@@ -104,6 +104,7 @@
 #include "weather.h"
 #include "weather_type.h"
 #include "worldfactory.h"
+#include "mp_client_conn.h"
 
 enum class direction : unsigned int;
 
@@ -2309,6 +2310,30 @@ static std::vector<action_id> get_actions_move_mode()
 bool game::do_regular_action( action_id &act, avatar &player_character,
                               const std::optional<tripoint_bub_ms> &mouse_target )
 {
+    // In client mode, intercept movement and wait — send to server, skip local execution.
+    if( cata_mp::is_client_mode() ) {
+        static const std::map<action_id, std::string> action_to_dir = {
+            { ACTION_MOVE_FORTH,       "n"  },
+            { ACTION_MOVE_BACK,        "s"  },
+            { ACTION_MOVE_RIGHT,       "e"  },
+            { ACTION_MOVE_LEFT,        "w"  },
+            { ACTION_MOVE_FORTH_RIGHT, "ne" },
+            { ACTION_MOVE_FORTH_LEFT,  "nw" },
+            { ACTION_MOVE_BACK_RIGHT,  "se" },
+            { ACTION_MOVE_BACK_LEFT,   "sw" },
+        };
+        auto it = action_to_dir.find( act );
+        if( it != action_to_dir.end() ) {
+            cata_mp::client_send( "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
+                                  it->second + "\"}" );
+            return true;
+        }
+        if( act == ACTION_WAIT ) {
+            cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
+            return true;
+        }
+    }
+
     map &here = get_map();
 
     item_location weapon = player_character.get_wielded_item();

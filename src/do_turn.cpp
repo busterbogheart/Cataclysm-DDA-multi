@@ -1,6 +1,7 @@
 #include "do_turn.h"
 #include "mp_queue.h"
 #include "mp_gamestate.h"
+#include "mp_client_conn.h"
 
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
@@ -507,6 +508,8 @@ bool do_turn()
 
     // Process multiplayer events from network thread
     cata_mp::process_mp_events();
+    // Apply any server state updates received since the last turn (client mode)
+    cata_mp::client_process_incoming();
 
     timed_event_manager &timed_events = get_timed_events();
     timed_events.process();

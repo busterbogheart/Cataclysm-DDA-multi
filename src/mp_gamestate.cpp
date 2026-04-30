@@ -1,4 +1,5 @@
 #include "mp_gamestate.h"
+#include "mp_client_conn.h"
 #include "mp_queue.h"
 #include "mp_server.h"
 
@@ -188,6 +189,69 @@ void process_mp_events()
             case mp_event::type::action:
                 handle_remote_action( event.session_id, event.data );
                 break;
+        }
+    }
+}
+
+static int parse_int_in( const std::string &json, const std::string &key )
+{
+    for( const std::string &sep : { std::string( "\":" ), std::string( "\": " ) } ) {
+        const std::string needle = "\"" + key + sep;
+        auto pos = json.find( needle );
+        if( pos != std::string::npos ) {
+            pos += needle.size();
+            while( pos < json.size() && json[pos] == ' ' ) {
+                ++pos;
+            }
+            if( pos < json.size() && ( std::isdigit( static_cast<unsigned char>( json[pos] ) ) ||
+                                       json[pos] == '-' ) ) {
+                return std::stoi( json.substr( pos ) );
+            }
+        }
+    }
+    return 0;
+}
+
+void client_process_incoming()
+{
+    std::string msg;
+    while( client_recv_pop( msg ) ) {
+        // Ignore non-state messages (hello, welcome, player_joined, etc.)
+        const bool is_state = msg.find( "\"type\":\"state\"" ) != std::string::npos ||
+                              msg.find( "\"type\": \"state\"" ) != std::string::npos;
+        if( !is_state ) {
+            std::cout << "[cdda-mp server] " << msg << std::endl;
+            continue;
+        }
+        if( msg.find( "\"connected\":false" ) != std::string::npos ) {
+            add_msg( m_bad, "Lost connection to server." );
+            continue;
+        }
+
+        // Parse pos block only
+        const auto pos_start = msg.find( "\"pos\":" );
+        if( pos_start == std::string::npos ) {
+            continue;
+        }
+        const auto obj_open  = msg.find( '{', pos_start );
+        const auto obj_close = msg.find( '}', obj_open );
+        if( obj_open == std::string::npos || obj_close == std::string::npos ) {
+            continue;
+        }
+        const std::string pos_obj = msg.substr( obj_open, obj_close - obj_open + 1 );
+
+        const int x = parse_int_in( pos_obj, "x" );
+        const int y = parse_int_in( pos_obj, "y" );
+        const int z = parse_int_in( pos_obj, "z" );
+
+        const int bx = std::max( 0, std::min( x, MAPSIZE_X - 1 ) );
+        const int by = std::max( 0, std::min( y, MAPSIZE_Y - 1 ) );
+
+        avatar &u = get_avatar();
+        map &m = get_map();
+        const tripoint_bub_ms new_pos{ bx, by, z };
+        if( new_pos != u.pos_bub() ) {
+            u.setpos( m, new_pos );
         }
     }
 }

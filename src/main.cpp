@@ -26,6 +26,7 @@
 #include <vector>
 #include "mp_server.h"
 #include "mp_gamestate.h"
+#include "mp_client_conn.h"
 #if defined(_WIN32)
 #include "cata_allocator.h"
 #include "platform_win.h"
@@ -288,6 +289,12 @@ struct cli_opts {
     bool host_mode = false;
     uint16_t server_port = 8080;
     std::string server_password;
+    // Client mode
+    bool client_mode = false;
+    std::string client_host;
+    uint16_t client_port = 8080;
+    std::string client_name;
+    std::string client_password;
 };
 
 cli_opts parse_commandline( int argc, const char **argv )
@@ -479,6 +486,34 @@ cli_opts parse_commandline( int argc, const char **argv )
                 1,
                 [&result]( int, const char **params ) -> int {
                     result.server_password = params[0];
+                    return 1;
+                }
+            },
+            {
+                "--client", "<host:port>",
+                "Connect to a multiplayer server as a client (e.g. --client localhost:8080)",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.client_mode = true;
+                    const std::string arg = params[0];
+                    const auto colon = arg.rfind( ':' );
+                    if( colon != std::string::npos ) {
+                        result.client_host = arg.substr( 0, colon );
+                        result.client_port = static_cast<uint16_t>( std::stoi( arg.substr( colon + 1 ) ) );
+                    } else {
+                        result.client_host = arg;
+                    }
+                    return 1;
+                }
+            },
+            {
+                "--client-name", "<name>",
+                "Player name to use when connecting as a client",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.client_name = params[0];
                     return 1;
                 }
             }
@@ -993,6 +1028,27 @@ int main( int argc, const char *argv[] )
 
         exit_handler( -999 );
         return 0;
+    }
+
+    // Client mode: connect to server before entering the game loop.
+    // The game still loads and displays normally; player actions are forwarded
+    // to the server instead of executing locally.
+    if( cli.client_mode ) {
+        if( cli.client_host.empty() ) {
+            fprintf( stderr, "[cdda-mp] --client requires a host, e.g. --client localhost:8080\n" );
+            return 1;
+        }
+        cata_mp::set_client_mode( true );
+        // Name defaults to --client-name, or "player2" if not given
+        const std::string name = cli.client_name.empty() ? "player2" : cli.client_name;
+        if( !cata_mp::client_connect( cli.client_host, cli.client_port,
+                                      name, cli.client_password ) ) {
+            fprintf( stderr, "[cdda-mp] Failed to connect to %s:%d\n",
+                     cli.client_host.c_str(), cli.client_port );
+            return 1;
+        }
+        printf( "[cdda-mp] Client mode active — connected to %s:%d\n",
+                cli.client_host.c_str(), cli.client_port );
     }
 
     main_menu::queued_world_to_load = std::move( cli.world );

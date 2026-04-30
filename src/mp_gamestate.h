@@ -19,6 +19,10 @@ std::string serialize_remote_player_state();
 // Used by monmove() to skip AI processing for human-controlled NPCs.
 bool is_remote_player( character_id id );
 
+// Drain the server recv queue and apply each state message to the local avatar.
+// Called once per game turn from do_turn() when in client mode.
+void client_process_incoming();
+
 // True when running as a dedicated headless server (--server flag).
 // Suppresses avatar input and display-related paths in the game loop.
 bool is_server_mode();
