@@ -2895,6 +2895,9 @@ void game::bury_screen() const
 
 void game::death_screen()
 {
+    if( test_mode ) {
+        return;
+    }
     gamemode->game_over();
     Messages::display_messages();
     u.get_avatar_diary()->death_entry();

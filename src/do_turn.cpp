@@ -582,9 +582,15 @@ bool do_turn()
     }
 
     // In server mode the avatar is a simulation host, not a controllable player.
-    // Zero its moves so we skip the input-blocking loop below entirely.
+    // Zero its moves so we skip the input-blocking loop, and keep survival
+    // needs at safe levels so it never dies and crashes the server.
     if( cata_mp::is_server_mode() ) {
         u.set_moves( 0 );
+        u.set_hunger( 0 );
+        u.set_thirst( 0 );
+        u.set_sleep_deprivation( 0 );
+        u.set_stamina( u.get_stamina_max() );
+        u.healall( 100 );
     }
 
     if( !u.has_effect( effect_sleep ) || g->uquit == QUIT_WATCH ) {
