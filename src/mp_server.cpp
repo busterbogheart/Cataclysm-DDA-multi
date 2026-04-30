@@ -1,0 +1,245 @@
+#include "mp_server.h"
+#include "mp_queue.h"
+
+#include <iostream>
+#include <algorithm>
+
+// Standalone Asio — no Boost dependency
+#define ASIO_STANDALONE
+#include <asio.hpp>
+
+using asio::ip::tcp;
+
+namespace cata_mp {
+
+// ---------------------------------------------------------------------------
+// client_session — owns one TCP connection
+// ---------------------------------------------------------------------------
+
+struct client_session : public std::enable_shared_from_this<client_session> {
+    tcp::socket socket;
+    asio::streambuf read_buf;
+    std::string name;
+    bool authenticated = false;
+
+    std::function<void( std::shared_ptr<client_session>, const std::string & )> on_message;
+    std::function<void( std::shared_ptr<client_session> )> on_disconnect;
+
+    explicit client_session( tcp::socket sock )
+        : socket( std::move( sock ) ) {}
+
+    void start() {
+        send( "{\"type\":\"hello\",\"protocol\":\"cdda-mp\",\"version\":\"0.1\"}\n" );
+        do_read();
+    }
+
+    void send( const std::string &msg ) {
+        auto self = shared_from_this();
+        asio::async_write( socket, asio::buffer( msg ),
+        [self]( std::error_code ec, std::size_t ) {
+            if( ec ) {
+                self->disconnect();
+            }
+        } );
+    }
+
+    void disconnect() {
+        std::error_code ec;
+        socket.close( ec );
+        if( on_disconnect ) {
+            on_disconnect( shared_from_this() );
+        }
+    }
+
+    private:
+        void do_read() {
+            auto self = shared_from_this();
+            asio::async_read_until( socket, read_buf, '\n',
+            [self]( std::error_code ec, std::size_t ) {
+                if( ec ) {
+                    self->disconnect();
+                    return;
+                }
+                std::istream stream( &self->read_buf );
+                std::string line;
+                std::getline( stream, line );
+                if( !line.empty() && self->on_message ) {
+                    self->on_message( self, line );
+                }
+                self->do_read();
+            } );
+        }
+};
+
+// ---------------------------------------------------------------------------
+// server::impl — holds the Asio io_context and acceptor
+// ---------------------------------------------------------------------------
+
+struct server::impl {
+    asio::io_context io_ctx;
+    tcp::acceptor acceptor;
+
+    impl( uint16_t port )
+        : acceptor( io_ctx, tcp::endpoint( tcp::v4(), port ) ) {}
+};
+
+// ---------------------------------------------------------------------------
+// server
+// ---------------------------------------------------------------------------
+
+server::server( uint16_t port, std::string password )
+    : port_( port )
+    , password_( std::move( password ) )
+    , impl_( std::make_unique<impl>( port ) ) {}
+
+server::~server() = default;
+
+void server::run() {
+    std::cout << "[cdda-mp] Server listening on port " << port_ << std::endl;
+    do_accept();
+    impl_->io_ctx.run();
+}
+
+void server::stop() {
+    impl_->io_ctx.stop();
+}
+
+void server::broadcast( const std::string &msg ) {
+    std::lock_guard<std::mutex> lock( clients_mutex_ );
+    for( auto &c : clients_ ) {
+        c->send( msg );
+    }
+}
+
+void server::do_accept() {
+    impl_->acceptor.async_accept(
+    [this]( std::error_code ec, tcp::socket socket ) {
+        if( !ec ) {
+            auto session = std::make_shared<client_session>( std::move( socket ) );
+
+            session->on_message = [this]( auto sess, auto msg ) {
+                on_message( sess, msg );
+            };
+            session->on_disconnect = [this]( auto sess ) {
+                on_client_disconnected( sess );
+            };
+
+            on_client_connected( session );
+            session->start();
+        }
+        do_accept();
+    } );
+}
+
+void server::on_client_connected( std::shared_ptr<client_session> session ) {
+    {
+        std::lock_guard<std::mutex> lock( clients_mutex_ );
+        clients_.push_back( session );
+    }
+    std::cout << "[cdda-mp] Client connected. Total: " << clients_.size() << std::endl;
+
+    if( clients_.size() > 2 ) {
+        session->send( "{\"type\":\"error\",\"message\":\"Server is full (max 2 players)\"}\n" );
+        session->disconnect();
+    }
+}
+
+void server::on_client_disconnected( std::shared_ptr<client_session> session ) {
+    {
+        std::lock_guard<std::mutex> lock( clients_mutex_ );
+        clients_.erase(
+            std::remove( clients_.begin(), clients_.end(), session ),
+            clients_.end()
+        );
+    }
+    std::string name = session->name.empty() ? "unknown" : session->name;
+    std::cout << "[cdda-mp] Client '" << name << "' disconnected. Total: " <<
+              clients_.size() << std::endl;
+
+    if( session->authenticated ) {
+        broadcast( "{\"type\":\"player_left\",\"name\":\"" + name + "\"}\n" );
+        get_mp_queue().push( { cata_mp::mp_event::type::disconnect, name, "" } );
+    }
+}
+
+void server::on_message( std::shared_ptr<client_session> session, const std::string &msg ) {
+    // Minimal string matching — full JSON handling comes in Phase 2
+    std::cout << "[cdda-mp] recv: " << msg << std::endl;
+
+    if( msg.find( "\"type\":\"join\"" ) != std::string::npos ) {
+        // Extract name
+        std::string name = "player";
+        auto pos = msg.find( "\"name\":\"" );
+        if( pos != std::string::npos ) {
+            pos += 8;
+            auto end = msg.find( '"', pos );
+            if( end != std::string::npos ) {
+                name = msg.substr( pos, end - pos );
+            }
+        }
+
+        // Check password
+        if( !password_.empty() ) {
+            std::string provided;
+            auto ppos = msg.find( "\"password\":\"" );
+            if( ppos != std::string::npos ) {
+                ppos += 12;
+                auto pend = msg.find( '"', ppos );
+                if( pend != std::string::npos ) {
+                    provided = msg.substr( ppos, pend - ppos );
+                }
+            }
+            if( provided != password_ ) {
+                session->send( "{\"type\":\"error\",\"message\":\"Wrong password\"}\n" );
+                session->disconnect();
+                return;
+            }
+        }
+
+        session->name = name;
+        session->authenticated = true;
+
+        session->send( "{\"type\":\"welcome\",\"player_id\":\"" + name +
+                       "\",\"world\":\"default\",\"current_turn\":0}\n" );
+
+        broadcast( "{\"type\":\"player_joined\",\"name\":\"" + name + "\"}\n" );
+        std::cout << "[cdda-mp] Player '" << name << "' joined." << std::endl;
+
+        // Notify game loop to spawn this player's character
+        get_mp_queue().push( { cata_mp::mp_event::type::connect, name, "" } );
+
+    } else if( msg.find( "\"type\":\"quit\"" ) != std::string::npos ) {
+        session->send( "{\"type\":\"goodbye\"}\n" );
+        session->disconnect();
+
+    } else if( session->authenticated ) {
+        // Route action to game loop
+        get_mp_queue().push( { cata_mp::mp_event::type::action, session->name, msg } );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point called from main()
+// ---------------------------------------------------------------------------
+
+static server *active_server_ = nullptr;
+
+server *get_active_server()
+{
+    return active_server_;
+}
+
+void run_server( uint16_t port, const std::string &password ) {
+    try {
+        server srv( port, password );
+        active_server_ = &srv;
+        srv.run();
+        active_server_ = nullptr;
+    } catch( const std::exception &e ) {
+        std::cerr << "[cdda-mp] Server failed to start: " << e.what() << std::endl;
+        std::cerr << "[cdda-mp] Is port " << port << " already in use?" << std::endl;
+        exit( 1 );
+    }
+}
+
+} // namespace cata_mp

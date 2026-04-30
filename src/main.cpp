@@ -20,8 +20,10 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
+#include "mp_server.h"
 #if defined(_WIN32)
 #include "cata_allocator.h"
 #include "platform_win.h"
@@ -278,6 +280,11 @@ struct cli_opts {
     std::vector<std::string> opts;
     std::string world; /** if set try to load first save in this world on startup */
     bool disable_ascii_art = false;
+    // Multiplayer
+    bool server_mode = false;
+    bool host_mode = false;
+    uint16_t server_port = 8080;
+    std::string server_password;
 };
 
 cli_opts parse_commandline( int argc, const char **argv )
@@ -430,6 +437,46 @@ cli_opts parse_commandline( int argc, const char **argv )
                 [&result]( int, const char ** ) -> int {
                     result.disable_ascii_art = true;
                     return 0;
+                }
+            },
+            {
+                "--server", {},
+                "Run as a headless multiplayer server (no display required)",
+                section_default,
+                0,
+                [&result]( int, const char ** ) -> int {
+                    result.server_mode = true;
+                    return 0;
+                }
+            },
+            {
+                "--host", {},
+                "Host a multiplayer game — play normally while accepting one remote player",
+                section_default,
+                0,
+                [&result]( int, const char ** ) -> int {
+                    result.host_mode = true;
+                    return 0;
+                }
+            },
+            {
+                "--port", "<number>",
+                "Port for the multiplayer server to listen on (default: 8080)",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.server_port = static_cast<uint16_t>( std::stoi( params[0] ) );
+                    return 1;
+                }
+            },
+            {
+                "--password", "<string>",
+                "Password required for players to join the multiplayer server",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.server_password = params[0];
+                    return 1;
                 }
             }
         }
@@ -691,6 +738,12 @@ int main( int argc, const char *argv[] )
 
     cli_opts cli = parse_commandline( argc, const_cast<const char **>( argv ) );
 
+    // Server mode: run headless before any UI, SDL, or game init
+    if( cli.server_mode ) {
+        cata_mp::run_server( cli.server_port, cli.server_password );
+        return 0;
+    }
+
     if( !dir_exist( PATH_INFO::datadir() ) ) {
         printf( "Fatal: Can't find data directory \"%s\"\nPlease ensure the current working directory is correct or specify data directory with --datadir.  Perhaps you meant to start \"cataclysm-launcher\"?\n",
                 PATH_INFO::datadir().c_str() );
@@ -856,6 +909,18 @@ int main( int argc, const char *argv[] )
     replay_buffered_debugmsg_prompts();
 
     main_menu::queued_world_to_load = std::move( cli.world );
+
+    // Host mode: start listen server in background thread before entering game loop
+    std::thread host_thread;
+    if( cli.host_mode ) {
+        const uint16_t port = cli.server_port;
+        const std::string password = cli.server_password;
+        host_thread = std::thread( [port, password]() {
+            cata_mp::run_server( port, password );
+        } );
+        host_thread.detach();
+        printf( "[cdda-mp] Hosting on port %d — waiting for player 2...\n", port );
+    }
 
     while( true ) {
         main_menu menu;

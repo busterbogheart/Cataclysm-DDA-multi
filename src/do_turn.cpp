@@ -1,4 +1,6 @@
 #include "do_turn.h"
+#include "mp_queue.h"
+#include "mp_gamestate.h"
 
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
@@ -498,6 +500,9 @@ bool do_turn()
     if( g->npcs_dirty ) {
         g->load_npcs();
     }
+
+    // Process multiplayer events from network thread
+    cata_mp::process_mp_events();
 
     timed_event_manager &timed_events = get_timed_events();
     timed_events.process();

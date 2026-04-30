@@ -558,7 +558,7 @@ ifeq ($(PCH), 1)
   endif
 endif
 
-CPPFLAGS += -Isrc -isystem ${SRC_DIR}/third-party $(DEFINES)
+CPPFLAGS += -Isrc -isystem ${SRC_DIR}/third-party -isystem ${SRC_DIR}/third-party/asio $(DEFINES)
 CXXFLAGS += $(WARNINGS) $(DEBUG) $(DEBUGSYMS) $(PROFILE) $(OTHERS)
 TOOL_CXXFLAGS = -DCATA_IN_TOOL
 DEFINES += -DZSTD_STATIC_LINKING_ONLY -DZSTD_DISABLE_ASM -DFMT_USE_LOCALE=0
