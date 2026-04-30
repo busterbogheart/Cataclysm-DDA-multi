@@ -17,6 +17,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
@@ -24,6 +25,7 @@
 #include <utility>
 #include <vector>
 #include "mp_server.h"
+#include "mp_gamestate.h"
 #if defined(_WIN32)
 #include "cata_allocator.h"
 #include "platform_win.h"
@@ -52,6 +54,7 @@
 #include "help.h"
 #include "input.h"
 #include "main_menu.h"
+#include "worldfactory.h"
 #include "mapsharing.h"
 #include "memory_fast.h"
 #include "options.h"
@@ -147,7 +150,7 @@ void exit_handler( int s )
 {
     const int old_timeout = inp_mngr.get_timeout();
     inp_mngr.reset_timeout();
-    if( s != 2 || query_yn( _( "Really Quit?  All unsaved changes will be lost." ) ) ) {
+    if( s != 2 || test_mode || query_yn( _( "Really Quit?  All unsaved changes will be lost." ) ) ) {
         deinitDebug();
 
         int exit_status = 0;
@@ -738,10 +741,20 @@ int main( int argc, const char *argv[] )
 
     cli_opts cli = parse_commandline( argc, const_cast<const char **>( argv ) );
 
-    // Server mode: run headless before any UI, SDL, or game init
+    // Server mode: flag early so catacurses::init_interface() and display
+    // calls throughout the rest of init are suppressed via test_mode guards.
     if( cli.server_mode ) {
-        cata_mp::run_server( cli.server_port, cli.server_password );
-        return 0;
+        test_mode = true;
+        cata_mp::set_server_mode( true );
+        // Tiles build loads options and colors inside catacurses::init_interface(),
+        // which we skip in test_mode.  Do only the display-independent parts here:
+        // options must be loaded before set_language_from_options(), and init_colors()
+        // must be called before load_core_data() parses color names from JSON.
+#if defined(TILES)
+        get_options().init();
+        get_options().load();
+#endif
+        init_colors();
     }
 
     if( !dir_exist( PATH_INFO::datadir() ) ) {
@@ -835,7 +848,9 @@ int main( int argc, const char *argv[] )
 
     rng_set_engine_seed( cli.seed );
 
-    game_ui::init_ui();
+    if( !cata_mp::is_server_mode() ) {
+        game_ui::init_ui();
+    }
 
     g = std::make_unique<game>();
 
@@ -856,13 +871,15 @@ int main( int argc, const char *argv[] )
         exit_handler( -999 );
     }
 
-    // Load the colors of ImGui to match the colors set by the user.
-    cataimgui::init_colors();
+    if( !cata_mp::is_server_mode() ) {
+        // Load the colors of ImGui to match the colors set by the user.
+        cataimgui::init_colors();
 
-    // set decimal point for float input widgets
-    // uses system locale, because that's what imgui uses to parse and display floats
-    ImGui::GetPlatformIO().Platform_LocaleDecimalPoint =
-        static_cast<unsigned char>( *localeconv()->decimal_point );
+        // set decimal point for float input widgets
+        // uses system locale, because that's what imgui uses to parse and display floats
+        ImGui::GetPlatformIO().Platform_LocaleDecimalPoint =
+            static_cast<unsigned char>( *localeconv()->decimal_point );
+    }
 
     // Override existing settings from cli  options
     if( cli.disable_ascii_art ) {
@@ -898,7 +915,9 @@ int main( int argc, const char *argv[] )
     }
 
 #if defined(LOCALIZE)
-    if( get_option<std::string>( "USE_LANG" ).empty() && !SystemLocale::Language().has_value() ) {
+    // imclient is null in server mode (SDL/ImGui not initialized), skip this.
+    if( !cata_mp::is_server_mode() &&
+        get_option<std::string>( "USE_LANG" ).empty() && !SystemLocale::Language().has_value() ) {
         imclient->new_frame(); // we have to prime the pump, because of reasons
         imclient->end_frame();
         const std::string lang = select_language();
@@ -907,6 +926,69 @@ int main( int argc, const char *argv[] )
     }
 #endif
     replay_buffered_debugmsg_prompts();
+
+    // Server mode: load world headlessly, start TCP server on background thread,
+    // then run the game loop on this thread.  Avatar moves are zeroed each turn
+    // in do_turn() so we never block on handle_action().
+    if( cli.server_mode ) {
+        const std::string worldname = cli.world;
+        if( worldname.empty() ) {
+            fprintf( stderr, "[cdda-mp] --server requires --world <worldname>\n" );
+            fprintf( stderr, "[cdda-mp] Usage: ./cataclysm-tiles --server --world <name> --port 8081\n" );
+            return 1;
+        }
+
+        // Scan available worlds so we can print a useful error if the name is wrong.
+        world_generator->init();
+        const WORLD *wptr = world_generator->get_world( worldname );
+        if( !wptr ) {
+            fprintf( stderr, "[cdda-mp] World '%s' not found. Available worlds:\n",
+                     worldname.c_str() );
+            for( const std::string &wn : world_generator->all_worldnames() ) {
+                const WORLD *w = world_generator->get_world( wn );
+                fprintf( stderr, "  %s  (%zu save(s))\n", wn.c_str(),
+                         w ? w->world_saves.size() : 0 );
+            }
+            fprintf( stderr, "[cdda-mp] Create a character in the game first, then run --server.\n" );
+            return 1;
+        }
+        if( wptr->world_saves.empty() ) {
+            fprintf( stderr,
+                     "[cdda-mp] World '%s' has no character saves. "
+                     "Start the game, create a character, and save before running --server.\n",
+                     worldname.c_str() );
+            return 1;
+        }
+
+        if( !g->load( worldname ) ) {
+            fprintf( stderr, "[cdda-mp] Failed to load world '%s' — check debug.log for details.\n",
+                     worldname.c_str() );
+            return 1;
+        }
+
+        const uint16_t port = cli.server_port;
+        const std::string password = cli.server_password;
+        std::thread server_thread( [port, password]() {
+            cata_mp::run_server( port, password );
+        } );
+        server_thread.detach();
+        printf( "[cdda-mp] Headless server running on port %d (world: %s)\n",
+                port, worldname.c_str() );
+
+        get_event_bus().send<event_type::game_begin>( getVersionString() );
+
+        // Pace the server to real-time: each game turn is 1 second, so sleep for the
+        // remainder of each real second after do_turn() completes.
+        using clock = std::chrono::steady_clock;
+        auto next_tick = clock::now();
+        while( !do_turn() ) {
+            next_tick += std::chrono::seconds( 1 );
+            std::this_thread::sleep_until( next_tick );
+        }
+
+        exit_handler( -999 );
+        return 0;
+    }
 
     main_menu::queued_world_to_load = std::move( cli.world );
 

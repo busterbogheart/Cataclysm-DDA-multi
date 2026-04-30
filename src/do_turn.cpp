@@ -577,6 +577,12 @@ bool do_turn()
         sfx::do_hearing_loss();
     }
 
+    // In server mode the avatar is a simulation host, not a controllable player.
+    // Zero its moves so we skip the input-blocking loop below entirely.
+    if( cata_mp::is_server_mode() ) {
+        u.set_moves( 0 );
+    }
+
     if( !u.has_effect( effect_sleep ) || g->uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
             while( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {

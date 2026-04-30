@@ -30,7 +30,12 @@ class server {
         void stop();
 
         // Broadcast a message to all connected clients.
+        // Must be called from the Asio io_context thread (e.g. inside a callback).
         void broadcast( const std::string &msg );
+
+        // Thread-safe broadcast: posts the send onto the io_context thread.
+        // Use this when calling from the game loop thread.
+        void post_broadcast( const std::string &msg );
 
         uint16_t port() const {
             return port_;

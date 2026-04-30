@@ -4120,6 +4120,9 @@ bool gamepad_available()
 
 void rescale_tileset( int size )
 {
+    if( !closetilecontext ) {
+        return; // tileset not initialized (server/headless mode)
+    }
     // zoom is calculated as powers of 2 so need to convert swap zoom between 4 and 64
     if( size <= pow( 2, get_option<int>( "SWAP_ZOOM" ) + 1 ) && use_far_tiles ) {
         tilecontext = fartilecontext;

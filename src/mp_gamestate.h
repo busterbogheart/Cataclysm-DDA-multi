@@ -14,6 +14,11 @@ void process_mp_events();
 // HP, and nearby visible tiles. Sent to the client after each action.
 std::string serialize_remote_player_state();
 
+// True when running as a dedicated headless server (--server flag).
+// Suppresses avatar input and display-related paths in the game loop.
+bool is_server_mode();
+void set_server_mode( bool enabled );
+
 } // namespace cata_mp
 
 #endif // CATA_SRC_MP_GAMESTATE_H

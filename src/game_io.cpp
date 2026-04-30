@@ -483,7 +483,9 @@ bool game::load( const save_t &name )
 #if defined(TILES)
                     // Ensure tileset display is synced with loaded zoom level
                     rescale_tileset( uistate.tileset_zoom );
-                    overmap_tilecontext->set_draw_scale( uistate.overmap_tileset_zoom );
+                    if( overmap_tilecontext ) {
+                        overmap_tilecontext->set_draw_scale( uistate.overmap_tileset_zoom );
+                    }
 #endif
 
                 }

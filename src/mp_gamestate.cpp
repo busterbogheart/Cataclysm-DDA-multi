@@ -19,6 +19,18 @@
 
 namespace cata_mp {
 
+static bool server_mode_ = false;
+
+bool is_server_mode()
+{
+    return server_mode_;
+}
+
+void set_server_mode( bool enabled )
+{
+    server_mode_ = enabled;
+}
+
 // The character_id of the remote player's NPC. Invalid when no remote player is connected.
 static character_id remote_player_npc_id;
 static bool remote_player_connected = false;
@@ -68,7 +80,7 @@ static void spawn_remote_player( const std::string &name )
     // Send initial state to player 2
     server *srv = get_active_server();
     if( srv ) {
-        srv->broadcast( serialize_remote_player_state() + "\n" );
+        srv->post_broadcast( serialize_remote_player_state() + "\n" );
     }
 }
 
@@ -106,22 +118,26 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     tripoint_bub_ms cur = remote->pos_bub();
     tripoint_bub_ms next = cur;
 
-    // Parse direction from JSON action
-    if( msg.find( "\"dir\":\"n\"" ) != std::string::npos ) {
+    // Parse direction — handle both "dir":"n" and "dir": "n" spacing
+    const auto dir_match = [&msg]( const std::string & d ) {
+        return msg.find( "\"dir\":\"" + d + "\"" ) != std::string::npos ||
+               msg.find( "\"dir\": \"" + d + "\"" ) != std::string::npos;
+    };
+    if( dir_match( "n" ) ) {
         next += tripoint( 0, -1, 0 );
-    } else if( msg.find( "\"dir\":\"s\"" ) != std::string::npos ) {
+    } else if( dir_match( "s" ) ) {
         next += tripoint( 0, 1, 0 );
-    } else if( msg.find( "\"dir\":\"e\"" ) != std::string::npos ) {
+    } else if( dir_match( "e" ) ) {
         next += tripoint( 1, 0, 0 );
-    } else if( msg.find( "\"dir\":\"w\"" ) != std::string::npos ) {
+    } else if( dir_match( "w" ) ) {
         next += tripoint( -1, 0, 0 );
-    } else if( msg.find( "\"dir\":\"ne\"" ) != std::string::npos ) {
+    } else if( dir_match( "ne" ) ) {
         next += tripoint( 1, -1, 0 );
-    } else if( msg.find( "\"dir\":\"nw\"" ) != std::string::npos ) {
+    } else if( dir_match( "nw" ) ) {
         next += tripoint( -1, -1, 0 );
-    } else if( msg.find( "\"dir\":\"se\"" ) != std::string::npos ) {
+    } else if( dir_match( "se" ) ) {
         next += tripoint( 1, 1, 0 );
-    } else if( msg.find( "\"dir\":\"sw\"" ) != std::string::npos ) {
+    } else if( dir_match( "sw" ) ) {
         next += tripoint( -1, 1, 0 );
     }
 
@@ -133,7 +149,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // Send updated state back
     server *srv = get_active_server();
     if( srv ) {
-        srv->broadcast( serialize_remote_player_state() + "\n" );
+        srv->post_broadcast( serialize_remote_player_state() + "\n" );
     }
 }
 

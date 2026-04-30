@@ -2878,6 +2878,11 @@ bool game::is_game_over()
 
 void game::bury_screen() const
 {
+    if( test_mode ) {
+        // No UI in headless/server mode — just log and return.
+        std::cerr << "[cdda-mp] Avatar died in server mode; shutting down." << std::endl;
+        return;
+    }
     end_screen_data new_instance;
     new_instance.draw_end_screen_ui();
 
@@ -6416,7 +6421,9 @@ void game::set_overmap_zoom( const int level )
 #if defined(TILES)
     if( uistate.overmap_tileset_zoom != level ) {
         uistate.overmap_tileset_zoom = level;
-        overmap_tilecontext->set_draw_scale( uistate.overmap_tileset_zoom );
+        if( overmap_tilecontext ) {
+            overmap_tilecontext->set_draw_scale( uistate.overmap_tileset_zoom );
+        }
     }
 #else
     static_cast<void>( level );

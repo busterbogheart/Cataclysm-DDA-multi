@@ -62,8 +62,8 @@ def recv_loop(sock):
                         pos = msg.get("pos", {})
                         hp = msg.get("hp", "?")
                         hp_max = msg.get("hp_max", "?")
-                        print(f"\r[state] pos=({pos.get('x')},{pos.get('y')},{pos.get('z')}) "
-                              f"hp={hp}/{hp_max}          ", flush=True)
+                        print(f"\n[state] pos=({pos.get('x')},{pos.get('y')},{pos.get('z')}) "
+                              f"hp={hp}/{hp_max}", flush=True)
                     elif mtype == "hello":
                         print(f"[server] protocol={msg.get('protocol')} version={msg.get('version')}")
                     elif mtype == "welcome":

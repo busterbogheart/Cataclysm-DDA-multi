@@ -111,6 +111,10 @@ void server::broadcast( const std::string &msg ) {
     }
 }
 
+void server::post_broadcast( const std::string &msg ) {
+    asio::post( impl_->io_ctx, [this, msg]() { broadcast( msg ); } );
+}
+
 void server::do_accept() {
     impl_->acceptor.async_accept(
     [this]( std::error_code ec, tcp::socket socket ) {
@@ -162,33 +166,39 @@ void server::on_client_disconnected( std::shared_ptr<client_session> session ) {
     }
 }
 
+// Extract a string value from a simple JSON message, tolerating optional spaces
+// around the colon (handles both "key":"val" and "key": "val").
+static std::string json_get_str( const std::string &json, const std::string &key )
+{
+    for( const std::string &sep : { std::string( "\":\"" ), std::string( "\": \"" ) } ) {
+        std::string needle = "\"" + key + sep;
+        auto pos = json.find( needle );
+        if( pos != std::string::npos ) {
+            pos += needle.size();
+            auto end = json.find( '"', pos );
+            if( end != std::string::npos ) {
+                return json.substr( pos, end - pos );
+            }
+        }
+    }
+    return "";
+}
+
 void server::on_message( std::shared_ptr<client_session> session, const std::string &msg ) {
-    // Minimal string matching — full JSON handling comes in Phase 2
     std::cout << "[cdda-mp] recv: " << msg << std::endl;
 
-    if( msg.find( "\"type\":\"join\"" ) != std::string::npos ) {
+    const std::string type = json_get_str( msg, "type" );
+
+    if( type == "join" ) {
         // Extract name
-        std::string name = "player";
-        auto pos = msg.find( "\"name\":\"" );
-        if( pos != std::string::npos ) {
-            pos += 8;
-            auto end = msg.find( '"', pos );
-            if( end != std::string::npos ) {
-                name = msg.substr( pos, end - pos );
-            }
+        std::string name = json_get_str( msg, "name" );
+        if( name.empty() ) {
+            name = "player";
         }
 
         // Check password
         if( !password_.empty() ) {
-            std::string provided;
-            auto ppos = msg.find( "\"password\":\"" );
-            if( ppos != std::string::npos ) {
-                ppos += 12;
-                auto pend = msg.find( '"', ppos );
-                if( pend != std::string::npos ) {
-                    provided = msg.substr( ppos, pend - ppos );
-                }
-            }
+            const std::string provided = json_get_str( msg, "password" );
             if( provided != password_ ) {
                 session->send( "{\"type\":\"error\",\"message\":\"Wrong password\"}\n" );
                 session->disconnect();
@@ -208,7 +218,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // Notify game loop to spawn this player's character
         get_mp_queue().push( { cata_mp::mp_event::type::connect, name, "" } );
 
-    } else if( msg.find( "\"type\":\"quit\"" ) != std::string::npos ) {
+    } else if( type == "quit" ) {
         session->send( "{\"type\":\"goodbye\"}\n" );
         session->disconnect();
 
