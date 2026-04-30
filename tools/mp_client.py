@@ -33,15 +33,17 @@ NAME = sys.argv[3] if len(sys.argv) > 3 else "player2"
 PASSWORD = sys.argv[4] if len(sys.argv) > 4 else ""
 
 KEY_TO_DIR = {
-    "w": "n", "k": "n",
-    "s": "s", "j": "s",
-    "d": "e", "l": "e",
-    "a": "w", "h": "w",
-    "q": "nw", "7": "nw",
-    "e": "ne", "9": "ne",
-    "z": "sw", "1": "sw",
-    "c": "se", "3": "se",
+    # WASD
+    "w": "n", "s": "s", "d": "e", "a": "w",
+    # vi keys
+    "k": "n", "j": "s", "l": "e", "h": "w",
+    "y": "nw", "u": "ne", "b": "sw", "n": "se",
+    # numpad
+    "8": "n", "2": "s", "6": "e", "4": "w",
+    "7": "nw", "9": "ne", "1": "sw", "3": "se",
 }
+
+WAIT_KEYS = {"5", "."}
 
 
 def recv_loop(sock):
@@ -62,7 +64,18 @@ def recv_loop(sock):
                         pos = msg.get("pos", {})
                         hp = msg.get("hp", "?")
                         hp_max = msg.get("hp_max", "?")
-                        print(f"\n[state] pos=({pos.get('x')},{pos.get('y')},{pos.get('z')}) "
+                        map_data = msg.get("map")
+                        print(flush=True)
+                        if map_data:
+                            w = map_data["w"]
+                            h = map_data["h"]
+                            tiles = map_data["tiles"]
+                            border = "+" + "-" * w + "+"
+                            print(border)
+                            for row in range(h):
+                                print("|" + tiles[row * w:(row + 1) * w] + "|")
+                            print(border)
+                        print(f"[state] pos=({pos.get('x')},{pos.get('y')},{pos.get('z')}) "
                               f"hp={hp}/{hp_max}", flush=True)
                     elif mtype == "hello":
                         print(f"[server] protocol={msg.get('protocol')} version={msg.get('version')}")
@@ -118,11 +131,15 @@ def main():
                 print(f"bad json: {e}")
             continue
 
+        if line in WAIT_KEYS:
+            send_json(sock, {"type": "action", "action": "wait"})
+            continue
+
         direction = KEY_TO_DIR.get(line)
         if direction:
             send_json(sock, {"type": "action", "action": "move", "dir": direction})
         else:
-            print(f"unknown key '{line}' — use w/a/s/d or q/e/z/c, or 'quit'")
+            print(f"unknown key '{line}' — numpad 8/4/6/2 (cardinal), 7/9/1/3 (diagonal), 5/. (wait), or 'quit'")
 
     sock.close()
     print("Bye.")

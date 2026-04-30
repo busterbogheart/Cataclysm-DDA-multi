@@ -11,6 +11,7 @@
 #include "npc.h"
 #include "overmapbuffer.h"
 #include "type_id.h"
+#include "map_scale_constants.h"
 #include "memory_fast.h"
 #include "point.h"
 
@@ -114,6 +115,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Wait — broadcast state without moving
+    const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
+                         msg.find( "\"action\": \"wait\"" ) != std::string::npos;
+    if( is_wait ) {
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
     map &m = get_map();
     tripoint_bub_ms cur = remote->pos_bub();
     tripoint_bub_ms next = cur;
@@ -157,6 +169,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 // Public API
 // ---------------------------------------------------------------------------
 
+bool is_remote_player( character_id id )
+{
+    return remote_player_connected && id == remote_player_npc_id;
+}
+
 void process_mp_events()
 {
     mp_event event;
@@ -175,6 +192,61 @@ void process_mp_events()
     }
 }
 
+static std::string build_viewport( const tripoint_bub_ms &center )
+{
+    constexpr int W = 41;
+    constexpr int H = 21;
+
+    map &m = get_map();
+    avatar &u = get_avatar();
+    npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+
+    tripoint_bub_ms avatar_pos = u.pos_bub();
+
+    // Map bounds in bubble coords
+    const point_bub_ms map_min{ 0, 0 };
+    const point_bub_ms map_max{ MAPSIZE_X - 1, MAPSIZE_Y - 1 };
+
+    int ox = center.x() - W / 2;
+    int oy = center.y() - H / 2;
+
+    std::string tiles;
+    tiles.reserve( W * H );
+
+    for( int row = 0; row < H; ++row ) {
+        for( int col = 0; col < W; ++col ) {
+            int bx = ox + col;
+            int by = oy + row;
+            tripoint_bub_ms p{ bx, by, center.z() };
+
+            if( bx < map_min.x() || bx > map_max.x() || by < map_min.y() || by > map_max.y() ) {
+                tiles += ' ';
+                continue;
+            }
+
+            // Player markers take priority
+            if( remote && p == remote->pos_bub() ) {
+                tiles += '2';
+            } else if( p == avatar_pos ) {
+                tiles += '@';
+            } else {
+                int sym = m.ter( p ).obj().symbol();
+                char ch = ( sym >= 32 && sym < 127 ) ? static_cast<char>( sym ) : '?';
+                if( ch == '\\' || ch == '"' ) {
+                    tiles += '\\';
+                }
+                tiles += ch;
+            }
+        }
+    }
+
+    return "{\"w\":" + std::to_string( W ) +
+           ",\"h\":" + std::to_string( H ) +
+           ",\"ox\":" + std::to_string( ox ) +
+           ",\"oy\":" + std::to_string( oy ) +
+           ",\"tiles\":\"" + tiles + "\"}";
+}
+
 std::string serialize_remote_player_state()
 {
     if( !remote_player_connected ) {
@@ -189,13 +261,15 @@ std::string serialize_remote_player_state()
     tripoint_bub_ms pos = remote->pos_bub();
     int hp = remote->get_hp();
     int hp_max = remote->get_hp_max();
+    std::string viewport = build_viewport( pos );
 
     return "{\"type\":\"state\","
            "\"pos\":{\"x\":" + std::to_string( pos.x() ) +
            ",\"y\":" + std::to_string( pos.y() ) +
            ",\"z\":" + std::to_string( pos.z() ) + "},"
            "\"hp\":" + std::to_string( hp ) +
-           ",\"hp_max\":" + std::to_string( hp_max ) + "}";
+           ",\"hp_max\":" + std::to_string( hp_max ) +
+           ",\"map\":" + viewport + "}";
 }
 
 } // namespace cata_mp

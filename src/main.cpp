@@ -977,13 +977,18 @@ int main( int argc, const char *argv[] )
 
         get_event_bus().send<event_type::game_begin>( getVersionString() );
 
-        // Pace the server to real-time: each game turn is 1 second, so sleep for the
-        // remainder of each real second after do_turn() completes.
+        // Pace the server to real-time (1 game turn = 1 real second).
+        // Between game ticks, poll MP events at 10 Hz so player input is
+        // processed in ~100 ms rather than waiting up to a full second.
         using clock = std::chrono::steady_clock;
-        auto next_tick = clock::now();
+        constexpr auto TICK_INTERVAL = std::chrono::seconds( 1 );
+        constexpr auto POLL_INTERVAL = std::chrono::milliseconds( 100 );
         while( !do_turn() ) {
-            next_tick += std::chrono::seconds( 1 );
-            std::this_thread::sleep_until( next_tick );
+            auto next_tick = clock::now() + TICK_INTERVAL;
+            while( clock::now() < next_tick ) {
+                std::this_thread::sleep_for( POLL_INTERVAL );
+                cata_mp::process_mp_events();
+            }
         }
 
         exit_handler( -999 );

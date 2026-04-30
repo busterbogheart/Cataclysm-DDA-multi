@@ -2,6 +2,7 @@
 #ifndef CATA_SRC_MP_GAMESTATE_H
 #define CATA_SRC_MP_GAMESTATE_H
 
+#include "character_id.h"
 #include <string>
 
 namespace cata_mp {
@@ -13,6 +14,10 @@ void process_mp_events();
 // Returns a JSON string describing the remote player's current position,
 // HP, and nearby visible tiles. Sent to the client after each action.
 std::string serialize_remote_player_state();
+
+// Returns true if the given character_id belongs to a remote player NPC.
+// Used by monmove() to skip AI processing for human-controlled NPCs.
+bool is_remote_player( character_id id );
 
 // True when running as a dedicated headless server (--server flag).
 // Suppresses avatar input and display-related paths in the game loop.

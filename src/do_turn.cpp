@@ -369,6 +369,10 @@ void monmove()
 
     // Now, do active NPCs.
     for( npc &guy : g->all_npcs() ) {
+        // Remote player NPCs are driven by network input, not AI.
+        if( cata_mp::is_remote_player( guy.getID() ) ) {
+            continue;
+        }
         int turns = 0;
         int real_count = 0;
         const int count_limit = std::max( 10, guy.get_moves() / 64 );
