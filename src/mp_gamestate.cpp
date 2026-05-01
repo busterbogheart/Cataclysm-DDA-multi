@@ -7,8 +7,10 @@
 #include "calendar.h"
 #include "cata_utility.h"
 #include "character_id.h"
+#include "color.h"
 #include "coordinates.h"
 #include "creature_tracker.h"
+#include "cursesdef.h"
 #include "game.h"
 #include "item.h"
 #include "json.h"
@@ -20,12 +22,15 @@
 #include "memory_fast.h"
 #include "messages.h"
 #include "npc.h"
+#include "output.h"
 #include "overmapbuffer.h"
 #include "path_info.h"
 #include "point.h"
 #include "teleport.h"
 #include "type_id.h"
+#include "ui_manager.h"
 #include <iostream>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -67,6 +72,115 @@ static std::unordered_map<uint32_t, monster *> g_net_id_map;
 // Client: action JSON queued to auto-fire once the server grants moves again.
 // Latest keypress wins — pressing a different key replaces the queued action.
 static std::string g_pending_action;
+
+// ---------------------------------------------------------------------------
+// MP debug HUD
+// ---------------------------------------------------------------------------
+
+static std::string pending_label()
+{
+    if( g_pending_action.empty() ) {
+        return "\xe2\x80\x94"; // em dash
+    }
+    if( g_pending_action.find( "\"action\":\"move\"" ) != std::string::npos ) {
+        for( const char *d : { "ne", "nw", "se", "sw", "n", "s", "e", "w" } ) {
+            if( g_pending_action.find( std::string( "\"dir\":\"" ) + d + "\"" ) != std::string::npos ) {
+                return std::string( "move:" ) + d;
+            }
+        }
+        return "move";
+    }
+    if( g_pending_action.find( "\"action\":\"pickup\"" ) != std::string::npos ) {
+        return "pickup";
+    }
+    if( g_pending_action.find( "\"action\":\"wait\"" ) != std::string::npos ) {
+        return "wait";
+    }
+    return "?";
+}
+
+struct mp_hud_t {
+    catacurses::window win;
+    ui_adaptor ui;
+
+    static constexpr int W = 46;
+    static constexpr int H = 6;
+
+    mp_hud_t() {
+        ui.on_screen_resize( [this]( ui_adaptor &ua ) {
+            win = catacurses::newwin( H, W, point( 0, TERMY - H ) );
+            ua.position_from_window( win );
+        } );
+        ui.on_redraw( [this]( const ui_adaptor & ) {
+            draw();
+        } );
+        ui.mark_resize();
+    }
+
+    void draw() const {
+        werase( win );
+        draw_border( win );
+
+        const bool client = is_client_mode();
+        const std::string title = client ? " MP Client " : " MP Server ";
+        mvwprintz( win, point( ( W - static_cast<int>( title.size() ) ) / 2, 0 ),
+                   c_cyan, title );
+
+        const int turn = to_turn<int>( calendar::turn );
+
+        if( client ) {
+            const avatar &av = get_avatar();
+            const int moves = av.get_moves();
+            const int speed = av.get_speed();
+            mvwprintz( win, point( 2, 1 ), c_white, "Turn: %-8d  Speed: %3d", turn, speed );
+            const nc_color mc = moves > 0 ? c_green : ( moves < 0 ? c_red : c_yellow );
+            mvwprintz( win, point( 2, 2 ), c_white, "Moves: " );
+            mvwprintz( win, point( 9, 2 ), mc, "%+-6d", moves );
+            mvwprintz( win, point( 16, 2 ), moves > 0 ? c_green : c_red,
+                       moves > 0 ? "ready " : "locked" );
+            const std::string pend = pending_label();
+            mvwprintz( win, point( 2, 3 ), c_white, "Queued: " );
+            mvwprintz( win, point( 10, 3 ),
+                       pend == "\xe2\x80\x94" ? c_dark_gray : c_yellow, pend );
+            mvwprintz( win, point( 2, 4 ), c_dark_gray,
+                       "5=wait  g=pickup  arrow=move" );
+        } else {
+            const avatar &host = get_avatar();
+            mvwprintz( win, point( 2, 1 ), c_white,
+                       "Turn: %-8d  Host spd: %3d", turn, host.get_speed() );
+            if( remote_player_connected ) {
+                npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+                const nc_color mc = g_remote_moves > 0 ? c_green :
+                                    ( g_remote_moves < 0 ? c_red : c_yellow );
+                mvwprintz( win, point( 2, 2 ), c_white, "Remote AP: " );
+                mvwprintz( win, point( 13, 2 ), mc, "%+-6d", g_remote_moves );
+                if( remote ) {
+                    mvwprintz( win, point( 20, 2 ), c_white,
+                               "Spd: %3d", remote->get_speed() );
+                    const tripoint_abs_ms p = remote->pos_abs();
+                    mvwprintz( win, point( 2, 3 ), c_white,
+                               "%-12s @ %d, %d, %d",
+                               remote_player_name_, p.x(), p.y(), p.z() );
+                }
+            } else {
+                mvwprintz( win, point( 2, 2 ), c_dark_gray, "Waiting for remote player..." );
+            }
+            mvwprintz( win, point( 2, 4 ), c_dark_gray, "Port 8080  |  server mode" );
+        }
+
+        wnoutrefresh( win );
+    }
+};
+
+static std::unique_ptr<mp_hud_t> g_mp_hud;
+
+void ensure_mp_hud()
+{
+    if( !g_mp_hud ) {
+        g_mp_hud = std::make_unique<mp_hud_t>();
+    }
+    g_mp_hud->ui.invalidate_ui();
+}
 
 // Client: last confirmed position of the remote player (our avatar as seen by the server).
 // Used as the center of the monster sync region.

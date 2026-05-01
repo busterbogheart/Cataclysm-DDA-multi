@@ -510,6 +510,10 @@ bool do_turn()
     cata_mp::process_mp_events();
     // Apply any server state updates received since the last turn (client mode)
     cata_mp::client_process_incoming();
+    // Keep the MP debug HUD alive whenever multiplayer is active
+    if( cata_mp::is_client_mode() || cata_mp::is_server_mode() ) {
+        cata_mp::ensure_mp_hud();
+    }
 
     timed_event_manager &timed_events = get_timed_events();
     timed_events.process();

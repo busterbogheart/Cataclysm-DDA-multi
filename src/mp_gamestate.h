@@ -27,6 +27,9 @@ void client_process_incoming();
 // available. Replaces any previously queued action (latest keypress wins).
 void client_queue_action( const std::string &json );
 
+// Ensure the MP debug HUD overlay is active. Safe to call every turn.
+void ensure_mp_hud();
+
 // True when running as a dedicated headless server (--server flag).
 // Suppresses avatar input and display-related paths in the game loop.
 bool is_server_mode();
