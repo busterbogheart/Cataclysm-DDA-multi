@@ -28,6 +28,7 @@ void client_process_incoming();
 bool is_server_mode();
 void set_server_mode( bool enabled );
 
+
 } // namespace cata_mp
 
 #endif // CATA_SRC_MP_GAMESTATE_H

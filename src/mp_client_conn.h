@@ -10,9 +10,14 @@ namespace cata_mp {
 bool is_client_mode();
 void set_client_mode( bool enabled );
 
-// Connect to server. Returns true on success.
+// Connect to server (TCP only). Returns true on success.
+// Does NOT send the join message — call client_send_join() after the save is loaded.
 bool client_connect( const std::string &host, uint16_t port,
                      const std::string &name, const std::string &password = "" );
+
+// Send the deferred join message. No-op if already sent or not connected.
+// Called by client_process_incoming() on the first game tick.
+void client_send_join();
 
 // Send an action JSON to the server (non-blocking, queued on io thread).
 void client_send( const std::string &json );

@@ -550,8 +550,9 @@ bool do_turn()
 
     u.update_body();
 
-    // Auto-save if autosave is enabled
-    if( get_option<bool>( "AUTOSAVE" ) &&
+    // Auto-save if autosave is enabled (suppressed in client mode — server owns saves)
+    if( !cata_mp::is_client_mode() &&
+        get_option<bool>( "AUTOSAVE" ) &&
         calendar::once_every( 1_turns * get_option<int>( "AUTOSAVE_TURNS" ) ) &&
         !u.is_dead_state() ) {
         g->autosave();
@@ -699,9 +700,11 @@ bool do_turn()
     // Update vision caches for monsters. If this turns out to be expensive,
     // consider a stripped down cache just for monsters.
     m.build_map_cache( levz, true );
-    monmove();
-    if( calendar::once_every( time_between_npc_OM_moves ) ) {
-        overmap_npc_move();
+    if( !cata_mp::is_client_mode() ) {
+        monmove();
+        if( calendar::once_every( time_between_npc_OM_moves ) ) {
+            overmap_npc_move();
+        }
     }
     if( calendar::once_every( 10_seconds ) ) {
         for( const tripoint_bub_ms &elem : m.get_furn_field_locations() ) {
@@ -801,6 +804,7 @@ bool do_turn()
     if( !u.is_deaf() ) {
         sfx::remove_hearing_loss();
     }
+    sfx::do_ambient();
     sfx::do_danger_music();
     sfx::do_vehicle_engine_sfx();
     sfx::do_vehicle_exterior_engine_sfx();

@@ -584,6 +584,10 @@ class monster : public Creature
         // Player given nickname
         std::string nickname;
         bool hallucination = false;
+        // Session-only multiplayer network ID. 0 = unassigned. Never serialized to save files.
+        // Assigned by the host when the monster first enters sync range; used by clients
+        // to match incoming state updates to local monster objects without positional ambiguity.
+        uint32_t mp_net_id = 0;
         // abstract for a fish monster representing a hidden stock of population in that area.
         int fish_population = 1;
 

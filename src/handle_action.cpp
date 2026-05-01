@@ -105,6 +105,7 @@
 #include "weather_type.h"
 #include "worldfactory.h"
 #include "mp_client_conn.h"
+#include "mp_gamestate.h"
 
 enum class direction : unsigned int;
 
@@ -2310,8 +2311,20 @@ static std::vector<action_id> get_actions_move_mode()
 bool game::do_regular_action( action_id &act, avatar &player_character,
                               const std::optional<tripoint_bub_ms> &mouse_target )
 {
-    // In client mode, intercept movement and wait — send to server, skip local execution.
+    // In client mode, intercept movement: predict locally then send to server.
+    // The server's delta response (received via client_process_incoming next turn)
+    // corrects the position if prediction was wrong (e.g. attack triggered instead of move).
     if( cata_mp::is_client_mode() ) {
+        static const std::map<action_id, tripoint> action_to_offset = {
+            { ACTION_MOVE_FORTH,       tripoint( 0, -1, 0 ) },
+            { ACTION_MOVE_BACK,        tripoint( 0,  1, 0 ) },
+            { ACTION_MOVE_RIGHT,       tripoint( 1,  0, 0 ) },
+            { ACTION_MOVE_LEFT,        tripoint( -1, 0, 0 ) },
+            { ACTION_MOVE_FORTH_RIGHT, tripoint( 1, -1, 0 ) },
+            { ACTION_MOVE_FORTH_LEFT,  tripoint( -1,-1, 0 ) },
+            { ACTION_MOVE_BACK_RIGHT,  tripoint( 1,  1, 0 ) },
+            { ACTION_MOVE_BACK_LEFT,   tripoint( -1, 1, 0 ) },
+        };
         static const std::map<action_id, std::string> action_to_dir = {
             { ACTION_MOVE_FORTH,       "n"  },
             { ACTION_MOVE_BACK,        "s"  },
@@ -2324,12 +2337,62 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         };
         auto it = action_to_dir.find( act );
         if( it != action_to_dir.end() ) {
+            map &m = get_map();
+            const tripoint offset = action_to_offset.at( act );
+            const tripoint_bub_ms next = player_character.pos_bub() +
+                                         tripoint( offset.x, offset.y, offset.z );
+            // Optimistic prediction: move avatar immediately if the tile looks passable and empty.
+            // Server confirmation (or correction) arrives next turn via client_process_incoming.
+            const tripoint_abs_ms next_abs = m.get_abs( next );
+            const bool creature_at_target = static_cast<bool>( get_creature_tracker().find( next_abs ) );
+            if( !m.impassable( next ) && !creature_at_target ) {
+                // Mirror what avatar_action::move() does: update facing before moving.
+                if( offset.x < 0 ) {
+                    player_character.facing = FacingDirection::LEFT;
+                } else if( offset.x > 0 ) {
+                    player_character.facing = FacingDirection::RIGHT;
+                }
+                player_character.setpos( m, next );
+                g->update_map( player_character );
+                // Replicate the sound triggers that walk_move() normally fires.
+                player_character.make_footstep_noise();
+                sfx::do_footstep( player_character );
+                sfx::do_ambient();
+            } else if( creature_at_target ) {
+                // Don't move locally — the server will process the attack.
+                // Still update facing so the attack animation looks right.
+                if( offset.x < 0 ) {
+                    player_character.facing = FacingDirection::LEFT;
+                } else if( offset.x > 0 ) {
+                    player_character.facing = FacingDirection::RIGHT;
+                }
+            }
             cata_mp::client_send( "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
                                   it->second + "\"}" );
+            player_character.set_moves( 0 );
             return true;
         }
         if( act == ACTION_WAIT ) {
             cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
+            player_character.set_moves( 0 );
+            return true;
+        }
+        // Forward pickup to the server so it executes authoritatively there.
+        // The tile will clear on the client via the next tile_changes sync.
+        if( act == ACTION_PICKUP || act == ACTION_PICKUP_ALL ) {
+            cata_mp::client_send( "{\"type\":\"action\",\"action\":\"pickup\"}" );
+            player_character.set_moves( 0 );
+            return true;
+        }
+        // Block actions that would modify local world state without server awareness.
+        if( act == ACTION_SMASH ) {
+            add_msg( m_bad, "Bashing is not yet supported in multiplayer." );
+            player_character.set_moves( 0 );
+            return true;
+        }
+        if( act == ACTION_DROP ) {
+            add_msg( m_bad, "Dropping items is not yet supported in multiplayer." );
+            player_character.set_moves( 0 );
             return true;
         }
     }
@@ -3034,7 +3097,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_SAVE:
-            if( query_yn( _( "Save and quit?" ) ) ) {
+            if( cata_mp::is_client_mode() ) {
+                if( query_yn( _( "Disconnect and quit? (Progress is saved on the host.)" ) ) ) {
+                    player_character.set_moves( 0 );
+                    uquit = QUIT_NOSAVED;
+                }
+            } else if( query_yn( _( "Save and quit?" ) ) ) {
                 if( save() ) {
                     player_character.set_moves( 0 );
                     uquit = QUIT_SAVED;
@@ -3047,7 +3115,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_QUICKSAVE:
-            quicksave();
+            if( !cata_mp::is_client_mode() ) {
+                quicksave();
+            }
             return false;
 
         case ACTION_QUICKLOAD:

@@ -47,6 +47,7 @@
 #include "sounds.h"
 #include "string_formatter.h"
 #include "tileray.h"
+#include "mp_gamestate.h"
 #include "translations.h"
 #include "trap.h"
 #include "type_id.h"
@@ -568,6 +569,9 @@ void monster::plan()
 
     int valid_targets = ( mon_plan.target == nullptr ) ? 0 : 1;
     for( npc &who : g->all_npcs() ) {
+        if( cata_mp::is_remote_player( who.getID() ) ) {
+            continue;
+        }
         mf_attitude faction_att = faction.obj().attitude( who.get_monster_faction() );
         if( faction_att == MFA_NEUTRAL || faction_att == MFA_FRIENDLY ) {
             continue;

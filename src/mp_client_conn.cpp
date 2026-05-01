@@ -102,6 +102,10 @@ struct client_impl {
 
 static std::unique_ptr<client_impl> g_client;
 
+// Join message built at connect time but sent only after the game is loaded.
+static std::string g_pending_join;
+static bool g_join_sent = false;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -133,22 +137,32 @@ bool client_connect( const std::string &host, uint16_t port,
         g_client->io_ctx.run();
     } );
 
-    // Send join
-    std::string join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
+    // Build the join message but don't send yet — deferred until the save is loaded.
+    g_pending_join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
     if( !password.empty() ) {
-        join += ",\"password\":\"" + password + "\"";
+        g_pending_join += ",\"password\":\"" + password + "\"";
     }
-    join += "}\n";
-    asio::write( g_client->sock, asio::buffer( join ), ec );
-    if( ec ) {
-        std::cerr << "[cdda-mp] Failed to send join: " << ec.message() << std::endl;
-        g_client.reset();
-        return false;
-    }
+    g_pending_join += "}\n";
+    g_join_sent = false;
 
     std::cout << "[cdda-mp] Connected to " << host << ":" << port
-              << " as '" << name << "'" << std::endl;
+              << " as '" << name << "' (join deferred until save loaded)" << std::endl;
     return true;
+}
+
+void client_send_join()
+{
+    if( g_join_sent || !g_client || g_pending_join.empty() ) {
+        return;
+    }
+    asio::error_code ec;
+    asio::write( g_client->sock, asio::buffer( g_pending_join ), ec );
+    if( ec ) {
+        std::cerr << "[cdda-mp] Failed to send join: " << ec.message() << std::endl;
+        return;
+    }
+    g_join_sent = true;
+    std::cout << "[cdda-mp] Join sent — now in-game." << std::endl;
 }
 
 bool client_recv_pop( std::string &out )
