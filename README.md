@@ -108,3 +108,31 @@ Please submit an issue on [our GitHub page](https://github.com/CleverRaven/Catac
 #### I would like to make a suggestion. What should I do?
 
 Please submit an issue on [our GitHub page](https://github.com/CleverRaven/Cataclysm-DDA/issues/) using [feature request template](https://github.com/CleverRaven/Cataclysm-DDA/issues/new?template=feature_request.yaml).
+
+---
+
+## Multiplayer (Co-op fork)
+
+This fork adds experimental co-op multiplayer. One player hosts; others connect as clients.
+
+### Joining a game (macOS)
+
+```bash
+git clone https://github.com/busterbogheart/Cataclysm-DDA-multi
+cd Cataclysm-DDA-multi
+brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype
+make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+./cataclysm-tiles --client <host-ip>:8080 --client-name yourname
+```
+
+At the main menu choose **Load** → **Volta** and you're in. The Volta world is included in the repo — no save transfer needed.
+
+### Hosting
+
+Launch the game normally (no extra flags). The listen server starts automatically when a client connects on port 8080.
+
+### Current limitations
+
+- Bashing and dropping items are not yet forwarded to the server
+- Inventory is not synced back to the client after pickup
+- Only two players supported
