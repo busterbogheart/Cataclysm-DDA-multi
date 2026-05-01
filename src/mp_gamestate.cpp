@@ -56,9 +56,17 @@ static bool client_host_npc_spawned = false;
 // Server: monotonically increasing counter for assigning monster network IDs.
 static uint32_t g_next_net_id = 0;
 
+// Server: cumulative AP for the remote player (replaces the NPC's own moves which
+// are skipped by monmove since is_remote_player() returns true).
+static int g_remote_moves = 0;
+
 // Client: maps server-assigned network IDs to local monster pointers.
 // Rebuilt each sync tick from creature_tracker before applying updates.
 static std::unordered_map<uint32_t, monster *> g_net_id_map;
+
+// Client: action JSON queued to auto-fire once the server grants moves again.
+// Latest keypress wins — pressing a different key replaces the queued action.
+static std::string g_pending_action;
 
 // Client: last confirmed position of the remote player (our avatar as seen by the server).
 // Used as the center of the monster sync region.
@@ -151,6 +159,7 @@ static void spawn_remote_player( const std::string &name )
 
     remote_player_npc_id = remote->getID();
     remote_player_connected = true;
+    g_remote_moves = 0;
 
     add_msg( m_good, "%s has connected and joined the game.", name );
     std::cout << "[cdda-mp] Spawned remote player '" << name << "' at "
@@ -195,10 +204,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
-    // Wait — broadcast state without moving
+    map &m = get_map();
+
+    // Give the NPC its current move budget before executing any action.
+    // (monmove skips remote player NPCs, so we manage AP ourselves.)
+    remote->set_moves( g_remote_moves );
+
+    // Wait — drain one turn's worth of AP.
     const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
                          msg.find( "\"action\": \"wait\"" ) != std::string::npos;
     if( is_wait ) {
+        g_remote_moves -= remote->get_speed();
         server *srv = get_active_server();
         if( srv ) {
             srv->post_broadcast( serialize_remote_player_state() + "\n" );
@@ -206,13 +222,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
-    map &m = get_map();
-
-    // Pickup — clear items from the NPC's current tile (inventory sync is future work).
+    // Pickup — clear items from the NPC's tile; charge a full turn of AP.
     const bool is_pickup = msg.find( "\"action\":\"pickup\"" ) != std::string::npos ||
                            msg.find( "\"action\": \"pickup\"" ) != std::string::npos;
     if( is_pickup ) {
         m.i_clear( remote->pos_bub() );
+        g_remote_moves -= remote->get_speed();
         server *srv = get_active_server();
         if( srv ) {
             srv->post_broadcast( serialize_remote_player_state() + "\n" );
@@ -228,23 +243,25 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return msg.find( "\"dir\":\"" + d + "\"" ) != std::string::npos ||
                msg.find( "\"dir\": \"" + d + "\"" ) != std::string::npos;
     };
+    tripoint offset;
     if( dir_match( "n" ) ) {
-        next += tripoint( 0, -1, 0 );
+        offset = tripoint( 0, -1, 0 );
     } else if( dir_match( "s" ) ) {
-        next += tripoint( 0, 1, 0 );
+        offset = tripoint( 0, 1, 0 );
     } else if( dir_match( "e" ) ) {
-        next += tripoint( 1, 0, 0 );
+        offset = tripoint( 1, 0, 0 );
     } else if( dir_match( "w" ) ) {
-        next += tripoint( -1, 0, 0 );
+        offset = tripoint( -1, 0, 0 );
     } else if( dir_match( "ne" ) ) {
-        next += tripoint( 1, -1, 0 );
+        offset = tripoint( 1, -1, 0 );
     } else if( dir_match( "nw" ) ) {
-        next += tripoint( -1, -1, 0 );
+        offset = tripoint( -1, -1, 0 );
     } else if( dir_match( "se" ) ) {
-        next += tripoint( 1, 1, 0 );
+        offset = tripoint( 1, 1, 0 );
     } else if( dir_match( "sw" ) ) {
-        next += tripoint( -1, 1, 0 );
+        offset = tripoint( -1, 1, 0 );
     }
+    next += offset;
 
     // Move or attack, matching single-player bump-to-attack behaviour.
     // Check for a creature first — melee_attack applies regardless of tile passability.
@@ -252,9 +269,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         const tripoint_abs_ms next_abs = m.get_abs( next );
         const shared_ptr_fast<monster> target = get_creature_tracker().find( next_abs );
         if( target ) {
+            // melee_attack() charges moves on the NPC internally; capture the result.
             remote->melee_attack( *target, true );
+            g_remote_moves = remote->get_moves();
         } else if( !m.impassable( next ) ) {
             remote->setpos( m, next );
+            // Charge terrain-aware movement cost (accounts for NPC speed/encumbrance).
+            const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
+            g_remote_moves -= remote->run_cost( m.move_cost( next ), diag );
         }
     }
 
@@ -276,6 +298,15 @@ bool is_remote_player( character_id id )
 
 void process_mp_events()
 {
+    // Restore this turn's AP for the remote player. monmove() skips the NPC because
+    // is_remote_player() returns true, so we do it here instead.
+    if( remote_player_connected ) {
+        npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+        if( remote ) {
+            g_remote_moves += remote->get_speed();
+        }
+    }
+
     mp_event event;
     while( get_mp_queue().pop( event ) ) {
         switch( event.evt_type ) {
@@ -407,6 +438,12 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // Apply server-authoritative move budget to the avatar so the game loop
+        // correctly gates input (moves > 0 → can act, ≤ 0 → locked).
+        if( jo.has_member( "moves" ) ) {
+            get_avatar().set_moves( jo.get_int( "moves" ) );
+        }
+
         // Sync main inventory from server snapshot.
         if( jo.has_array( "inventory" ) ) {
             avatar &av = get_avatar();
@@ -440,6 +477,17 @@ void client_process_incoming()
     while( client_recv_pop( msg ) ) {
         apply_one_state_message( msg );
     }
+    // Auto-fire any queued action now that the server has restored our moves.
+    if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
+        client_send( g_pending_action );
+        g_pending_action.clear();
+        get_avatar().set_moves( 0 );
+    }
+}
+
+void client_queue_action( const std::string &json )
+{
+    g_pending_action = json;
 }
 
 // Server: scan the sync area and emit tile entries whose ter/furn/items changed since last broadcast.
@@ -863,6 +911,8 @@ std::string serialize_remote_player_state()
            ",\"z\":" + std::to_string( host_pos.z() ) + "},"
            "\"bodyparts\":" + bparts_json +
            ",\"inventory\":" + inv_json +
+           ",\"moves\":" + std::to_string( g_remote_moves ) +
+           ",\"speed\":" + std::to_string( remote->get_speed() ) +
            ",\"monsters\":" + monsters +
            ",\"tile_changes\":" + tile_changes +
            ",\"map\":" + viewport + "}";

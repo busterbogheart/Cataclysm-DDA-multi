@@ -2335,56 +2335,66 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             { ACTION_MOVE_BACK_RIGHT,  "se" },
             { ACTION_MOVE_BACK_LEFT,   "sw" },
         };
+        // Helper: either send immediately (moves available) or queue for auto-fire.
+        // Local prediction only runs on the send path — queued actions are corrected
+        // by the server's next state packet when they eventually fire.
+        const auto mp_dispatch = [&]( const std::string & json ) {
+            if( player_character.get_moves() > 0 ) {
+                cata_mp::client_send( json );
+                player_character.set_moves( 0 );
+            } else {
+                cata_mp::client_queue_action( json );
+                // Leave moves at the server-reported negative value so the game loop
+                // stays blocked; auto-fire triggers in client_process_incoming().
+            }
+        };
+
         auto it = action_to_dir.find( act );
         if( it != action_to_dir.end() ) {
-            map &m = get_map();
-            const tripoint offset = action_to_offset.at( act );
-            const tripoint_bub_ms next = player_character.pos_bub() +
-                                         tripoint( offset.x, offset.y, offset.z );
-            // Optimistic prediction: move avatar immediately if the tile looks passable and empty.
-            // Server confirmation (or correction) arrives next turn via client_process_incoming.
-            const tripoint_abs_ms next_abs = m.get_abs( next );
-            const bool creature_at_target = static_cast<bool>( get_creature_tracker().find( next_abs ) );
-            if( !m.impassable( next ) && !creature_at_target ) {
-                // Mirror what avatar_action::move() does: update facing before moving.
-                if( offset.x < 0 ) {
-                    player_character.facing = FacingDirection::LEFT;
-                } else if( offset.x > 0 ) {
-                    player_character.facing = FacingDirection::RIGHT;
+            const std::string json = "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
+                                     it->second + "\"}";
+            if( player_character.get_moves() > 0 ) {
+                // Optimistic local prediction only when we're actually sending now.
+                map &m = get_map();
+                const tripoint offset = action_to_offset.at( act );
+                const tripoint_bub_ms next = player_character.pos_bub() +
+                                             tripoint( offset.x, offset.y, offset.z );
+                const tripoint_abs_ms next_abs = m.get_abs( next );
+                const bool creature_at_target = static_cast<bool>(
+                                                    get_creature_tracker().find( next_abs ) );
+                if( !m.impassable( next ) && !creature_at_target ) {
+                    if( offset.x < 0 ) {
+                        player_character.facing = FacingDirection::LEFT;
+                    } else if( offset.x > 0 ) {
+                        player_character.facing = FacingDirection::RIGHT;
+                    }
+                    player_character.setpos( m, next );
+                    g->update_map( player_character );
+                    player_character.make_footstep_noise();
+                    sfx::do_footstep( player_character );
+                    sfx::do_ambient();
+                } else if( creature_at_target ) {
+                    if( offset.x < 0 ) {
+                        player_character.facing = FacingDirection::LEFT;
+                    } else if( offset.x > 0 ) {
+                        player_character.facing = FacingDirection::RIGHT;
+                    }
                 }
-                player_character.setpos( m, next );
-                g->update_map( player_character );
-                // Replicate the sound triggers that walk_move() normally fires.
-                player_character.make_footstep_noise();
-                sfx::do_footstep( player_character );
-                sfx::do_ambient();
-            } else if( creature_at_target ) {
-                // Don't move locally — the server will process the attack.
-                // Still update facing so the attack animation looks right.
-                if( offset.x < 0 ) {
-                    player_character.facing = FacingDirection::LEFT;
-                } else if( offset.x > 0 ) {
-                    player_character.facing = FacingDirection::RIGHT;
-                }
+                cata_mp::client_send( json );
+                player_character.set_moves( 0 );
+            } else {
+                cata_mp::client_queue_action( json );
             }
-            cata_mp::client_send( "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
-                                  it->second + "\"}" );
-            player_character.set_moves( 0 );
             return true;
         }
         if( act == ACTION_WAIT ) {
-            cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
-            player_character.set_moves( 0 );
+            mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
             return true;
         }
-        // Forward pickup to the server so it executes authoritatively there.
-        // The tile will clear on the client via the next tile_changes sync.
         if( act == ACTION_PICKUP || act == ACTION_PICKUP_ALL ) {
-            cata_mp::client_send( "{\"type\":\"action\",\"action\":\"pickup\"}" );
-            player_character.set_moves( 0 );
+            mp_dispatch( "{\"type\":\"action\",\"action\":\"pickup\"}" );
             return true;
         }
-        // Block actions that would modify local world state without server awareness.
         if( act == ACTION_SMASH ) {
             add_msg( m_bad, "Bashing is not yet supported in multiplayer." );
             player_character.set_moves( 0 );

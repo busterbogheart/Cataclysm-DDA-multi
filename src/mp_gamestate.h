@@ -23,6 +23,10 @@ bool is_remote_player( character_id id );
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();
 
+// Queue an action JSON to be sent to the server on the next tick when moves are
+// available. Replaces any previously queued action (latest keypress wins).
+void client_queue_action( const std::string &json );
+
 // True when running as a dedicated headless server (--server flag).
 // Suppresses avatar input and display-related paths in the game loop.
 bool is_server_mode();
