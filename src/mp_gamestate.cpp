@@ -396,6 +396,36 @@ static bool apply_one_state_message( const std::string &msg )
         apply_monster_sync( jo );
         apply_tile_changes( jo );
 
+        // Apply per-bodypart HP to the client avatar so the sidebar stays accurate.
+        if( jo.has_array( "bodyparts" ) ) {
+            avatar &av = get_avatar();
+            for( const JsonValue &bpv : jo.get_array( "bodyparts" ) ) {
+                JsonObject bpo = bpv.get_object();
+                bpo.allow_omitted_members();
+                const bodypart_id bp = bodypart_str_id( bpo.get_string( "id" ) ).id();
+                av.set_part_hp_cur( bp, bpo.get_int( "hp" ) );
+            }
+        }
+
+        // Sync main inventory from server snapshot.
+        if( jo.has_array( "inventory" ) ) {
+            avatar &av = get_avatar();
+            av.inv->clear();
+            for( const JsonValue &iv : jo.get_array( "inventory" ) ) {
+                JsonObject io = iv.get_object();
+                io.allow_omitted_members();
+                const itype_id tid( io.get_string( "t" ) );
+                if( tid.is_valid() ) {
+                    item it( tid );
+                    const int charges = io.get_int( "c", -1 );
+                    if( charges >= 0 ) {
+                        it.charges = charges;
+                    }
+                    av.i_add( std::move( it ) );
+                }
+            }
+        }
+
     } catch( const JsonError &e ) {
         std::cout << "[cdda-mp] JSON parse error in state: " << e.what() << std::endl;
     }
@@ -787,11 +817,41 @@ std::string serialize_remote_player_state()
     tripoint_abs_ms pos = remote->pos_abs();
     const avatar &host = get_avatar();
     tripoint_abs_ms host_pos = host.pos_abs();
-    int hp = remote->get_hp();
-    int hp_max = remote->get_hp_max();
     std::string viewport = build_viewport( pos_bub );
     std::string monsters     = build_monster_list( pos, 40 );
     std::string tile_changes = build_tile_changes( pos, 20 );
+
+    // Per-bodypart HP for accurate client sidebar display.
+    std::string bparts_json = "[";
+    bool bfirst = true;
+    for( const bodypart_id &bp : remote->get_all_body_parts() ) {
+        if( !bfirst ) {
+            bparts_json += ',';
+        }
+        bfirst = false;
+        bparts_json += "{\"id\":\"" + bp.id().str() +
+                       "\",\"hp\":" + std::to_string( remote->get_hp( bp ) ) +
+                       ",\"hp_max\":" + std::to_string( remote->get_hp_max( bp ) ) + "}";
+    }
+    bparts_json += "]";
+
+    // Main-inventory snapshot (worn gear and weapon excluded for simplicity).
+    std::vector<item *> inv_items;
+    remote->inv->dump( inv_items );
+    std::string inv_json = "[";
+    bool inv_first = true;
+    for( const item *it : inv_items ) {
+        if( !inv_first ) {
+            inv_json += ',';
+        }
+        inv_first = false;
+        inv_json += "{\"t\":\"" + it->typeId().str() + "\"";
+        if( it->charges > 0 ) {
+            inv_json += ",\"c\":" + std::to_string( it->charges );
+        }
+        inv_json += "}";
+    }
+    inv_json += "]";
 
     return "{\"type\":\"state\","
            "\"host_name\":\"" + host.name + "\","
@@ -801,8 +861,8 @@ std::string serialize_remote_player_state()
            "\"host_pos\":{\"x\":" + std::to_string( host_pos.x() ) +
            ",\"y\":" + std::to_string( host_pos.y() ) +
            ",\"z\":" + std::to_string( host_pos.z() ) + "},"
-           "\"hp\":" + std::to_string( hp ) +
-           ",\"hp_max\":" + std::to_string( hp_max ) +
+           "\"bodyparts\":" + bparts_json +
+           ",\"inventory\":" + inv_json +
            ",\"monsters\":" + monsters +
            ",\"tile_changes\":" + tile_changes +
            ",\"map\":" + viewport + "}";
