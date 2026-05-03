@@ -569,12 +569,15 @@ void monster::plan()
 
     int valid_targets = ( mon_plan.target == nullptr ) ? 0 : 1;
     for( npc &who : g->all_npcs() ) {
-        if( cata_mp::is_remote_player( who.getID() ) ) {
+        mf_attitude faction_att = faction.obj().attitude( who.get_monster_faction() );
+        // Remote player NPCs use the player monster faction which monsters treat as
+        // MFA_FRIENDLY, causing them to be avoided.  Force hostile targeting instead.
+        const bool is_remote = cata_mp::is_remote_player( who.getID() );
+        if( !is_remote && ( faction_att == MFA_NEUTRAL || faction_att == MFA_FRIENDLY ) ) {
             continue;
         }
-        mf_attitude faction_att = faction.obj().attitude( who.get_monster_faction() );
-        if( faction_att == MFA_NEUTRAL || faction_att == MFA_FRIENDLY ) {
-            continue;
+        if( is_remote ) {
+            faction_att = MFA_HATE;
         }
         if( !seen_levels.test( who.posz() + OVERMAP_DEPTH ) ) {
             continue;

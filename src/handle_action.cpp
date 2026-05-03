@@ -106,6 +106,7 @@
 #include "worldfactory.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "npc.h"
 
 enum class direction : unsigned int;
 
@@ -447,6 +448,19 @@ input_context game::get_player_input( std::string &action )
                 g->invalidate_main_ui_adaptor();
             }
 
+            // Host: process queued client actions on every animation frame so
+            // the client gets combat feedback within ~125 ms instead of waiting
+            // for the host's next keypress.
+            if( cata_mp::is_hosting() ) {
+                cata_mp::process_mp_events();
+            }
+            // Client: pull server monster/position updates on every frame so
+            // monsters move visually without advancing local game time.
+            if( cata_mp::is_client_mode() && action == "TIMEOUT" ) {
+                cata_mp::client_process_incoming();
+                g->invalidate_main_ui_adaptor();
+            }
+
             ui_manager::redraw_invalidated();
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
@@ -454,8 +468,17 @@ input_context game::get_player_input( std::string &action )
     } else {
         ctxt.set_timeout( 125 );
         while( handle_mouseview( ctxt, action ) ) {
-            if( action == "TIMEOUT" && current_turn.has_timeout_elapsed() ) {
-                break;
+            if( action == "TIMEOUT" ) {
+                if( current_turn.has_timeout_elapsed() ) {
+                    break;
+                }
+                if( cata_mp::is_hosting() ) {
+                    cata_mp::process_mp_events();
+                }
+                if( cata_mp::is_client_mode() ) {
+                    cata_mp::client_process_incoming();
+                    g->invalidate_main_ui_adaptor();
+                }
             }
         }
         ctxt.reset_timeout();
@@ -2315,16 +2338,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
     // The server's delta response (received via client_process_incoming next turn)
     // corrects the position if prediction was wrong (e.g. attack triggered instead of move).
     if( cata_mp::is_client_mode() ) {
-        static const std::map<action_id, tripoint> action_to_offset = {
-            { ACTION_MOVE_FORTH,       tripoint( 0, -1, 0 ) },
-            { ACTION_MOVE_BACK,        tripoint( 0,  1, 0 ) },
-            { ACTION_MOVE_RIGHT,       tripoint( 1,  0, 0 ) },
-            { ACTION_MOVE_LEFT,        tripoint( -1, 0, 0 ) },
-            { ACTION_MOVE_FORTH_RIGHT, tripoint( 1, -1, 0 ) },
-            { ACTION_MOVE_FORTH_LEFT,  tripoint( -1,-1, 0 ) },
-            { ACTION_MOVE_BACK_RIGHT,  tripoint( 1,  1, 0 ) },
-            { ACTION_MOVE_BACK_LEFT,   tripoint( -1, 1, 0 ) },
-        };
         static const std::map<action_id, std::string> action_to_dir = {
             { ACTION_MOVE_FORTH,       "n"  },
             { ACTION_MOVE_BACK,        "s"  },
@@ -2342,6 +2355,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             if( player_character.get_moves() > 0 ) {
                 cata_mp::client_send( json );
                 player_character.set_moves( 0 );
+                // Suppress stale pre-ack grants that are still in the TCP buffer.
+                cata_mp::client_mark_action_sent();
             } else {
                 cata_mp::client_queue_action( json );
                 // Leave moves at the server-reported negative value so the game loop
@@ -2353,57 +2368,76 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         if( it != action_to_dir.end() ) {
             const std::string json = "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
                                      it->second + "\"}";
-            if( player_character.get_moves() > 0 ) {
-                // Optimistic local prediction only when we're actually sending now.
-                map &m = get_map();
-                const tripoint offset = action_to_offset.at( act );
-                const tripoint_bub_ms next = player_character.pos_bub() +
-                                             tripoint( offset.x, offset.y, offset.z );
-                const tripoint_abs_ms next_abs = m.get_abs( next );
-                const bool creature_at_target = static_cast<bool>(
-                                                    get_creature_tracker().find( next_abs ) );
-                if( !m.impassable( next ) && !creature_at_target ) {
-                    if( offset.x < 0 ) {
-                        player_character.facing = FacingDirection::LEFT;
-                    } else if( offset.x > 0 ) {
-                        player_character.facing = FacingDirection::RIGHT;
-                    }
-                    player_character.setpos( m, next );
-                    g->update_map( player_character );
-                    player_character.make_footstep_noise();
-                    sfx::do_footstep( player_character );
-                    sfx::do_ambient();
-                } else if( creature_at_target ) {
-                    if( offset.x < 0 ) {
-                        player_character.facing = FacingDirection::LEFT;
-                    } else if( offset.x > 0 ) {
-                        player_character.facing = FacingDirection::RIGHT;
-                    }
-                }
-                cata_mp::client_send( json );
-                player_character.set_moves( 0 );
-            } else {
-                cata_mp::client_queue_action( json );
-            }
+            mp_dispatch( json );
             return true;
         }
-        if( act == ACTION_WAIT ) {
+        if( act == ACTION_WAIT || act == ACTION_PAUSE ) {
             mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
             return true;
         }
-        if( act == ACTION_PICKUP || act == ACTION_PICKUP_ALL ) {
-            mp_dispatch( "{\"type\":\"action\",\"action\":\"pickup\"}" );
-            return true;
-        }
+        // Pickup: let the normal single-player dialog run on the client.
+        // Fall through — do NOT return here.
         if( act == ACTION_SMASH ) {
-            add_msg( m_bad, "Bashing is not yet supported in multiplayer." );
-            player_character.set_moves( 0 );
+            const std::optional<tripoint_bub_ms> smashp =
+                choose_adjacent( _( "Smash where?" ), false );
+            if( !smashp ) {
+                return true; // cancelled — don't charge moves
+            }
+            const tripoint_abs_ms abs_target = get_map().get_abs( *smashp );
+            const std::string json =
+                "{\"type\":\"action\",\"action\":\"smash\""
+                ",\"x\":" + std::to_string( abs_target.x() ) +
+                ",\"y\":" + std::to_string( abs_target.y() ) +
+                ",\"z\":" + std::to_string( abs_target.z() ) + "}";
+            mp_dispatch( json );
             return true;
         }
         if( act == ACTION_DROP ) {
             add_msg( m_bad, "Dropping items is not yet supported in multiplayer." );
             player_character.set_moves( 0 );
             return true;
+        }
+        if( act == ACTION_OPEN ) {
+            const std::optional<tripoint_bub_ms> doorpos =
+                choose_adjacent( _( "Open where?" ), false );
+            if( !doorpos ) {
+                return true;
+            }
+            // Optimistic local update so the door visually opens immediately.
+            // The server will confirm (or revert via tile_changes if it rejects).
+            get_map().open_door( player_character, *doorpos, true, false );
+            const tripoint_abs_ms abs_target = get_map().get_abs( *doorpos );
+            const std::string json =
+                "{\"type\":\"action\",\"action\":\"open\""
+                ",\"x\":" + std::to_string( abs_target.x() ) +
+                ",\"y\":" + std::to_string( abs_target.y() ) +
+                ",\"z\":" + std::to_string( abs_target.z() ) + "}";
+            mp_dispatch( json );
+            return true;
+        }
+        if( act == ACTION_CLOSE ) {
+            const std::optional<tripoint_bub_ms> doorpos =
+                choose_adjacent( _( "Close where?" ), false );
+            if( !doorpos ) {
+                return true;
+            }
+            // Optimistic local update.
+            get_map().close_door( *doorpos, true, false );
+            const tripoint_abs_ms abs_target = get_map().get_abs( *doorpos );
+            const std::string json =
+                "{\"type\":\"action\",\"action\":\"close\""
+                ",\"x\":" + std::to_string( abs_target.x() ) +
+                ",\"y\":" + std::to_string( abs_target.y() ) +
+                ",\"z\":" + std::to_string( abs_target.z() ) + "}";
+            mp_dispatch( json );
+            return true;
+        }
+
+        // Inventory-mutating actions that are not yet server-synced: log them
+        // so we can see exactly what falls through to local-only handling.
+        if( act == ACTION_WEAR || act == ACTION_TAKE_OFF ||
+            act == ACTION_WIELD || act == ACTION_UNLOAD || act == ACTION_MEND ) {
+            cata_mp::mp_log( "[cdda-mp] client local-only action: " + action_ident( act ) );
         }
     }
 
@@ -3553,11 +3587,24 @@ bool game::handle_action()
         do_deathcam_action( act, player_character );
     }
 
+    const int pre_action_z = player_character.pos_abs().z();
+
     // actions allowed only while alive
     if( !player_character.is_dead_state() ) {
         if( !do_regular_action( act, player_character, mouse_target ) ) {
             return false;
         }
+    }
+
+    // Client mode: if vertical_move() changed z-level, sync the proxy NPC on the host.
+    if( cata_mp::is_client_mode() && player_character.pos_abs().z() != pre_action_z ) {
+        const tripoint_abs_ms new_abs = player_character.pos_abs();
+        const std::string json =
+            "{\"type\":\"action\",\"action\":\"position_sync\""
+            ",\"x\":" + std::to_string( new_abs.x() ) +
+            ",\"y\":" + std::to_string( new_abs.y() ) +
+            ",\"z\":" + std::to_string( new_abs.z() ) + "}";
+        cata_mp::client_send( json );
     }
     if( act != ACTION_TIMEOUT ) {
         player_character.mod_moves( -current_turn.moves_elapsed() );

@@ -87,6 +87,8 @@ struct client_impl {
         [this]( const asio::error_code & ec, size_t /*n*/ ) {
             if( ec ) {
                 std::cerr << "[cdda-mp] Server disconnected: " << ec.message() << std::endl;
+                // Synthetic disconnect message — game thread will clean up the host NPC.
+                g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
                 return;
             }
             std::istream is( &read_buf );
@@ -163,6 +165,11 @@ void client_send_join()
     }
     g_join_sent = true;
     std::cout << "[cdda-mp] Join sent — now in-game." << std::endl;
+}
+
+bool client_join_is_sent()
+{
+    return g_join_sent;
 }
 
 bool client_recv_pop( std::string &out )

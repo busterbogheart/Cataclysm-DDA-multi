@@ -1,5 +1,13 @@
 # Cataclysm: Dark Days Ahead — Multiplayer Fork
 
+## Build Rules (MANDATORY)
+
+- **Never write any text before or after a build command.** No "Building...", no "Clean.", no summary after make output. Issue the Bash tool call with no surrounding prose.
+- **Always build with:** `make -C /Users/ethankemp/Cataclysm-DDA-multiplayer -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles`
+- **Never use `touch` before make** — just run make directly.
+
+---
+
 ## Project Goal
 
 Add co-op multiplayer to Cataclysm: Dark Days Ahead (CDDA), a C++ open-world survival roguelike. The game supports both turn-based and real-time modes. This fork (`busterbogheart/Cataclysm-DDA-multiplayer`) starts from the upstream codebase with no multiplayer commits yet — this is a greenfield implementation.

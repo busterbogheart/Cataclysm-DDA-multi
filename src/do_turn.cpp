@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <map>
 #include <memory>
 #include <optional>
@@ -56,6 +57,7 @@
 #include "monster.h"
 #include "mtype.h"
 #include "music.h"
+#include "sdlsound.h"
 #include "npc.h"
 #include "options.h"
 #include "output.h"
@@ -136,6 +138,11 @@ bool cleanup_at_end()
         //save achievements entry
         g->save_achievements();
 
+        // Notify connected clients before the death screen takes focus so they
+        // see "partner died" instead of a raw socket-drop spam.
+        if( cata_mp::is_hosting() ) {
+            cata_mp::notify_client_host_died();
+        }
         g->death_screen();
         std::chrono::seconds time_since_load =
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -491,7 +498,13 @@ bool do_turn()
         }
     } else {
         g->gamemode->per_turn();
-        calendar::turn += 1_turns;
+        // Client: only advance the calendar when moves were just granted (i.e. an
+        // actual game turn is happening).  Without this guard the clock races
+        // forward at ~10 turns/sec of real time while the client is locked, creating
+        // the divergence shown in the debug HUD.
+        if( !cata_mp::is_client_mode() || get_avatar().get_moves() > 0 ) {
+            calendar::turn += 1_turns;
+        }
     }
     //used for dimension swapping
     if( g->swapping_dimensions ) {
@@ -510,8 +523,12 @@ bool do_turn()
     cata_mp::process_mp_events();
     // Apply any server state updates received since the last turn (client mode)
     cata_mp::client_process_incoming();
+    // Lockstep: grant the client their turn at the start of each game turn.
+    if( cata_mp::is_hosting() ) {
+        cata_mp::grant_client_turn();
+    }
     // Keep the MP debug HUD alive whenever multiplayer is active
-    if( cata_mp::is_client_mode() || cata_mp::is_server_mode() ) {
+    if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
         cata_mp::ensure_mp_hud();
     }
 
@@ -631,6 +648,15 @@ bool do_turn()
                     u.action_taken();
                 }
 
+                // Pump MP events after each host action so the remote player's
+                // queued actions are processed immediately, not deferred until the
+                // next full do_turn() call.  Also re-invalidate the HUD so the
+                // updated move count is visible on the very next redraw.
+                if( cata_mp::is_hosting() ) {
+                    cata_mp::process_mp_events();
+                    cata_mp::ensure_mp_hud();
+                }
+
                 if( g->is_game_over() ) {
                     return turn_handler::cleanup_at_end();
                 }
@@ -654,6 +680,15 @@ bool do_turn()
             if( ( now - start ).count() > 100 ) {
                 handle_key_blocking_activity();
                 start = now;
+            }
+
+            // Client: prevent do_turn() from spinning at CPU speed when locked
+            // (moves=0).  Also redraw the MP HUD each iteration so the
+            // acting/waiting status stays live while waiting for a move grant.
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::ensure_mp_hud();
+                ui_manager::redraw();
+                std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
             }
 
             g->mon_info_update();
@@ -704,6 +739,10 @@ bool do_turn()
     // Update vision caches for monsters. If this turns out to be expensive,
     // consider a stripped down cache just for monsters.
     m.build_map_cache( levz, true );
+    // Lockstep: wait for the client to act before advancing the world.
+    if( cata_mp::is_hosting() ) {
+        cata_mp::wait_for_client_action();
+    }
     if( !cata_mp::is_client_mode() ) {
         monmove();
         if( calendar::once_every( time_between_npc_OM_moves ) ) {
@@ -726,6 +765,11 @@ bool do_turn()
     }
     g->mon_info_update();
     u.process_turn();
+    // Client: process_turn() unconditionally adds get_speed() moves. Discard that
+    // budget — the client's move allowance comes only from server grant packets.
+    if( cata_mp::is_client_mode() && u.get_moves() > 0 ) {
+        u.set_moves( 0 );
+    }
     if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
         ui_manager::redraw();
         refresh_display();

@@ -295,6 +295,7 @@ struct cli_opts {
     uint16_t client_port = 8080;
     std::string client_name;
     std::string client_password;
+    std::string char_name;  // --char: which save to load (character name)
 };
 
 cli_opts parse_commandline( int argc, const char **argv )
@@ -514,6 +515,16 @@ cli_opts parse_commandline( int argc, const char **argv )
                 1,
                 [&result]( int, const char **params ) -> int {
                     result.client_name = params[0];
+                    return 1;
+                }
+            },
+            {
+                "--char", "<name>",
+                "Character name to load (use with --world to skip the character selection menu)",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.char_name = params[0];
                     return 1;
                 }
             }
@@ -1039,8 +1050,10 @@ int main( int argc, const char *argv[] )
             return 1;
         }
         cata_mp::set_client_mode( true );
-        // Name defaults to --client-name, or "player2" if not given
-        const std::string name = cli.client_name.empty() ? "player2" : cli.client_name;
+        // Name: --client-name > --char > "player2"
+        const std::string name = !cli.client_name.empty() ? cli.client_name
+                                 : !cli.char_name.empty()  ? cli.char_name
+                                 : "player2";
         if( !cata_mp::client_connect( cli.client_host, cli.client_port,
                                       name, cli.client_password ) ) {
             fprintf( stderr, "[cdda-mp] Failed to connect to %s:%d\n",
@@ -1052,10 +1065,14 @@ int main( int argc, const char *argv[] )
     }
 
     main_menu::queued_world_to_load = std::move( cli.world );
+    if( !cli.char_name.empty() ) {
+        main_menu::queued_save_id_to_load = cli.char_name;
+    }
 
     // Host mode: start listen server in background thread before entering game loop
     std::thread host_thread;
     if( cli.host_mode ) {
+        cata_mp::set_host_mode( true );
         const uint16_t port = cli.server_port;
         const std::string password = cli.server_password;
         host_thread = std::thread( [port, password]() {
@@ -1065,10 +1082,23 @@ int main( int argc, const char *argv[] )
         printf( "[cdda-mp] Hosting on port %d — waiting for player 2...\n", port );
     }
 
+    // Refresh window title now that host/client mode flags are set.
+    // set_language_from_options() was called during SDL init, before the flags existed.
+    if( !test_mode ) {
+        set_language_from_options();
+    }
+
     while( true ) {
         main_menu menu;
         if( !menu.opening_screen() ) {
             break;
+        }
+
+        // Client: block until the server sends our initial position so the
+        // first rendered frame already shows the correct location, not the
+        // scenario start tile the character was saved at.
+        if( cata_mp::is_client_mode() ) {
+            cata_mp::client_wait_for_initial_position();
         }
 
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();

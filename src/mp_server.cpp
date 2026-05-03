@@ -34,9 +34,12 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     }
 
     void send( const std::string &msg ) {
+        // Keep the buffer alive until the async_write completes — ASIO holds a
+        // reference into the buffer memory, so the string must outlive the write.
         auto self = shared_from_this();
-        asio::async_write( socket, asio::buffer( msg ),
-        [self]( std::error_code ec, std::size_t ) {
+        auto buf = std::make_shared<std::string>( msg );
+        asio::async_write( socket, asio::buffer( *buf ),
+        [self, buf]( std::error_code ec, std::size_t ) {
             if( ec ) {
                 self->disconnect();
             }
@@ -244,12 +247,12 @@ void run_server( uint16_t port, const std::string &password ) {
         server srv( port, password );
         active_server_ = &srv;
         srv.run();
-        active_server_ = nullptr;
     } catch( const std::exception &e ) {
-        std::cerr << "[cdda-mp] Server failed to start: " << e.what() << std::endl;
-        std::cerr << "[cdda-mp] Is port " << port << " already in use?" << std::endl;
-        exit( 1 );
+        std::cerr << "[cdda-mp] Server error: " << e.what() << std::endl;
+        // Never call exit() from a background thread — it runs SDL atexit handlers
+        // on the wrong thread, which crashes on macOS (EXC_BREAKPOINT in Cocoa).
     }
+    active_server_ = nullptr;
 }
 
 } // namespace cata_mp

@@ -1,6 +1,8 @@
 #include <string>
 
 #include "cata_utility.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "debug.h"
 #include "get_version.h"
 #include "path_info.h"
@@ -104,5 +106,11 @@ void set_language( const std::string &lang )
     // names.
     SNIPPET.reload_names( PATH_INFO::names() );
 
-    set_title( string_format( _( "Cataclysm: Dark Days Ahead - %s" ), getVersionString() ) );
+    std::string window_title = string_format( _( "Cataclysm: Dark Days Ahead - %s" ), getVersionString() );
+    if( cata_mp::is_client_mode() ) {
+        window_title += " [CLIENT]";
+    } else if( cata_mp::is_host_mode() ) {
+        window_title += " [HOST]";
+    }
+    set_title( window_title );
 }

@@ -19,6 +19,10 @@ bool client_connect( const std::string &host, uint16_t port,
 // Called by client_process_incoming() on the first game tick.
 void client_send_join();
 
+// Returns true after client_send_join() has fired (i.e. the save is loaded and
+// the server has received the join handshake).
+bool client_join_is_sent();
+
 // Send an action JSON to the server (non-blocking, queued on io thread).
 void client_send( const std::string &json );
 

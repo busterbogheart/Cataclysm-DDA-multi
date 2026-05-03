@@ -1252,6 +1252,9 @@ std::pair<skill_id, int> npc::best_combat_skill( combat_skills subset, bool rand
             skill_subset.emplace_back( p );
         }
     }
+    if( skill_subset.empty() ) {
+        return default_skill;
+    }
     std::sort( skill_subset.begin(), skill_subset.end(), []( std::pair<skill_id, SkillLevel> &s1,
     std::pair<skill_id, SkillLevel> &s2 ) {
         return s1.second.level() > s2.second.level();
