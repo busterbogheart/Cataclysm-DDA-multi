@@ -2338,6 +2338,40 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
     // The server's delta response (received via client_process_incoming next turn)
     // corrects the position if prediction was wrong (e.g. attack triggered instead of move).
     if( cata_mp::is_client_mode() ) {
+        const bool mp_locked = player_character.get_moves() <= 0;
+
+        // Pure display/UI actions — always free, work even while locked.
+        if( act == ACTION_ZOOM_IN ) {
+            zoom_in();
+            return false;
+        }
+        if( act == ACTION_ZOOM_OUT ) {
+            zoom_out();
+            return false;
+        }
+        if( act == ACTION_LIST_ITEMS ) {
+            list_surroundings();
+            return false;
+        }
+
+        // While locked, block anything that would cost moves via local fallthrough.
+        // Movement/wait go through mp_dispatch (queued) and are fine.
+        // Free UI actions (inventory, map, look, etc.) are also fine.
+        if( mp_locked ) {
+            static const std::set<action_id> blocked_while_locked = {
+                ACTION_WEAR, ACTION_TAKE_OFF, ACTION_WIELD, ACTION_UNLOAD, ACTION_MEND,
+                ACTION_EAT,
+                ACTION_DROP, ACTION_DIR_DROP,
+                ACTION_PICKUP, ACTION_PICKUP_ALL,
+                ACTION_FIRE, ACTION_FIRE_BURST, ACTION_BUTCHER, ACTION_LOOT,
+                ACTION_SLEEP,
+                ACTION_PEEK, ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
+            };
+            if( blocked_while_locked.count( act ) ) {
+                return false;
+            }
+        }
+
         static const std::map<action_id, std::string> action_to_dir = {
             { ACTION_MOVE_FORTH,       "n"  },
             { ACTION_MOVE_BACK,        "s"  },
@@ -2352,13 +2386,16 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         // Local prediction only runs on the send path — queued actions are corrected
         // by the server's next state packet when they eventually fire.
         const auto mp_dispatch = [&]( const std::string & json ) {
+            // Append current move_mode so the server can update the NPC proxy's run/crouch/prone overlay.
+            const std::string full_json = json.substr( 0, json.size() - 1 )
+                                          + ",\"move_mode\":\"" + player_character.move_mode.str() + "\"}";
             if( player_character.get_moves() > 0 ) {
-                cata_mp::client_send( json );
+                cata_mp::client_send( full_json );
                 player_character.set_moves( 0 );
                 // Suppress stale pre-ack grants that are still in the TCP buffer.
                 cata_mp::client_mark_action_sent();
             } else {
-                cata_mp::client_queue_action( json );
+                cata_mp::client_queue_action( full_json );
                 // Leave moves at the server-reported negative value so the game loop
                 // stays blocked; auto-fire triggers in client_process_incoming().
             }
@@ -2366,8 +2403,35 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
         auto it = action_to_dir.find( act );
         if( it != action_to_dir.end() ) {
+            const std::string &dir = it->second;
+
+            // Pre-check: if the target tile is impassable, has no creature to attack,
+            // and can't be opened as a door, it's a solid wall — free action, no AP.
+            static const std::map<std::string, tripoint> dir_to_offset = {
+                { "n",  tripoint(  0, -1, 0 ) }, { "s",  tripoint(  0,  1, 0 ) },
+                { "e",  tripoint(  1,  0, 0 ) }, { "w",  tripoint( -1,  0, 0 ) },
+                { "ne", tripoint(  1, -1, 0 ) }, { "nw", tripoint( -1, -1, 0 ) },
+                { "se", tripoint(  1,  1, 0 ) }, { "sw", tripoint( -1,  1, 0 ) },
+            };
+            map &here = get_map();
+            const tripoint_bub_ms cur_pos = player_character.pos_bub();
+            const auto offset_it = dir_to_offset.find( dir );
+            if( offset_it != dir_to_offset.end() ) {
+                const tripoint_bub_ms next_pos = cur_pos + offset_it->second;
+                if( here.impassable( next_pos ) ) {
+                    const tripoint_abs_ms next_abs = here.get_abs( next_pos );
+                    const bool has_creature = static_cast<bool>(
+                                                 get_creature_tracker().find( next_abs ) );
+                    const bool openable = here.open_door( player_character, next_pos,
+                                                          true, true );
+                    if( !has_creature && !openable ) {
+                        return false; // solid wall — free, don't dispatch or consume AP
+                    }
+                }
+            }
+
             const std::string json = "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
-                                     it->second + "\"}";
+                                     dir + "\"}";
             mp_dispatch( json );
             return true;
         }
@@ -2390,11 +2454,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ",\"y\":" + std::to_string( abs_target.y() ) +
                 ",\"z\":" + std::to_string( abs_target.z() ) + "}";
             mp_dispatch( json );
-            return true;
-        }
-        if( act == ACTION_DROP ) {
-            add_msg( m_bad, "Dropping items is not yet supported in multiplayer." );
-            player_character.set_moves( 0 );
             return true;
         }
         if( act == ACTION_OPEN ) {
@@ -2433,12 +2492,217 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return true;
         }
 
-        // Inventory-mutating actions that are not yet server-synced: log them
-        // so we can see exactly what falls through to local-only handling.
-        if( act == ACTION_WEAR || act == ACTION_TAKE_OFF ||
-            act == ACTION_WIELD || act == ACTION_UNLOAD || act == ACTION_MEND ) {
+        if( act == ACTION_SLEEP ) {
+            add_msg( m_info, "Sleep is not yet available in multiplayer." );
+            return false;
+        }
+
+        if( act == ACTION_LOOK ) {
+            // Run look/cursor mode (needed for drop-to-tile, examine, etc.).
+            // If peek() fired inside look_around it consumed moves — send wait so the
+            // server advances rather than hanging for 30 s waiting for an action.
+            const int moves_before = player_character.get_moves();
+            g->look_around();
+            if( player_character.get_moves() < moves_before ) {
+                mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
+                return true;
+            }
+            return false;
+        }
+
+        if( act == ACTION_PICKUP || act == ACTION_PICKUP_ALL ) {
+            // Snapshot item type IDs on the player's tile before pickup so we can
+            // diff afterwards and tell the server exactly what was taken.
+            map &here = get_map();
+            const tripoint_bub_ms pos = player_character.pos_bub();
+            const tripoint_abs_ms abs_pos = here.get_abs( pos );
+            std::vector<std::string> before_types;
+            for( const item &it : here.i_at( pos ) ) {
+                before_types.push_back( it.typeId().str() );
+            }
+
+            // Run normal pickup dialog.
+            if( act == ACTION_PICKUP_ALL ) {
+                pickup_all();
+            } else {
+                pickup();
+            }
+
+            // Diff: find which type IDs were removed from the tile.
+            std::vector<std::string> after_types;
+            for( const item &it : here.i_at( pos ) ) {
+                after_types.push_back( it.typeId().str() );
+            }
+            std::multiset<std::string> remaining( after_types.begin(), after_types.end() );
+            std::string items_json;
+            bool first = true;
+            for( const std::string &t : before_types ) {
+                auto it = remaining.find( t );
+                if( it != remaining.end() ) {
+                    remaining.erase( it );
+                } else {
+                    if( !first ) {
+                        items_json += ',';
+                    }
+                    first = false;
+                    items_json += "{\"t\":\"" + t + "\"}";
+                }
+            }
+
+            if( !items_json.empty() ) {
+                const std::string json =
+                    "{\"type\":\"action\",\"action\":\"pickup\""
+                    ",\"x\":" + std::to_string( abs_pos.x() ) +
+                    ",\"y\":" + std::to_string( abs_pos.y() ) +
+                    ",\"z\":" + std::to_string( abs_pos.z() ) +
+                    ",\"items\":[" + items_json + "]}";
+                mp_dispatch( json );
+            }
+            return true;
+        }
+
+        if( act == ACTION_DROP || act == ACTION_DIR_DROP ) {
+            map &here = get_map();
+
+            // For DIR_DROP determine the target tile; ACTION_DROP always lands underfoot.
+            tripoint_bub_ms drop_pos = player_character.pos_bub();
+            if( act == ACTION_DIR_DROP ) {
+                const std::optional<tripoint_bub_ms> pnt = choose_adjacent( _( "Drop where?" ) );
+                if( !pnt ) {
+                    return true; // cancelled before dialog — free
+                }
+                drop_pos = *pnt;
+            }
+
+            const tripoint_abs_ms abs_pos = here.get_abs( drop_pos );
+            const int pre_drop_moves = player_character.get_moves();
+
+            // Snapshot items on the target tile before drop.
+            std::multiset<std::string> before_set;
+            for( const item &it : here.i_at( drop_pos ) ) {
+                before_set.insert( it.typeId().str() );
+            }
+
+            drop_in_direction( drop_pos );
+
+            // Diff: newly added items (dropped ones).
+            std::multiset<std::string> remaining_before = before_set;
+            std::string items_json;
+            bool first = true;
+            for( const item &it : here.i_at( drop_pos ) ) {
+                const std::string t = it.typeId().str();
+                auto found = remaining_before.find( t );
+                if( found != remaining_before.end() ) {
+                    remaining_before.erase( found ); // was already there before
+                } else {
+                    if( !first ) {
+                        items_json += ',';
+                    }
+                    first = false;
+                    items_json += "{\"t\":\"" + t + "\"";
+                    if( it.has_itype_variant() ) {
+                        items_json += ",\"v\":\"" + it.itype_variant().id + "\"";
+                    }
+                    items_json += "}";
+                }
+            }
+
+            if( !items_json.empty() ) {
+                const std::string json =
+                    "{\"type\":\"action\",\"action\":\"drop\""
+                    ",\"x\":" + std::to_string( abs_pos.x() ) +
+                    ",\"y\":" + std::to_string( abs_pos.y() ) +
+                    ",\"z\":" + std::to_string( abs_pos.z() ) +
+                    ",\"items\":[" + items_json + "]}";
+                // Force-send rather than queue: drop_in_direction may have consumed
+                // moves already, which would cause mp_dispatch to queue (not send),
+                // letting the server timeout and immediately re-grant moves.
+                cata_mp::client_send( json );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            } else {
+                // Dialog was cancelled or nothing to drop — restore moves so this
+                // counts as a free action and the server doesn't time out.
+                player_character.set_moves( pre_drop_moves );
+            }
+            return true;
+        }
+
+        if( act == ACTION_WEAR ) {
+            std::vector<item *> worn_before;
+            player_character.worn.inv_dump( worn_before );
+
+            wear();
+
+            std::vector<item *> worn_after;
+            player_character.worn.inv_dump( worn_after );
+
+            if( worn_after.size() != worn_before.size() ) {
+                // An item was actually worn — sync appearance and charge server a turn.
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
+            return true;
+        }
+
+        if( act == ACTION_TAKE_OFF ) {
+            std::vector<item *> worn_before;
+            player_character.worn.inv_dump( worn_before );
+
+            takeoff();
+
+            std::vector<item *> worn_after;
+            player_character.worn.inv_dump( worn_after );
+
+            if( worn_after.size() != worn_before.size() ) {
+                // An item was actually removed — sync appearance and charge server a turn.
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
+            return true;
+        }
+
+        if( act == ACTION_EAT ) {
+            if( !avatar_action::eat_here( player_character ) ) {
+                item_location loc = game_menus::inv::consume();
+                if( loc ) {
+                    // Capture type before eat_or_use() may invalidate the location.
+                    const std::string itype = loc->typeId().str();
+                    avatar_action::eat_or_use( player_character, loc );
+                    mp_dispatch( "{\"type\":\"action\",\"action\":\"eat\",\"item\":\"" + itype + "\"}" );
+                }
+            } else {
+                // Grazer/ruminant ate terrain — still costs a server turn.
+                mp_dispatch( "{\"type\":\"action\",\"action\":\"eat\",\"item\":\"\"}" );
+            }
+            return true;
+        }
+
+        // Inventory-mutating actions that are not yet server-synced: log them.
+        if( act == ACTION_WIELD || act == ACTION_UNLOAD || act == ACTION_MEND ) {
             cata_mp::mp_log( "[cdda-mp] client local-only action: " + action_ident( act ) );
         }
+    }
+
+    // Host waiting for client action: allow pure UI actions, block everything else.
+    // Moves are 0 after the host's turn; calling handle_action() in this state must
+    // not mutate world state or advance the simulation.
+    if( cata_mp::is_hosting() && player_character.get_moves() <= 0 ) {
+        static const std::set<action_id> host_ui_actions = {
+            ACTION_ZOOM_IN, ACTION_ZOOM_OUT,
+            ACTION_MAP, ACTION_LIST_ITEMS,
+            ACTION_INVENTORY, ACTION_COMPARE, ACTION_ORGANIZE,
+            ACTION_LOOK, ACTION_EXAMINE,
+            ACTION_HELP, ACTION_MESSAGES,
+        };
+        if( !host_ui_actions.count( act ) ) {
+            return false;
+        }
+        // Allowed — fall through to regular single-player handling below.
     }
 
     map &here = get_map();
@@ -3606,7 +3870,10 @@ bool game::handle_action()
             ",\"z\":" + std::to_string( new_abs.z() ) + "}";
         cata_mp::client_send( json );
     }
-    if( act != ACTION_TIMEOUT ) {
+    // In client MP mode the move budget is server-controlled; never drain it based on
+    // wall-clock time.  UI screens like @ and x would otherwise consume the client's
+    // entire turn grant just by being open for a few seconds.
+    if( act != ACTION_TIMEOUT && !cata_mp::is_client_mode() ) {
         player_character.mod_moves( -current_turn.moves_elapsed() );
     }
     if( act != ACTION_PAUSE ) {

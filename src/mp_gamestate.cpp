@@ -13,6 +13,7 @@
 #include "cursesdef.h"
 #include "game.h"
 #include "item.h"
+#include "itype.h"
 #include "json.h"
 #include "json_loader.h"
 #include "monster.h"
@@ -134,10 +135,23 @@ static bool g_server_died = false;
 // and must be ignored — otherwise TCP-buffered grants re-unlock the client
 // before the server has processed the action.
 static bool g_client_waiting_for_ack = false;
+// Timestamp of when the ack guard was set. Used to break deadlocks where the
+// server never sends moves<=0 (e.g. after reconnect with a stale ack flag).
+static std::chrono::steady_clock::time_point g_ack_set_time;
 
 // Server: set when the remote player has submitted at least one real action
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
+
+// Server: elapsed wait time (ms) in the last wait_for_client_action() call.
+static int g_wait_elapsed_ms = 0;
+// Server: duration (ms) of the last monmove() (AI turn) call; set by do_turn.cpp.
+static int g_last_monmove_ms = 0;
+
+// Server: short label for the last action type received from the client this turn.
+// Reset to em-dash by grant_client_turn() at the start of each host turn.
+// Displayed on the server HUD "Queued" row as the partner-side equivalent.
+static std::string g_last_client_action_label = "\xe2\x80\x94";
 
 // ---------------------------------------------------------------------------
 // MP debug HUD
@@ -162,15 +176,28 @@ static std::string pending_label()
     if( g_pending_action.find( "\"action\":\"wait\"" ) != std::string::npos ) {
         return "wait";
     }
+    if( g_pending_action.find( "\"action\":\"smash\"" ) != std::string::npos ) {
+        return "smash";
+    }
+    if( g_pending_action.find( "\"action\":\"open\"" ) != std::string::npos ) {
+        return "open";
+    }
+    if( g_pending_action.find( "\"action\":\"close\"" ) != std::string::npos ) {
+        return "close";
+    }
     return "?";
 }
+
+// ---------------------------------------------------------------------------
+// Info panel (bottom-left corner)
+// ---------------------------------------------------------------------------
 
 struct mp_hud_t {
     catacurses::window win;
     ui_adaptor ui;
 
     static constexpr int W = 46;
-    static constexpr int H = 6;
+    static constexpr int H = 4;
 
     mp_hud_t() {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
@@ -187,77 +214,43 @@ struct mp_hud_t {
         werase( win );
         draw_border( win );
 
-        const bool client = is_client_mode();
-        const std::string title = client ? " MP Client " : " MP Server ";
-        mvwprintz( win, point( ( W - static_cast<int>( title.size() ) ) / 2, 0 ),
-                   c_cyan, title );
+        mvwprintz( win, point( ( W - 8 ) / 2, 0 ), c_cyan, " Co-op " );
 
-        const int turn = to_turn<int>( calendar::turn );
-
-        if( client ) {
-            const avatar &av = get_avatar();
-            const int moves = av.get_moves();
-            const int speed = av.get_speed();
-
-            mvwprintz( win, point( 2, 1 ), c_white, "Turn: %-8d  Speed: %3d", turn, speed );
-
-            const nc_color mc = moves > 0 ? c_green : ( moves < 0 ? c_red : c_yellow );
-            mvwprintz( win, point( 2, 2 ), c_white, "Moves: " );
-            mvwprintz( win, point( 9, 2 ), mc, "%+-6d", moves );
-            mvwprintz( win, point( 16, 2 ), moves > 0 ? c_green : c_red,
-                       moves > 0 ? "ready " : "locked" );
-
+        if( is_client_mode() ) {
+            // Row 1: my queued action
             const std::string pend = pending_label();
-            mvwprintz( win, point( 2, 3 ), c_white, "Queued: " );
-            mvwprintz( win, point( 10, 3 ),
+            mvwprintz( win, point( 2, 1 ), c_white, "Queued: " );
+            mvwprintz( win, point( 10, 1 ),
                        pend == "\xe2\x80\x94" ? c_dark_gray : c_yellow, pend );
 
-            // Row 4: who has the turn right now
-            if( moves > 0 ) {
-                mvwprintz( win, point( 2, 4 ), c_green,  "You: acting  " );
-                mvwprintz( win, point( 15, 4 ), c_yellow, "Host: waiting" );
-            } else {
-                mvwprintz( win, point( 2, 4 ), c_yellow, "You: waiting " );
-                mvwprintz( win, point( 15, 4 ), c_green,  "Host: acting " );
-            }
+            // Row 2: host status (from client's perspective)
+            const bool my_turn = get_avatar().get_moves() > 0;
+            mvwprintz( win, point( 2, 2 ), c_white, "Host:   " );
+            mvwprintz( win, point( 10, 2 ),
+                       my_turn ? c_dark_gray : c_light_green,
+                       my_turn ? "waiting for you" : "acting..." );
+
         } else {
-            const avatar &host = get_avatar();
-            const int host_moves = host.get_moves();
-            const server *srv = get_active_server();
-            const uint16_t port = srv ? srv->port() : 0;
+            // Row 1: partner's last action
+            mvwprintz( win, point( 2, 1 ), c_white, "Queued: " );
+            mvwprintz( win, point( 10, 1 ),
+                       g_last_client_action_label == "\xe2\x80\x94" ? c_dark_gray : c_yellow,
+                       g_last_client_action_label );
 
-            mvwprintz( win, point( 2, 1 ), c_white, "Turn: %-8d  Port: %-5u", turn, port );
-
-            // Row 2: host moves
-            const nc_color hmc = host_moves > 0 ? c_green : ( host_moves < 0 ? c_red : c_yellow );
-            mvwprintz( win, point( 2, 2 ), c_white, "Host   mv: " );
-            mvwprintz( win, point( 13, 2 ), hmc, "%+-6d", host_moves );
-            mvwprintz( win, point( 20, 2 ), c_white, "spd: %3d", host.get_speed() );
-
+            // Row 2: partner connection status
+            std::string plabel = remote_player_name_.empty() ? "Partner" : remote_player_name_;
+            if( plabel.size() > 10 ) {
+                plabel = plabel.substr( 0, 9 ) + "~";
+            }
+            plabel += ":";
+            mvwprintz( win, point( 2, 2 ), c_white, "%-12s", plabel.c_str() );
             if( remote_player_connected ) {
-                npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
-                // Row 3: client AP + waiting indicator
-                const nc_color cmc = g_remote_moves > 0 ? c_green :
-                                     ( g_remote_moves < 0 ? c_red : c_yellow );
-                mvwprintz( win, point( 2, 3 ), c_white, "Client AP: " );
-                mvwprintz( win, point( 13, 3 ), cmc, "%+-6d", g_remote_moves );
-                if( remote ) {
-                    mvwprintz( win, point( 20, 3 ), c_white, "spd: %3d", remote->get_speed() );
-                }
-                const bool need_client = !g_client_acted_this_turn;
-                mvwprintz( win, point( 30, 3 ),
-                           need_client ? c_yellow : c_green,
-                           need_client ? "WAIT" : "ok  " );
-
-                // Row 4: remote player name + position
-                if( remote ) {
-                    const tripoint_abs_ms p = remote->pos_abs();
-                    mvwprintz( win, point( 2, 4 ), c_white,
-                               "%-12s @ %d, %d, %d",
-                               remote_player_name_, p.x(), p.y(), p.z() );
-                }
+                const bool acted = g_client_acted_this_turn;
+                mvwprintz( win, point( 14, 2 ),
+                           acted ? c_light_green : c_yellow,
+                           acted ? "ready" : "acting..." );
             } else {
-                mvwprintz( win, point( 2, 3 ), c_dark_gray, "Waiting for remote player..." );
+                mvwprintz( win, point( 14, 2 ), c_dark_gray, "not connected" );
             }
         }
 
@@ -265,10 +258,46 @@ struct mp_hud_t {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Full-height go/stop strip on the left edge (both host and client)
+// ---------------------------------------------------------------------------
+
+struct mp_strip_t {
+    catacurses::window win;
+    ui_adaptor ui;
+
+    mp_strip_t() {
+        ui.on_screen_resize( [this]( ui_adaptor &ua ) {
+            win = catacurses::newwin( TERMY, 1, point( 0, 0 ) );
+            ua.position_from_window( win );
+        } );
+        ui.on_redraw( [this]( const ui_adaptor & ) {
+            draw();
+        } );
+        ui.mark_resize();
+    }
+
+    void draw() const {
+        werase( win );
+        const bool go = get_avatar().get_moves() > 0;
+        const nc_color c = go ? c_light_green : c_red;
+        for( int y = 0; y < TERMY; y++ ) {
+            mvwprintz( win, point( 0, y ), c, "\xe2\x96\x88" );
+        }
+        wnoutrefresh( win );
+    }
+};
+
+static std::unique_ptr<mp_strip_t> g_mp_strip;
 static std::unique_ptr<mp_hud_t> g_mp_hud;
 
 void ensure_mp_hud()
 {
+    // Strip rendered first so panel draws on top in the overlap zone.
+    if( !g_mp_strip ) {
+        g_mp_strip = std::make_unique<mp_strip_t>();
+    }
+    g_mp_strip->ui.invalidate_ui();
     if( !g_mp_hud ) {
         g_mp_hud = std::make_unique<mp_hud_t>();
     }
@@ -537,10 +566,12 @@ static void spawn_remote_player( const std::string &name )
     std::cout << "[cdda-mp] Spawned remote player '" << name << "' at "
               << spawn_pos.x() << "," << spawn_pos.y() << std::endl;
 
-    // Send initial state to player 2
+    // Send initial state to player 2, then ask it to resend worn/hair so the
+    // fresh NPC gets the correct appearance even after a respawn.
     server *srv = get_active_server();
     if( srv ) {
         srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        srv->post_broadcast( "{\"type\":\"resync_request\"}\n" );
     }
 }
 
@@ -624,13 +655,44 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // (monmove skips remote player NPCs, so we manage AP ourselves.)
     remote->set_moves( g_remote_moves );
 
-    // Worn-item sync — client sends this once after joining so the remote NPC
-    // wears the same gear the client player actually has equipped.
+    // Extract action label for HUD "Queued" row on the server panel.
+    {
+        const size_t pos = msg.find( "\"action\":\"" );
+        if( pos != std::string::npos ) {
+            const size_t start = pos + 10;
+            const size_t end = msg.find( '"', start );
+            if( end != std::string::npos ) {
+                std::string act = msg.substr( start, end - start );
+                // Append direction for move actions so it reads e.g. "move:n".
+                if( act == "move" ) {
+                    const size_t dpos = msg.find( "\"dir\":\"" );
+                    if( dpos != std::string::npos ) {
+                        const size_t dstart = dpos + 7;
+                        const size_t dend = msg.find( '"', dstart );
+                        if( dend != std::string::npos ) {
+                            act += ':' + msg.substr( dstart, dend - dstart );
+                        }
+                    }
+                }
+                if( act != "worn_sync" ) {
+                    g_last_client_action_label = act;
+                }
+            }
+        }
+    }
+
+    // Worn-item sync — client sends this once after joining (and after any
+    // wear/take-off) so the remote NPC reflects the client's actual equipment.
     if( msg.find( "\"action\":\"worn_sync\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] worn_sync recv: " + msg.substr( 0, 120 ) );
         try {
             JsonValue jv = json_loader::from_string( msg );
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
+            // Sync gender so tileset uses the correct overlay prefix.
+            if( jo.has_bool( "male" ) ) {
+                remote->male = jo.get_bool( "male" );
+            }
             if( jo.has_array( "worn" ) ) {
                 remote->clear_worn();
                 for( const JsonValue &wv : jo.get_array( "worn" ) ) {
@@ -638,8 +700,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     wo.allow_omitted_members();
                     const itype_id tid( wo.get_string( "t", "" ) );
                     if( tid.is_valid() ) {
-                        remote->worn.wear_item( *remote, item( tid ),
-                                               false, false, true, true );
+                        item worn_item( tid );
+                        const std::string var = wo.get_string( "v", "" );
+                        if( !var.empty() ) {
+                            worn_item.set_itype_variant( var );
+                        }
+                        // wear_item(who, item, interactive, do_calc_encumbrance, do_sort, quiet)
+                        auto result = remote->worn.wear_item( *remote, worn_item,
+                                                             false, false, true, true );
+                        if( !result ) {
+                            mp_log( "[cdda-mp] worn_sync: wear_item FAILED for " + tid.str() );
+                        }
                     }
                 }
                 std::vector<item *> applied_worn;
@@ -649,6 +720,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     worn_list += wi->typeId().str() + ' ';
                 }
                 mp_log( "[cdda-mp] worn_sync applied: [" + worn_list + "]" );
+                // Log overlay IDs the NPC would generate (confirm tileset coverage).
+                std::string ov_log;
+                for( const auto &ov : remote->get_overlay_ids() ) {
+                    ov_log += ov.first + ' ';
+                }
+                mp_log( "[cdda-mp] worn_sync overlays: [" + ov_log + "]" );
             }
             // Apply the client's wielded weapon to the remote NPC.
             std::string wielded_str;
@@ -672,14 +749,58 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         }
                     }
                     remote->set_mutation( new_tone );
-                    std::cout << "[cdda-mp] Applied skin tone '" << skin_tone_str
-                              << "' to remote player." << std::endl;
                 }
+            }
+            // Apply the client's hair style + color to the remote NPC.
+            std::string hair_trait_str;
+            std::string hair_variant_str;
+            jo.read( "hair_trait", hair_trait_str );
+            jo.read( "hair_variant", hair_variant_str );
+            if( !hair_trait_str.empty() ) {
+                const trait_id hair_tid( hair_trait_str );
+                if( hair_tid.is_valid() ) {
+                    for( const trait_id &tid : get_mutations_in_type( "hair_style" ) ) {
+                        if( remote->has_trait( tid ) ) {
+                            remote->unset_mutation( tid );
+                        }
+                    }
+                    const mutation_variant *var = hair_variant_str.empty()
+                                                  ? nullptr
+                                                  : hair_tid.obj().variant( hair_variant_str );
+                    mp_log( "[cdda-mp] worn_sync: hair=" + hair_trait_str
+                            + "/" + hair_variant_str
+                            + " valid=" + std::to_string( hair_tid.is_valid() )
+                            + " var=" + ( var ? var->id : "NULL" ) );
+                    remote->set_mutation( hair_tid, var );
+                    mp_log( "[cdda-mp] worn_sync: has_trait after=" +
+                            std::to_string( remote->has_trait( hair_tid ) ) );
+                } else {
+                    mp_log( "[cdda-mp] worn_sync: hair_tid INVALID: " + hair_trait_str );
+                }
+            } else {
+                mp_log( "[cdda-mp] worn_sync: no hair_trait in message" );
             }
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] worn_sync parse error: " ) + e.what() );
         }
         return;
+    }
+
+    // Apply client's move_mode to the remote NPC proxy (run/crouch/prone overlay).
+    if( msg.find( "\"move_mode\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            std::string mm_str;
+            jo.read( "move_mode", mm_str );
+            if( !mm_str.empty() ) {
+                const move_mode_id mode_id( mm_str );
+                if( mode_id.is_valid() ) {
+                    remote->move_mode = mode_id;
+                }
+            }
+        } catch( const JsonError & ) {}
     }
 
     // Wait — drain one turn's worth of AP.
@@ -695,11 +816,86 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
-    // Pickup — client runs the normal single-player dialog locally; this message
-    // just drains AP on the server so the move budget stays in sync.
-    const bool is_pickup = msg.find( "\"action\":\"pickup\"" ) != std::string::npos ||
-                           msg.find( "\"action\": \"pickup\"" ) != std::string::npos;
-    if( is_pickup ) {
+    // Pickup — drain AP and remove the taken items from the server's authoritative tile.
+    if( msg.find( "\"action\":\"pickup\"" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            // Use NPC's server-side position — client coordinates may be out of sync.
+            map &here = get_map();
+            const tripoint_bub_ms bub_pos = remote->pos_bub();
+            if( jo.has_array( "items" ) ) {
+                for( const JsonValue &iv : jo.get_array( "items" ) ) {
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    const itype_id tid( io.get_string( "t", "" ) );
+                    if( !tid.is_valid() ) {
+                        continue;
+                    }
+                    map_stack stack = here.i_at( bub_pos );
+                    for( auto it = stack.begin(); it != stack.end(); ++it ) {
+                        if( it->typeId() == tid ) {
+                            here.i_rem( bub_pos, &*it );
+                            mp_log( "[cdda-mp] pickup: removed " + tid.str()
+                                    + " from " + std::to_string( bub_pos.x() ) + ","
+                                    + std::to_string( bub_pos.y() ) );
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] pickup parse error: " + std::string( e.what() ) );
+        }
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
+    // Drop — client dropped items locally; add them to the server's authoritative tile.
+    // Always drop at the remote NPC's current server-side position to avoid coordinate
+    // desync between the client's local bubble and the server's bubble.
+    if( msg.find( "\"action\":\"drop\"" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            map &here = get_map();
+            const tripoint_bub_ms bub_pos = remote->pos_bub();
+            const tripoint_abs_ms abs_pos = here.get_abs( bub_pos );
+            mp_log( "[cdda-mp] drop recv: NPC at bub=(" + std::to_string( bub_pos.x() ) + ","
+                    + std::to_string( bub_pos.y() ) + "," + std::to_string( bub_pos.z() ) + ")"
+                    + " abs=(" + std::to_string( abs_pos.x() ) + "," + std::to_string( abs_pos.y() ) + ")"
+                    + " has_items=" + std::string( jo.has_array( "items" ) ? "yes" : "NO" ) );
+            if( jo.has_array( "items" ) ) {
+                for( const JsonValue &iv : jo.get_array( "items" ) ) {
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    const itype_id tid( io.get_string( "t", "" ) );
+                    if( tid.is_valid() ) {
+                        item dropped( tid );
+                        const std::string var = io.get_string( "v", "" );
+                        if( !var.empty() ) {
+                            dropped.set_itype_variant( var );
+                        }
+                        here.add_item( bub_pos, std::move( dropped ) );
+                        // Erase baseline so the next tile_changes scan always
+                        // picks up this newly added item.
+                        g_tile_baseline.erase( abs_pos );
+                        mp_log( "[cdda-mp] drop: added " + tid.str()
+                                + " at " + std::to_string( bub_pos.x() ) + ","
+                                + std::to_string( bub_pos.y() ) );
+                    }
+                }
+            }
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] drop parse error: " + std::string( e.what() ) );
+        }
         g_remote_moves -= remote->get_speed();
         g_client_acted_this_turn = true;
         server *srv = get_active_server();
@@ -790,6 +986,18 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Eat / use item — client is authoritative over its own nutrition; server just
+    // drains one turn of AP and re-broadcasts state so the client's HUD stays current.
+    if( msg.find( "\"action\":\"eat\"" ) != std::string::npos ) {
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
     tripoint_bub_ms cur = remote->pos_bub();
     tripoint_bub_ms next = cur;
 
@@ -818,6 +1026,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     }
     next += offset;
 
+    // Track whether this action consumed a turn.  Wall bumps and other no-ops
+    // must not lock the client — they get a "free":true response instead.
+    bool acted = false;
+
     // Move or attack, matching single-player bump-to-attack behaviour.
     // Check for a creature first — melee_attack applies regardless of tile passability.
     if( next != cur ) {
@@ -838,17 +1050,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // melee_attack() charges moves on the NPC internally; capture the result.
             remote->melee_attack( *target, true );
             g_remote_moves = remote->get_moves();
+            acted = true;
         } else if( !m.impassable( next ) ) {
             remote->setpos( m, next );
             // Charge terrain-aware movement cost (accounts for NPC speed/encumbrance).
             const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
             g_remote_moves -= remote->run_cost( m.move_cost( next ), diag );
+            acted = true;
         } else {
             // Bump-to-open: try to open a door on the target tile (follows CDDA rules —
-            // respects locks, handles etc).  If it's not openable, fail silently.
+            // respects locks, handles etc).  If it's not openable, it's a wall bump.
             if( m.open_door( *remote, next, true, false ) ) {
                 g_remote_moves -= remote->get_speed();
+                acted = true;
             }
+            // else: solid wall — acted stays false, no AP charged
         }
     }
 
@@ -856,13 +1072,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // kills) for forwarding to the client regardless of NPC name filter.
     flush_action_msgs( pre_action_msg, remote->name );
 
-    g_client_acted_this_turn = true;
-    g_remote_moves = 0;  // lock client after one action; grant_client_turn() restores on next turn
+    if( acted ) {
+        g_client_acted_this_turn = true;
+        g_remote_moves = 0;  // lock client; grant_client_turn() restores on next turn
+    }
 
-    // Send updated state back
+    // Broadcast updated state.  Wall bumps and other no-ops include "free":true
+    // so the client knows to restore its moves without waiting for the next turn grant.
     server *srv = get_active_server();
     if( srv ) {
-        srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        std::string state = serialize_remote_player_state();
+        if( !acted ) {
+            state = state.substr( 0, state.size() - 1 ) + ",\"free\":true}";
+        }
+        srv->post_broadcast( state + "\n" );
     }
 }
 
@@ -893,7 +1116,8 @@ void wait_for_client_action()
         return;
     }
     using namespace std::chrono_literals;
-    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    const auto t_start = std::chrono::steady_clock::now();
+    const auto deadline = t_start + 10s;
     while( !g_client_acted_this_turn && remote_player_connected ) {
         if( std::chrono::steady_clock::now() >= deadline ) {
             std::cout << "[cdda-mp] lockstep: timed out waiting for client action" << std::endl;
@@ -901,21 +1125,19 @@ void wait_for_client_action()
         }
         process_mp_events();
         ensure_mp_hud();
-        ui_manager::redraw();
-        refresh_display();
-#ifdef TILES
-        // Pump the macOS/SDL event queue so the host window stays responsive
-        // (no spinning beach ball) while waiting for the client to act.
-        SDL_PumpEvents();
-#endif
+        // Let the host use UI actions (map, inventory, zoom, etc.) while waiting.
+        // do_regular_action() blocks all world-mutating actions when hosting with moves<=0.
+        g->mp_poll_input();
         std::this_thread::sleep_for( 16ms );
     }
-#ifdef TILES
-    // Drain any keyboard/mouse events that accumulated while the gate was active
-    // so they don't replay as unintended actions on the next input poll.
-    SDL_Event ev;
-    while( SDL_PollEvent( &ev ) ) {}
-#endif
+    g_wait_elapsed_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t_start ).count() );
+}
+
+void set_last_monmove_ms( int ms )
+{
+    g_last_monmove_ms = ms;
 }
 
 bool is_remote_player( character_id id )
@@ -1100,6 +1322,12 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
 
 static bool apply_one_state_message( const std::string &msg )
 {
+    // Server asks the client to re-send worn/hair after a respawn.
+    if( msg.find( "\"type\":\"resync_request\"" ) != std::string::npos ) {
+        client_resync_worn();
+        return true;
+    }
+
     // Host died gracefully — show once and stop processing further packets.
     if( msg.find( "\"type\":\"host_died\"" ) != std::string::npos ) {
         if( !g_server_died ) {
@@ -1131,6 +1359,11 @@ static bool apply_one_state_message( const std::string &msg )
         JsonObject jo = jv.get_object();
         jo.allow_omitted_members();
         std::cout << " ok" << std::endl;
+
+        // Sync host's calendar turn so the client sees the correct time, lighting, and weather.
+        if( jo.has_int( "calendar_turn" ) ) {
+            calendar::turn = time_point( jo.get_int( "calendar_turn" ) );
+        }
 
         if( jo.has_object( "pos" ) ) {
             std::cout << "[cdda-mp] teleporting avatar..." << std::flush;
@@ -1169,24 +1402,41 @@ static bool apply_one_state_message( const std::string &msg )
             }
             std::string incoming_skin_tone;
             jo.read( "host_skin_tone", incoming_skin_tone );
-            sig += '|' + incoming_skin_tone;
+            std::string incoming_hair_sig;
+            jo.read( "host_hair_trait", incoming_hair_sig );
+            std::string incoming_wielded;
+            jo.read( "host_wielded", incoming_wielded );
+            sig += '|' + incoming_skin_tone + '|' + incoming_hair_sig + '|' + incoming_wielded;
 
             if( sig != g_client_host_worn_sig && client_host_npc_spawned ) {
                 std::cout << "[cdda-mp] dressing host NPC..." << std::flush;
                 g_client_host_worn_sig = sig;
                 npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
                 if( host_npc ) {
+                    if( jo.has_bool( "host_male" ) ) {
+                        host_npc->male = jo.get_bool( "host_male" );
+                    }
                     host_npc->clear_worn();
+                    std::string applied_log;
                     for( const JsonValue &wv : jo.get_array( "host_worn" ) ) {
                         JsonObject wo = wv.get_object();
                         wo.allow_omitted_members();
                         const itype_id tid( wo.get_string( "t", "" ) );
                         if( tid.is_valid() ) {
-                            host_npc->worn.wear_item( *host_npc, item( tid ),
+                            item worn_item( tid );
+                            const std::string var = wo.get_string( "v", "" );
+                            if( !var.empty() ) {
+                                worn_item.set_itype_variant( var );
+                                applied_log += tid.str() + '[' + var + "] ";
+                            } else {
+                                applied_log += tid.str() + ' ';
+                            }
+                            host_npc->worn.wear_item( *host_npc, worn_item,
                                                       false, false, true, true );
                         }
                     }
-                    // Apply skin tone to the host NPC proxy.
+                    mp_log( "[cdda-mp] host_worn applied: [" + applied_log + "]" );
+                    // Apply skin tone.
                     if( !incoming_skin_tone.empty() ) {
                         const trait_id new_tone( incoming_skin_tone );
                         if( new_tone.is_valid() ) {
@@ -1198,8 +1448,48 @@ static bool apply_one_state_message( const std::string &msg )
                             host_npc->set_mutation( new_tone );
                         }
                     }
+                    // Apply hair style + color.
+                    std::string incoming_hair_trait;
+                    std::string incoming_hair_variant;
+                    jo.read( "host_hair_trait", incoming_hair_trait );
+                    jo.read( "host_hair_variant", incoming_hair_variant );
+                    if( !incoming_hair_trait.empty() ) {
+                        const trait_id hair_tid( incoming_hair_trait );
+                        if( hair_tid.is_valid() ) {
+                            for( const trait_id &tid : get_mutations_in_type( "hair_style" ) ) {
+                                if( host_npc->has_trait( tid ) ) {
+                                    host_npc->unset_mutation( tid );
+                                }
+                            }
+                            const mutation_variant *var = incoming_hair_variant.empty()
+                                                          ? nullptr
+                                                          : hair_tid.obj().variant( incoming_hair_variant );
+                            host_npc->set_mutation( hair_tid, var );
+                        }
+                    }
+                    // Apply or clear the host's wielded weapon.
+                    if( incoming_wielded.empty() ) {
+                        host_npc->remove_weapon();
+                    } else {
+                        const itype_id wid( incoming_wielded );
+                        if( wid.is_valid() ) {
+                            host_npc->set_wielded_item( item( wid ) );
+                            mp_log( "[cdda-mp] host_wielded applied: " + incoming_wielded );
+                        }
+                    }
                 }
                 std::cout << " ok" << std::endl;
+            }
+        }
+
+        // Apply host's move_mode to the host NPC proxy every tick (changes per-action).
+        if( jo.has_string( "host_move_mode" ) && client_host_npc_spawned ) {
+            npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
+            if( host_npc ) {
+                const move_mode_id mode_id( jo.get_string( "host_move_mode" ) );
+                if( mode_id.is_valid() ) {
+                    host_npc->move_mode = mode_id;
+                }
             }
         }
 
@@ -1234,10 +1524,25 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // "free":true means the server rejected the action as a no-op (e.g. wall bump).
+        // Clear the ack guard immediately so the restored moves value is accepted below.
+        if( jo.has_bool( "free" ) && jo.get_bool( "free" ) ) {
+            g_client_waiting_for_ack = false;
+        }
+
         // Apply server-authoritative move budget.
         // While g_client_waiting_for_ack is set (we sent an action but haven't
         // received the server's moves=0 ack yet), ignore moves>0 packets —
         // those are stale pre-ack broadcasts still in the TCP buffer.
+        // Safety: if the ack hasn't arrived within 5 s (e.g. reconnect with stale
+        // flag, or server timeout path that never sends moves<=0), force-clear it.
+        if( g_client_waiting_for_ack ) {
+            using namespace std::chrono_literals;
+            if( std::chrono::steady_clock::now() - g_ack_set_time > 5s ) {
+                mp_log( "[cdda-mp] ack guard timed out — force-clearing" );
+                g_client_waiting_for_ack = false;
+            }
+        }
         if( jo.has_member( "moves" ) ) {
             const int srv_moves = jo.get_int( "moves" );
             if( srv_moves <= 0 ) {
@@ -1287,41 +1592,11 @@ void client_process_incoming()
     const bool was_joined = client_join_is_sent();
     client_send_join();
     if( !was_joined && client_join_is_sent() ) {
-        // Just sent the join — immediately follow with our worn-item list and skin
-        // tone so the server can dress the remote NPC in our actual gear/appearance.
-        avatar &av = get_avatar();
-        std::vector<item *> worn_items;
-        av.worn.inv_dump( worn_items );
-        std::string skin_tone_str;
-        for( const trait_id &tid : get_mutations_in_type( "skin_tone" ) ) {
-            if( av.has_trait( tid ) ) {
-                skin_tone_str = tid.str();
-                break;
-            }
-        }
-        std::string worn_json = "{\"action\":\"worn_sync\",\"worn\":[";
-        bool wfirst = true;
-        for( const item *it : worn_items ) {
-            if( !wfirst ) {
-                worn_json += ',';
-            }
-            wfirst = false;
-            worn_json += "{\"t\":\"" + it->typeId().str() + "\"}";
-        }
-        // Include wielded weapon so the host NPC proxy attacks with the right item.
-        std::string wielded_type;
-        item_location wielded = av.get_wielded_item();
-        if( wielded ) {
-            wielded_type = wielded->typeId().str();
-        }
-        worn_json += "],\"skin_tone\":\"" + skin_tone_str
-                     + "\",\"wielded\":\"" + wielded_type + "\"}";
-        std::string worn_log;
-        for( const item *it : worn_items ) {
-            worn_log += it->typeId().str() + ' ';
-        }
-        mp_log( "[cdda-mp] worn_sync sent: [" + worn_log + "]" );
-        client_send( worn_json );
+        // Just sent the join — clear any stale ack guard from a previous session
+        // so the server's first move grant isn't silently ignored after reconnect.
+        g_client_waiting_for_ack = false;
+        // Immediately follow with our worn-item list and skin tone.
+        client_resync_worn();
     }
     std::string msg;
     while( client_recv_pop( msg ) ) {
@@ -1333,6 +1608,7 @@ void client_process_incoming()
         g_pending_action.clear();
         get_avatar().set_moves( 0 );
         g_client_waiting_for_ack = true;
+        g_ack_set_time = std::chrono::steady_clock::now();
     }
 }
 
@@ -1341,9 +1617,60 @@ void client_queue_action( const std::string &json )
     g_pending_action = json;
 }
 
+void client_resync_worn()
+{
+    avatar &av = get_avatar();
+    std::vector<item *> worn_items;
+    av.worn.inv_dump( worn_items );
+
+    std::string skin_tone_str;
+    for( const trait_id &tid : get_mutations_in_type( "skin_tone" ) ) {
+        if( av.has_trait( tid ) ) {
+            skin_tone_str = tid.str();
+            break;
+        }
+    }
+    std::string hair_trait_str;
+    std::string hair_variant_str;
+    for( const trait_and_var &tv : av.get_mutations_variants() ) {
+        if( tv.trait.obj().types.count( "hair_style" ) ) {
+            hair_trait_str = tv.trait.str();
+            hair_variant_str = tv.variant;
+            break;
+        }
+    }
+
+    std::string worn_json = "{\"action\":\"worn_sync\",\"worn\":[";
+    bool wfirst = true;
+    for( const item *it : worn_items ) {
+        if( !wfirst ) {
+            worn_json += ',';
+        }
+        wfirst = false;
+        worn_json += "{\"t\":\"" + it->typeId().str() + "\"";
+        if( it->has_itype_variant() ) {
+            worn_json += ",\"v\":\"" + it->itype_variant().id + "\"";
+        }
+        worn_json += "}";
+    }
+    std::string wielded_type;
+    item_location wielded = av.get_wielded_item();
+    if( wielded ) {
+        wielded_type = wielded->typeId().str();
+    }
+    const std::string male_str = av.male ? "true" : "false";
+    worn_json += "],\"male\":" + male_str
+                 + ",\"skin_tone\":\"" + skin_tone_str
+                 + "\",\"hair_trait\":\"" + hair_trait_str
+                 + "\",\"hair_variant\":\"" + hair_variant_str
+                 + "\",\"wielded\":\"" + wielded_type + "\"}";
+    client_send( worn_json );
+}
+
 void client_mark_action_sent()
 {
     g_client_waiting_for_ack = true;
+    g_ack_set_time = std::chrono::steady_clock::now();
 }
 
 // Server: scan the sync area and emit tile entries whose ter/furn/items changed since last broadcast.
@@ -1371,13 +1698,18 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 items_json = "[";
                 bool ifirst = true;
                 for( const item &it : items ) {
-                    items_sig += it.typeId().str() + ':' +
-                                 std::to_string( it.charges ) + ',';
+                    const std::string var_str = it.has_itype_variant()
+                                               ? it.itype_variant().id : "";
+                    items_sig += it.typeId().str() + ':' + var_str + ':'
+                                 + std::to_string( it.charges ) + ',';
                     if( !ifirst ) {
                         items_json += ',';
                     }
                     ifirst = false;
                     items_json += "{\"t\":\"" + it.typeId().str() + "\"";
+                    if( !var_str.empty() ) {
+                        items_json += ",\"v\":\"" + var_str + "\"";
+                    }
                     if( it.charges > 0 ) {
                         items_json += ",\"c\":" + std::to_string( it.charges );
                     }
@@ -1534,6 +1866,10 @@ static void apply_tile_changes( JsonObject &jo )
                 }
                 applied += type_str + ' ';
                 item new_item( itype_id( type_str ), calendar::turn );
+                const std::string var_str = io.get_string( "v", "" );
+                if( !var_str.empty() ) {
+                    new_item.set_itype_variant( var_str );
+                }
                 if( io.has_int( "c" ) ) {
                     new_item.charges = io.get_int( "c" );
                 }
@@ -1831,19 +2167,7 @@ std::string serialize_remote_player_state()
     }
     bparts_json += "]";
 
-    // Host worn items — so the client can dress the host NPC correctly.
-    std::vector<const item *> host_worn_items;
-    host.worn.inv_dump( host_worn_items );
-    std::string host_worn_json = "[";
-    bool hwfirst = true;
-    for( const item *it : host_worn_items ) {
-        if( !hwfirst ) {
-            host_worn_json += ',';
-        }
-        hwfirst = false;
-        host_worn_json += "{\"t\":\"" + it->typeId().str() + "\"}";
-    }
-    host_worn_json += "]";
+    const std::string host_male_str = host.male ? "true" : "false";
 
     // Host skin tone — transmitted so the client NPC proxy has the right appearance.
     std::string host_skin_tone;
@@ -1852,6 +2176,68 @@ std::string serialize_remote_player_state()
             host_skin_tone = tid.str();
             break;
         }
+    }
+
+    // Host hair style + color.
+    std::string host_hair_trait;
+    std::string host_hair_variant;
+    for( const trait_and_var &tv : host.get_mutations_variants() ) {
+        if( tv.trait.obj().types.count( "hair_style" ) ) {
+            host_hair_trait = tv.trait.str();
+            host_hair_variant = tv.variant;
+            break;
+        }
+    }
+
+    // Host wielded weapon — sent so the client NPC proxy shows the correct item.
+    std::string host_wielded_type;
+    item_location host_wielded_loc = host.get_wielded_item();
+    if( host_wielded_loc ) {
+        host_wielded_type = host_wielded_loc->typeId().str();
+    }
+
+    // Host worn items — cached; JSON only rebuilt when worn list or appearance changes.
+    static std::string g_host_worn_json_cache;
+    static std::string g_host_worn_sig_cache;
+
+    std::vector<const item *> host_worn_items;
+    host.worn.inv_dump( host_worn_items );
+
+    std::string host_worn_sig;
+    for( const item *it : host_worn_items ) {
+        host_worn_sig += it->typeId().str();
+        if( it->has_itype_variant() ) {
+            host_worn_sig += '[';
+            host_worn_sig += it->itype_variant().id;
+            host_worn_sig += ']';
+        }
+        host_worn_sig += ',';
+    }
+    host_worn_sig += '|' + host_skin_tone + '|' + host_hair_trait + '|' + host_wielded_type;
+
+    std::string host_worn_json;
+    if( host_worn_sig == g_host_worn_sig_cache ) {
+        host_worn_json = g_host_worn_json_cache;
+    } else {
+        g_host_worn_sig_cache = host_worn_sig;
+        host_worn_json = "[";
+        bool hwfirst = true;
+        for( const item *it : host_worn_items ) {
+            if( !hwfirst ) {
+                host_worn_json += ',';
+            }
+            hwfirst = false;
+            host_worn_json += "{\"t\":\"" + it->typeId().str() + "\"";
+            if( it->has_itype_variant() ) {
+                host_worn_json += ",\"v\":\"" + it->itype_variant().id + "\"";
+            }
+            host_worn_json += "}";
+        }
+        host_worn_json += "]";
+        g_host_worn_json_cache = host_worn_json;
+        mp_log( "[cdda-mp] host_worn changed: [" + host_worn_sig + "]" );
+        mp_log( "[cdda-mp] host_hair=" + host_hair_trait + "/" + host_hair_variant
+                + " male=" + host_male_str );
     }
 
     // Build the messages JSON.  Two sources:
@@ -1913,6 +2299,7 @@ std::string serialize_remote_player_state()
     msgs_json += ']';
 
     return "{\"type\":\"state\","
+           "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
            "\"host_name\":\"" + host.name + "\","
            "\"pos\":{\"x\":" + std::to_string( pos.x() ) +
            ",\"y\":" + std::to_string( pos.y() ) +
@@ -1921,7 +2308,12 @@ std::string serialize_remote_player_state()
            ",\"y\":" + std::to_string( host_pos.y() ) +
            ",\"z\":" + std::to_string( host_pos.z() ) + "},"
            "\"host_worn\":" + host_worn_json + ","
+           "\"host_wielded\":\"" + host_wielded_type + "\","
+           "\"host_male\":" + host_male_str + ","
            "\"host_skin_tone\":\"" + host_skin_tone + "\","
+           "\"host_hair_trait\":\"" + host_hair_trait + "\","
+           "\"host_hair_variant\":\"" + host_hair_variant + "\","
+           "\"host_move_mode\":\"" + host.move_mode.str() + "\","
            "\"bodyparts\":" + bparts_json +
            ",\"moves\":" + std::to_string( g_remote_moves ) +
            ",\"speed\":" + std::to_string( remote->get_speed() ) +

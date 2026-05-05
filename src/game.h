@@ -1085,6 +1085,9 @@ class game
          * has effectively done nothing.
          */
         bool disable_robot( const tripoint_bub_ms &p );
+        // Public wrapper for MP wait loops — lets wait_for_client_action() poll
+        // UI input (map, zoom, inventory, etc.) without needing friend access.
+        void mp_poll_input() { handle_action(); }
         // Draws the pixel minimap based on the player's current location
         void draw_pixel_minimap( const catacurses::window &w );
     private:

@@ -682,13 +682,11 @@ bool do_turn()
                 start = now;
             }
 
-            // Client: prevent do_turn() from spinning at CPU speed when locked
-            // (moves=0).  Also redraw the MP HUD each iteration so the
-            // acting/waiting status stays live while waiting for a move grant.
+            // Client: poll input while locked so zoom and UI keys respond immediately.
+            // Move-costing fallthrough actions are blocked in handle_action when locked.
             if( cata_mp::is_client_mode() ) {
                 cata_mp::ensure_mp_hud();
-                ui_manager::redraw();
-                std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+                g->handle_action(); // 125 ms timeout; zoom/UI keys run, game actions blocked
             }
 
             g->mon_info_update();
@@ -744,7 +742,19 @@ bool do_turn()
         cata_mp::wait_for_client_action();
     }
     if( !cata_mp::is_client_mode() ) {
-        monmove();
+        if( cata_mp::is_hosting() ) {
+            const auto t0 = std::chrono::steady_clock::now();
+            monmove();
+            const auto ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - t0 ).count() );
+            cata_mp::set_last_monmove_ms( ms );
+            if( ms > 50 ) {
+                cata_mp::mp_log( "[cdda-mp] monmove slow: " + std::to_string( ms ) + "ms" );
+            }
+        } else {
+            monmove();
+        }
         if( calendar::once_every( time_between_npc_OM_moves ) ) {
             overmap_npc_move();
         }

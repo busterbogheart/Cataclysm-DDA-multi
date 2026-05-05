@@ -113,26 +113,87 @@ Please submit an issue on [our GitHub page](https://github.com/CleverRaven/Catac
 
 ## Multiplayer (Co-op fork)
 
-This fork adds experimental co-op multiplayer. One player hosts; others connect as clients.
+This fork adds experimental co-op multiplayer. One player hosts; a second player connects as a client. Both share the same simulated world in real time.
 
-### Joining a game (macOS)
+### Prerequisites
+
+Build from source (macOS):
 
 ```bash
-git clone https://github.com/busterbogheart/Cataclysm-DDA-multi
-cd Cataclysm-DDA-multi
-brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype
+git clone https://github.com/busterbogheart/Cataclysm-DDA-multiplayer
+cd Cataclysm-DDA-multiplayer
+brew install sdl2 sdl2_image sdl2_ttf sdl2_mixer freetype
 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
-./cataclysm-tiles --client <host-ip>:8080 --client-name yourname
 ```
 
-At the main menu choose **Load** → **Volta** and you're in. The Volta world is included in the repo — no save transfer needed.
+The Volta world is included in the repo — no save transfer needed.
 
-### Hosting
+---
 
-Launch the game normally (no extra flags). The listen server starts automatically when a client connects on port 8080.
+### Quickstart (two machines, same LAN)
+
+**Host** — plays the game and accepts one remote player:
+
+```bash
+./cataclysm-tiles --host --world Volta
+```
+
+**Client** — connects to the host:
+
+```bash
+./cataclysm-tiles --client <host-ip>:8080 --world Volta --client-name YourName
+```
+
+Both `--world Volta` arguments are required. They tell each instance to skip the main menu and load straight into the shared world. Without `--world`, the game stops at the main menu and waits for the player to pick a world manually before anything works.
+
+The client teleports to the host's location on the first tick. A debug HUD appears in the bottom-left corner showing connection state, move budget, and queued action.
+
+---
+
+### Dedicated headless server
+
+Runs the simulation with no display. Requires an existing character save in the target world.
+
+```bash
+./cataclysm-tiles --server --world Volta
+./cataclysm-tiles --server --world Volta --port 9000 --password secret
+```
+
+Client connects the same way:
+
+```bash
+./cataclysm-tiles --client <host-ip>:9000 --world Volta --client-name YourName --password secret
+```
+
+The server ticks the world at 1 game-turn/second and processes player actions at 10 Hz between ticks.
+
+---
+
+### Flag reference
+
+| Flag | Argument | Default | Description |
+|---|---|---|---|
+| `--host` | — | — | Play normally while hosting a listen server |
+| `--server` | — | — | Run as a headless dedicated server (requires `--world`) |
+| `--world` | `<name>` | — | World to load on startup — **required for both host and client** |
+| `--port` | `<number>` | 8080 | TCP port to listen on (host/server) |
+| `--password` | `<string>` | none | Password clients must supply to join |
+| `--client` | `<host:port>` | — | Connect to a server as a client |
+| `--client-name` | `<name>` | player2 | Your player name shown to the host |
+
+---
+
+### What works
+
+- Movement, melee combat, smashing terrain and furniture
+- Item pickup (single tile `g`, all nearby tiles `Q`)
+- Host and client appear as NPC proxies in each other's world with correct clothing and skin tone
+- Monster sync with damage messages
+- Field sync (blood, fire, acid)
+- Tile sync (terrain, furniture, items)
 
 ### Current limitations
 
-- Bashing and dropping items are not yet forwarded to the server
-- Inventory is not synced back to the client after pickup
+- Dropping items is not yet forwarded to the server
+- Both players load from the same character save (unique characters not yet supported)
 - Only two players supported

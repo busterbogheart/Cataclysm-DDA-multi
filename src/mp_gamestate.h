@@ -74,10 +74,19 @@ void grant_client_turn();
 // never freezes the host permanently.  Call just before monmove().
 void wait_for_client_action();
 
+// Server only: record the duration of the last monster/NPC AI turn (in ms) for
+// display on the debug HUD.  Call from do_turn() immediately after monmove().
+void set_last_monmove_ms( int ms );
+
 // Write a [cdda-mp] log line to stdout AND to /tmp/cdda-mp-server.log or
 // /tmp/cdda-mp-client.log (depending on mode).  Use this for any event that
 // should be readable after a session without stopping the process.
 void mp_log( const std::string &msg );
+
+// Client only: re-send the client's current worn-item list, skin tone, hair,
+// and wielded weapon to the server so the remote NPC proxy stays in sync.
+// Call after any wear/take-off/wield action.
+void client_resync_worn();
 
 } // namespace cata_mp
 
