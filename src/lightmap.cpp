@@ -34,6 +34,8 @@
 #include "math_defines.h"
 #include "monster.h"
 #include "mtype.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "npc.h"
 #include "point.h"
 #include "string_formatter.h"
@@ -556,6 +558,35 @@ void map::generate_lightmap( const int zlev )
     apply_character_light( get_player_character() );
     for( npc &guy : g->all_npcs() ) {
         apply_character_light( guy );
+    }
+    // MP client: host NPC proxy has no real items so active_light() returns 0.
+    // Inject the host's actual luminance (flashlight, mutations) from the state packet.
+    if( cata_mp::is_client_mode() ) {
+        const float host_lum = cata_mp::get_host_luminance();
+        if( host_lum > 0.0f ) {
+            for( npc &guy : g->all_npcs() ) {
+                if( guy.getID() == cata_mp::get_host_npc_character_id() ) {
+                    apply_light_source( guy.pos_bub(), host_lum );
+                    break;
+                }
+            }
+        }
+    }
+    // MP host: remote player NPC proxy active_light() is always 0 (proxy has no
+    // real items). Inject the client's actual luminance received in action packets.
+    if( cata_mp::is_hosting() ) {
+        const float remote_lum = cata_mp::get_remote_player_luminance();
+        if( remote_lum > 0.0f ) {
+            const character_id remote_id = cata_mp::get_remote_player_npc_character_id();
+            if( remote_id.is_valid() ) {
+                for( npc &guy : g->all_npcs() ) {
+                    if( guy.getID() == remote_id ) {
+                        apply_light_source( guy.pos_bub(), remote_lum );
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     std::vector<std::pair<tripoint_bub_ms, float>> lm_override;

@@ -34,6 +34,10 @@ void client_wait_for_initial_position();
 // available. Replaces any previously queued action (latest keypress wins).
 void client_queue_action( const std::string &json );
 
+// Enrich a client action JSON with the current client_light and client_bleed fields.
+// Call before any direct client_send() to ensure the server always receives light/bleed state.
+std::string client_enrich_action( const std::string &json );
+
 // Client only: call immediately after client_send() to suppress stale moves>0
 // state packets until the server sends moves=0 (its action acknowledgement).
 // Prevents TCP-buffered pre-ack grants from re-unlocking the client.
@@ -87,6 +91,24 @@ void mp_log( const std::string &msg );
 // and wielded weapon to the server so the remote NPC proxy stays in sync.
 // Call after any wear/take-off/wield action.
 void client_resync_worn();
+
+// Client only: returns the luminance emitted by the host player (flashlight,
+// mutations, etc.) as received in the last state packet.  Used by lightmap.cpp
+// to inject a point light at the host NPC position during build_map_cache().
+float get_host_luminance();
+
+// Host only: returns the luminance emitted by the remote player (client), as
+// received in each action packet.  Used by lightmap.cpp to inject a point light
+// at the remote NPC proxy position during build_map_cache().
+float get_remote_player_luminance();
+
+// Client only: returns the character_id of the host NPC proxy so lightmap.cpp
+// can find the right NPC without knowing internal MP state.
+character_id get_host_npc_character_id();
+
+// Host only: returns the character_id of the remote player NPC proxy so
+// lightmap.cpp can inject the client's light at the correct position.
+character_id get_remote_player_npc_character_id();
 
 } // namespace cata_mp
 

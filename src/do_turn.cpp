@@ -726,7 +726,9 @@ bool do_turn()
 
     m.process_falling();
     m.vehmove();
-    m.process_fields();
+    if( !cata_mp::is_client_mode() ) {
+        m.process_fields();
+    }
     m.process_items();
     explosion_handler::process_explosions();
     m.creature_in_field( u );

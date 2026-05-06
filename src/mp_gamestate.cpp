@@ -30,6 +30,7 @@
 #include "path_info.h"
 #include "point.h"
 #include "filesystem.h"
+#include "effect.h"
 #include "mutation.h"
 #include "teleport.h"
 #include "type_id.h"
@@ -152,6 +153,16 @@ static int g_last_monmove_ms = 0;
 // Reset to em-dash by grant_client_turn() at the start of each host turn.
 // Displayed on the server HUD "Queued" row as the partner-side equivalent.
 static std::string g_last_client_action_label = "\xe2\x80\x94";
+
+// Client: luminance emitted by the host player (flashlight, mutations, etc.).
+// Received from state packet each turn and injected into the lighting pass.
+static float g_mp_host_luminance = 0.0f;
+
+// Host: luminance emitted by the remote player (client). Received from each
+// action packet and injected into the host's lighting pass at the proxy NPC position.
+static float g_mp_remote_player_luminance = 0.0f;
+
+static const efftype_id effect_bleed( "bleed" );
 
 // ---------------------------------------------------------------------------
 // MP debug HUD
@@ -320,6 +331,11 @@ struct mp_tile_state {
     std::string fields_sig; // "type:intensity,..." — empty when no fields
 };
 static std::unordered_map<tripoint_abs_ms, mp_tile_state> g_tile_baseline;
+
+// Client→server tile baselines: track what was last sent so we only send diffs.
+// Fields are always re-sent every turn because they decay server-side.
+static std::unordered_map<tripoint_abs_ms, std::string> g_client_item_baseline;
+static std::unordered_map<tripoint_abs_ms, std::string> g_client_terfurn_baseline;
 
 // Client: last known HP per net ID — used to synthesise combat hit/death messages.
 static std::unordered_map<uint32_t, int> g_last_monster_hp;
@@ -538,12 +554,23 @@ static void spawn_remote_player( const std::string &name )
         remote->name = name;
     }
 
+    // Ensure the NPC has a valid character_id before inserting into the world.
+    // make_shared_fast<npc>() + normalize() never calls setID(), so we must
+    // assign one explicitly here. Loaded NPCs may already have a valid id from
+    // their save file; assign_npc_id() is safe to call regardless.
+    if( !remote->getID().is_valid() ) {
+        remote->setID( g->assign_npc_id() );
+    }
+
     // Always respawn near the host player regardless of saved position
     remote->spawn_at_precise( m.get_abs( spawn_pos ) );
     overmap_buffer.insert_npc( remote );
     g->load_npcs();
 
     remote_player_npc_id = remote->getID();
+    mp_log( "[cdda-mp] spawn: remote_player_npc_id=" +
+            std::to_string( remote_player_npc_id.get_value() ) +
+            " valid=" + std::to_string( remote_player_npc_id.is_valid() ) );
 
     // Co-op partner: apply ally status AFTER load_npcs so the NPC pointer is
     // fully wired into the game state (faction manager, critter tracker, etc.).
@@ -559,6 +586,7 @@ static void spawn_remote_player( const std::string &name )
     remote_player_connected = true;
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
+    g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
     g_last_forwarded_msg_count = Messages::size();  // don't forward pre-connect history
     mp_save_npc_ids();  // persist ID so next session can clean it up
 
@@ -803,6 +831,123 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         } catch( const JsonError & ) {}
     }
 
+    // Sync client light level so the host lighting pass can inject it at the proxy NPC.
+    if( msg.find( "\"client_light\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_float( "client_light" ) || jo.has_int( "client_light" ) ) {
+                g_mp_remote_player_luminance = static_cast<float>( jo.get_float( "client_light" ) );
+            }
+        } catch( const JsonError & ) {}
+    }
+
+    // Sync client bleeding effects to the remote NPC proxy so blood appears on
+    // the host's map when the proxy moves.
+    if( msg.find( "\"client_bleed\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_array( "client_bleed" ) ) {
+                remote->remove_effect( effect_bleed );
+                for( const JsonValue &bv : jo.get_array( "client_bleed" ) ) {
+                    JsonObject bo = bv.get_object();
+                    bo.allow_omitted_members();
+                    const std::string bp_str = bo.get_string( "bp", "" );
+                    const int intensity = bo.get_int( "intensity", 0 );
+                    if( !bp_str.empty() && intensity > 0 ) {
+                        const bodypart_id bp = bodypart_str_id( bp_str ).id();
+                        remote->add_effect( effect_bleed, 2_turns, bp, intensity );
+                    }
+                }
+            }
+        } catch( const JsonError & ) {}
+    }
+
+    // Apply field changes (blood, etc.) placed on the client's map tiles.
+    if( msg.find( "\"client_tile_changes\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_array( "client_tile_changes" ) ) {
+                map &m = get_map();
+                for( const JsonValue &entry : jo.get_array( "client_tile_changes" ) ) {
+                    JsonObject to = entry.get_object();
+                    to.allow_omitted_members();
+                    const tripoint_abs_ms abs{
+                        to.get_int( "x" ), to.get_int( "y" ), to.get_int( "z" )
+                    };
+                    if( !m.inbounds( abs ) ) {
+                        continue;
+                    }
+                    const tripoint_bub_ms bub = m.get_bub( abs );
+                    if( to.has_string( "ter" ) ) {
+                        const ter_id tid( to.get_string( "ter" ) );
+                        if( tid.id().is_valid() ) {
+                            m.ter_set( bub, tid );
+                            g_tile_baseline.erase( abs );
+                        }
+                    }
+                    if( to.has_string( "furn" ) ) {
+                        const furn_id fid( to.get_string( "furn" ) );
+                        if( fid.id().is_valid() ) {
+                            m.furn_set( bub, fid );
+                            g_tile_baseline.erase( abs );
+                        }
+                    }
+                    if( to.has_array( "items" ) ) {
+                        mp_log( "[cdda-mp] server apply client items @ " +
+                                std::to_string( abs.x() ) + "," +
+                                std::to_string( abs.y() ) + "," +
+                                std::to_string( abs.z() ) );
+                        m.i_clear( bub );
+                        for( const JsonValue &iv : to.get_array( "items" ) ) {
+                            JsonObject io = iv.get_object();
+                            io.allow_omitted_members();
+                            const itype_id tid( io.get_string( "t", "" ) );
+                            if( tid.is_empty() || !tid.is_valid() ) {
+                                continue;
+                            }
+                            item new_item( tid, calendar::turn );
+                            if( io.has_string( "v" ) ) {
+                                new_item.set_itype_variant( io.get_string( "v" ) );
+                            }
+                            if( io.has_int( "c" ) ) {
+                                new_item.charges = io.get_int( "c" );
+                            }
+                            if( io.has_int( "bat" ) && !new_item.ammo_default().is_null() ) {
+                                new_item.ammo_set( new_item.ammo_default(), io.get_int( "bat" ) );
+                            } else if( new_item.type->light_emission > 0 && new_item.is_tool()
+                                       && !new_item.ammo_default().is_null() ) {
+                                new_item.ammo_set( new_item.ammo_default(), -1 );
+                            }
+                            m.add_item( bub, new_item );
+                        }
+                        g_tile_baseline.erase( abs );
+                    }
+                    if( to.has_array( "fields" ) ) {
+                        for( const JsonValue &fv : to.get_array( "fields" ) ) {
+                            JsonObject fo = fv.get_object();
+                            fo.allow_omitted_members();
+                            const std::string type_str = fo.get_string( "t", "" );
+                            if( type_str.empty() ) {
+                                continue;
+                            }
+                            const field_type_id ftid( type_str );
+                            if( ftid.is_valid() ) {
+                                m.add_field( bub, ftid, fo.get_int( "i", 1 ) );
+                                g_tile_baseline.erase( abs );
+                            }
+                        }
+                    }
+                }
+            }
+        } catch( const JsonError & ) {}
+    }
+
     // Wait — drain one turn's worth of AP.
     const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
                          msg.find( "\"action\": \"wait\"" ) != std::string::npos;
@@ -866,11 +1011,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
             map &here = get_map();
-            const tripoint_bub_ms bub_pos = remote->pos_bub();
-            const tripoint_abs_ms abs_pos = here.get_abs( bub_pos );
-            mp_log( "[cdda-mp] drop recv: NPC at bub=(" + std::to_string( bub_pos.x() ) + ","
-                    + std::to_string( bub_pos.y() ) + "," + std::to_string( bub_pos.z() ) + ")"
-                    + " abs=(" + std::to_string( abs_pos.x() ) + "," + std::to_string( abs_pos.y() ) + ")"
+            // Use the absolute coordinates sent by the client; fall back to NPC
+            // proxy position only if the client didn't supply them.
+            const tripoint_abs_ms remote_abs = remote->pos_abs();
+            const tripoint_abs_ms abs_pos{
+                jo.get_int( "x", remote_abs.x() ),
+                jo.get_int( "y", remote_abs.y() ),
+                jo.get_int( "z", remote_abs.z() )
+            };
+            const tripoint_bub_ms bub_pos = here.inbounds( abs_pos )
+                                            ? here.get_bub( abs_pos )
+                                            : remote->pos_bub();
+            mp_log( "[cdda-mp] drop recv: abs=(" + std::to_string( abs_pos.x() ) + ","
+                    + std::to_string( abs_pos.y() ) + "," + std::to_string( abs_pos.z() ) + ")"
+                    + " bub=(" + std::to_string( bub_pos.x() ) + "," + std::to_string( bub_pos.y() ) + ")"
                     + " has_items=" + std::string( jo.has_array( "items" ) ? "yes" : "NO" ) );
             if( jo.has_array( "items" ) ) {
                 for( const JsonValue &iv : jo.get_array( "items" ) ) {
@@ -947,7 +1101,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             };
             if( m.inbounds( abs_target ) ) {
                 const tripoint_bub_ms bub = m.get_bub( abs_target );
-                m.bash( bub, remote->smash_ability() );
+                auto bash_map = remote->smash_ability();
+                if( jo.has_int( "bash" ) ) {
+                    const int client_bash = jo.get_int( "bash" );
+                    const damage_type_id bash_type( "bash" );
+                    bash_map[bash_type] = client_bash;
+                }
+                m.bash( bub, bash_map, false, true );
+                mp_log( "[cdda-mp] smash @ " +
+                        std::to_string( abs_target.x() ) + "," +
+                        std::to_string( abs_target.y() ) );
             }
         } catch( const JsonError &e ) {
             std::cout << "[cdda-mp] smash parse error: " << e.what() << std::endl;
@@ -1390,6 +1553,10 @@ static bool apply_one_state_message( const std::string &msg )
             std::cout << " ok" << std::endl;
         }
 
+        if( jo.has_float( "host_light" ) || jo.has_int( "host_light" ) ) {
+            g_mp_host_luminance = static_cast<float>( jo.get_float( "host_light" ) );
+        }
+
         // Dress the host NPC with the items the host player is actually wearing,
         // and apply the host's skin tone. Signature-gated to avoid redoing every tick.
         if( jo.has_array( "host_worn" ) ) {
@@ -1612,9 +1779,185 @@ void client_process_incoming()
     }
 }
 
+// Scan tiles around the client avatar for field changes (blood, etc.) since the
+// last action was sent.  Returns a JSON array of changed tile entries suitable
+// for inclusion as "client_tile_changes" in an action packet.
+static std::string build_client_tile_changes( int radius = 10 )
+{
+    const avatar &av = get_avatar();
+    const tripoint_abs_ms center = av.pos_abs();
+    map &m = get_map();
+    std::string out = "[";
+    bool first = true;
+
+    for( int dy = -radius; dy <= radius; ++dy ) {
+        for( int dx = -radius; dx <= radius; ++dx ) {
+            const tripoint_abs_ms abs{ center.x() + dx, center.y() + dy, center.z() };
+            if( !m.inbounds( abs ) ) {
+                continue;
+            }
+            const tripoint_bub_ms bub = m.get_bub( abs );
+
+            // Terrain + furniture — baseline-gated.
+            const std::string ter_str  = m.ter( bub ).id().str();
+            const std::string furn_str = m.furn( bub ).id().str();
+            const std::string terfurn_sig = ter_str + '|' + furn_str;
+            auto &terfurn_baseline = g_client_terfurn_baseline[abs];
+            const bool terfurn_changed = ( terfurn_baseline != terfurn_sig );
+            if( terfurn_changed ) {
+                terfurn_baseline = terfurn_sig;
+            }
+
+            // Items — baseline-gated so we only send when the tile changes.
+            std::string items_sig;
+            std::string items_json = "[]";
+            auto items = m.i_at( bub );
+            if( !items.empty() ) {
+                items_json = "[";
+                bool ifirst = true;
+                for( const item &it : items ) {
+                    const std::string var_str = it.has_itype_variant()
+                                               ? it.itype_variant().id : "";
+                    const int bat = it.ammo_remaining();
+                    items_sig += it.typeId().str() + ':' + var_str + ':'
+                                 + std::to_string( it.charges ) + ':'
+                                 + std::to_string( bat ) + ',';
+                    if( !ifirst ) {
+                        items_json += ',';
+                    }
+                    ifirst = false;
+                    items_json += "{\"t\":\"" + it.typeId().str() + "\"";
+                    if( !var_str.empty() ) {
+                        items_json += ",\"v\":\"" + var_str + "\"";
+                    }
+                    if( it.charges > 0 ) {
+                        items_json += ",\"c\":" + std::to_string( it.charges );
+                    }
+                    if( bat > 0 ) {
+                        items_json += ",\"bat\":" + std::to_string( bat );
+                    }
+                    items_json += "}";
+                }
+                items_json += "]";
+            }
+            auto &item_baseline = g_client_item_baseline[abs];
+            const bool items_changed = ( item_baseline != items_sig );
+            if( items_changed ) {
+                item_baseline = items_sig;
+                if( !items_sig.empty() ) {
+                    mp_log( "[cdda-mp] client tile items @ " +
+                            std::to_string( abs.x() ) + "," +
+                            std::to_string( abs.y() ) + "," +
+                            std::to_string( abs.z() ) + " : " + items_sig );
+                }
+            }
+
+            // Fields — always re-sent every turn because they decay on the server.
+            std::string fields_sig;
+            std::string fields_json = "[]";
+            const field &fld = m.field_at( bub );
+            if( fld.field_count() > 0 ) {
+                fields_json = "[";
+                bool ffield = true;
+                for( const auto &[ftype, fentry] : fld ) {
+                    if( !fentry.is_field_alive() ) {
+                        continue;
+                    }
+                    const int fi = fentry.get_field_intensity();
+                    fields_sig += ftype.id().str() + ':' + std::to_string( fi ) + ',';
+                    if( !ffield ) {
+                        fields_json += ',';
+                    }
+                    ffield = false;
+                    fields_json += "{\"t\":\"" + ftype.id().str()
+                                   + "\",\"i\":" + std::to_string( fi ) + "}";
+                }
+                fields_json += "]";
+            }
+
+            if( !terfurn_changed && !items_changed && fields_sig.empty() ) {
+                continue;
+            }
+
+            if( !first ) {
+                out += ',';
+            }
+            first = false;
+            out += "{\"x\":" + std::to_string( abs.x() )
+                   + ",\"y\":" + std::to_string( abs.y() )
+                   + ",\"z\":" + std::to_string( abs.z() );
+            if( terfurn_changed ) {
+                out += ",\"ter\":\"" + ter_str + "\",\"furn\":\"" + furn_str + "\"";
+            }
+            if( items_changed ) {
+                out += ",\"items\":" + items_json;
+            }
+            if( !fields_sig.empty() ) {
+                out += ",\"fields\":" + fields_json;
+            }
+            out += "}";
+        }
+    }
+    out += ']';
+    return out;
+}
+
+std::string client_enrich_action( const std::string &json )
+{
+    const avatar &av = get_avatar();
+
+    std::string bleed_json = "[";
+    bool bleed_first = true;
+    for( const bodypart_id &bp : av.get_all_body_parts() ) {
+        const int intensity = av.get_effect_int( effect_bleed, bp );
+        if( intensity > 0 ) {
+            if( !bleed_first ) {
+                bleed_json += ',';
+            }
+            bleed_first = false;
+            bleed_json += "{\"bp\":\"" + bp.id().str() +
+                          "\",\"intensity\":" + std::to_string( intensity ) + "}";
+        }
+    }
+    bleed_json += "]";
+
+    const float cl = av.active_light();
+    const std::string tile_changes = build_client_tile_changes();
+
+    std::string enriched = json;
+    if( !enriched.empty() && enriched.back() == '}' ) {
+        enriched.pop_back();
+        enriched += ",\"client_light\":" + std::to_string( cl );
+        enriched += ",\"client_bleed\":" + bleed_json;
+        enriched += ",\"client_tile_changes\":" + tile_changes;
+        enriched += '}';
+    }
+    return enriched;
+}
+
 void client_queue_action( const std::string &json )
 {
-    g_pending_action = json;
+    g_pending_action = client_enrich_action( json );
+}
+
+float get_host_luminance()
+{
+    return g_mp_host_luminance;
+}
+
+float get_remote_player_luminance()
+{
+    return g_mp_remote_player_luminance;
+}
+
+character_id get_host_npc_character_id()
+{
+    return client_host_npc_id;
+}
+
+character_id get_remote_player_npc_character_id()
+{
+    return remote_player_npc_id;
 }
 
 void client_resync_worn()
@@ -1700,8 +2043,10 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 for( const item &it : items ) {
                     const std::string var_str = it.has_itype_variant()
                                                ? it.itype_variant().id : "";
+                    const int bat = it.ammo_remaining();
                     items_sig += it.typeId().str() + ':' + var_str + ':'
-                                 + std::to_string( it.charges ) + ',';
+                                 + std::to_string( it.charges ) + ':'
+                                 + std::to_string( bat ) + ',';
                     if( !ifirst ) {
                         items_json += ',';
                     }
@@ -1712,6 +2057,9 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                     }
                     if( it.charges > 0 ) {
                         items_json += ",\"c\":" + std::to_string( it.charges );
+                    }
+                    if( bat > 0 ) {
+                        items_json += ",\"bat\":" + std::to_string( bat );
                     }
                     items_json += "}";
                 }
@@ -1752,10 +2100,16 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             baseline.fields_sig = fields_sig;
 
             if( !items_sig.empty() ) {
-                mp_log( "[cdda-mp] tile_delta items @ " +
+                mp_log( "tile_delta items @ " +
                         std::to_string( abs.x() ) + "," +
                         std::to_string( abs.y() ) + "," +
                         std::to_string( abs.z() ) + " : " + items_sig );
+            }
+            if( !fields_sig.empty() ) {
+                mp_log( "tile_delta fields @ " +
+                        std::to_string( abs.x() ) + "," +
+                        std::to_string( abs.y() ) + "," +
+                        std::to_string( abs.z() ) + " : " + fields_sig );
             }
 
             if( !first ) {
@@ -1872,6 +2226,14 @@ static void apply_tile_changes( JsonObject &jo )
                 }
                 if( io.has_int( "c" ) ) {
                     new_item.charges = io.get_int( "c" );
+                }
+                // Restore battery so light-emitting tools (phones, flashlights) work
+                // correctly — getlight_emit() returns 0 with no battery (CHARGEDIM check).
+                if( io.has_int( "bat" ) && !new_item.ammo_default().is_null() ) {
+                    new_item.ammo_set( new_item.ammo_default(), io.get_int( "bat" ) );
+                } else if( new_item.type->light_emission > 0 && new_item.is_tool()
+                           && !new_item.ammo_default().is_null() ) {
+                    new_item.ammo_set( new_item.ammo_default(), -1 );
                 }
                 m.add_item( bub, std::move( new_item ) );
             }
@@ -2314,6 +2676,7 @@ std::string serialize_remote_player_state()
            "\"host_hair_trait\":\"" + host_hair_trait + "\","
            "\"host_hair_variant\":\"" + host_hair_variant + "\","
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
+           "\"host_light\":" + std::to_string( host.active_light() ) + ","
            "\"bodyparts\":" + bparts_json +
            ",\"moves\":" + std::to_string( g_remote_moves ) +
            ",\"speed\":" + std::to_string( remote->get_speed() ) +

@@ -2390,7 +2390,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             const std::string full_json = json.substr( 0, json.size() - 1 )
                                           + ",\"move_mode\":\"" + player_character.move_mode.str() + "\"}";
             if( player_character.get_moves() > 0 ) {
-                cata_mp::client_send( full_json );
+                cata_mp::client_send( cata_mp::client_enrich_action( full_json ) );
                 player_character.set_moves( 0 );
                 // Suppress stale pre-ack grants that are still in the TCP buffer.
                 cata_mp::client_mark_action_sent();
@@ -2448,11 +2448,19 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 return true; // cancelled — don't charge moves
             }
             const tripoint_abs_ms abs_target = get_map().get_abs( *smashp );
+            // Send the client's actual bash ability so the server uses real strength,
+            // not the NPC proxy's (which may be weaker).
+            const auto bash_map = player_character.smash_ability();
+            int total_bash = 0;
+            for( const auto &[dtype, val] : bash_map ) {
+                total_bash += val;
+            }
             const std::string json =
                 "{\"type\":\"action\",\"action\":\"smash\""
                 ",\"x\":" + std::to_string( abs_target.x() ) +
                 ",\"y\":" + std::to_string( abs_target.y() ) +
-                ",\"z\":" + std::to_string( abs_target.z() ) + "}";
+                ",\"z\":" + std::to_string( abs_target.z() ) +
+                ",\"bash\":" + std::to_string( total_bash ) + "}";
             mp_dispatch( json );
             return true;
         }
@@ -2617,7 +2625,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 // Force-send rather than queue: drop_in_direction may have consumed
                 // moves already, which would cause mp_dispatch to queue (not send),
                 // letting the server timeout and immediately re-grant moves.
-                cata_mp::client_send( json );
+                cata_mp::client_send( cata_mp::client_enrich_action( json ) );
                 player_character.set_moves( 0 );
                 cata_mp::client_mark_action_sent();
             } else {
@@ -2640,7 +2648,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             if( worn_after.size() != worn_before.size() ) {
                 // An item was actually worn — sync appearance and charge server a turn.
                 cata_mp::client_resync_worn();
-                cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
+                cata_mp::client_send( cata_mp::client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                 player_character.set_moves( 0 );
                 cata_mp::client_mark_action_sent();
             }
@@ -2659,7 +2667,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             if( worn_after.size() != worn_before.size() ) {
                 // An item was actually removed — sync appearance and charge server a turn.
                 cata_mp::client_resync_worn();
-                cata_mp::client_send( "{\"type\":\"action\",\"action\":\"wait\"}" );
+                cata_mp::client_send( cata_mp::client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                 player_character.set_moves( 0 );
                 cata_mp::client_mark_action_sent();
             }
@@ -3868,7 +3876,7 @@ bool game::handle_action()
             ",\"x\":" + std::to_string( new_abs.x() ) +
             ",\"y\":" + std::to_string( new_abs.y() ) +
             ",\"z\":" + std::to_string( new_abs.z() ) + "}";
-        cata_mp::client_send( json );
+        cata_mp::client_send( cata_mp::client_enrich_action( json ) );
     }
     // In client MP mode the move budget is server-controlled; never drain it based on
     // wall-clock time.  UI screens like @ and x would otherwise consume the client's
