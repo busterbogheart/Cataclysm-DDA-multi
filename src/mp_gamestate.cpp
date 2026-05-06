@@ -154,6 +154,11 @@ static int g_last_monmove_ms = 0;
 // Displayed on the server HUD "Queued" row as the partner-side equivalent.
 static std::string g_last_client_action_label = "\xe2\x80\x94";
 
+// Separation warning tier: 0=ok, 1=warn (≥50 tiles), 2=danger (≥57 tiles).
+// Shared by both host and client; resets on connect/disconnect.
+// Hysteresis: step up at 50/57, step down at 44/50.
+static int g_separation_tier = 0;
+
 // Client: luminance emitted by the host player (flashlight, mutations, etc.).
 // Received from state packet each turn and injected into the lighting pass.
 static float g_mp_host_luminance = 0.0f;
@@ -587,6 +592,7 @@ static void spawn_remote_player( const std::string &name )
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
     g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
+    g_separation_tier = 0;
     g_last_forwarded_msg_count = Messages::size();  // don't forward pre-connect history
     mp_save_npc_ids();  // persist ID so next session can clean it up
 
@@ -625,6 +631,7 @@ static void remove_remote_player()
 
     remote_player_connected = false;
     remote_player_npc_id = character_id();
+    g_separation_tier = 0;
     mp_save_npc_ids();  // ID is now invalid — clears the cleanup file entry
     add_msg( m_bad, "The other player has disconnected." );
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
@@ -1328,6 +1335,34 @@ void notify_client_host_died()
     std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 }
 
+// Check separation between two absolute positions and update g_separation_tier.
+// Uses Chebyshev distance (same as rl_dist in 2D).  Tier thresholds:
+//   0 → 1 at ≥50 tiles,  1 → 2 at ≥57 tiles
+//   2 → 1 at  <50 tiles, 1 → 0 at  <44 tiles  (hysteresis prevents flicker)
+static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_abs_ms &b )
+{
+    const int dist = std::max( std::abs( a.x() - b.x() ), std::abs( a.y() - b.y() ) );
+    const int prev = g_separation_tier;
+    if( dist >= 57 ) {
+        g_separation_tier = 2;
+    } else if( dist >= 50 ) {
+        g_separation_tier = std::max( g_separation_tier, 1 );
+    } else if( dist < 44 ) {
+        g_separation_tier = 0;
+    } else if( dist < 50 ) {
+        g_separation_tier = std::min( g_separation_tier, 1 );
+    }
+    if( g_separation_tier != prev ) {
+        if( g_separation_tier == 0 ) {
+            add_msg( m_good, "You and your partner are close enough again." );
+        } else if( g_separation_tier == 1 ) {
+            add_msg( m_warning, "Your partner is getting far away (%d tiles). Max safe range is ~60.", dist );
+        } else {
+            add_msg( m_bad, "Your partner is near the edge of the simulated zone (%d tiles)! Move closer.", dist );
+        }
+    }
+}
+
 void process_mp_events()
 {
     // On the very first tick, purge any MP NPCs that leaked into the world save
@@ -1354,6 +1389,11 @@ void process_mp_events()
         server *srv = get_active_server();
         if( srv ) {
             srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        // Warn if the two players are drifting near the edge of the shared bubble.
+        npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+        if( remote ) {
+            check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
         }
     }
 }
@@ -1776,6 +1816,13 @@ void client_process_incoming()
         get_avatar().set_moves( 0 );
         g_client_waiting_for_ack = true;
         g_ack_set_time = std::chrono::steady_clock::now();
+    }
+    // Warn if the client is drifting too far from the host's reality bubble center.
+    if( client_host_npc_id.is_valid() ) {
+        npc *hnpc = g->critter_by_id<npc>( client_host_npc_id );
+        if( hnpc ) {
+            check_separation_warning( get_avatar().pos_abs(), hnpc->pos_abs() );
+        }
     }
 }
 
