@@ -2,6 +2,7 @@
 #ifndef CATA_SRC_MP_GAMESTATE_H
 #define CATA_SRC_MP_GAMESTATE_H
 
+#include "activity_type.h"
 #include "character_id.h"
 #include "coordinates.h"
 #include <string>
@@ -42,6 +43,14 @@ std::string client_enrich_action( const std::string &json );
 // state packets until the server sends moves=0 (its action acknowledgement).
 // Prevents TCP-buffered pre-ack grants from re-unlocking the client.
 void client_mark_action_sent();
+
+// Client only: returns true if we have sent an action and are waiting for the
+// server's acknowledgement (moves<=0 packet).  Used by do_turn() to block the
+// game loop and by mp_dispatch to avoid double-sending while ack is pending.
+bool is_client_waiting_for_ack();
+
+// Save the last smash action JSON so it can be re-queued for "keep smashing".
+void client_set_autosmash_json( const std::string &json );
 
 // Ensure the MP debug HUD overlay is active. Safe to call every turn.
 void ensure_mp_hud();
@@ -91,6 +100,14 @@ void mp_log( const std::string &msg );
 // and wielded weapon to the server so the remote NPC proxy stays in sync.
 // Call after any wear/take-off/wield action.
 void client_resync_worn();
+
+// Client only: if the avatar has an active wait-type activity (ACT_WAIT,
+// ACT_WAIT_STAMINA, etc.), dispatch a "wait" action to the server so its
+// timeline advances in sync with the client's local activity.  Call once per
+// game turn after the avatar activity loop has run and consumed moves.
+// Pass the activity ID that was running BEFORE the loop so the dispatch still
+// fires when the activity consumed moves and then called finish() this same turn.
+void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id() );
 
 // Client only: returns the luminance emitted by the host player (flashlight,
 // mutations, etc.) as received in the last state packet.  Used by lightmap.cpp

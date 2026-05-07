@@ -2353,6 +2353,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             list_surroundings();
             return false;
         }
+        if( act == ACTION_MORALE ) {
+            player_character.disp_morale();
+            return false;
+        }
 
         // While locked, block anything that would cost moves via local fallthrough.
         // Movement/wait go through mp_dispatch (queued) and are fine.
@@ -2385,13 +2389,19 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         // Helper: either send immediately (moves available) or queue for auto-fire.
         // Local prediction only runs on the send path — queued actions are corrected
         // by the server's next state packet when they eventually fire.
-        const auto mp_dispatch = [&]( const std::string & json ) {
-            // Append current move_mode so the server can update the NPC proxy's run/crouch/prone overlay.
+        // charge_from_caller=true: caller already charged AP and burned stamina;
+        // don't zero moves (they already reflect the real cost).
+        const auto mp_dispatch = [&]( const std::string & json, bool charge_from_caller = false ) {
+            // Append move_mode so the server can update the NPC proxy's run/crouch/prone state.
             const std::string full_json = json.substr( 0, json.size() - 1 )
-                                          + ",\"move_mode\":\"" + player_character.move_mode.str() + "\"}";
-            if( player_character.get_moves() > 0 ) {
+                                          + ",\"move_mode\":\"" + player_character.move_mode.str() + "\""
+                                          + "}";
+            // Don't double-send while a previous action is still awaiting ack — queue instead.
+            if( player_character.get_moves() > 0 && !cata_mp::is_client_waiting_for_ack() ) {
                 cata_mp::client_send( cata_mp::client_enrich_action( full_json ) );
-                player_character.set_moves( 0 );
+                if( !charge_from_caller ) {
+                    player_character.set_moves( 0 );
+                }
                 // Suppress stale pre-ack grants that are still in the TCP buffer.
                 cata_mp::client_mark_action_sent();
             } else {
@@ -2416,8 +2426,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             map &here = get_map();
             const tripoint_bub_ms cur_pos = player_character.pos_bub();
             const auto offset_it = dir_to_offset.find( dir );
+            // Hoist next_pos to outer scope so both the wall-check and the AP-charge
+            // block can use the same computed destination tile.
+            const tripoint_bub_ms next_pos = offset_it != dir_to_offset.end()
+                                             ? cur_pos + offset_it->second
+                                             : cur_pos;
             if( offset_it != dir_to_offset.end() ) {
-                const tripoint_bub_ms next_pos = cur_pos + offset_it->second;
                 if( here.impassable( next_pos ) ) {
                     const tripoint_abs_ms next_abs = here.get_abs( next_pos );
                     const bool has_creature = static_cast<bool>(
@@ -2430,13 +2444,100 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 }
             }
 
+            // Block movement dispatch during wait activities — mirrors SP behavior
+            // where the activity loop consumes all moves before handle_action runs.
+            // Without this, pressing a movement key while catching breath queues a
+            // move that fires the moment the server's next grant arrives.
+            {
+                const player_activity &pact = player_character.activity;
+                static const activity_id act_wait( "ACT_WAIT" );
+                static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
+                static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
+                static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
+                if( pact && ( pact.id() == act_wait || pact.id() == act_wait_stamina ||
+                              pact.id() == act_wait_weather || pact.id() == act_wait_npc ) ) {
+                    player_character.set_moves( 0 );
+                    return true;
+                }
+            }
+
+            // Commit any pending move_mode transition (run, crouch, prone) before
+            // dispatching so the server receives the intended mode, not the stale one.
+            // Normally this commit happens at line ~2756, but the client intercept
+            // returns before reaching that code.
+            if( player_character.is_waiting_to_change_mode_mode() ) {
+                const move_mode_id desired = player_character.get_desired_move_mode();
+                player_character.set_movement_mode( desired );
+                if( player_character.move_mode != desired ) {
+                    player_character.cancel_desired_move_mode();
+                }
+            }
+
+            // Danger tile prompt — mirrors game::move_player() logic.
+            // Runs before AP charge so a cancel is free (no moves consumed).
+            if( offset_it != dir_to_offset.end() ) {
+                std::vector<std::string> harmful_stuff = g->get_dangerous_tile( next_pos );
+                if( !harmful_stuff.empty() ) {
+                    const std::string opt = get_option<std::string>( "DANGEROUS_TERRAIN_WARNING_PROMPT" );
+                    if( opt == "ALWAYS" &&
+                        !g->prompt_dangerous_tile( next_pos, &harmful_stuff ) ) {
+                        return true;
+                    } else if( opt == "RUNNING" &&
+                               ( !player_character.is_running() ||
+                                 !g->prompt_dangerous_tile( next_pos, &harmful_stuff ) ) ) {
+                        add_msg( m_warning,
+                                 _( "Stepping into that %1$s looks risky.  Run into it if you wish to enter anyway." ),
+                                 enumerate_as_string( harmful_stuff ) );
+                        return true;
+                    } else if( opt == "CROUCHING" &&
+                               ( !player_character.is_crouching() ||
+                                 !g->prompt_dangerous_tile( next_pos, &harmful_stuff ) ) ) {
+                        add_msg( m_warning,
+                                 _( "Stepping into that %1$s looks risky.  Crouch and move into it if you wish to enter anyway." ),
+                                 enumerate_as_string( harmful_stuff ) );
+                        return true;
+                    } else if( opt == "NEVER" && !player_character.is_running() ) {
+                        add_msg( m_warning,
+                                 _( "Stepping into that %1$s looks risky.  Run into it if you wish to enter anyway." ),
+                                 enumerate_as_string( harmful_stuff ) );
+                        return true;
+                    }
+                }
+            }
+
+            // Mirror SP movement cost locally so moves/stamina/activity display correctly.
+            // SP path: game.cpp charges run_cost AP, then burns stamina from AP spent.
+            if( offset_it != dir_to_offset.end() ) {
+                const bool diag = ( std::abs( offset_it->second.x ) +
+                                    std::abs( offset_it->second.y ) ) == 2;
+                const int mcost   = here.combined_movecost( cur_pos, next_pos );
+                const int ap_cost = player_character.run_cost( mcost, diag );
+                const int pre_moves = player_character.get_moves();
+                player_character.mod_moves( -ap_cost );
+                player_character.burn_move_stamina( pre_moves - player_character.get_moves() );
+                player_character.set_activity_level(
+                    player_character.current_movement_mode()->exertion_level() );
+                if( player_character.is_running() && !player_character.can_run() ) {
+                    player_character.reset_move_mode();
+                }
+            }
             const std::string json = "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
                                      dir + "\"}";
-            mp_dispatch( json );
+            mp_dispatch( json, /*charge_from_caller=*/true );
             return true;
         }
-        if( act == ACTION_WAIT || act == ACTION_PAUSE ) {
+        if( act == ACTION_PAUSE ) {
             mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
+            return true;
+        }
+        if( act == ACTION_WAIT ) {
+            // Show the wait-duration dialog and assign a local activity (same as SP).
+            // Dispatch the first "wait" now; client_dispatch_wait_for_activity() in
+            // do_turn.cpp sends one "wait" per subsequent turn while the activity runs.
+            wait();
+            if( player_character.activity ) {
+                mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
+            }
             return true;
         }
         // Pickup: let the normal single-player dialog run on the client.
@@ -2461,6 +2562,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ",\"y\":" + std::to_string( abs_target.y() ) +
                 ",\"z\":" + std::to_string( abs_target.z() ) +
                 ",\"bash\":" + std::to_string( total_bash ) + "}";
+            // Save the smash JSON so the client can re-queue it for "keep smashing".
+            cata_mp::client_set_autosmash_json( json );
             mp_dispatch( json );
             return true;
         }
@@ -2706,6 +2809,14 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             ACTION_INVENTORY, ACTION_COMPARE, ACTION_ORGANIZE,
             ACTION_LOOK, ACTION_EXAMINE,
             ACTION_HELP, ACTION_MESSAGES,
+            ACTION_PL_INFO, ACTION_MORALE,
+            // Main-menu entries: all pure UI/config, safe while waiting for client.
+            ACTION_OPTIONS, ACTION_TOGGLE_PANEL_ADM,
+            ACTION_AUTOPICKUP, ACTION_AUTONOTES,
+            ACTION_SAFEMODE, ACTION_DISTRACTION_MANAGER,
+            ACTION_COLOR, ACTION_WORLD_MODS,
+            ACTION_QUICKSAVE,
+            ACTION_EXPORT_BUG_REPORT_ARCHIVE,
         };
         if( !host_ui_actions.count( act ) ) {
             return false;
@@ -2758,8 +2869,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         if( player_character.move_mode == desired_move ) {
             player_character.mod_moves( -desired_move_mode_cost );
         } else {
-            debugmsg( "Player unable to change from move_mode(%s) to desired_move_mode(%s)",
-                      player_character.move_mode.c_str(), desired_move.c_str() );
+            // Transition failed (e.g. tried to run with no stamina).
+            // Reset desired_move_mode to the current mode so we don't retry
+            // the impossible transition on every subsequent action.
+            player_character.cancel_desired_move_mode();
         }
     }
 
@@ -3859,7 +3972,7 @@ bool game::handle_action()
         do_deathcam_action( act, player_character );
     }
 
-    const int pre_action_z = player_character.pos_abs().z();
+    const tripoint_abs_ms pre_action_pos = player_character.pos_abs();
 
     // actions allowed only while alive
     if( !player_character.is_dead_state() ) {
@@ -3868,8 +3981,10 @@ bool game::handle_action()
         }
     }
 
-    // Client mode: if vertical_move() changed z-level, sync the proxy NPC on the host.
-    if( cata_mp::is_client_mode() && player_character.pos_abs().z() != pre_action_z ) {
+    // Client mode: if an action moved the avatar without going through mp_dispatch
+    // (z-level change via stairs, fence-climb via examine, teleport, etc.),
+    // sync the proxy NPC on the host so the server doesn't snap us back.
+    if( cata_mp::is_client_mode() && player_character.pos_abs() != pre_action_pos ) {
         const tripoint_abs_ms new_abs = player_character.pos_abs();
         const std::string json =
             "{\"type\":\"action\",\"action\":\"position_sync\""
@@ -3881,7 +3996,10 @@ bool game::handle_action()
     // In client MP mode the move budget is server-controlled; never drain it based on
     // wall-clock time.  UI screens like @ and x would otherwise consume the client's
     // entire turn grant just by being open for a few seconds.
-    if( act != ACTION_TIMEOUT && !cata_mp::is_client_mode() ) {
+    // Similarly, don't drain the host's moves while locked (moves<=0, waiting for the
+    // client) — the budget is managed by the MP loop, not wall-clock time.
+    if( act != ACTION_TIMEOUT && !cata_mp::is_client_mode() &&
+        !( cata_mp::is_hosting() && player_character.get_moves() <= 0 ) ) {
         player_character.mod_moves( -current_turn.moves_elapsed() );
     }
     if( act != ACTION_PAUSE ) {

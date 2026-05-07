@@ -51,6 +51,7 @@
 #include "iuse_actor.h"
 #include "magic.h"
 #include "map.h"
+#include "mp_gamestate.h"
 #include "map_iterator.h"
 #include "mapdata.h"
 #include "messages.h"
@@ -3578,11 +3579,16 @@ void npc::process_turn()
 
     // NPCs shouldn't be using stamina, but if they have, set it back to max
     // If the stamina is higher than the max (Languorous), set it back to max
-    if( calendar::once_every( 1_minutes ) && get_stamina() != get_stamina_max() ) {
+    // Skip for the remote player proxy — stamina is server-authoritative and synced each tick.
+    if( !cata_mp::is_remote_player( getID() ) &&
+        calendar::once_every( 1_minutes ) && get_stamina() != get_stamina_max() ) {
         set_stamina( get_stamina_max() );
     }
 
-    if( is_player_ally() && calendar::once_every( 1_hours ) &&
+    // Skip trust updates for the remote player proxy.  The proxy's hunger/thirst advance
+    // untended (nobody feeds it), so this check would eventually degrade trust with the host.
+    if( !cata_mp::is_remote_player( getID() ) &&
+        is_player_ally() && calendar::once_every( 1_hours ) &&
         get_hunger() < 200 && get_thirst() < 100 && op_of_u.trust < 5 ) {
         // Friends who are well fed will like you more
         // 24 checks per day, best case chance at trust 0 is 1 in 48 for +1 trust per 2 days

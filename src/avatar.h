@@ -335,6 +335,7 @@ class avatar : public Character
 
         void cycle_desired_move_mode();
         void cycle_desired_move_mode_reverse();
+        void cancel_desired_move_mode();
 
         bool is_walk_mode_desired() const;
         void set_walk_mode_desired();

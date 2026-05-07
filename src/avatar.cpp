@@ -1405,6 +1405,12 @@ void avatar::cycle_desired_move_mode_reverse()
     }
 }
 
+void avatar::cancel_desired_move_mode()
+{
+    desired_move_mode = move_mode;
+}
+
+
 
 bool avatar::wield( item &it )
 {

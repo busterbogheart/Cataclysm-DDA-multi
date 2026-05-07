@@ -84,6 +84,7 @@
 #include "visitable.h"
 #include "vpart_position.h"
 #include "weather.h"
+#include "mp_gamestate.h"
 
 static const activity_id ACT_CRAFT( "ACT_CRAFT" );
 static const activity_id ACT_DISASSEMBLE( "ACT_DISASSEMBLE" );
@@ -3141,9 +3142,11 @@ void remove_ammo( item &dis_item, Character &p )
 std::vector<Character *> Character::get_crafting_helpers() const
 {
     return g->get_characters_if( [this]( const Character & guy ) {
-        // NPCs can help craft if awake, taking orders, within pickup range and have clear path
+        // NPCs can help craft if awake, taking orders, within pickup range and have clear path.
+        // Exclude the remote player proxy NPC — it has skill 0 and would skew crafting rolls.
         return getID() != guy.getID()
                && guy.is_npc()
+               && !cata_mp::is_remote_player( guy.getID() )
                && !guy.in_sleep_state()
                && guy.is_obeying( *this )
                && rl_dist( guy.pos_bub(), pos_bub() ) < PICKUP_RANGE
@@ -3155,6 +3158,7 @@ std::vector<Character *> Character::get_crafting_group() const
 {
     return g->get_characters_if( [this]( const Character & guy ) {
         return guy.is_ally( *this )
+               && !cata_mp::is_remote_player( guy.getID() )
                && rl_dist( guy.pos_bub(), pos_bub() ) < PICKUP_RANGE
                && get_map().clear_path( pos_bub(), guy.pos_bub(), PICKUP_RANGE, 1, 100 );
     } );

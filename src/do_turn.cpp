@@ -586,8 +586,25 @@ bool do_turn()
     }
 
     g->perhaps_add_random_npc( /* ignore_spawn_timers_and_rates = */ false );
+    // Snapshot moves and activity ID before the loop.  The ID is needed because
+    // ACT_WAIT_STAMINA (and other perpetual wait activities) consume moves and then
+    // call finish() inside the same do_turn() call when their condition is met
+    // (e.g. stamina fully recovered after server state is applied).  After finish()
+    // the activity pointer is null, so client_dispatch_wait_for_activity() needs the
+    // pre-loop ID as a fallback to know it should still send a "wait" to unblock the server.
+    const int pre_activity_moves = u.get_moves();
+    const activity_id pre_activity_id = u.activity ? u.activity.id() : activity_id();
     while( u.get_moves() > 0 && u.activity ) {
         u.activity.do_turn( u );
+    }
+    // Client: if a wait activity consumed the server-granted moves this turn,
+    // dispatch "wait" so the server advances its timeline in sync.
+    bool mp_wait_dispatched = false;
+    if( cata_mp::is_client_mode() && pre_activity_moves > 0 && u.get_moves() <= 0 ) {
+        cata_mp::mp_log( "[cdda-mp] pre-loop dispatch: pre_moves=" + std::to_string( pre_activity_moves ) +
+                         " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
+        cata_mp::client_dispatch_wait_for_activity( pre_activity_id );
+        mp_wait_dispatched = true;
     }
 
     // Process NPC sound events before they move or they hear themselves talking
@@ -648,6 +665,7 @@ bool do_turn()
                     u.action_taken();
                 }
 
+
                 // Pump MP events after each host action so the remote player's
                 // queued actions are processed immediately, not deferred until the
                 // next full do_turn() call.  Also re-invalidate the HUD so the
@@ -667,6 +685,28 @@ bool do_turn()
                 while( u.get_moves() > 0 && u.activity ) {
                     u.activity.do_turn( u );
                 }
+            }
+            // Client: catch activities that started inside the input loop (e.g. ACT_WAIT_STAMINA
+            // triggered by burn_move_stamina inside handle_action).  The pre-loop dispatch above
+            // ran before the loop and couldn't see them — dispatch "wait" now if we haven't yet.
+            // Guards:
+            //  pre_activity_moves > 0  — only fire when a real server grant arrived this iteration;
+            //                            prevents a "wait storm" when do_turn re-enters with 0 moves
+            //                            and no grant (each extra "wait" drives g_remote_moves negative
+            //                            and the positive grant never clears the ack guard).
+            //  !is_client_waiting_for_ack() — don't stack a "wait" on top of a pending movement ack;
+            //                            the pre-loop dispatch will handle it on the next grant.
+            if( cata_mp::is_client_mode() && !mp_wait_dispatched &&
+                pre_activity_moves > 0 && u.get_moves() <= 0 &&
+                !cata_mp::is_client_waiting_for_ack() ) {
+                const activity_id post_id = u.activity ? u.activity.id() : activity_id();
+                cata_mp::mp_log( "[cdda-mp] post-loop dispatch: pre_moves=" + std::to_string( pre_activity_moves ) +
+                                 " act=" + ( post_id ? post_id.str() : "none" ) );
+                cata_mp::client_dispatch_wait_for_activity( post_id );
+            } else if( cata_mp::is_client_mode() && pre_activity_moves > 0 && u.get_moves() <= 0 ) {
+                cata_mp::mp_log( "[cdda-mp] post-loop SKIPPED: dispatched=" + std::to_string( mp_wait_dispatched ) +
+                                 " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +
+                                 " act=" + ( u.activity ? u.activity.id().str() : "none" ) );
             }
             // Reset displayed sound markers now that the turn is over.
             // We only want this to happen if the player had a chance to examine the sounds.
@@ -852,6 +892,9 @@ bool do_turn()
     if( calendar::once_every( 1_minutes ) ) {
         u.update_morale();
         for( npc &guy : g->all_npcs() ) {
+            if( cata_mp::is_remote_player( guy.getID() ) ) {
+                continue;
+            }
             guy.update_morale();
             guy.check_and_recover_morale();
         }

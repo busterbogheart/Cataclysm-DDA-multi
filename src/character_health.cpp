@@ -90,6 +90,7 @@
 #include "weather_type.h"
 #include "weighted_list.h"
 #include "wound.h"
+#include "mp_gamestate.h"
 
 static const activity_id ACT_READ( "ACT_READ" );
 static const activity_id ACT_TREE_COMMUNION( "ACT_TREE_COMMUNION" );
@@ -2191,7 +2192,7 @@ void Character::invalidate_leak_level_cache()
 
 int Character::get_stamina() const
 {
-    if( is_npc() ) {
+    if( is_npc() && !cata_mp::is_remote_player( getID() ) ) {
         // No point in doing a bunch of checks on NPCs for now since they can't use stamina.
         return get_stamina_max();
     }
@@ -2200,7 +2201,7 @@ int Character::get_stamina() const
 
 int Character::get_stamina_max() const
 {
-    if( is_npc() ) {
+    if( is_npc() && !cata_mp::is_remote_player( getID() ) ) {
         // No point in doing a bunch of checks on NPCs for now since they can't use stamina.
         return 10000;
     }
@@ -2227,7 +2228,8 @@ void Character::set_stamina( int new_stamina )
 void Character::mod_stamina( int mod )
 {
     // TODO: Make NPCs smart enough to use stamina
-    if( is_npc() || has_trait( trait_DEBUG_STAMINA ) ) {
+    // Remote player proxies are NPC objects but need real stamina tracking.
+    if( ( is_npc() && !cata_mp::is_remote_player( getID() ) ) || has_trait( trait_DEBUG_STAMINA ) ) {
         return;
     }
 
