@@ -546,7 +546,10 @@ bool do_turn()
     }
 
     // If you're inside a wall or something and haven't been telefragged, let's get you out.
-    if( ( m.impassable( u.pos_bub() ) && !m.impassable_field_at( u.pos_bub() ) ) &&
+    // In client MP mode the server is authoritative for position; staggering against
+    // the server's position causes a stumble loop and flicker, so skip it.
+    if( !cata_mp::is_client_mode() &&
+        ( m.impassable( u.pos_bub() ) && !m.impassable_field_at( u.pos_bub() ) ) &&
         !m.has_flag( ter_furn_flag::TFLAG_CLIMBABLE, u.pos_bub() ) ) {
         u.stagger();
     }

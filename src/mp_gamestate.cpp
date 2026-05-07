@@ -2581,9 +2581,13 @@ static void apply_vehicle_sync( JsonObject &jo )
         };
         const int  face_deg = vo.get_int( "face", 0 );
         const int  vel      = vo.get_int( "vel",  0 );
+        // Read name early — used as fallback identifier when position lookups fail
+        // (e.g. the client's local physics have drifted the vehicle away from both
+        // the tracked position and the server's authoritative position).
+        std::string vname;
+        vo.read( "name", vname );
 
         // Find the vehicle object.  Primary: look at last-known abs position.
-        // Fallback: look at new_abs (e.g. first packet, or vehicle already there).
         vehicle *found = nullptr;
         auto pos_it = g_client_veh_pos.find( nid );
         const tripoint_abs_ms search_abs = ( pos_it != g_client_veh_pos.end() )
@@ -2598,7 +2602,7 @@ static void apply_vehicle_sync( JsonObject &jo )
                 }
             }
         }
-        // Secondary fallback: if old position already moved, look at new_abs directly.
+        // Fallback: server's authoritative position (first packet, or vehicle there).
         if( !found && m.inbounds( new_abs ) ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == new_abs ) {
@@ -2607,12 +2611,19 @@ static void apply_vehicle_sync( JsonObject &jo )
                 }
             }
         }
+        // Name fallback: client physics may have drifted the vehicle away from both
+        // the tracked position and new_abs.  Match by name so we can snap it back.
+        if( !found && !vname.empty() ) {
+            for( const wrapped_vehicle &wv : vehs ) {
+                if( wv.v && wv.v->name == vname ) {
+                    found = wv.v;
+                    break;
+                }
+            }
+        }
 
         if( !found ) {
             // Vehicle not in the client's reality bubble — don't update tracked position.
-            // Keeping the old in-bounds position means future ticks can still find the
-            // vehicle if the client moves toward it.  Storing an out-of-bounds abs would
-            // permanently orphan the vehicle: the primary lookup would fail every tick.
             continue;
         }
 
@@ -2645,11 +2656,12 @@ static void apply_vehicle_sync( JsonObject &jo )
         }
 
         // Update velocity (server is authoritative for physics).
+        // Also zero cruise_velocity so the client's physics don't re-accelerate
+        // the vehicle between state packets.
         found->velocity = vel;
+        found->cruise_velocity = vel;
 
         // Sync vehicle name — server is authoritative; overrides any local rename.
-        std::string vname;
-        vo.read( "name", vname );
         if( !vname.empty() && found->name != vname ) {
             found->name = vname;
         }
