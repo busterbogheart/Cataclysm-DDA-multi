@@ -50,6 +50,14 @@ sudo apt install cataclysm-dda-curses cataclysm-dda-sdl
 
 Download from [Flathub](https://flathub.org/apps/org.cataclysmdda.CataclysmDDA).
 
+## Multiplayer Fork — Building (macOS)
+
+```sh
+make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+```
+
+Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext`
+
 ## Compile
 
 Please read [COMPILING.md](doc/c++/COMPILING.md) - it covers general information and more specific recipes for Linux, OS X, Windows and BSD. See [COMPILER_SUPPORT.md](doc/c++/COMPILER_SUPPORT.md) for details on which compilers we support. And you can always dig for more information in [doc/](https://github.com/CleverRaven/Cataclysm-DDA/tree/master/doc).
