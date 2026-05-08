@@ -6,6 +6,19 @@ Cataclysm: Dark Days Ahead is a turn-based survival game set in a post-apocalypt
     <img src="./data/screenshots/ultica-showcase-sep-2021.png" alt="Tileset: Ultica">
 </p>
 
+## Contents
+
+- [Multiplayer (Co-op fork)](#multiplayer-co-op-fork)
+  - [Building (macOS)](#multiplayer-fork--building-macos)
+  - [Two-machine LAN quickstart](#two-machine-lan-quickstart)
+  - [Flag reference](#flag-reference)
+  - [What works / Current limitations](#what-works)
+- [Downloads](#downloads)
+- [Compile](#compile)
+- [Contribute](#contribute)
+- [Community](#community)
+- [FAQ](#frequently-asked-questions)
+
 ## Downloads
 
 **Releases** - [Stable](https://cataclysmdda.org/releases/) | [Experimental](https://cataclysmdda.org/experimental/)
@@ -123,57 +136,42 @@ Please submit an issue on [our GitHub page](https://github.com/CleverRaven/Catac
 
 This fork adds experimental co-op multiplayer. One player hosts; a second player connects as a client. Both share the same simulated world in real time.
 
-### Prerequisites
+---
 
-Build from source (macOS):
+### Two-machine LAN quickstart
+
+Both machines need the repo built and the same `save/` directory. Sync it from the host before starting:
 
 ```bash
-git clone https://github.com/busterbogheart/Cataclysm-DDA-multiplayer
-cd Cataclysm-DDA-multiplayer
-brew install sdl2 sdl2_image sdl2_ttf sdl2_mixer freetype
-make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+# Run on the client machine — replace user@host-machine as needed
+rsync -av user@host-machine:/path/to/Cataclysm-DDA-multiplayer/save/ ./save/
 ```
 
-The Volta world is included in the repo — no save transfer needed.
+Then use `start-mp.sh` — it handles world/character selection interactively and writes logs to `/tmp/`.
+
+**Host machine** (plays the game, accepts one remote player):
+
+```bash
+./start-mp.sh host
+```
+
+**Client machine** (connects to the host):
+
+```bash
+./start-mp.sh client <host-lan-ip>
+```
+
+Both scripts prompt you to pick a world and character from the local save. The client teleports to the host's location on the first tick. Logs land at `/tmp/cdda-mp-server.log` and `/tmp/cdda-mp-client.log`.
 
 ---
 
-### Quickstart (two machines, same LAN)
+### start-mp.sh modes
 
-**Host** — plays the game and accepts one remote player:
-
-```bash
-./cataclysm-tiles --host --world Volta
-```
-
-**Client** — connects to the host:
-
-```bash
-./cataclysm-tiles --client <host-ip>:8080 --world Volta --client-name YourName
-```
-
-Both `--world Volta` arguments are required. They tell each instance to skip the main menu and load straight into the shared world. Without `--world`, the game stops at the main menu and waits for the player to pick a world manually before anything works.
-
-The client teleports to the host's location on the first tick. A debug HUD appears in the bottom-left corner showing connection state, move budget, and queued action.
-
----
-
-### Dedicated headless server
-
-Runs the simulation with no display. Requires an existing character save in the target world.
-
-```bash
-./cataclysm-tiles --server --world Volta
-./cataclysm-tiles --server --world Volta --port 9000 --password secret
-```
-
-Client connects the same way:
-
-```bash
-./cataclysm-tiles --client <host-ip>:9000 --world Volta --client-name YourName --password secret
-```
-
-The server ticks the world at 1 game-turn/second and processes player actions at 10 Hz between ticks.
+| Invocation | What it does |
+|---|---|
+| `./start-mp.sh` | Launches host + client on **this machine** — local two-window testing |
+| `./start-mp.sh host` | Host only — full windowed game, listens on port 8080 |
+| `./start-mp.sh client <ip>` | Client only — connects to `<ip>:8080` |
 
 ---
 
@@ -182,12 +180,11 @@ The server ticks the world at 1 game-turn/second and processes player actions at
 | Flag | Argument | Default | Description |
 |---|---|---|---|
 | `--host` | — | — | Play normally while hosting a listen server |
-| `--server` | — | — | Run as a headless dedicated server (requires `--world`) |
-| `--world` | `<name>` | — | World to load on startup — **required for both host and client** |
-| `--port` | `<number>` | 8080 | TCP port to listen on (host/server) |
-| `--password` | `<string>` | none | Password clients must supply to join |
-| `--client` | `<host:port>` | — | Connect to a server as a client |
-| `--client-name` | `<name>` | player2 | Your player name shown to the host |
+| `--world` | `<name>` | — | World to load on startup — required for host and client |
+| `--char` | `<name>` | — | Character name to load |
+| `--port` | `<number>` | 8080 | TCP port to listen on |
+| `--client` | `<host:port>` | — | Connect to a host as a client |
+| `--client-name` | `<name>` | player2 | Player name shown to the host |
 
 ---
 
