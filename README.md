@@ -140,12 +140,7 @@ This fork adds experimental co-op multiplayer. One player hosts; a second player
 
 ### Two-machine LAN quickstart
 
-Both machines need the repo built and the same `save/` directory. Sync it from the host before starting:
-
-```bash
-# Run on the client machine — replace user@host-machine as needed
-rsync -av user@host-machine:/path/to/Cataclysm-DDA-multiplayer/save/ ./save/
-```
+Both machines need the repo built. The save (world **Kiel**) is in the repo — a `git pull` on the client is all that's needed to sync it.
 
 Then use `start-mp.sh` — it handles world/character selection interactively and writes logs to `/tmp/`.
 
