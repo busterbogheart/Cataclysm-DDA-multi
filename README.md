@@ -139,6 +139,13 @@ Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gett
 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
 ```
 
+Or, with MacPorts SDL via `pkg-config` and Clang:
+
+```sh
+export PKG_CONFIG_PATH="/opt/local/lib/pkgconfig"
+make -j$(sysctl -n hw.logicalcpu) NATIVE=osx CLANG=1 TILES=1 SOUND=1 PCH=0 LINTJSON=0 cataclysm-tiles
+```
+
 ---
 
 ### Two-machine LAN quickstart
