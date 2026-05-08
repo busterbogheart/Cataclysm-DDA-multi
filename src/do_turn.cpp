@@ -640,6 +640,12 @@ bool do_turn()
 
     if( !u.has_effect( effect_sleep ) || g->uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_log( "[cdda-mp] input-loop enter: moves=" +
+                                 std::to_string( u.get_moves() ) +
+                                 " ms_grant=" + std::to_string( cata_mp::ms_since_last_grant() ) +
+                                 " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+            }
             while( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
                 m.process_falling();
                 g->cleanup_dead();
@@ -671,11 +677,18 @@ bool do_turn()
                 // Auto-wait: if the client has had moves for > 500 ms without acting,
                 // the host is likely fast-forwarding through a long activity (wait, sleep,
                 // crafting).  Send "wait" so the host can advance without requiring a keypress.
-                if( cata_mp::is_client_mode() && !cata_mp::is_client_waiting_for_ack() &&
-                    u.get_moves() > 0 && cata_mp::ms_since_last_grant() > 500 ) {
-                    cata_mp::mp_log( "[cdda-mp] auto-wait: idle " +
-                                     std::to_string( cata_mp::ms_since_last_grant() ) + "ms" );
-                    cata_mp::client_dispatch_wait_for_activity( activity_id() );
+                if( cata_mp::is_client_mode() ) {
+                    const int ms = cata_mp::ms_since_last_grant();
+                    const bool ack = cata_mp::is_client_waiting_for_ack();
+                    if( ms > 100 ) {
+                        cata_mp::mp_log( "[cdda-mp] auto-wait check: ms=" + std::to_string( ms ) +
+                                         " ack=" + std::to_string( ack ) +
+                                         " moves=" + std::to_string( u.get_moves() ) );
+                    }
+                    if( !ack && u.get_moves() > 0 && ms > 500 ) {
+                        cata_mp::mp_log( "[cdda-mp] auto-wait: idle " + std::to_string( ms ) + "ms" );
+                        cata_mp::client_dispatch_wait_for_activity( activity_id() );
+                    }
                 }
 
                 // Pump MP events after each host action so the remote player's
