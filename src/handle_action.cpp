@@ -2686,6 +2686,21 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 pickup();
             }
 
+            // pickup() only starts an ACT_PICKUP activity; it doesn't run it.
+            // Force it to complete now so the tile diff below captures the removed
+            // items before the next tile sync can clear them and crash the activity.
+            {
+                static const activity_id ACT_PICKUP_ID( "ACT_PICKUP" );
+                if( player_character.activity.id() == ACT_PICKUP_ID ) {
+                    const int saved_moves = player_character.get_moves();
+                    player_character.set_moves( 100000 );
+                    while( player_character.activity.id() == ACT_PICKUP_ID ) {
+                        player_character.activity.do_turn( player_character );
+                    }
+                    player_character.set_moves( saved_moves );
+                }
+            }
+
             // Diff: find which type IDs were removed from the tile.
             std::vector<std::string> after_types;
             for( const item &it : here.i_at( pos ) ) {
@@ -2788,6 +2803,20 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             player_character.worn.inv_dump( worn_before );
 
             wear();
+
+            // wear() only starts an ACT_WEAR activity; force it to complete now so the
+            // worn-list diff below is accurate and tile sync can't race the activity.
+            {
+                static const activity_id ACT_WEAR_ID( "ACT_WEAR" );
+                if( player_character.activity.id() == ACT_WEAR_ID ) {
+                    const int saved_moves = player_character.get_moves();
+                    player_character.set_moves( 100000 );
+                    while( player_character.activity.id() == ACT_WEAR_ID ) {
+                        player_character.activity.do_turn( player_character );
+                    }
+                    player_character.set_moves( saved_moves );
+                }
+            }
 
             std::vector<item *> worn_after;
             player_character.worn.inv_dump( worn_after );
