@@ -158,6 +158,8 @@
 #include "monster.h"
 #include "monstergenerator.h"
 #include "move_mode.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "mtype.h"
 #include "npc.h"
 #include "npctrade.h"
@@ -3536,7 +3538,7 @@ void game::draw_ter( const tripoint_bub_ms &center, const bool looking, const bo
                   point( POSX - pos.x(), POSY - pos.y() ), c_white, 'X' );
     }
 
-    if( u.controlling_vehicle && !looking ) {
+    if( ( u.controlling_vehicle || cata_mp::client_ctrl_veh() ) && !looking ) {
         draw_veh_dir_indicator( false );
         draw_veh_dir_indicator( true );
     }
@@ -3549,6 +3551,30 @@ std::optional<tripoint_rel_ms> game::get_veh_dir_indicator_location( bool next )
     if( !get_option<bool>( "VEHICLE_DIR_INDICATOR" ) ) {
         return std::nullopt;
     }
+
+    // MP client driving: avatar occupies a vehicle tile, so try avatar position first.
+    // Fall back to server-supplied abs pos in case avatar is not on a part tile.
+    if( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
+        vehicle *veh = nullptr;
+        if( const optional_vpart_position vp = here.veh_at( u.pos_bub() ) ) {
+            veh = &vp->vehicle();
+        } else {
+            const tripoint_abs_ms vabs = cata_mp::client_ctrl_veh_abs();
+            if( here.inbounds( vabs ) ) {
+                if( const optional_vpart_position cvp = here.veh_at( here.get_bub( vabs ) ) ) {
+                    veh = &cvp->vehicle();
+                }
+            }
+        }
+        if( !veh ) {
+            return std::nullopt;
+        }
+        rl_vec2d face = next ? veh->dir_vec() : veh->face_vec();
+        float r = 10.0f;
+        return tripoint_rel_ms( static_cast<int>( r * face.x ), static_cast<int>( r * face.y ),
+                                u.posz() );
+    }
+
     const optional_vpart_position vp = here.veh_at( u.pos_bub() );
     if( !vp ) {
         return std::nullopt;

@@ -47,6 +47,8 @@
 #include "ret_val.h"
 #include "rng.h"
 #include "smart_controller_ui.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "sounds.h"
 #include "string_formatter.h"
 #include "translations.h"
@@ -60,6 +62,24 @@
 #include "vpart_position.h"
 #include "vpart_range.h"
 #include "weather.h"
+
+// MP: send a vehicle control action from the interact-menu lambdas, mirroring
+// the logic in handle_action.cpp's mp_dispatch local lambda.
+static void veh_mp_dispatch( const std::string &base_json )
+{
+    Character &pc = get_player_character();
+    const std::string full = base_json.substr( 0, base_json.size() - 1 )
+                             + ",\"move_mode\":\"" + pc.move_mode.str() + "\""
+                             + "}";
+    const std::string enriched = cata_mp::client_enrich_action( full );
+    if( pc.get_moves() > 0 && !cata_mp::is_client_waiting_for_ack() ) {
+        cata_mp::client_send( enriched );
+        pc.set_moves( 0 );
+        cata_mp::client_mark_action_sent();
+    } else {
+        cata_mp::client_queue_action( enriched );
+    }
+}
 
 static const activity_id ACT_HEATING( "ACT_HEATING" );
 static const activity_id ACT_REPAIR_ITEM( "ACT_REPAIR_ITEM" );
@@ -2029,7 +2049,8 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
                                          ? has_parts( {"CTRL_ELECTRONIC", "REMOTE_CONTROL"} ).any()
                                          : has_part_here( "CTRL_ELECTRONIC" );
     const bool controls_here = has_part_here( "CONTROLS" );
-    const bool player_is_driving = get_player_character().controlling_vehicle;
+    const bool player_is_driving = get_player_character().controlling_vehicle
+                                   || ( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() );
     const bool player_inside = here->veh_at( get_player_character().pos_abs() ) ?
                                &here->veh_at( get_player_character().pos_abs() )->vehicle() == this :
                                false;
@@ -2136,6 +2157,11 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
                 .hotkey( "TOGGLE_ENGINE" )
                 .skip_theft_check()
                 .on_submit( [this, here] {
+                    if( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
+                        veh_mp_dispatch( "{\"type\":\"action\",\"action\":\"stop_engine\"}" );
+                        cata_mp::set_client_ctrl_veh( false );
+                        return;
+                    }
                     if( engine_on && has_engine_type_not( fuel_type_muscle, true ) )
                     {
                         add_msg( _( "You turn the engine off and let go of the controls." ) );
@@ -2172,13 +2198,24 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
             .skip_locked_check() // in case player somehow controls locked vehicle
             .skip_theft_check()
             .on_submit( [] {
+                if( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
+                    veh_mp_dispatch( "{\"type\":\"action\",\"action\":\"control_vehicle\"}" );
+                    cata_mp::set_client_ctrl_veh( false );
+                    return;
+                }
                 get_player_character().controlling_vehicle = false;
                 add_msg( _( "You let go of the controls." ) );
             } );
 
             menu.add( _( "Pull handbrake" ) )
             .hotkey( "PULL_HANDBRAKE" )
-            .on_submit( [here] { handbrake( *here ); } );
+            .on_submit( [here] {
+                if( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
+                    veh_mp_dispatch( "{\"type\":\"action\",\"action\":\"handbrake\"}" );
+                    return;
+                }
+                handbrake( *here );
+            } );
         }
 
         const bool has_engine_or_fuel_controls = ( engines.size() > 1 ) ||
@@ -2280,7 +2317,13 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
             menu.add( _( "Honk horn" ) )
             .skip_locked_check()
             .hotkey( "SOUND_HORN" )
-            .on_submit( [this, here] { honk_horn( *here ); } );
+            .on_submit( [this, here] {
+                if( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
+                    veh_mp_dispatch( "{\"type\":\"action\",\"action\":\"honk\"}" );
+                    return;
+                }
+                honk_horn( *here );
+            } );
         }
     }
 

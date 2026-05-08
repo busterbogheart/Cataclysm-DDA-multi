@@ -6647,8 +6647,25 @@ void vehicle::gain_moves( map &here )
         of_turn = .001;
     }
     of_turn_carry = 0;
-    // cruise control TODO: enable for NPC?
-    if( ( pl_control || is_following || is_patrolling ) && cruise_velocity != velocity ) {
+    // Also apply cruise control when an NPC is at the controls (covers MP proxy player).
+    bool npc_ctrl = false;
+    if( !pl_control ) {
+        creature_tracker &creatures = get_creature_tracker();
+        for( int pidx = 0; pidx < static_cast<int>( parts.size() ); ++pidx ) {
+            const vehicle_part &vp = parts[pidx];
+            if( vp.removed || !vp.info().has_flag( VPFLAG_CONTROLS ) ) {
+                continue;
+            }
+            const tripoint_bub_ms ppos = bub_part_pos( here, pidx );
+            if( const Character *ch = creatures.creature_at<Character>( ppos, true ) ) {
+                if( ch->controlling_vehicle ) {
+                    npc_ctrl = true;
+                    break;
+                }
+            }
+        }
+    }
+    if( ( pl_control || npc_ctrl || is_following || is_patrolling ) && cruise_velocity != velocity ) {
         thrust( here, cruise_velocity > velocity ? 1 : -1 );
     } else if( is_rotorcraft( here ) && velocity == 0 ) {
         // rotorcraft uses fuel for hover

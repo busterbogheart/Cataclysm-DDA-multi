@@ -1,5 +1,6 @@
 #include "mp_gamestate.h"
 #include "mp_client_conn.h"
+#include "input.h"
 #include "mp_queue.h"
 #include "mp_server.h"
 
@@ -12,6 +13,7 @@
 #include "creature_tracker.h"
 #include "cursesdef.h"
 #include "game.h"
+#include "gates.h"
 #include "item.h"
 #include "itype.h"
 #include "json.h"
@@ -38,6 +40,8 @@
 #include "player_activity.h"
 #include "type_id.h"
 #include "ui_manager.h"
+#include "rng.h"
+#include "units.h"
 #include "units_utility.h"
 #include "vehicle.h"
 #ifdef TILES
@@ -123,6 +127,10 @@ static std::unordered_map<uint32_t, tripoint_abs_ms> g_client_veh_pos;
 // are skipped by monmove since is_remote_player() returns true).
 static int g_remote_moves = 0;
 
+// Server: true while wait_for_client_action() is blocking.  Used by the HUD
+// strip so it shows red (can't act) even when host moves > 0.
+static bool g_host_waiting_for_client = false;
+
 // Server: message log index at last state broadcast — used to forward only NEW messages.
 static size_t g_last_forwarded_msg_count = 0;
 
@@ -154,6 +162,13 @@ static bool g_server_died = false;
 // and must be ignored — otherwise TCP-buffered grants re-unlock the client
 // before the server has processed the action.
 static bool g_client_waiting_for_ack = false;
+// Client: true when the server's proxy NPC is at vehicle controls.
+// Set by apply_state_packet() from the "client_ctrl_veh" field.
+// handle_action uses this to route movement keys to pldrive.
+static bool g_client_ctrl_veh = false;
+// Client: absolute position of the controlled vehicle (root tile).
+// Set alongside g_client_ctrl_veh from "client_veh_pos" in the state packet.
+static tripoint_abs_ms g_client_ctrl_veh_abs{ 0, 0, 0 };
 // Timestamp of when the ack guard was set. Used to break deadlocks where the
 // server never sends moves<=0 (e.g. after reconnect with a stale ack flag).
 static std::chrono::steady_clock::time_point g_ack_set_time;
@@ -324,7 +339,8 @@ struct mp_strip_t {
         const bool in_wait_act = pact && (
             pact.id() == s_act_wait || pact.id() == s_act_wait_stamina ||
             pact.id() == s_act_wait_weather || pact.id() == s_act_wait_npc );
-        const bool go = get_avatar().get_moves() > 0 && !in_wait_act;
+        const bool go = get_avatar().get_moves() > 0 && !in_wait_act
+                        && !g_host_waiting_for_client;
         const nc_color c = go ? c_light_green : c_red;
         for( int y = 0; y < TERMY; y++ ) {
             mvwprintz( win, point( 0, y ), c, "\xe2\x96\x88" );
@@ -694,6 +710,7 @@ static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
                 p += 3;
             }
         }
+        mp_log( "[cdda-mp] flush_action_msgs queued: " + out );
         g_action_msgs_pending.push_back( out );
     }
 }
@@ -798,7 +815,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 const itype_id wid( wielded_str );
                 if( wid.is_valid() ) {
                     remote->set_wielded_item( item( wid ) );
-                    std::cout << "[cdda-mp] Set wielded weapon: " << wielded_str << std::endl;
+                    mp_log( "[cdda-mp] worn_sync: set wielded=" + wielded_str );
                 }
             }
             // Apply all appearance mutations (skin tone, eye color, hair style/color,
@@ -941,26 +958,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 std::to_string( abs.z() ) );
                         m.i_clear( bub );
                         for( const JsonValue &iv : to.get_array( "items" ) ) {
-                            JsonObject io = iv.get_object();
-                            io.allow_omitted_members();
-                            const itype_id tid( io.get_string( "t", "" ) );
-                            if( tid.is_empty() || !tid.is_valid() ) {
-                                continue;
-                            }
-                            item new_item( tid, calendar::turn );
-                            if( io.has_string( "v" ) ) {
-                                new_item.set_itype_variant( io.get_string( "v" ) );
-                            }
-                            if( io.has_int( "c" ) ) {
-                                new_item.charges = io.get_int( "c" );
-                            }
-                            if( io.has_int( "bat" ) && !new_item.ammo_default().is_null() ) {
-                                new_item.ammo_set( new_item.ammo_default(), io.get_int( "bat" ) );
-                            } else if( new_item.type->light_emission > 0 && new_item.is_tool()
-                                       && !new_item.ammo_default().is_null() ) {
-                                new_item.ammo_set( new_item.ammo_default(), -1 );
-                            }
-                            m.add_item( bub, new_item );
+                            try {
+                                item new_item;
+                                JsonObject io = iv.get_object();
+                                io.allow_omitted_members();
+                                new_item.deserialize( io );
+                                if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
+                                    m.add_item( bub, std::move( new_item ) );
+                                }
+                            } catch( const JsonError & ) {}
                         }
                         g_tile_baseline.erase( abs );
                     }
@@ -1064,22 +1070,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     + " has_items=" + std::string( jo.has_array( "items" ) ? "yes" : "NO" ) );
             if( jo.has_array( "items" ) ) {
                 for( const JsonValue &iv : jo.get_array( "items" ) ) {
-                    JsonObject io = iv.get_object();
-                    io.allow_omitted_members();
-                    const itype_id tid( io.get_string( "t", "" ) );
-                    if( tid.is_valid() ) {
-                        item dropped( tid );
-                        const std::string var = io.get_string( "v", "" );
-                        if( !var.empty() ) {
-                            dropped.set_itype_variant( var );
+                    try {
+                        item dropped;
+                        JsonObject io = iv.get_object();
+                        io.allow_omitted_members();
+                        dropped.deserialize( io );
+                        if( !dropped.typeId().is_empty() && dropped.typeId().is_valid() ) {
+                            mp_log( "[cdda-mp] drop: added " + dropped.typeId().str()
+                                    + " at " + std::to_string( bub_pos.x() ) + ","
+                                    + std::to_string( bub_pos.y() ) );
+                            here.add_item( bub_pos, std::move( dropped ) );
+                            g_tile_baseline.erase( abs_pos );
                         }
-                        here.add_item( bub_pos, std::move( dropped ) );
-                        // Erase baseline so the next tile_changes scan always
-                        // picks up this newly added item.
-                        g_tile_baseline.erase( abs_pos );
-                        mp_log( "[cdda-mp] drop: added " + tid.str()
-                                + " at " + std::to_string( bub_pos.x() ) + ","
-                                + std::to_string( bub_pos.y() ) );
+                    } catch( const JsonError &e ) {
+                        mp_log( "[cdda-mp] drop: item deserialize error: " + std::string( e.what() ) );
                     }
                 }
             }
@@ -1111,7 +1115,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 if( is_open ) {
                     m.open_door( *remote, bub, true, false );
                 } else {
-                    m.close_door( bub, true, false );
+                    // doors::close_door handles vehicle parts (next_part_to_close →
+                    // veh->close()) as well as regular terrain/furniture doors.
+                    // map::close_door alone skips vehicle doors entirely.
+                    doors::close_door( m, *remote, bub );
                 }
             }
         } catch( const JsonError &e ) {
@@ -1236,6 +1243,224 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         if( srv ) {
             srv->post_broadcast( serialize_remote_player_state() + "\n" );
         }
+        return;
+    }
+
+    // Control vehicle — toggle the proxy NPC's vehicle control state.
+    // Mirrors game::control_vehicle() for the client's proxy.
+    {
+        const bool cv_match = msg.find( "\"action\":\"control_vehicle\"" ) != std::string::npos;
+        mp_log( "[cdda-mp] DEBUG ctrl_veh check: match=" + std::to_string( cv_match )
+                + " msg[0..60]=" + msg.substr( 0, 60 ) );
+    }
+    if( msg.find( "\"action\":\"control_vehicle\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] control_vehicle: HANDLER ENTERED controlling=" +
+                std::to_string( remote->controlling_vehicle ) );
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        mp_log( "[cdda-mp] control_vehicle: proxy bub=(" + std::to_string( bub.x() ) + "," +
+                std::to_string( bub.y() ) + "," + std::to_string( bub.z() ) + ")" );
+        const optional_vpart_position vp_check = here.veh_at( bub );
+        mp_log( "[cdda-mp] control_vehicle: veh_at=" + std::to_string( static_cast<bool>( vp_check ) ) );
+        if( remote->controlling_vehicle ) {
+            // Already controlling — give up control and unboard.
+            remote->controlling_vehicle = false;
+            here.unboard_vehicle( bub );
+            remote->in_vehicle = false;
+            mp_log( "[cdda-mp] control_vehicle: proxy released controls" );
+            // Host log: NPC-form. Client: direct push (correct grammar, first-person).
+            add_msg( _( "%s lets go of the controls." ), remote->name );
+            g_action_msgs_pending.push_back( _( "You let go of the controls." ) );
+        } else if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            const int ctrl_idx = veh.avail_part_with_feature( vp->mount_pos(), "CONTROLS" );
+            mp_log( "[cdda-mp] control_vehicle: ctrl_idx=" + std::to_string( ctrl_idx ) +
+                    " engine_on=" + std::to_string( veh.engine_on ) );
+            if( ctrl_idx >= 0 ) {
+                remote->in_vehicle = true;
+                here.board_vehicle( bub, remote );  // register as passenger so vehicle moves NPC
+                const bool engine_was_off = !veh.engine_on;
+                if( engine_was_off ) {
+                    // start_engines() with an NPC driver assigns a cranking activity whose
+                    // finish() uses get_player_character() to re-find the vehicle — it
+                    // never finds it for an NPC proxy and the engine stays off.
+                    // Bypass the activity: directly enable and start each engine, mirroring
+                    // what start_engines_activity_actor::finish() does internally.
+                    for( const int p : veh.engines ) {
+                        vehicle_part &vpart = veh.part( p );
+                        if( !vpart.is_broken() ) {
+                            vpart.enabled = true;
+                        }
+                    }
+                    int started = 0;
+                    for( const int p : veh.engines ) {
+                        vehicle_part &vpart = veh.part( p );
+                        if( veh.is_engine_on( vpart ) && veh.start_engine( here, vpart ) ) {
+                            started++;
+                        }
+                    }
+                    veh.engine_on = started > 0;
+                    mp_log( "[cdda-mp] control_vehicle: direct engine start, started=" +
+                            std::to_string( started ) + " engine_on=" + std::to_string( veh.engine_on ) );
+                }
+                if( veh.engine_on ) {
+                    remote->controlling_vehicle = true;
+                    mp_log( "[cdda-mp] control_vehicle: proxy took/started+took control of " + veh.name );
+                    // Host log: NPC-form. Client: direct push (correct grammar, first-person).
+                    add_msg( _( "%s takes control of the %s." ), remote->name, veh.name );
+                    g_action_msgs_pending.push_back(
+                        string_format( _( "You take control of the %s." ), veh.name ) );
+                    if( engine_was_off ) {
+                        add_msg( _( "The %s's engine starts up." ), veh.name );
+                        g_action_msgs_pending.push_back(
+                            string_format( _( "The %s's engine starts up." ), veh.name ) );
+                    }
+                } else {
+                    mp_log( "[cdda-mp] control_vehicle: engine failed to start" );
+                    add_msg( m_bad, _( "%s can't start the %s's engine." ), remote->name, veh.name );
+                    g_action_msgs_pending.push_back(
+                        string_format( _( "You can't start the %s's engine." ), veh.name ) );
+                }
+            } else {
+                mp_log( "[cdda-mp] control_vehicle: no controls at proxy position" );
+                add_msg( m_info, _( "%s can't drive from here — no controls." ), remote->name );
+                g_action_msgs_pending.push_back( _( "You can't drive from here — no controls." ) );
+            }
+        } else {
+            mp_log( "[cdda-mp] control_vehicle: no vehicle at proxy position" );
+            add_msg( m_info, _( "No vehicle here for %s to control." ), remote->name );
+            g_action_msgs_pending.push_back( _( "No vehicle here to control." ) );
+        }
+        // Don't use flush_action_msgs here — messages are pushed directly above
+        // to avoid grammar issues from NPC-name→"You" substitution ("takes"→"take").
+        g_last_forwarded_msg_count = Messages::size();
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
+    // Pldrive — client is at vehicle controls, translate directional input to
+    // vehicle::pldrive() exactly as handle_action.cpp does in single-player.
+    if( msg.find( "\"action\":\"pldrive\"" ) != std::string::npos ) {
+        int dx = 0;
+        int dy = 0;
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            dx = jo.get_int( "dx", 0 );
+            dy = jo.get_int( "dy", 0 );
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] pldrive parse error: " + std::string( e.what() ) );
+        }
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            veh.pldrive( here, *remote, dx, dy, 0 );
+            mp_log( "[cdda-mp] pldrive: dx=" + std::to_string( dx )
+                    + " dy=" + std::to_string( dy )
+                    + " veh=" + veh.name
+                    + " vel=" + std::to_string( veh.velocity )
+                    + " cruise=" + std::to_string( veh.cruise_velocity ) );
+        } else {
+            // No longer at a vehicle — clear control flag so the client gets corrected.
+            remote->controlling_vehicle = false;
+            mp_log( "[cdda-mp] pldrive: no vehicle at proxy pos, cleared control flag" );
+        }
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        flush_action_msgs( pre_action_msg, remote->name );
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
+    // Handbrake — client pressed smash key while in vehicle control mode.
+    if( msg.find( "\"action\":\"handbrake\"" ) != std::string::npos ) {
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            mp_log( "[cdda-mp] handbrake: veh=" + veh.name
+                    + " vel=" + std::to_string( veh.velocity ) );
+            add_msg( _( "%s pulls a handbrake." ), remote->name );
+            g_action_msgs_pending.push_back( _( "You pull a handbrake." ) );
+            veh.cruise_velocity = 0;
+            if( veh.last_turn != 0_degrees &&
+                rng( 15, 60 ) * 100 < std::abs( veh.velocity ) ) {
+                veh.skidding = true;
+                add_msg( m_warning, _( "%s loses control of %s." ), remote->name, veh.name );
+                g_action_msgs_pending.push_back( string_format( _( "You lose control of %s." ),
+                                                 veh.name ) );
+                veh.turn( veh.last_turn > 0_degrees ? 60_degrees : -60_degrees );
+            } else {
+                int braking_power = std::abs( veh.velocity ) / 2 + 10 * 100;
+                if( std::abs( veh.velocity ) < braking_power ) {
+                    veh.stop( here );
+                } else {
+                    int sgn = veh.velocity > 0 ? 1 : -1;
+                    veh.velocity = sgn * ( std::abs( veh.velocity ) - braking_power );
+                }
+            }
+        }
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        g_last_forwarded_msg_count = Messages::size();
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
+    // Stop engine — client selected "Stop engine" from driving menu.
+    if( msg.find( "\"action\":\"stop_engine\"" ) != std::string::npos ) {
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            veh.engine_on = false;
+            for( const int p : veh.engines ) {
+                veh.part( p ).enabled = false;
+            }
+            veh.cruise_velocity = 0;
+            mp_log( "[cdda-mp] stop_engine: engines stopped for " + veh.name );
+            // Host log: NPC-form. Client: direct push (correct grammar, first-person).
+            add_msg( _( "%s turns off the engine and lets go of the controls." ), remote->name );
+            g_action_msgs_pending.push_back(
+                string_format( _( "You turn the engine off and let go of the controls." ) ) );
+        }
+        remote->controlling_vehicle = false;
+        here.unboard_vehicle( bub );
+        remote->in_vehicle = false;
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        g_last_forwarded_msg_count = Messages::size();
+        server *srv = get_active_server();
+        if( srv ) { srv->post_broadcast( serialize_remote_player_state() + "\n" ); }
+        return;
+    }
+
+    // Honk horn.
+    if( msg.find( "\"action\":\"honk\"" ) != std::string::npos ) {
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            veh.honk_horn( here );
+        }
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        flush_action_msgs( pre_action_msg, remote->name );
+        server *srv = get_active_server();
+        if( srv ) { srv->post_broadcast( serialize_remote_player_state() + "\n" ); }
         return;
     }
 
@@ -1387,6 +1612,7 @@ void wait_for_client_action()
     if( !remote_player_connected ) {
         return;
     }
+    g_host_waiting_for_client = true;
     using namespace std::chrono_literals;
     const auto t_start = std::chrono::steady_clock::now();
     auto deadline = t_start + 10s;
@@ -1396,27 +1622,37 @@ void wait_for_client_action()
             break;
         }
         process_mp_events();
-        ensure_mp_hud();
-        // Let the host use UI actions (map, inventory, zoom, etc.) while waiting.
-        // do_regular_action() blocks all world-mutating actions when hosting with moves<=0.
-        // Track how long mp_poll_input blocks so modal UI time (menu browsing, help,
-        // options screens) doesn't count against the 10-second disconnect deadline.
-        const auto poll_start = std::chrono::steady_clock::now();
-        g->mp_poll_input();
-        const auto poll_end = std::chrono::steady_clock::now();
-        const auto poll_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 poll_end - poll_start ).count();
-        // Normal idle poll takes ~1 second (input_context timeout).  Anything longer
-        // means the host was in a modal — extend the deadline by the excess so the
-        // disconnect timeout only measures true idle time.
-        if( poll_ms > 1500 ) {
-            deadline += poll_end - poll_start;
+        if( g_client_acted_this_turn ) {
+            break;
         }
+        ensure_mp_hud();
+        // Pump SDL events and dispatch any pending input so the host can use
+        // UI keys (@, ?, map, etc.) while waiting for the client.  The guard in
+        // handle_action() allows only pure-UI actions when moves<=0, so world
+        // state cannot be mutated from here.
+        inp_mngr.pump_events();
+        g->mp_poll_input();
         std::this_thread::sleep_for( 16ms );
     }
+    g_host_waiting_for_client = false;
     g_wait_elapsed_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_start ).count() );
+
+    // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
+    // before monmove() / process_vehicles() runs.  vehicle_move.cpp line ~892 skips
+    // collision for any character with in_vehicle==true, so without this the vehicle
+    // rams into its own passenger each time it moves.
+    if( remote_player_connected ) {
+        npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+        if( remote ) {
+            const optional_vpart_position ovp = get_map().veh_at( remote->pos_bub() );
+            remote->in_vehicle = static_cast<bool>( ovp );
+            if( !ovp ) {
+                remote->controlling_vehicle = false;
+            }
+        }
+    }
 }
 
 void set_last_monmove_ms( int ms )
@@ -1930,8 +2166,18 @@ static bool apply_one_state_message( const std::string &msg )
         }
 
         // Sync authoritative client stats from the server's NPC proxy.
-        // The server is the source of truth for stamina and move_mode — it drains
-        // proxy stamina during movement and auto-transitions run→walk on exhaustion.
+        // The server is the source of truth for stamina, move_mode, and vehicle control —
+        // it drains proxy stamina during movement and manages controlling_vehicle.
+        g_client_ctrl_veh = jo.get_bool( "client_ctrl_veh", false );
+        if( jo.has_object( "client_veh_pos" ) ) {
+            JsonObject cvp = jo.get_object( "client_veh_pos" );
+            cvp.allow_omitted_members();
+            g_client_ctrl_veh_abs = tripoint_abs_ms{
+                cvp.get_int( "x" ), cvp.get_int( "y" ), cvp.get_int( "z" )
+            };
+        } else {
+            g_client_ctrl_veh_abs = tripoint_abs_ms{ 0, 0, 0 };
+        }
         if( jo.has_string( "client_move_mode" ) ) {
             const move_mode_id mode_id( jo.get_string( "client_move_mode" ) );
             get_avatar().move_mode = mode_id;
@@ -1943,7 +2189,9 @@ static bool apply_one_state_message( const std::string &msg )
         // Display forwarded combat messages from the host (hits, misses, kills).
         if( jo.has_array( "msgs" ) ) {
             for( const JsonValue &mv : jo.get_array( "msgs" ) ) {
-                add_msg( m_neutral, mv.get_string() );
+                const std::string txt = mv.get_string();
+                mp_log( "[cdda-mp] client recv msg: " + txt );
+                add_msg( m_neutral, txt );
             }
         }
 
@@ -1988,6 +2236,7 @@ void client_process_incoming()
     }
     // Auto-fire any queued action now that the server has restored our moves.
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
+        mp_log( "[cdda-mp] auto-fire: pending=" + g_pending_action.substr( 0, 60 ) );
         // Mirror SP: the activity loop consumes moves before handle_action can run.
         // If we're now in a wait activity, discard the stale queued action instead of
         // sending it — otherwise catching breath auto-dispatches a pre-activity move.
@@ -2002,6 +2251,7 @@ void client_process_incoming()
             g_pending_action.clear();
             get_avatar().set_moves( 0 );
         } else {
+            mp_log( "[cdda-mp] auto-fire: SENDING" );
             client_send( g_pending_action );
             g_pending_action.clear();
             get_avatar().set_moves( 0 );
@@ -2048,6 +2298,7 @@ static std::string build_client_tile_changes( int radius = 10 )
             }
 
             // Items — baseline-gated so we only send when the tile changes.
+            // Full item serialize() is used so nested pocket contents are included.
             std::string items_sig;
             std::string items_json = "[]";
             auto items = m.i_at( bub );
@@ -2055,27 +2306,13 @@ static std::string build_client_tile_changes( int radius = 10 )
                 items_json = "[";
                 bool ifirst = true;
                 for( const item &it : items ) {
-                    const std::string var_str = it.has_itype_variant()
-                                               ? it.itype_variant().id : "";
-                    const int bat = it.ammo_remaining();
-                    items_sig += it.typeId().str() + ':' + var_str + ':'
-                                 + std::to_string( it.charges ) + ':'
-                                 + std::to_string( bat ) + ',';
+                    const std::string item_json = serialize( it );
+                    items_sig += item_json + ',';
                     if( !ifirst ) {
                         items_json += ',';
                     }
                     ifirst = false;
-                    items_json += "{\"t\":\"" + it.typeId().str() + "\"";
-                    if( !var_str.empty() ) {
-                        items_json += ",\"v\":\"" + var_str + "\"";
-                    }
-                    if( it.charges > 0 ) {
-                        items_json += ",\"c\":" + std::to_string( it.charges );
-                    }
-                    if( bat > 0 ) {
-                        items_json += ",\"bat\":" + std::to_string( bat );
-                    }
-                    items_json += "}";
+                    items_json += item_json;
                 }
                 items_json += "]";
             }
@@ -2087,7 +2324,7 @@ static std::string build_client_tile_changes( int radius = 10 )
                     mp_log( "[cdda-mp] client tile items @ " +
                             std::to_string( abs.x() ) + "," +
                             std::to_string( abs.y() ) + "," +
-                            std::to_string( abs.z() ) + " : " + items_sig );
+                            std::to_string( abs.z() ) );
                 }
             }
 
@@ -2277,6 +2514,24 @@ bool is_client_waiting_for_ack()
     return g_client_waiting_for_ack;
 }
 
+bool client_ctrl_veh()
+{
+    return g_client_ctrl_veh;
+}
+
+void set_client_ctrl_veh( bool b )
+{
+    g_client_ctrl_veh = b;
+    if( !b ) {
+        g_client_ctrl_veh_abs = tripoint_abs_ms{ 0, 0, 0 };
+    }
+}
+
+tripoint_abs_ms client_ctrl_veh_abs()
+{
+    return g_client_ctrl_veh_abs;
+}
+
 void client_set_autosmash_json( const std::string &json )
 {
     // Clear any existing auto-smash state so a new manual smash starts fresh.
@@ -2323,6 +2578,7 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             const std::string furn_str = m.furn( bub ).id().str();
 
             // Build item fingerprint and JSON simultaneously.
+            // Full item serialize() is used so nested pocket contents are included.
             std::string items_sig;
             std::string items_json = "[]";
             auto items = m.i_at( bub );
@@ -2330,27 +2586,13 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 items_json = "[";
                 bool ifirst = true;
                 for( const item &it : items ) {
-                    const std::string var_str = it.has_itype_variant()
-                                               ? it.itype_variant().id : "";
-                    const int bat = it.ammo_remaining();
-                    items_sig += it.typeId().str() + ':' + var_str + ':'
-                                 + std::to_string( it.charges ) + ':'
-                                 + std::to_string( bat ) + ',';
+                    const std::string item_json = serialize( it );
+                    items_sig += item_json + ',';
                     if( !ifirst ) {
                         items_json += ',';
                     }
                     ifirst = false;
-                    items_json += "{\"t\":\"" + it.typeId().str() + "\"";
-                    if( !var_str.empty() ) {
-                        items_json += ",\"v\":\"" + var_str + "\"";
-                    }
-                    if( it.charges > 0 ) {
-                        items_json += ",\"c\":" + std::to_string( it.charges );
-                    }
-                    if( bat > 0 ) {
-                        items_json += ",\"bat\":" + std::to_string( bat );
-                    }
-                    items_json += "}";
+                    items_json += item_json;
                 }
                 items_json += "]";
             }
@@ -2392,7 +2634,7 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 mp_log( "tile_delta items @ " +
                         std::to_string( abs.x() ) + "," +
                         std::to_string( abs.y() ) + "," +
-                        std::to_string( abs.z() ) + " : " + items_sig );
+                        std::to_string( abs.z() ) );
             }
             if( !fields_sig.empty() ) {
                 mp_log( "tile_delta fields @ " +
@@ -2500,31 +2742,16 @@ static void apply_tile_changes( JsonObject &jo )
             m.i_clear( bub );
             std::string applied;
             for( const JsonValue &iv : to.get_array( "items" ) ) {
-                JsonObject io = iv.get_object();
-                io.allow_omitted_members();
-                std::string type_str;
-                io.read( "t", type_str );
-                if( type_str.empty() ) {
-                    continue;
-                }
-                applied += type_str + ' ';
-                item new_item( itype_id( type_str ), calendar::turn );
-                const std::string var_str = io.get_string( "v", "" );
-                if( !var_str.empty() ) {
-                    new_item.set_itype_variant( var_str );
-                }
-                if( io.has_int( "c" ) ) {
-                    new_item.charges = io.get_int( "c" );
-                }
-                // Restore battery so light-emitting tools (phones, flashlights) work
-                // correctly — getlight_emit() returns 0 with no battery (CHARGEDIM check).
-                if( io.has_int( "bat" ) && !new_item.ammo_default().is_null() ) {
-                    new_item.ammo_set( new_item.ammo_default(), io.get_int( "bat" ) );
-                } else if( new_item.type->light_emission > 0 && new_item.is_tool()
-                           && !new_item.ammo_default().is_null() ) {
-                    new_item.ammo_set( new_item.ammo_default(), -1 );
-                }
-                m.add_item( bub, std::move( new_item ) );
+                try {
+                    item new_item;
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    new_item.deserialize( io );
+                    if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
+                        applied += new_item.typeId().str() + ' ';
+                        m.add_item( bub, std::move( new_item ) );
+                    }
+                } catch( const JsonError & ) {}
             }
             if( !applied.empty() ) {
                 mp_log( "[cdda-mp] apply_tile_changes: set items @ " +
@@ -2589,7 +2816,9 @@ static void apply_vehicle_sync( JsonObject &jo )
 
         // Find the vehicle object.  Primary: look at last-known abs position.
         vehicle *found = nullptr;
+        const char *find_method = "none";
         auto pos_it = g_client_veh_pos.find( nid );
+        const bool first_encounter = ( pos_it == g_client_veh_pos.end() );
         const tripoint_abs_ms search_abs = ( pos_it != g_client_veh_pos.end() )
                                            ? pos_it->second
                                            : new_abs;
@@ -2598,6 +2827,7 @@ static void apply_vehicle_sync( JsonObject &jo )
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == search_abs ) {
                     found = wv.v;
+                    find_method = "tracked_pos";
                     break;
                 }
             }
@@ -2607,6 +2837,7 @@ static void apply_vehicle_sync( JsonObject &jo )
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == new_abs ) {
                     found = wv.v;
+                    find_method = "server_pos";
                     break;
                 }
             }
@@ -2617,28 +2848,69 @@ static void apply_vehicle_sync( JsonObject &jo )
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->name == vname ) {
                     found = wv.v;
+                    find_method = "name";
                     break;
                 }
             }
         }
+
+        mp_log( "[cdda-mp] veh_sync nid=" + std::to_string( nid ) + " name=" + vname
+                + " found_by=" + find_method
+                + " target=(" + std::to_string( new_abs.x() ) + "," + std::to_string( new_abs.y() ) + ")"
+                + " face=" + std::to_string( face_deg )
+                + " vel=" + std::to_string( vel ) );
 
         if( !found ) {
             // Vehicle not in the client's reality bubble — don't update tracked position.
             continue;
         }
 
+        mp_log( "[cdda-mp] veh_sync found at=("
+                + std::to_string( found->pos_abs().x() ) + ","
+                + std::to_string( found->pos_abs().y() ) + ")"
+                + " cur_face=" + std::to_string( static_cast<int>(
+                      std::lround( to_degrees( found->face.dir() ) ) ) ) );
+
+        // Compute target facing.
+        const units::angle face_angle = units::from_degrees( face_deg );
+        const bool face_changed = ( found->face.dir() != face_angle );
+
+        // Always prime precalc[1] before any displacement.
+        // displace_vehicle → advance_precalc_mounts copies precalc[1] → precalc[0]
+        // then calls add_vehicle_to_cache.  Without this, a pure translation (no face
+        // change) would copy stale precalc[1] into the cache — wrong part positions.
+        found->pivot_rotation[1] = face_angle;
+        found->precalc_mounts( 1, face_angle, found->pivot_anchor[1] );
+        if( face_changed ) {
+            mp_log( "[cdda-mp] veh_sync: face change nid=" + std::to_string( nid )
+                    + " from=" + std::to_string( static_cast<int>(
+                          std::lround( to_degrees( found->face.dir() ) ) ) )
+                    + " to=" + std::to_string( face_deg ) );
+        }
+
         // Move vehicle to server-authoritative position if it has changed AND the
         // target is inside the client's loaded map.  Driving out of the bubble is
         // handled naturally when the submaps unload; we don't force the vehicle to
         // follow into territory the client hasn't loaded.
+        bool did_displace = false;
         if( found->pos_abs() != new_abs && m.inbounds( new_abs ) ) {
             const tripoint_bub_ms cur_bub = found->pos_bub( m );
             const tripoint_bub_ms new_bub = m.get_bub( new_abs );
             const tripoint_rel_ms dp      = new_bub - cur_bub;
             if( dp != tripoint_rel_ms::zero ) {
-                mp_log( "[cdda-mp] vehicle_sync: moving nid=" + std::to_string( nid )
+                mp_log( "[cdda-mp] veh_sync: displacing nid=" + std::to_string( nid )
                         + " dp=(" + std::to_string( dp.x() ) + "," + std::to_string( dp.y() ) + ")" );
-                m.displace_vehicle( *found, dp );
+                const bool ok = m.displace_vehicle( *found, dp );
+                mp_log( "[cdda-mp] veh_sync: displace result=" + std::to_string( ok )
+                        + " post_pos=(" + std::to_string( found->pos_abs().x() )
+                        + "," + std::to_string( found->pos_abs().y() ) + ")" );
+                did_displace = true;
+                // advance_precalc_mounts inside displace_vehicle already:
+                //   - cleared the rendering cache at old positions
+                //   - copied precalc[1] (new facing) → precalc[0]
+                //   - set pivot_rotation[0] = pivot_rotation[1] = face_angle
+                // add_vehicle_to_cache was called inside displace_vehicle with the
+                // correct new-facing part positions.
             }
         }
 
@@ -2646,13 +2918,42 @@ static void apply_vehicle_sync( JsonObject &jo )
         // at a location the client can see.  This keeps the lookup anchor valid.
         g_client_veh_pos[nid] = found->pos_abs();
 
-        // Update facing direction.
-        const units::angle face_angle = units::from_degrees( face_deg );
-        if( found->face.dir() != face_angle ) {
+        // Finalise facing state.  face.init() and move.init() must still be updated
+        // even when displace_vehicle already set pivot_rotation[0].
+        if( face_changed ) {
             found->face.init( face_angle );
             found->move.init( face_angle );
-            found->pivot_rotation[0] = found->pivot_rotation[1] = face_angle;
-            found->precalc_mounts( 0, face_angle, found->pivot_anchor[0] );
+            found->pivot_rotation[0] = face_angle;
+
+            if( !did_displace ) {
+                // No displacement occurred: advance_precalc_mounts was NOT called,
+                // so precalc[0] and the rendering cache still reflect the old facing.
+                // Clear the stale cache entries, recompute precalc[0], then re-add.
+                for( const vpart_reference &vpr : found->get_all_parts_with_fakes() ) {
+                    if( !vpr.part().removed ) {
+                        m.clear_vehicle_point_from_cache( found,
+                                                          found->bub_part_pos( m, vpr.part() ) );
+                    }
+                }
+                found->precalc_mounts( 0, face_angle, found->pivot_anchor[0] );
+                m.add_vehicle_to_cache( found );
+            }
+            // did_displace case: cache and precalc[0] are already correct (set by
+            // advance_precalc_mounts from the pre-set precalc[1]).
+        }
+
+        // First encounter: vehicle may have uninitialized precalc (debug spawn, save
+        // load without a physics tick, etc.).  Force a full rebuild so the render
+        // cache reflects correct part positions from the start.
+        if( first_encounter && !did_displace && !face_changed ) {
+            for( const vpart_reference &vpr : found->get_all_parts_with_fakes() ) {
+                if( !vpr.part().removed ) {
+                    m.clear_vehicle_point_from_cache( found,
+                                                      found->bub_part_pos( m, vpr.part() ) );
+                }
+            }
+            found->precalc_mounts( 0, found->face.dir(), found->pivot_anchor[0] );
+            m.add_vehicle_to_cache( found );
         }
 
         // Update velocity (server is authoritative for physics).
@@ -2664,6 +2965,45 @@ static void apply_vehicle_sync( JsonObject &jo )
         // Sync vehicle name — server is authoritative; overrides any local rename.
         if( !vname.empty() && found->name != vname ) {
             found->name = vname;
+        }
+
+        // Apply per-part state (open/enabled).  Parts are indexed by sequential
+        // position over get_all_parts() — same iteration order on both sides.
+        if( vo.has_array( "parts" ) ) {
+            // Build index → part pointer map using the same iteration as serialize.
+            std::vector<vehicle_part *> part_ptrs;
+            for( const vpart_reference &vpr : found->get_all_parts() ) {
+                part_ptrs.push_back( &vpr.part() );
+            }
+
+            bool parts_changed = false;
+            for( const JsonValue &pv : vo.get_array( "parts" ) ) {
+                JsonObject po = const_cast<JsonValue &>( pv ).get_object();
+                po.allow_omitted_members();
+                const int idx = po.get_int( "i", -1 );
+                if( idx < 0 || idx >= static_cast<int>( part_ptrs.size() ) ) {
+                    continue;
+                }
+                vehicle_part &vp = *part_ptrs[idx];
+                const bool new_open    = po.get_bool( "open",    vp.open );
+                const bool new_enabled = po.get_bool( "enabled", vp.enabled );
+                if( vp.open != new_open || vp.enabled != new_enabled ) {
+                    vp.open    = new_open;
+                    vp.enabled = new_enabled;
+                    parts_changed = true;
+                }
+            }
+            // Rebuild the render cache so part sprite changes are visible immediately.
+            if( parts_changed ) {
+                for( const vpart_reference &vpr : found->get_all_parts_with_fakes() ) {
+                    if( !vpr.part().removed ) {
+                        m.clear_vehicle_point_from_cache( found,
+                                                          found->bub_part_pos( m, vpr.part() ) );
+                    }
+                }
+                found->precalc_mounts( 0, found->face.dir(), found->pivot_anchor[0] );
+                m.add_vehicle_to_cache( found );
+            }
         }
     }
 }
@@ -3095,6 +3435,25 @@ std::string serialize_remote_player_state()
                 else if( c == '"' ) { vname_escaped += "\\\""; }
                 else { vname_escaped += c; }
             }
+            // Per-part state: open (doors/windows) and enabled (lights, etc.).
+            // Sequential index over get_all_parts() — host and client share the same
+            // save so the iteration order is identical on both sides.
+            std::string parts_json = "[";
+            bool psfirst = true;
+            int pidx = 0;
+            for( const vpart_reference &vpr : v->get_all_parts() ) {
+                const vehicle_part &vp = vpr.part();
+                if( !psfirst ) {
+                    parts_json += ',';
+                }
+                psfirst = false;
+                parts_json += "{\"i\":" + std::to_string( pidx )
+                              + ",\"open\":" + ( vp.open ? "true" : "false" )
+                              + ",\"enabled\":" + ( vp.enabled ? "true" : "false" ) + "}";
+                ++pidx;
+            }
+            parts_json += ']';
+
             if( !vfirst ) {
                 vehicles_json += ',';
             }
@@ -3105,7 +3464,8 @@ std::string serialize_remote_player_state()
                              + ",\"z\":" + std::to_string( vabs.z() )
                              + ",\"face\":" + std::to_string( face_deg )
                              + ",\"vel\":" + std::to_string( v->velocity )
-                             + ",\"name\":\"" + vname_escaped + "\"}";
+                             + ",\"name\":\"" + vname_escaped + "\""
+                             + ",\"parts\":" + parts_json + "}";
         }
     }
     vehicles_json += ']';
@@ -3131,6 +3491,17 @@ std::string serialize_remote_player_state()
            ",\"client_move_mode\":\"" + remote->move_mode.str() + "\""
            ",\"client_stamina\":" + std::to_string( remote->get_stamina() ) +
            ",\"client_stamina_max\":" + std::to_string( remote->get_stamina_max() ) +
+           ",\"client_ctrl_veh\":" + ( remote->controlling_vehicle ? "true" : "false" ) +
+           [&]() -> std::string {
+               if( !remote->controlling_vehicle ) { return ""; }
+               map &vmap = get_map();
+               const optional_vpart_position ovp = vmap.veh_at( remote->pos_bub() );
+               if( !ovp ) { return ""; }
+               const tripoint_abs_ms vabs = ovp->vehicle().pos_abs();
+               return ",\"client_veh_pos\":{\"x\":" + std::to_string( vabs.x() )
+                      + ",\"y\":" + std::to_string( vabs.y() )
+                      + ",\"z\":" + std::to_string( vabs.z() ) + "}";
+           }() +
            ",\"monsters\":" + monsters +
            ",\"tile_changes\":" + tile_changes +
            ",\"vehicles\":" + vehicles_json +

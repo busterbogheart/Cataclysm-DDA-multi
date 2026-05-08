@@ -1878,6 +1878,13 @@ static void fire()
         int sel = uilist( _( "Draw what?" ), options );
         if( sel >= 0 ) {
             actions[sel]();
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                you.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             return;
         }
     }
@@ -2431,6 +2438,41 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             const tripoint_bub_ms next_pos = offset_it != dir_to_offset.end()
                                              ? cur_pos + offset_it->second
                                              : cur_pos;
+
+            // Vehicle control mode: route movement to pldrive instead of walk.
+            // Must be checked BEFORE the impassable-wall check because vehicle body
+            // parts (front bumper, hood) appear as obstacles on the map — north key
+            // would hit the car's nose and short-circuit as a wall bump, preventing
+            // acceleration from ever reaching the server.
+            if( cata_mp::client_ctrl_veh() ) {
+                const int dx = offset_it != dir_to_offset.end() ? offset_it->second.x : 0;
+                const int dy = offset_it != dir_to_offset.end() ? offset_it->second.y : 0;
+                const std::string json = "{\"type\":\"action\",\"action\":\"pldrive\""
+                                         ",\"dx\":" + std::to_string( dx ) +
+                                         ",\"dy\":" + std::to_string( dy ) + "}";
+                mp_dispatch( json );
+                // Client-side prediction: update local vehicle turn/speed immediately
+                // so azimuth and cruise speed reflect the input without waiting for the
+                // server's next state broadcast.
+                {
+                    map &pvmap = get_map();
+                    const tripoint_abs_ms pvabs = cata_mp::client_ctrl_veh_abs();
+                    if( pvmap.inbounds( pvabs ) ) {
+                        const tripoint_bub_ms pvbub = pvmap.get_bub( pvabs );
+                        if( const optional_vpart_position pvp = pvmap.veh_at( pvbub ) ) {
+                            vehicle &pveh = pvp->vehicle();
+                            if( dx != 0 ) {
+                                pveh.turn( vehicles::steer_increment * dx );
+                            }
+                            if( dy != 0 ) {
+                                pveh.cruise_thrust( pvmap, -dy * 400 );
+                            }
+                        }
+                    }
+                }
+                return true;
+            }
+
             if( offset_it != dir_to_offset.end() ) {
                 if( here.impassable( next_pos ) ) {
                     const tripoint_abs_ms next_abs = here.get_abs( next_pos );
@@ -2540,6 +2582,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             }
             return true;
         }
+        // While driving, smash key = handbrake (mirrors SP handle_action case ACTION_SMASH).
+        if( act == ACTION_SMASH && cata_mp::client_ctrl_veh() ) {
+            mp_dispatch( "{\"type\":\"action\",\"action\":\"handbrake\"}" );
+            return true;
+        }
         // Pickup: let the normal single-player dialog run on the client.
         // Fall through — do NOT return here.
         if( act == ACTION_SMASH ) {
@@ -2591,8 +2638,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             if( !doorpos ) {
                 return true;
             }
-            // Optimistic local update.
-            get_map().close_door( *doorpos, true, false );
+            // Optimistic local update — use doors::close_door so vehicle parts work.
+            doors::close_door( get_map(), player_character, *doorpos );
             const tripoint_abs_ms abs_target = get_map().get_abs( *doorpos );
             const std::string json =
                 "{\"type\":\"action\",\"action\":\"close\""
@@ -2710,11 +2757,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                         items_json += ',';
                     }
                     first = false;
-                    items_json += "{\"t\":\"" + t + "\"";
-                    if( it.has_itype_variant() ) {
-                        items_json += ",\"v\":\"" + it.itype_variant().id + "\"";
-                    }
-                    items_json += "}";
+                    items_json += serialize( it );
                 }
             }
 
@@ -2728,6 +2771,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 // Force-send rather than queue: drop_in_direction may have consumed
                 // moves already, which would cause mp_dispatch to queue (not send),
                 // letting the server timeout and immediately re-grant moves.
+                cata_mp::client_resync_worn();
                 cata_mp::client_send( cata_mp::client_enrich_action( json ) );
                 player_character.set_moves( 0 );
                 cata_mp::client_mark_action_sent();
@@ -2789,6 +2833,35 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             } else {
                 // Grazer/ruminant ate terrain — still costs a server turn.
                 mp_dispatch( "{\"type\":\"action\",\"action\":\"eat\",\"item\":\"\"}" );
+            }
+            return true;
+        }
+
+        if( act == ACTION_CONTROL_VEHICLE ) {
+            if( cata_mp::client_ctrl_veh() ) {
+                // Already driving: show the same interact_with menu as SP.
+                // The vehicle is at client_ctrl_veh_abs(); find its controls tile
+                // so build_interact_menu sees controls_here=true.
+                map &vmap = get_map();
+                const tripoint_abs_ms vabs = cata_mp::client_ctrl_veh_abs();
+                if( vmap.inbounds( vabs ) ) {
+                    const tripoint_bub_ms vbub = vmap.get_bub( vabs );
+                    if( const optional_vpart_position ovp = vmap.veh_at( vbub ) ) {
+                        vehicle &veh = ovp->vehicle();
+                        // Find the first working CONTROLS part for the interact position.
+                        tripoint_bub_ms ctrl_pos = vbub;
+                        for( const vpart_reference &vpr : veh.get_avail_parts( "CONTROLS" ) ) {
+                            ctrl_pos = vpr.pos_bub( vmap );
+                            break;
+                        }
+                        veh.interact_with( &vmap, ctrl_pos );
+                    }
+                }
+            } else {
+                cata_mp::mp_log( "[cdda-mp] ^: client ctrl_veh hit, moves=" +
+                                 std::to_string( player_character.get_moves() ) +
+                                 " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+                mp_dispatch( "{\"type\":\"action\",\"action\":\"control_vehicle\"}" );
             }
             return true;
         }
@@ -3277,6 +3350,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             item_location loc = game_menus::inv::wield();
             if( loc ) {
                 player_character.wield( loc );
+                if( cata_mp::is_client_mode() ) {
+                    cata_mp::client_resync_worn();
+                    cata_mp::client_send( cata_mp::client_enrich_action(
+                        "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                    player_character.set_moves( 0 );
+                    cata_mp::client_mark_action_sent();
+                }
             }
             break;
         }
@@ -3306,13 +3386,29 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_THROW: {
+            const int pre_throw_moves = player_character.get_moves();
             item_location loc;
             avatar_action::plthrow( player_character, loc );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_throw_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
         }
 
         case ACTION_THROW_WIELDED: {
+            const int pre_throw_moves = player_character.get_moves();
             avatar_action::plthrow_wielded( player_character );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_throw_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
         }
 

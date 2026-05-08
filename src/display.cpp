@@ -40,6 +40,8 @@
 #include "type_id.h"
 #include "units.h"
 #include "units_utility.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "vehicle.h"
 #include "vpart_position.h"
 #include "weather.h"
@@ -138,6 +140,10 @@ vehicle *display::vehicle_driven( const Character &u )
 {
     vehicle *veh = g->remoteveh();
     if( veh == nullptr && u.in_vehicle ) {
+        veh = veh_pointer_or_null( get_map().veh_at( u.pos_bub() ) );
+    }
+    // MP client: proxy NPC is driving; find the vehicle at our position for HUD display.
+    if( veh == nullptr && cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
         veh = veh_pointer_or_null( get_map().veh_at( u.pos_bub() ) );
     }
     return veh;

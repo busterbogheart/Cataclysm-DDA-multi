@@ -127,6 +127,20 @@ character_id get_host_npc_character_id();
 // lightmap.cpp can inject the client's light at the correct position.
 character_id get_remote_player_npc_character_id();
 
+// Client only: true when the server has told us the proxy NPC is at vehicle controls.
+// handle_action uses this to route movement keys through pldrive instead of walk.
+bool client_ctrl_veh();
+
+// Client only: immediately set the local ctrl-veh flag (without waiting for the next
+// state packet).  Use when the client releases controls via the drive menu so that
+// movement keys stop routing to pldrive right away.
+void set_client_ctrl_veh( bool b );
+
+// Client only: absolute map position of the vehicle the client is currently
+// controlling, as broadcast by the server in the most recent state packet.
+// Returns a zero tripoint when not driving.
+tripoint_abs_ms client_ctrl_veh_abs();
+
 } // namespace cata_mp
 
 #endif // CATA_SRC_MP_GAMESTATE_H
