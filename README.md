@@ -8,16 +8,17 @@ Cataclysm: Dark Days Ahead is a turn-based survival game set in a post-apocalypt
 
 ## Contents
 
-- [Multiplayer (Co-op fork)](#multiplayer-co-op-fork)
-  - [Building (macOS)](#multiplayer-fork--building-macos)
-  - [Two-machine LAN quickstart](#two-machine-lan-quickstart)
-  - [Flag reference](#flag-reference)
-  - [What works / Current limitations](#what-works)
 - [Downloads](#downloads)
 - [Compile](#compile)
 - [Contribute](#contribute)
 - [Community](#community)
 - [FAQ](#frequently-asked-questions)
+- [Multiplayer (Co-op fork)](#multiplayer-co-op-fork)
+  - [Building (macOS)](#building-macos)
+  - [Two-machine LAN quickstart](#two-machine-lan-quickstart)
+  - [start-mp.sh modes](#start-mpsh-modes)
+  - [Flag reference](#flag-reference)
+  - [What works / Current limitations](#what-works)
 
 ## Downloads
 
@@ -62,14 +63,6 @@ sudo apt install cataclysm-dda-curses cataclysm-dda-sdl
 #### Flatpak
 
 Download from [Flathub](https://flathub.org/apps/org.cataclysmdda.CataclysmDDA).
-
-## Multiplayer Fork — Building (macOS)
-
-```sh
-make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
-```
-
-Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext`
 
 ## Compile
 
@@ -135,6 +128,16 @@ Please submit an issue on [our GitHub page](https://github.com/CleverRaven/Catac
 ## Multiplayer (Co-op fork)
 
 This fork adds experimental co-op multiplayer. One player hosts; a second player connects as a client. Both share the same simulated world in real time.
+
+---
+
+### Building (macOS)
+
+Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext`
+
+```sh
+make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+```
 
 ---
 
