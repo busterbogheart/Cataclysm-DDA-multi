@@ -172,6 +172,9 @@ static tripoint_abs_ms g_client_ctrl_veh_abs{ 0, 0, 0 };
 // Timestamp of when the ack guard was set. Used to break deadlocks where the
 // server never sends moves<=0 (e.g. after reconnect with a stale ack flag).
 static std::chrono::steady_clock::time_point g_ack_set_time;
+// Timestamp of when the server last granted moves (moves > 0 packet received).
+// Used by ms_since_last_grant() to auto-send "wait" when the player is idle.
+static std::chrono::steady_clock::time_point g_last_grant_time;
 
 // Server: set when the remote player has submitted at least one real action
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
@@ -2123,6 +2126,7 @@ static bool apply_one_state_message( const std::string &msg )
                 mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
                         " (applied)" );
                 get_avatar().set_moves( srv_moves );
+                g_last_grant_time = std::chrono::steady_clock::now();
             } else {
                 // srv_moves > 0 but waiting for ack → stale packet, skip.
                 mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
@@ -2512,6 +2516,13 @@ void client_mark_action_sent()
 bool is_client_waiting_for_ack()
 {
     return g_client_waiting_for_ack;
+}
+
+int ms_since_last_grant()
+{
+    using namespace std::chrono;
+    return static_cast<int>(
+        duration_cast<milliseconds>( steady_clock::now() - g_last_grant_time ).count() );
 }
 
 bool client_ctrl_veh()

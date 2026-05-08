@@ -668,6 +668,15 @@ bool do_turn()
                     u.action_taken();
                 }
 
+                // Auto-wait: if the client has had moves for > 500 ms without acting,
+                // the host is likely fast-forwarding through a long activity (wait, sleep,
+                // crafting).  Send "wait" so the host can advance without requiring a keypress.
+                if( cata_mp::is_client_mode() && !cata_mp::is_client_waiting_for_ack() &&
+                    u.get_moves() > 0 && cata_mp::ms_since_last_grant() > 500 ) {
+                    cata_mp::mp_log( "[cdda-mp] auto-wait: idle " +
+                                     std::to_string( cata_mp::ms_since_last_grant() ) + "ms" );
+                    cata_mp::client_dispatch_wait_for_activity( activity_id() );
+                }
 
                 // Pump MP events after each host action so the remote player's
                 // queued actions are processed immediately, not deferred until the

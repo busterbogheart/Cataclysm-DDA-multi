@@ -127,6 +127,12 @@ character_id get_host_npc_character_id();
 // lightmap.cpp can inject the client's light at the correct position.
 character_id get_remote_player_npc_character_id();
 
+// Client only: milliseconds since the server last granted moves to the client.
+// Returns a large value if no grant has been received yet.
+// Used by do_turn() to auto-send "wait" when the player is idle and the host
+// is fast-forwarding through a long activity (wait, sleep, crafting).
+int ms_since_last_grant();
+
 // Client only: true when the server has told us the proxy NPC is at vehicle controls.
 // handle_action uses this to route movement keys through pldrive instead of walk.
 bool client_ctrl_veh();
