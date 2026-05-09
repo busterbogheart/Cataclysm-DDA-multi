@@ -107,7 +107,7 @@ void client_resync_worn();
 // game turn after the avatar activity loop has run and consumed moves.
 // Pass the activity ID that was running BEFORE the loop so the dispatch still
 // fires when the activity consumed moves and then called finish() this same turn.
-void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id() );
+void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id(), bool force_idle = false );
 
 // Client only: returns the luminance emitted by the host player (flashlight,
 // mutations, etc.) as received in the last state packet.  Used by lightmap.cpp

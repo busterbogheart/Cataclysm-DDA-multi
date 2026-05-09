@@ -523,6 +523,11 @@ bool do_turn()
     cata_mp::process_mp_events();
     // Apply any server state updates received since the last turn (client mode)
     cata_mp::client_process_incoming();
+    if( cata_mp::is_client_mode() ) {
+        avatar &u_dbg = get_avatar();
+        cata_mp::mp_log( "[cdda-mp] post-incoming moves=" + std::to_string( u_dbg.get_moves() ) +
+                         " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+    }
     // Lockstep: grant the client their turn at the start of each game turn.
     if( cata_mp::is_hosting() ) {
         cata_mp::grant_client_turn();
@@ -597,6 +602,10 @@ bool do_turn()
     // pre-loop ID as a fallback to know it should still send a "wait" to unblock the server.
     const int pre_activity_moves = u.get_moves();
     const activity_id pre_activity_id = u.activity ? u.activity.id() : activity_id();
+    if( cata_mp::is_client_mode() ) {
+        cata_mp::mp_log( "[cdda-mp] pre-act-loop: moves=" + std::to_string( pre_activity_moves ) +
+                         " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
+    }
     while( u.get_moves() > 0 && u.activity ) {
         u.activity.do_turn( u );
     }
@@ -687,7 +696,9 @@ bool do_turn()
                     }
                     if( !ack && u.get_moves() > 0 && ms > 500 ) {
                         cata_mp::mp_log( "[cdda-mp] auto-wait: idle " + std::to_string( ms ) + "ms" );
-                        cata_mp::client_dispatch_wait_for_activity( activity_id() );
+                        cata_mp::client_dispatch_wait_for_activity( activity_id(), true );
+                        // Exit the input loop so do_turn advances to client_process_incoming.
+                        u.set_moves( 0 );
                     }
                 }
 

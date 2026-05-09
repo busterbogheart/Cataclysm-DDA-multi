@@ -1879,6 +1879,11 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
 
 static bool apply_one_state_message( const std::string &msg )
 {
+    // Log a preview of every received packet so we can confirm moves=90 packets arrive.
+    {
+        const size_t preview_len = std::min( msg.size(), static_cast<size_t>( 120 ) );
+        mp_log( "[cdda-mp] recv-packet: " + msg.substr( 0, preview_len ) );
+    }
     // Server asks the client to re-send worn/hair after a respawn.
     if( msg.find( "\"type\":\"resync_request\"" ) != std::string::npos ) {
         client_resync_worn();
@@ -2239,11 +2244,13 @@ void client_process_incoming()
         apply_one_state_message( msg );
     }
     // Auto-fire any queued action now that the server has restored our moves.
+    // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
+    // immediately after, giving the user the chance to queue the next action.
+    // The ack guard (set below) prevents the input loop from double-sending.
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
         mp_log( "[cdda-mp] auto-fire: pending=" + g_pending_action.substr( 0, 60 ) );
-        // Mirror SP: the activity loop consumes moves before handle_action can run.
-        // If we're now in a wait activity, discard the stale queued action instead of
-        // sending it — otherwise catching breath auto-dispatches a pre-activity move.
+        // If we're now in a wait activity, discard the stale queued action instead
+        // of sending it — catching breath / ACT_WAIT should not dispatch a move.
         const player_activity &pact = get_avatar().activity;
         static const activity_id act_wait( "ACT_WAIT" );
         static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
@@ -2253,12 +2260,13 @@ void client_process_incoming()
                       pact.id() == act_wait_weather || pact.id() == act_wait_npc ) ) {
             mp_log( "[cdda-mp] auto-fire suppressed: in wait activity " + pact.id().str() );
             g_pending_action.clear();
-            get_avatar().set_moves( 0 );
+            // Leave moves intact — activity loop will consume them below.
         } else {
             mp_log( "[cdda-mp] auto-fire: SENDING" );
             client_send( g_pending_action );
             g_pending_action.clear();
-            get_avatar().set_moves( 0 );
+            // Keep moves > 0: input loop will run so the user can queue the next action.
+            // Ack guard prevents a second send before the server acknowledges this one.
             g_client_waiting_for_ack = true;
             g_ack_set_time = std::chrono::steady_clock::now();
         }
@@ -2550,23 +2558,19 @@ void client_set_autosmash_json( const std::string &json )
     g_client_autosmash_json = json;
 }
 
-void client_dispatch_wait_for_activity( const activity_id &pre_id )
+void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_idle )
 {
-    // Use current activity if still running; fall back to the pre-loop activity ID when
-    // the activity consumed moves and then finished (e.g. ACT_WAIT_STAMINA calling finish()
-    // after stamina recovered) — without the fallback the dispatch silently returns early
-    // and the server's wait_for_client_action() times out.
-    // No activity-type whitelist: the server only needs "client is busy, advance your turn."
-    // This covers catching breath, eating, reading, crafting, surgery, etc.
-    // Sleep and other long consent-required activities are handled separately.
+    if( g_client_waiting_for_ack ) {
+        mp_log( "[cdda-mp] dispatch_wait: ack pending, skip" );
+        return;
+    }
     const player_activity &pact = get_avatar().activity;
     const activity_id &id = pact ? pact.id() : pre_id;
-    if( !id ) {
+    if( !id && !force_idle ) {
         mp_log( "[cdda-mp] dispatch_wait: no activity, skip" );
         return;
     }
-    mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + id.str() +
-            " ack_before=" + std::to_string( g_client_waiting_for_ack ) );
+    mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) );
     client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
     client_mark_action_sent();
 }

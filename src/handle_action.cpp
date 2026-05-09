@@ -2413,8 +2413,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 cata_mp::client_mark_action_sent();
             } else {
                 cata_mp::client_queue_action( full_json );
-                // Leave moves at the server-reported negative value so the game loop
-                // stays blocked; auto-fire triggers in client_process_incoming().
+                // Zero moves so the input loop exits and do_turn can call
+                // client_process_incoming() to drain the pending ACK.
+                player_character.set_moves( 0 );
             }
         };
 
