@@ -3106,6 +3106,21 @@ static void apply_vehicle_sync( JsonObject &jo )
                     vp.enabled = new_enabled;
                     parts_changed = true;
                 }
+                // HP: server is authoritative; apply if it differs from local value.
+                const int new_hp = po.get_int( "hp", -1 );
+                if( new_hp >= 0 && new_hp != vp.hp() ) {
+                    found->set_hp( vp, new_hp, true );
+                    parts_changed = true;
+                }
+                // Fuel: sync amount for tanks and fuel stores.
+                std::string fuel_type_str;
+                if( po.read( "fuel_type", fuel_type_str ) && !fuel_type_str.empty() ) {
+                    const itype_id ftype( fuel_type_str );
+                    const int fuel_amt = po.get_int( "fuel_amt", 0 );
+                    if( ftype.is_valid() && vp.ammo_remaining() != fuel_amt ) {
+                        vp.ammo_set( ftype, fuel_amt );
+                    }
+                }
             }
             // Rebuild the render cache so part sprite changes are visible immediately.
             if( parts_changed ) {
@@ -3498,7 +3513,15 @@ std::string serialize_remote_player_state()
     }
     g_action_msgs_pending.clear();
 
-    // 2. Between-action messages mentioning the remote player's NPC.
+    // 2. Between-action messages mentioning the remote player's NPC or their vehicle.
+    // When the client is driving, physics messages (engine dies, collision, etc.)
+    // name the vehicle not the player — include those so the driver sees them.
+    std::string driving_veh_name;
+    if( remote->controlling_vehicle && remote->in_vehicle ) {
+        if( const optional_vpart_position vp_pos = get_map().veh_at( remote->pos_bub() ) ) {
+            driving_veh_name = vp_pos->vehicle().name;
+        }
+    }
     const size_t current_msg_count = Messages::size();
     if( current_msg_count > g_last_forwarded_msg_count ) {
         const size_t new_count = current_msg_count - g_last_forwarded_msg_count;
@@ -3506,14 +3529,19 @@ std::string serialize_remote_player_state()
         const auto new_msgs = Messages::recent_messages( new_count );
         for( const auto &[time_str, text] : new_msgs ) {
             ( void )time_str;
-            if( npc_name.empty() || text.find( npc_name ) == std::string::npos ) {
+            const bool has_npc    = !npc_name.empty() && text.find( npc_name ) != std::string::npos;
+            const bool has_vehnam = !driving_veh_name.empty() &&
+                                    text.find( driving_veh_name ) != std::string::npos;
+            if( !has_npc && !has_vehnam ) {
                 continue;  // skip messages unrelated to the remote player
             }
             std::string out = text;
-            size_t p = 0;
-            while( ( p = out.find( npc_name, p ) ) != std::string::npos ) {
-                out.replace( p, npc_name.size(), "You" );
-                p += 3;
+            if( !npc_name.empty() ) {
+                size_t p = 0;
+                while( ( p = out.find( npc_name, p ) ) != std::string::npos ) {
+                    out.replace( p, npc_name.size(), "You" );
+                    p += 3;
+                }
             }
             append_msg( out );
         }
@@ -3549,7 +3577,7 @@ std::string serialize_remote_player_state()
                 else if( c == '"' ) { vname_escaped += "\\\""; }
                 else { vname_escaped += c; }
             }
-            // Per-part state: open (doors/windows) and enabled (lights, etc.).
+            // Per-part state: open/enabled, HP, and fuel (for tanks/fuel stores).
             // Sequential index over get_all_parts() — host and client share the same
             // save so the iteration order is identical on both sides.
             std::string parts_json = "[";
@@ -3563,7 +3591,14 @@ std::string serialize_remote_player_state()
                 psfirst = false;
                 parts_json += "{\"i\":" + std::to_string( pidx )
                               + ",\"open\":" + ( vp.open ? "true" : "false" )
-                              + ",\"enabled\":" + ( vp.enabled ? "true" : "false" ) + "}";
+                              + ",\"enabled\":" + ( vp.enabled ? "true" : "false" )
+                              + ",\"hp\":" + std::to_string( vp.hp() );
+                // Fuel stores: sync current fuel type and amount.
+                if( vp.is_fuel_store( false ) && !vp.ammo_current().is_null() ) {
+                    parts_json += ",\"fuel_type\":\"" + vp.ammo_current().str()
+                                  + "\",\"fuel_amt\":" + std::to_string( vp.ammo_remaining() );
+                }
+                parts_json += "}";
                 ++pidx;
             }
             parts_json += ']';
