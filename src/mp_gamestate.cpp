@@ -2795,6 +2795,7 @@ static void apply_tile_changes( JsonObject &jo )
         return;
     }
     map &m = get_map();
+    bool any_new_trap = false;
 
     for( const JsonValue &entry : jo.get_array( "tile_changes" ) ) {
         JsonObject to = entry.get_object();
@@ -2888,6 +2889,7 @@ static void apply_tile_changes( JsonObject &jo )
                 const trap_str_id tsid( trap_str );
                 if( tsid.is_valid() ) {
                     m.trap_set( bub, tsid.id() );
+                    any_new_trap = true;
                 }
             }
         }
@@ -2900,6 +2902,12 @@ static void apply_tile_changes( JsonObject &jo )
                 m.set_graffiti( bub, gtext );
             }
         }
+    }
+
+    // Run detection so newly synced traps show the warning tile immediately,
+    // mirroring the search_surroundings() call that SP makes after every move.
+    if( any_new_trap ) {
+        get_avatar().search_surroundings();
     }
 }
 
