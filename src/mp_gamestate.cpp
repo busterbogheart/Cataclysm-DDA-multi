@@ -1579,6 +1579,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             acted = true;
         } else if( !m.impassable( next ) ) {
             remote->setpos( m, next );
+            // Trigger traps on the destination tile, mirroring game.cpp:8351.
+            m.creature_on_trap( *remote );
             // Use combined_movecost (same as game.cpp:7733) so the AP cost includes
             // all terrain/encumbrance factors, not just the raw tile cost.
             const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
