@@ -38,6 +38,7 @@
 #include "teleport.h"
 #include "activity_type.h"
 #include "player_activity.h"
+#include "trap.h"
 #include "type_id.h"
 #include "ui_manager.h"
 #include "rng.h"
@@ -380,8 +381,10 @@ static bool g_initial_teleport_done = false;
 struct mp_tile_state {
     std::string ter;
     std::string furn;
-    std::string items_sig;  // "type:charges,..." — empty when no items
-    std::string fields_sig; // "type:intensity,..." — empty when no fields
+    std::string items_sig;    // "type:charges,..." — empty when no items
+    std::string fields_sig;   // "type:intensity,..." — empty when no fields
+    std::string trap_sig;     // trap id string, empty = tr_null (no placed trap)
+    std::string graffiti_sig; // empty = no graffiti
 };
 static std::unordered_map<tripoint_abs_ms, mp_tile_state> g_tile_baseline;
 
@@ -389,6 +392,23 @@ static std::unordered_map<tripoint_abs_ms, mp_tile_state> g_tile_baseline;
 // Fields are always re-sent every turn because they decay server-side.
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_item_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_terfurn_baseline;
+static std::unordered_map<tripoint_abs_ms, std::string> g_client_trap_baseline;
+static std::unordered_map<tripoint_abs_ms, std::string> g_client_graffiti_baseline;
+
+static std::string json_escape_str( const std::string &s )
+{
+    std::string out;
+    out.reserve( s.size() );
+    for( char c : s ) {
+        if( c == '"' )       { out += "\\\""; }
+        else if( c == '\\' ) { out += "\\\\"; }
+        else if( c == '\n' ) { out += "\\n";  }
+        else if( c == '\r' ) { out += "\\r";  }
+        else if( c == '\t' ) { out += "\\t";  }
+        else                 { out += c;       }
+    }
+    return out;
+}
 
 // Client: last known HP per net ID — used to synthesise combat hit/death messages.
 static std::unordered_map<uint32_t, int> g_last_monster_hp;
@@ -987,6 +1007,27 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 g_tile_baseline.erase( abs );
                             }
                         }
+                    }
+                    if( to.has_string( "trap" ) ) {
+                        const std::string trap_str = to.get_string( "trap" );
+                        if( trap_str.empty() || trap_str == "tr_null" ) {
+                            m.trap_set( bub, tr_null );
+                        } else {
+                            const trap_str_id tsid( trap_str );
+                            if( tsid.is_valid() ) {
+                                m.trap_set( bub, tsid.id() );
+                            }
+                        }
+                        g_tile_baseline.erase( abs );
+                    }
+                    if( to.has_string( "graffiti" ) ) {
+                        const std::string gtext = to.get_string( "graffiti" );
+                        if( gtext.empty() ) {
+                            m.delete_graffiti( bub );
+                        } else {
+                            m.set_graffiti( bub, gtext );
+                        }
+                        g_tile_baseline.erase( abs );
                     }
                 }
             }
@@ -2363,7 +2404,25 @@ static std::string build_client_tile_changes( int radius = 10 )
                 fields_json += "]";
             }
 
-            if( !terfurn_changed && !items_changed && fields_sig.empty() ) {
+            // Trap — baseline-gated.
+            const trap &tr_here = m.tr_at( bub );
+            const std::string trap_sig_c = tr_here.is_null() ? "" : tr_here.id.str();
+            auto &trap_baseline = g_client_trap_baseline[abs];
+            const bool trap_changed = ( trap_baseline != trap_sig_c );
+            if( trap_changed ) {
+                trap_baseline = trap_sig_c;
+            }
+
+            // Graffiti — baseline-gated.
+            const std::string graffiti_sig_c = m.has_graffiti_at( bub ) ? m.graffiti_at( bub ) : "";
+            auto &graffiti_baseline = g_client_graffiti_baseline[abs];
+            const bool graffiti_changed = ( graffiti_baseline != graffiti_sig_c );
+            if( graffiti_changed ) {
+                graffiti_baseline = graffiti_sig_c;
+            }
+
+            if( !terfurn_changed && !items_changed && fields_sig.empty() &&
+                !trap_changed && !graffiti_changed ) {
                 continue;
             }
 
@@ -2382,6 +2441,12 @@ static std::string build_client_tile_changes( int radius = 10 )
             }
             if( !fields_sig.empty() ) {
                 out += ",\"fields\":" + fields_json;
+            }
+            if( trap_changed ) {
+                out += ",\"trap\":\"" + ( trap_sig_c.empty() ? std::string( "tr_null" ) : trap_sig_c ) + "\"";
+            }
+            if( graffiti_changed ) {
+                out += ",\"graffiti\":\"" + json_escape_str( graffiti_sig_c ) + "\"";
             }
             out += "}";
         }
@@ -2635,15 +2700,25 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 fields_json += "]";
             }
 
+            // Trap — id string, empty when no placed trap (tr_null).
+            const trap &tr      = m.tr_at( bub );
+            const std::string trap_sig = tr.is_null() ? "" : tr.id.str();
+
+            // Graffiti.
+            const std::string graffiti_sig = m.has_graffiti_at( bub ) ? m.graffiti_at( bub ) : "";
+
             auto &baseline = g_tile_baseline[abs];
             if( baseline.ter == ter_str && baseline.furn == furn_str &&
-                baseline.items_sig == items_sig && baseline.fields_sig == fields_sig ) {
+                baseline.items_sig == items_sig && baseline.fields_sig == fields_sig &&
+                baseline.trap_sig == trap_sig && baseline.graffiti_sig == graffiti_sig ) {
                 continue; // Nothing changed — skip this tile.
             }
-            baseline.ter        = ter_str;
-            baseline.furn       = furn_str;
-            baseline.items_sig  = items_sig;
-            baseline.fields_sig = fields_sig;
+            baseline.ter          = ter_str;
+            baseline.furn         = furn_str;
+            baseline.items_sig    = items_sig;
+            baseline.fields_sig   = fields_sig;
+            baseline.trap_sig     = trap_sig;
+            baseline.graffiti_sig = graffiti_sig;
 
             if( !items_sig.empty() ) {
                 mp_log( "tile_delta items @ " +
@@ -2668,7 +2743,10 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                    + ",\"ter\":\"" + ter_str + "\""
                    + ",\"furn\":\"" + furn_str + "\""
                    + ",\"items\":" + items_json
-                   + ",\"fields\":" + fields_json + "}";
+                   + ",\"fields\":" + fields_json
+                   + ",\"trap\":\"" + ( trap_sig.empty() ? "tr_null" : trap_sig ) + "\""
+                   + ",\"graffiti\":\"" + json_escape_str( graffiti_sig ) + "\""
+                   + "}";
         }
     }
     out += ']';
@@ -2797,6 +2875,27 @@ static void apply_tile_changes( JsonObject &jo )
                 if( ftid.is_valid() ) {
                     m.add_field( bub, ftid, fo.get_int( "i", 1 ) );
                 }
+            }
+        }
+
+        if( to.has_string( "trap" ) ) {
+            const std::string trap_str = to.get_string( "trap" );
+            if( trap_str.empty() || trap_str == "tr_null" ) {
+                m.trap_set( bub, tr_null );
+            } else {
+                const trap_str_id tsid( trap_str );
+                if( tsid.is_valid() ) {
+                    m.trap_set( bub, tsid.id() );
+                }
+            }
+        }
+
+        if( to.has_string( "graffiti" ) ) {
+            const std::string gtext = to.get_string( "graffiti" );
+            if( gtext.empty() ) {
+                m.delete_graffiti( bub );
+            } else {
+                m.set_graffiti( bub, gtext );
             }
         }
     }
