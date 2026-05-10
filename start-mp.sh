@@ -37,14 +37,42 @@ case "${1:-}" in
     client)
         MODE="client"
         HOST_IP="${2:-}"
-        if [[ -z "$HOST_IP" ]]; then
-            echo "Usage: $0 client <host-ip>"
-            exit 1
-        fi
-        shift 2
+        shift 2 2>/dev/null || shift 1 2>/dev/null || true
         echo "Pulling latest save from remote..."
         git -C "$GAME_DIR" pull
         echo ""
+        if [[ -z "$HOST_IP" ]]; then
+            # Discover LAN candidates from ARP cache
+            mapfile -t arp_ips < <(arp -a 2>/dev/null \
+                | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' \
+                | tr -d '()' \
+                | grep -v '\.255$' \
+                | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+            if [[ ${#arp_ips[@]} -gt 0 ]]; then
+                echo "  Nearby machines:"
+                for i in "${!arp_ips[@]}"; do
+                    printf "  %d) %s\n" "$((i+1))" "${arp_ips[$i]}"
+                done
+                printf "  %d) Enter manually\n" "$((${#arp_ips[@]}+1))"
+                echo ""
+                while true; do
+                    read -rp "  Select host: " choice
+                    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                        if (( choice >= 1 && choice <= ${#arp_ips[@]} )); then
+                            HOST_IP="${arp_ips[$((choice-1))]}"
+                            break
+                        elif (( choice == ${#arp_ips[@]}+1 )); then
+                            read -rp "  Host IP: " HOST_IP
+                            break
+                        fi
+                    fi
+                    echo "  Invalid choice."
+                done
+            else
+                read -rp "  Host IP: " HOST_IP
+            fi
+            echo ""
+        fi
         ;;
 esac
 
