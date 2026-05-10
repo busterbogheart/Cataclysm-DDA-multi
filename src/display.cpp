@@ -1015,6 +1015,14 @@ std::string display::vehicle_azimuth_text( const Character &u )
 {
     vehicle *veh = display::vehicle_driven( u );
     if( veh ) {
+        // Client mode: show turn_dir rather than face.dir().  turn_dir is synced
+        // immediately after pldrive (before vehmove updates face), so azimuth
+        // reflects the new heading as soon as the server acks the turn.
+        if( cata_mp::is_client_mode() && cata_mp::client_ctrl_veh() ) {
+            tileray tr;
+            tr.init( veh->turn_dir );
+            return tr.to_string_azimuth_from_north();
+        }
         return veh->face.to_string_azimuth_from_north();
     }
     return "";

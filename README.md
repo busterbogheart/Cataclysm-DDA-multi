@@ -150,7 +150,7 @@ make -j$(sysctl -n hw.logicalcpu) NATIVE=osx CLANG=1 TILES=1 SOUND=1 PCH=0 LINTJ
 
 ### Two-machine LAN quickstart
 
-Both machines need the repo built. The save (world **Kiel**) is in the repo — a `git pull` on the client is all that's needed to sync it.
+Both machines need the repo built. The save (world **Parshall**) is in the repo — a `git pull` on the client is all that's needed to sync it.
 
 Then use `start-mp.sh` — it handles world/character selection interactively and writes logs to `/tmp/`.
 
@@ -197,10 +197,15 @@ Both scripts prompt you to pick a world and character from the local save. The c
 
 - Movement, melee combat, smashing terrain and furniture
 - Item pickup (single tile `g`, all nearby tiles `Q`)
+- Item use and wielded-item use forwarded to server
 - Host and client appear as NPC proxies in each other's world with correct clothing and skin tone
 - Monster sync with damage messages
+- Client ranged/thrown/spell damage forwarded to and applied on the server
 - Field sync (blood, fire, acid)
-- Tile sync (terrain, furniture, items)
+- Tile sync (terrain, furniture, items, graffiti)
+- Trap sync — client triggers traps on the server
+- Vehicle driving by client (turning deducts AP; cruise speed is free)
+- Vehicle state sync (part HP, fuel, name messages)
 
 ### Current limitations
 

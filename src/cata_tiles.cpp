@@ -97,6 +97,7 @@
 #include "weather.h"
 #include "weather_type.h"
 #include "weighted_list.h"
+#include "mp_gamestate.h"
 
 #define dbg(x) DebugLog((x),D_SDL) << __FILE__ << ":" << __LINE__ << ": "
 
@@ -2301,7 +2302,7 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
                              tripoint_bub_ms( g->ter_view_p.xy(), center.z() ), 0, 0, lit_level::LIT,
                              false );
     }
-    if( you.controlling_vehicle ) {
+    if( you.controlling_vehicle || cata_mp::client_ctrl_veh() ) {
         std::optional<tripoint_rel_ms> indicator_offset = g->get_veh_dir_indicator_location( true );
         if( indicator_offset ) {
             draw_from_id_string( "cursor", TILE_CATEGORY::NONE, empty_string,

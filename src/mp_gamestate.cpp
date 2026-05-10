@@ -1034,6 +1034,51 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         } catch( const JsonError & ) {}
     }
 
+    // Apply client-reported combat damage (gun fire, throw, spell) to server monsters.
+    if( msg.find( "\"client_monster_hits\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_array( "client_monster_hits" ) ) {
+                map &m = get_map();
+                bool any_killed = false;
+                for( const JsonValue &hv : jo.get_array( "client_monster_hits" ) ) {
+                    JsonObject ho = hv.get_object();
+                    ho.allow_omitted_members();
+                    const uint32_t nid = static_cast<uint32_t>( ho.get_int( "nid", 0 ) );
+                    const int new_hp   = ho.get_int( "hp", -1 );
+                    if( nid == 0 || new_hp < 0 ) {
+                        continue;
+                    }
+                    monster *mon = nullptr;
+                    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+                        if( ptr && ptr->mp_net_id == nid ) {
+                            mon = ptr.get();
+                            break;
+                        }
+                    }
+                    if( !mon || mon->is_dead() ) {
+                        continue;
+                    }
+                    if( new_hp <= 0 ) {
+                        mon->die( &m, nullptr );
+                        any_killed = true;
+                    } else {
+                        mon->set_hp( new_hp );
+                    }
+                    mp_log( "[cdda-mp] client hit: nid=" + std::to_string( nid )
+                           + " hp=" + std::to_string( new_hp ) );
+                }
+                if( any_killed ) {
+                    g->cleanup_dead();
+                }
+            }
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] monster_hits parse error: " + std::string( e.what() ) );
+        }
+    }
+
     // Wait — drain one turn's worth of AP.
     const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
                          msg.find( "\"action\": \"wait\"" ) != std::string::npos;
@@ -1426,6 +1471,32 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Cruise speed adjustment — free action (mirrors SP: cruise_thrust costs no AP).
+    if( msg.find( "\"action\":\"cruise\"" ) != std::string::npos ) {
+        int dy = 0;
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            dy = jo.get_int( "dy", 0 );
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] cruise parse error: " + std::string( e.what() ) );
+        }
+        map &here = get_map();
+        if( const optional_vpart_position vp = here.veh_at( remote->pos_bub() ) ) {
+            vehicle &veh = vp->vehicle();
+            veh.cruise_thrust( here, -dy * 400 );
+            mp_log( "[cdda-mp] cruise: dy=" + std::to_string( dy )
+                    + " cruise_vel=" + std::to_string( veh.cruise_velocity ) );
+        }
+        // Free action: do NOT deduct g_remote_moves.  Broadcast updated state.
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
     // Handbrake — client pressed smash key while in vehicle control mode.
     if( msg.find( "\"action\":\"handbrake\"" ) != std::string::npos ) {
         map &here = get_map();
@@ -1658,6 +1729,22 @@ void wait_for_client_action()
     if( !remote_player_connected ) {
         return;
     }
+
+    // During host sleep, don't block — just drain the event queue and return.
+    // Sleep is fast-forwarded (8 in-game hours in <1 s wall-clock).  Blocking
+    // up to 10 s per tick × ~28800 ticks would freeze the game for hours.
+    // Short wait activities (ACT_WAIT, ACT_WAIT_STAMINA, etc.) stay in lockstep:
+    // the client's 500 ms auto-wait fires once per activity tick, so the client
+    // gets one free turn per tick (~30 real seconds for a 1-minute in-game wait).
+    {
+        static const efftype_id eff_sleep( "sleep" );
+        if( get_avatar().has_effect( eff_sleep ) ) {
+            process_mp_events();
+            mp_log( "[cdda-mp] host sleeping — skipping client wait (fast-forward)" );
+            return;
+        }
+    }
+
     g_host_waiting_for_client = true;
     using namespace std::chrono_literals;
     const auto t_start = std::chrono::steady_clock::now();
@@ -2457,6 +2544,33 @@ static std::string build_client_tile_changes( int radius = 10 )
     return out;
 }
 
+// Build JSON array of monsters the client damaged since the last server sync.
+// Uses g_last_monster_hp (last server-reported HP) as the baseline.
+static std::string build_client_monster_hits()
+{
+    std::string hits;
+    bool first = true;
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        monster *mon = ptr.get();
+        if( !mon || mon->mp_net_id == 0 ) {
+            continue;
+        }
+        const auto it = g_last_monster_hp.find( mon->mp_net_id );
+        if( it == g_last_monster_hp.end() ) {
+            continue;
+        }
+        const int client_hp = mon->is_dead() ? 0 : mon->get_hp();
+        if( client_hp >= it->second ) {
+            continue;
+        }
+        if( !first ) { hits += ','; }
+        first = false;
+        hits += "{\"nid\":" + std::to_string( mon->mp_net_id )
+             + ",\"hp\":" + std::to_string( client_hp ) + "}";
+    }
+    return first ? std::string() : ( "[" + hits + "]" );
+}
+
 std::string client_enrich_action( const std::string &json )
 {
     const avatar &av = get_avatar();
@@ -2486,6 +2600,10 @@ std::string client_enrich_action( const std::string &json )
         enriched += ",\"client_bleed\":" + bleed_json;
         enriched += ",\"client_tile_changes\":" + tile_changes;
         enriched += ",\"client_stamina\":" + std::to_string( av.get_stamina() );
+        const std::string monster_hits = build_client_monster_hits();
+        if( !monster_hits.empty() ) {
+            enriched += ",\"client_monster_hits\":" + monster_hits;
+        }
         enriched += '}';
     }
     return enriched;
@@ -2930,8 +3048,10 @@ static void apply_vehicle_sync( JsonObject &jo )
         const tripoint_abs_ms new_abs{
             vo.get_int( "x" ), vo.get_int( "y" ), vo.get_int( "z" )
         };
-        const int  face_deg = vo.get_int( "face", 0 );
-        const int  vel      = vo.get_int( "vel",  0 );
+        const int  face_deg     = vo.get_int( "face", 0 );
+        const int  turn_dir_deg = vo.get_int( "turn_dir", face_deg );
+        const int  vel          = vo.get_int( "vel",  0 );
+        const int  cruise       = vo.get_int( "cruise", vel );
         // Read name early — used as fallback identifier when position lookups fail
         // (e.g. the client's local physics have drifted the vehicle away from both
         // the tracked position and the server's authoritative position).
@@ -2980,12 +3100,16 @@ static void apply_vehicle_sync( JsonObject &jo )
 
         mp_log( "[cdda-mp] veh_sync nid=" + std::to_string( nid ) + " name=" + vname
                 + " found_by=" + find_method
+                + " search=(" + std::to_string( search_abs.x() ) + "," + std::to_string( search_abs.y() ) + ")"
                 + " target=(" + std::to_string( new_abs.x() ) + "," + std::to_string( new_abs.y() ) + ")"
+                + " inbounds_search=" + std::to_string( m.inbounds( search_abs ) )
+                + " inbounds_target=" + std::to_string( m.inbounds( new_abs ) )
                 + " face=" + std::to_string( face_deg )
                 + " vel=" + std::to_string( vel ) );
 
         if( !found ) {
             // Vehicle not in the client's reality bubble — don't update tracked position.
+            mp_log( "[cdda-mp] veh_sync MISS nid=" + std::to_string( nid ) + " not found by any method" );
             continue;
         }
 
@@ -2993,7 +3117,8 @@ static void apply_vehicle_sync( JsonObject &jo )
                 + std::to_string( found->pos_abs().x() ) + ","
                 + std::to_string( found->pos_abs().y() ) + ")"
                 + " cur_face=" + std::to_string( static_cast<int>(
-                      std::lround( to_degrees( found->face.dir() ) ) ) ) );
+                      std::lround( to_degrees( found->face.dir() ) ) ) )
+                + " inbounds_new=" + std::to_string( m.inbounds( new_abs ) ) );
 
         // Compute target facing.
         const units::angle face_angle = units::from_degrees( face_deg );
@@ -3044,6 +3169,10 @@ static void apply_vehicle_sync( JsonObject &jo )
 
         // Finalise facing state.  face.init() and move.init() must still be updated
         // even when displace_vehicle already set pivot_rotation[0].
+        // turn_dir synced unconditionally: it updates immediately after pldrive on the
+        // server (before vehmove), so the client sees the new intended heading right away.
+        found->turn_dir = units::from_degrees( turn_dir_deg );
+
         if( face_changed ) {
             found->face.init( face_angle );
             found->move.init( face_angle );
@@ -3080,11 +3209,9 @@ static void apply_vehicle_sync( JsonObject &jo )
             m.add_vehicle_to_cache( found );
         }
 
-        // Update velocity (server is authoritative for physics).
-        // Also zero cruise_velocity so the client's physics don't re-accelerate
-        // the vehicle between state packets.
+        // Update velocity and cruise target (server is authoritative for physics).
         found->velocity = vel;
-        found->cruise_velocity = vel;
+        found->cruise_velocity = cruise;
 
         // Sync vehicle name — server is authoritative; overrides any local rename.
         if( !vname.empty() && found->name != vname ) {
@@ -3578,7 +3705,8 @@ std::string serialize_remote_player_state()
             }
             const uint32_t nid = vid_it->second;
             const tripoint_abs_ms vabs = v->pos_abs();
-            const int face_deg = static_cast<int>( std::lround( to_degrees( v->face.dir() ) ) );
+            const int face_deg     = static_cast<int>( std::lround( to_degrees( v->face.dir() ) ) );
+            const int turn_dir_deg = static_cast<int>( std::lround( to_degrees( v->turn_dir ) ) );
             // JSON-escape the vehicle name so special characters don't break the packet.
             std::string vname_escaped;
             vname_escaped.reserve( v->name.size() );
@@ -3622,7 +3750,9 @@ std::string serialize_remote_player_state()
                              + ",\"y\":" + std::to_string( vabs.y() )
                              + ",\"z\":" + std::to_string( vabs.z() )
                              + ",\"face\":" + std::to_string( face_deg )
+                             + ",\"turn_dir\":" + std::to_string( turn_dir_deg )
                              + ",\"vel\":" + std::to_string( v->velocity )
+                             + ",\"cruise\":" + std::to_string( v->cruise_velocity )
                              + ",\"name\":\"" + vname_escaped + "\""
                              + ",\"parts\":" + parts_json + "}";
         }

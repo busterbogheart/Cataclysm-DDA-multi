@@ -18,6 +18,7 @@
 #include "activity_actor_definitions.h"
 #include "avatar_action.h"
 #include "bodypart.h"
+#include "mp_client_conn.h"
 #include "calendar.h"
 #include "cata_assert.h"
 #include "cata_utility.h"
@@ -402,8 +403,12 @@ void avatar::on_mission_finished( mission &cur_mission )
     }
     const auto iter = std::find( active_missions.begin(), active_missions.end(), &cur_mission );
     if( iter == active_missions.end() ) {
-        debugmsg( "completed mission %s was not in the active_missions list",
-                  cur_mission.mission_id().c_str() );
+        // In client mode the avatar never accepted the host's NPC/faction-camp missions,
+        // so this is expected and should not pop up as an error.
+        if( !cata_mp::is_client_mode() ) {
+            debugmsg( "completed mission %s was not in the active_missions list",
+                      cur_mission.mission_id().c_str() );
+        }
     } else {
         active_missions.erase( iter );
     }

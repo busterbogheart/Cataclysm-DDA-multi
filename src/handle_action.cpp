@@ -2448,26 +2448,29 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             if( cata_mp::client_ctrl_veh() ) {
                 const int dx = offset_it != dir_to_offset.end() ? offset_it->second.x : 0;
                 const int dy = offset_it != dir_to_offset.end() ? offset_it->second.y : 0;
-                const std::string json = "{\"type\":\"action\",\"action\":\"pldrive\""
-                                         ",\"dx\":" + std::to_string( dx ) +
-                                         ",\"dy\":" + std::to_string( dy ) + "}";
-                mp_dispatch( json );
-                // Client-side prediction: update local vehicle turn/speed immediately
-                // so azimuth and cruise speed reflect the input without waiting for the
-                // server's next state broadcast.
-                {
+
+                if( dx != 0 ) {
+                    // Turning costs AP — mirrors SP where pldrive charges moves for trn != 0.
+                    const std::string json = "{\"type\":\"action\",\"action\":\"pldrive\""
+                                             ",\"dx\":" + std::to_string( dx ) +
+                                             ",\"dy\":" + std::to_string( dy ) + "}";
+                    mp_dispatch( json );
+                } else if( dy != 0 ) {
+                    // Acceleration/deceleration: free in SP (cruise_thrust costs no AP).
+                    // Send as a lightweight "cruise" action; server applies cruise_thrust
+                    // without deducting g_remote_moves.  Update local cruise_velocity
+                    // immediately so the HUD reflects input before the server round-trip.
+                    const std::string full =
+                        std::string( "{\"type\":\"action\",\"action\":\"cruise\""
+                                     ",\"dy\":" ) + std::to_string( dy )
+                        + ",\"move_mode\":\"" + player_character.move_mode.str() + "\"}";
+                    cata_mp::client_send( cata_mp::client_enrich_action( full ) );
                     map &pvmap = get_map();
                     const tripoint_abs_ms pvabs = cata_mp::client_ctrl_veh_abs();
                     if( pvmap.inbounds( pvabs ) ) {
-                        const tripoint_bub_ms pvbub = pvmap.get_bub( pvabs );
-                        if( const optional_vpart_position pvp = pvmap.veh_at( pvbub ) ) {
-                            vehicle &pveh = pvp->vehicle();
-                            if( dx != 0 ) {
-                                pveh.turn( vehicles::steer_increment * dx );
-                            }
-                            if( dy != 0 ) {
-                                pveh.cruise_thrust( pvmap, -dy * 400 );
-                            }
+                        if( const optional_vpart_position pvp =
+                                pvmap.veh_at( pvmap.get_bub( pvabs ) ) ) {
+                            pvp->vehicle().cruise_thrust( pvmap, -dy * 400 );
                         }
                     }
                 }
@@ -3341,15 +3344,33 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             game_menus::inv::swap_letters();
             break;
 
-        case ACTION_USE:
+        case ACTION_USE: {
             // Shell-users are presumed to be able to mess with their inventories, etc
             // while in the shell.  Eating, gear-changing, and item use are OK.
+            const int pre_use_moves = player_character.get_moves();
             avatar_action::use_item( player_character );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_use_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_USE_WIELDED:
+        case ACTION_USE_WIELDED: {
+            const int pre_use_moves = player_character.get_moves();
             player_character.use_wielded();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_use_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
         case ACTION_WEAR:
             wear();
@@ -3395,25 +3416,70 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             player_character.martial_arts_data->pick_style( player_character );
             break;
 
-        case ACTION_RELOAD_ITEM:
+        case ACTION_RELOAD_ITEM: {
+            const int pre_reload_moves = player_character.get_moves();
             reload_item();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_reload_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_RELOAD_WEAPON:
+        case ACTION_RELOAD_WEAPON: {
+            const int pre_reload_moves = player_character.get_moves();
             reload_weapon();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_reload_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_RELOAD_WIELDED:
+        case ACTION_RELOAD_WIELDED: {
+            const int pre_reload_moves = player_character.get_moves();
             reload_wielded();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_reload_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_UNLOAD:
+        case ACTION_UNLOAD: {
+            const int pre_unload_moves = player_character.get_moves();
             avatar_action::unload( player_character );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_unload_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_MEND:
+        case ACTION_MEND: {
+            const int pre_mend_moves = player_character.get_moves();
             avatar_action::mend( player_character, item_location() );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_mend_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
         case ACTION_THROW: {
             const int pre_throw_moves = player_character.get_moves();
@@ -3442,23 +3508,58 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
         }
 
-        case ACTION_FIRE:
+        case ACTION_FIRE: {
+            const int pre_fire_moves = player_character.get_moves();
             fire();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_fire_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_CAST_SPELL:
+        case ACTION_CAST_SPELL: {
+            const int pre_cast_moves = player_character.get_moves();
             cast_spell();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_cast_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_RECAST_SPELL:
+        case ACTION_RECAST_SPELL: {
+            const int pre_cast_moves = player_character.get_moves();
             cast_spell( true );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_cast_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
         case ACTION_FIRE_BURST: {
+            const int pre_burst_moves = player_character.get_moves();
             if( weapon ) {
                 if( weapon->gun_set_mode( gun_mode_BURST ) || weapon->gun_set_mode( gun_mode_AUTO ) ) {
                     avatar_action::fire_wielded_weapon( player_character );
                 }
+            }
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_burst_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
             }
             break;
         }
@@ -3495,14 +3596,32 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             }
             break;
 
-        case ACTION_INSERT_ITEM:
+        case ACTION_INSERT_ITEM: {
+            const int pre_insert_moves = player_character.get_moves();
             insert_item();
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_insert_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
-        case ACTION_UNLOAD_CONTAINER:
+        case ACTION_UNLOAD_CONTAINER: {
             // You CAN drop things to your own tile while in the shell.
+            const int pre_unload_moves = player_character.get_moves();
             unload_container( mouse_target );
+            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_unload_moves ) {
+                cata_mp::client_resync_worn();
+                cata_mp::client_send( cata_mp::client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                player_character.set_moves( 0 );
+                cata_mp::client_mark_action_sent();
+            }
             break;
+        }
 
         case ACTION_DROP:
             drop_in_direction( player_character.pos_bub() );
