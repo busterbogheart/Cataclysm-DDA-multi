@@ -56,20 +56,38 @@ case "${1:-}" in
                     arp_labels+=("$host  ($ip)")
                 fi
             done < <(arp -a 2>/dev/null)
-            if [[ ${#arp_ips[@]} -gt 0 ]]; then
-                echo "  Nearby machines:"
-                for i in "${!arp_labels[@]}"; do
-                    printf "  %d) %s\n" "$((i+1))" "${arp_labels[$i]}"
+
+            # Filter to machines with port 8080 open (parallel, 1s timeout each)
+            printf "  Scanning for hosts on port %d..." "$HOST_PORT"
+            _tmpfile=$(mktemp)
+            for i in "${!arp_ips[@]}"; do
+                ( nc -z -w1 "${arp_ips[$i]}" "$HOST_PORT" 2>/dev/null && echo "$i" >> "$_tmpfile" ) &
+            done
+            wait
+            printf " done.\n\n"
+
+            host_ips=()
+            host_labels=()
+            while IFS= read -r idx; do
+                host_ips+=("${arp_ips[$idx]}")
+                host_labels+=("${arp_labels[$idx]}")
+            done < <(sort -n "$_tmpfile")
+            rm -f "$_tmpfile"
+
+            if [[ ${#host_ips[@]} -gt 0 ]]; then
+                echo "  Hosts running CDDA:"
+                for i in "${!host_labels[@]}"; do
+                    printf "  %d) %s\n" "$((i+1))" "${host_labels[$i]}"
                 done
-                printf "  %d) Enter manually\n" "$((${#arp_ips[@]}+1))"
+                printf "  %d) Enter manually\n" "$((${#host_ips[@]}+1))"
                 echo ""
                 while true; do
                     read -rp "  Select host: " choice
                     if [[ "$choice" =~ ^[0-9]+$ ]]; then
-                        if (( choice >= 1 && choice <= ${#arp_ips[@]} )); then
-                            HOST_IP="${arp_ips[$((choice-1))]}"
+                        if (( choice >= 1 && choice <= ${#host_ips[@]} )); then
+                            HOST_IP="${host_ips[$((choice-1))]}"
                             break
-                        elif (( choice == ${#arp_ips[@]}+1 )); then
+                        elif (( choice == ${#host_ips[@]}+1 )); then
                             read -rp "  Host IP: " HOST_IP
                             break
                         fi
@@ -77,6 +95,7 @@ case "${1:-}" in
                     echo "  Invalid choice."
                 done
             else
+                echo "  No hosts found on port $HOST_PORT."
                 read -rp "  Host IP: " HOST_IP
             fi
             echo ""
