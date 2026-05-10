@@ -727,6 +727,14 @@ static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
         // are NPC-name-filtered separately.
         std::string out = text;
         if( !npc_name.empty() ) {
+            // Resolve <npcname> placeholder used by melee/combat message generators
+            // (e.g. player_hit_message stores "<npcname> hits X" not the real name).
+            // Expand it to the real name first so the name→"You" pass below catches it.
+            size_t q = 0;
+            while( ( q = out.find( "<npcname>", q ) ) != std::string::npos ) {
+                out.replace( q, 9, npc_name );
+                q += npc_name.size();
+            }
             size_t p = 0;
             while( ( p = out.find( npc_name, p ) ) != std::string::npos ) {
                 out.replace( p, npc_name.size(), "You" );

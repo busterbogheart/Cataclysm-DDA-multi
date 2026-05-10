@@ -291,10 +291,14 @@ void monmove()
     map &m = get_map();
     avatar &u = get_avatar();
 
+    int mon_count = 0;
+    std::string mon_slow_log;
     for( monster &critter : g->all_monsters() ) {
         if( !m.inbounds( critter.pos_abs() ) ) {
             continue;
         }
+        ++mon_count;
+        const auto mon_t0 = std::chrono::steady_clock::now();
         const tripoint_bub_ms critter_pos = critter.pos_bub( m );
 
         // Critters in impassable tiles get pushed away, unless it's not impassable for them
@@ -366,6 +370,20 @@ void monmove()
                 u.wake_up();
             }
         }
+
+        if( cata_mp::is_hosting() ) {
+            const int mon_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - mon_t0 ).count() );
+            if( mon_ms >= 10 ) {
+                mon_slow_log += " " + critter.type->id.str() + "=" + std::to_string( mon_ms ) + "ms";
+            }
+        }
+    }
+
+    if( cata_mp::is_hosting() && !mon_slow_log.empty() ) {
+        cata_mp::mp_log( "[cdda-mp] monmove slow monsters (count=" +
+                         std::to_string( mon_count ) + "):" + mon_slow_log );
     }
 
     g->cleanup_dead();
@@ -381,6 +399,7 @@ void monmove()
         if( cata_mp::is_remote_player( guy.getID() ) ) {
             continue;
         }
+        const auto npc_t0 = std::chrono::steady_clock::now();
         int turns = 0;
         int real_count = 0;
         const int count_limit = std::max( 10, guy.get_moves() / 64 );
@@ -422,6 +441,17 @@ void monmove()
 
         if( !guy.is_dead() ) {
             guy.npc_update_body();
+        }
+
+        if( cata_mp::is_hosting() ) {
+            const int npc_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - npc_t0 ).count() );
+            if( npc_ms >= 10 ) {
+                cata_mp::mp_log( "[cdda-mp] monmove slow NPC: " + guy.get_name() +
+                                 " activity=" + guy.activity.id().str() +
+                                 " " + std::to_string( npc_ms ) + "ms" );
+            }
         }
     }
     g->cleanup_dead();
