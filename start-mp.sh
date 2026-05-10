@@ -42,6 +42,9 @@ case "${1:-}" in
             exit 1
         fi
         shift 2
+        echo "Pulling latest save from remote..."
+        git -C "$GAME_DIR" pull
+        echo ""
         ;;
 esac
 
@@ -214,7 +217,16 @@ if [[ "$MODE" == "host" ]]; then
     echo "  Log    : $HOST_LOG"
     echo ""
     > "$HOST_LOG"
-    exec "$GAME" --host --world "$WORLD" --char "$HOST_CHAR" 2>&1 | tee "$HOST_LOG"
+    "$GAME" --host --world "$WORLD" --char "$HOST_CHAR" 2>&1 | tee "$HOST_LOG"
+    echo ""
+    echo "Session ended. Pushing save to remote..."
+    git -C "$GAME_DIR" add -f save/
+    if git -C "$GAME_DIR" diff --cached --quiet; then
+        echo "No save changes to push."
+    else
+        git -C "$GAME_DIR" commit -m "save: session $(date '+%Y-%m-%d %H:%M')"
+        git -C "$GAME_DIR" push
+    fi
 
 elif [[ "$MODE" == "client" ]]; then
     echo ""
