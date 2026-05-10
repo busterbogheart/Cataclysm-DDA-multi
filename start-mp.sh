@@ -42,19 +42,24 @@ case "${1:-}" in
         git -C "$GAME_DIR" pull
         echo ""
         if [[ -z "$HOST_IP" ]]; then
-            # Discover LAN candidates from ARP cache
+            # Discover LAN candidates from ARP cache (hostname + IP)
             arp_ips=()
-            while IFS= read -r ip; do
+            arp_labels=()
+            while IFS= read -r line; do
+                ip=$(echo "$line" | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' | tr -d '()')
+                [[ -z "$ip" || "$ip" =~ \.255$ ]] && continue
+                host=$(echo "$line" | awk '{print $1}')
                 arp_ips+=("$ip")
-            done < <(arp -a 2>/dev/null \
-                | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' \
-                | tr -d '()' \
-                | grep -v '\.255$' \
-                | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+                if [[ "$host" == "?" ]]; then
+                    arp_labels+=("$ip")
+                else
+                    arp_labels+=("$host  ($ip)")
+                fi
+            done < <(arp -a 2>/dev/null)
             if [[ ${#arp_ips[@]} -gt 0 ]]; then
                 echo "  Nearby machines:"
-                for i in "${!arp_ips[@]}"; do
-                    printf "  %d) %s\n" "$((i+1))" "${arp_ips[$i]}"
+                for i in "${!arp_labels[@]}"; do
+                    printf "  %d) %s\n" "$((i+1))" "${arp_labels[$i]}"
                 done
                 printf "  %d) Enter manually\n" "$((${#arp_ips[@]}+1))"
                 echo ""
