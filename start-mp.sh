@@ -43,7 +43,10 @@ case "${1:-}" in
         echo ""
         if [[ -z "$HOST_IP" ]]; then
             # Discover LAN candidates from ARP cache
-            mapfile -t arp_ips < <(arp -a 2>/dev/null \
+            arp_ips=()
+            while IFS= read -r ip; do
+                arp_ips+=("$ip")
+            done < <(arp -a 2>/dev/null \
                 | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' \
                 | tr -d '()' \
                 | grep -v '\.255$' \
