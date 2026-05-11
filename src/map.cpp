@@ -1621,10 +1621,13 @@ void map::board_vehicle( const tripoint_bub_ms &pos, Character *p )
     }
     if( vp->part().has_flag( vp_flag::passenger_flag ) ) {
         Character *psg = vp->vehicle().get_passenger( vp->part_index() );
-        debugmsg( "map::board_vehicle: %s failed to board passenger (%s) is already there",
-                  p ? p->get_name() : "<null_boarder>",
-                  psg ? psg->get_name() : "<null_passenger>" );
-        unboard_vehicle( pos );
+        if( psg == p ) {
+            return; // already seated here — no-op
+        }
+        add_msg( m_info, _( "Only one player can drive at a time (for now). [%s tried to board a seat occupied by %s]" ),
+                 p ? p->get_name() : "<null_boarder>",
+                 psg ? psg->get_name() : "<null_passenger>" );
+        return;
     }
     vp->part().set_flag( vp_flag::passenger_flag );
     vp->part().passenger_id = p->getID();

@@ -1053,6 +1053,7 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
     map &here = get_map();
 
     Character &player_character = get_player_character();
+
     int volume = player_character.get_shout_volume();
 
     const std::vector<Creature *> available = get_creatures_if( [&]( const Creature & guy ) {

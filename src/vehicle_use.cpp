@@ -2179,6 +2179,10 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
                 .hotkey( "TOGGLE_ENGINE" )
                 .skip_theft_check()
                 .on_submit( [this, here] {
+                    if( cata_mp::is_client_mode() ) {
+                        veh_mp_dispatch( "{\"type\":\"action\",\"action\":\"toggle_engine\"}" );
+                        return;
+                    }
                     if( engine_on )
                     {
                         disable_smart_controller_if_needed();

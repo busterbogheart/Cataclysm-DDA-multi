@@ -44,9 +44,11 @@
 #include "rng.h"
 #include "units.h"
 #include "units_utility.h"
+#include "skill.h"
 #include "vehicle.h"
 #ifdef TILES
 #include "sdl_wrappers.h"
+#include "sounds.h"
 #endif
 #include <chrono>
 #include <fstream>
@@ -103,6 +105,26 @@ void set_host_mode( bool enabled )
 bool is_hosting()
 {
     return get_active_server() != nullptr;
+}
+
+// Host: sfx events generated during this turn, forwarded to the client in the next grant.
+// Capped at 32 entries per turn to bound grant message size.
+struct MPSfxEvent {
+    std::string id;
+    std::string variant;
+    int vol = 0;
+};
+static std::vector<MPSfxEvent> g_host_sfx_queue;
+
+void host_queue_sfx( const std::string &id, const std::string &variant, int vol )
+{
+    if( !is_hosting() || vol < 5 ) {
+        return;
+    }
+    if( g_host_sfx_queue.size() >= 32 ) {
+        return;
+    }
+    g_host_sfx_queue.push_back( {id, variant, vol} );
 }
 
 // The character_id of the remote player's NPC. Invalid when no remote player is connected.
@@ -710,6 +732,49 @@ static void remove_remote_player()
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
 }
 
+// After substituting an NPC name → "You", the verb is still third-person singular.
+// Strip the suffix so "You guts" → "You gut", "You misses" → "You miss", etc.
+// Also fixes "You's " → "your " for possessive constructions.
+static void fix_you_verb( std::string &s )
+{
+    for( size_t p = 0; ( p = s.find( "You's ", p ) ) != std::string::npos; ) {
+        s.replace( p, 6, "your " );
+    }
+
+    if( s.rfind( "You ", 0 ) != 0 ) {
+        return;
+    }
+
+    const size_t vs = 4;
+    size_t ve = s.find( ' ', vs );
+    if( ve == std::string::npos ) {
+        ve = s.size();
+    }
+    if( ve <= vs + 1 ) {
+        return;
+    }
+
+    const std::string v = s.substr( vs, ve - vs );
+    std::string fixed;
+
+    auto ends_with = [&]( const char *suffix, size_t n ) {
+        return v.size() >= n && v.compare( v.size() - n, n, suffix ) == 0;
+    };
+
+    if( ends_with( "ies", 3 ) ) {
+        fixed = v.substr( 0, v.size() - 3 ) + "y";
+    } else if( ends_with( "sses", 4 ) || ends_with( "xes", 3 ) || ends_with( "zes", 3 ) ||
+               ends_with( "ches", 4 ) || ends_with( "shes", 4 ) ) {
+        fixed = v.substr( 0, v.size() - 2 );
+    } else if( v.size() > 1 && v.back() == 's' ) {
+        fixed = v.substr( 0, v.size() - 1 );
+    } else {
+        return;
+    }
+
+    s.replace( vs, ve - vs, fixed );
+}
+
 // Collect messages generated from pre_msg onward, apply NPC→"You" substitution,
 // and append them to g_action_msgs_pending for inclusion in the next broadcast.
 // Messages starting with "You " that don't contain the NPC name are host-avatar
@@ -740,10 +805,15 @@ static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
                 out.replace( q, 9, npc_name );
                 q += npc_name.size();
             }
+            bool did_sub = false;
             size_t p = 0;
             while( ( p = out.find( npc_name, p ) ) != std::string::npos ) {
                 out.replace( p, npc_name.size(), "You" );
                 p += 3;
+                did_sub = true;
+            }
+            if( did_sub ) {
+                fix_you_verb( out );
             }
         }
         mp_log( "[cdda-mp] flush_action_msgs queued: " + out );
@@ -754,6 +824,24 @@ static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
 // Capture messages the avatar generated since pre_msg and queue them for the client,
 // replacing "You" with the host character's name so the client sees attributed hits.
 // Called from do_turn after each avatar handle_action() when a remote player is connected.
+// Capture ALL messages generated during vehmove() and queue them for the remote
+// client as their own messages (no attribution — the driver sees these directly).
+void host_capture_vehmove_msgs( size_t pre_msg )
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    const size_t cur = Messages::size();
+    if( cur <= pre_msg ) {
+        return;
+    }
+    const auto new_msgs = Messages::recent_messages( cur - pre_msg );
+    for( const auto &[time_str, text] : new_msgs ) {
+        ( void )time_str;
+        g_action_msgs_pending.push_back( text );
+    }
+}
+
 void host_capture_avatar_msgs( size_t pre_msg )
 {
     if( !is_hosting() || !remote_player_connected ) {
@@ -800,6 +888,47 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // Give the NPC its current move budget before executing any action.
     // (monmove skips remote player NPCs, so we manage AP ourselves.)
     remote->set_moves( g_remote_moves );
+
+    // Parse the full action JSON once here so char_stats and other top-level
+    // fields are accessible without re-parsing inside each action block.
+    JsonValue jv_top = json_loader::from_string( msg );
+    JsonObject jo = jv_top.get_object();
+    jo.allow_omitted_members();
+
+    // Apply the client's real character stats to the proxy so all action
+    // handlers (pldrive steering, melee, etc.) use the player's actual values.
+    if( jo.has_object( "char_stats" ) ) {
+        JsonObject cs = jo.get_object( "char_stats" );
+        cs.allow_omitted_members();
+        if( cs.has_int( "str" ) ) {
+            remote->set_str_base( cs.get_int( "str" ) );
+        }
+        if( cs.has_int( "dex" ) ) {
+            remote->set_dex_base( cs.get_int( "dex" ) );
+        }
+        if( cs.has_int( "int" ) ) {
+            remote->set_int_base( cs.get_int( "int" ) );
+        }
+        if( cs.has_int( "per" ) ) {
+            remote->set_per_base( cs.get_int( "per" ) );
+        }
+        if( cs.has_array( "skills" ) ) {
+            for( const JsonValue &entry : cs.get_array( "skills" ) ) {
+                JsonArray ja = entry.get_array();
+                const skill_id sid( ja.next_string() );
+                const int lvl = ja.next_int();
+                remote->set_skill_level( sid, lvl );
+            }
+        }
+        if( cs.has_array( "profs" ) ) {
+            for( const JsonValue &pv : cs.get_array( "profs" ) ) {
+                const proficiency_id pid( pv.get_string() );
+                if( !remote->has_proficiency( pid ) ) {
+                    remote->add_proficiency( pid, true );
+                }
+            }
+        }
+    }
 
     // Extract action label for HUD "Queued" row on the server panel.
     {
@@ -1125,6 +1254,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
                          msg.find( "\"action\": \"wait\"" ) != std::string::npos;
     if( is_wait ) {
+        mp_log( "[cdda-mp] wait recv: ctrl_veh=" + std::to_string( remote->controlling_vehicle ) +
+                " g_remote_moves=" + std::to_string( g_remote_moves ) );
         g_remote_moves -= remote->get_speed();
         g_client_acted_this_turn = true;
         server *srv = get_active_server();
@@ -1408,8 +1539,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             mp_log( "[cdda-mp] control_vehicle: ctrl_idx=" + std::to_string( ctrl_idx ) +
                     " engine_on=" + std::to_string( veh.engine_on ) );
             if( ctrl_idx >= 0 ) {
+                if( !remote->in_vehicle ) {
+                    here.board_vehicle( bub, remote );  // register as passenger so vehicle moves NPC
+                }
                 remote->in_vehicle = true;
-                here.board_vehicle( bub, remote );  // register as passenger so vehicle moves NPC
                 const bool engine_was_off = !veh.engine_on;
                 if( engine_was_off ) {
                     // start_engines() with an NPC driver assigns a cranking activity whose
@@ -1492,18 +1625,30 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         const tripoint_bub_ms bub = remote->pos_bub();
         if( const optional_vpart_position vp = here.veh_at( bub ) ) {
             vehicle &veh = vp->vehicle();
+            const int face_before = static_cast<int>( units::to_degrees( veh.face.dir() ) );
+            const int str = remote->get_str();
+            const int dex = remote->get_dex();
+            const int drv = remote->get_skill_level( skill_id( "driving" ) );
+            mp_log( "[cdda-mp] pldrive: dx=" + std::to_string( dx ) +
+                    " dy=" + std::to_string( dy ) +
+                    " face=" + std::to_string( face_before ) +
+                    " str=" + std::to_string( str ) +
+                    " dex=" + std::to_string( dex ) +
+                    " drv=" + std::to_string( drv ) +
+                    " moves=" + std::to_string( g_remote_moves ) );
+            // pldrive() internally caps moves to get_speed() then deducts the turn cost.
+            // Preserve any budget above one speed unit, then use pldrive's remainder.
+            const int excess = std::max( 0, g_remote_moves - remote->get_speed() );
             veh.pldrive( here, *remote, dx, dy, 0 );
-            mp_log( "[cdda-mp] pldrive: dx=" + std::to_string( dx )
-                    + " dy=" + std::to_string( dy )
-                    + " veh=" + veh.name
-                    + " vel=" + std::to_string( veh.velocity )
-                    + " cruise=" + std::to_string( veh.cruise_velocity ) );
+            mp_log( "[cdda-mp] pldrive result: face=" +
+                    std::to_string( static_cast<int>( units::to_degrees( veh.face.dir() ) ) ) +
+                    " moves_after=" + std::to_string( remote->get_moves() ) );
+            g_remote_moves = excess + remote->get_moves();
         } else {
             // No longer at a vehicle — clear control flag so the client gets corrected.
             remote->controlling_vehicle = false;
-            mp_log( "[cdda-mp] pldrive: no vehicle at proxy pos, cleared control flag" );
+            g_remote_moves -= remote->get_speed();
         }
-        g_remote_moves -= remote->get_speed();
         g_client_acted_this_turn = true;
         flush_action_msgs( pre_action_msg, remote->name );
         server *srv = get_active_server();
@@ -1597,6 +1742,30 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         remote->controlling_vehicle = false;
         here.unboard_vehicle( bub );
         remote->in_vehicle = false;
+        g_remote_moves -= remote->get_speed();
+        g_client_acted_this_turn = true;
+        g_last_forwarded_msg_count = Messages::size();
+        server *srv = get_active_server();
+        if( srv ) { srv->post_broadcast( serialize_remote_player_state() + "\n" ); }
+        return;
+    }
+
+    // Toggle engine while not driving (at controls but not in control mode).
+    if( msg.find( "\"action\":\"toggle_engine\"" ) != std::string::npos ) {
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            if( veh.engine_on ) {
+                veh.stop_engines( here );
+                add_msg( _( "%s turns off the engine." ), remote->name );
+                g_action_msgs_pending.push_back( _( "You turn the engine off." ) );
+            } else {
+                veh.start_engines( here, remote );
+                add_msg( _( "%s starts the engine." ), remote->name );
+                g_action_msgs_pending.push_back( _( "You start the engine." ) );
+            }
+        }
         g_remote_moves -= remote->get_speed();
         g_client_acted_this_turn = true;
         g_last_forwarded_msg_count = Messages::size();
@@ -1894,8 +2063,14 @@ void process_mp_events()
     // from a previous session (server and client share the same world directory).
     mp_cleanup_stale_npcs();
 
+    static int s_call_id = 0;
+    const int call_id = ++s_call_id;
     mp_event event;
     while( get_mp_queue().pop( event ) ) {
+        if( event.evt_type == mp_event::type::action ) {
+            mp_log( "[cdda-mp] process_mp_events #" + std::to_string( call_id ) +
+                    " popped: " + event.data.substr( 0, 60 ) );
+        }
         switch( event.evt_type ) {
             case mp_event::type::connect:
                 spawn_remote_player( event.session_id );
@@ -2376,6 +2551,18 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // Play sfx events forwarded from the host's turn.
+        if( jo.has_array( "sfx" ) ) {
+            for( const JsonValue &sv : jo.get_array( "sfx" ) ) {
+                JsonObject so = sv.get_object();
+                so.allow_omitted_members();
+                if( so.has_string( "id" ) && so.has_string( "v" ) && so.has_int( "vol" ) ) {
+                    sfx::play_variant_sound( so.get_string( "id" ), so.get_string( "v" ),
+                                            so.get_int( "vol" ) );
+                }
+            }
+        }
+
         // Client manages its own inventory via the normal pickup dialog.
         // No server-driven inventory sync needed.
 
@@ -2635,6 +2822,37 @@ std::string client_enrich_action( const std::string &json )
     const float cl = av.active_light();
     const std::string tile_changes = build_client_tile_changes();
 
+    // Build char_stats block: base stats, all skills, and known proficiencies.
+    // Applied server-side to the NPC proxy so pldrive(), melee, etc. use real values.
+    std::string char_stats = "{";
+    char_stats += "\"str\":" + std::to_string( av.get_str_base() );
+    char_stats += ",\"dex\":" + std::to_string( av.get_dex_base() );
+    char_stats += ",\"int\":" + std::to_string( av.get_int_base() );
+    char_stats += ",\"per\":" + std::to_string( av.get_per_base() );
+    char_stats += ",\"skills\":[";
+    bool first_s = true;
+    for( const auto &[sid, slevel] : av.get_all_skills() ) {
+        const int lvl = slevel.level();
+        if( lvl <= 0 ) {
+            continue;
+        }
+        if( !first_s ) {
+            char_stats += ',';
+        }
+        first_s = false;
+        char_stats += "[\"" + sid.str() + "\"," + std::to_string( lvl ) + "]";
+    }
+    char_stats += "],\"profs\":[";
+    bool first_p = true;
+    for( const proficiency_id &pid : av.known_proficiencies() ) {
+        if( !first_p ) {
+            char_stats += ',';
+        }
+        first_p = false;
+        char_stats += "\"" + pid.str() + "\"";
+    }
+    char_stats += "]}";
+
     std::string enriched = json;
     if( !enriched.empty() && enriched.back() == '}' ) {
         enriched.pop_back();
@@ -2646,6 +2864,7 @@ std::string client_enrich_action( const std::string &json )
         if( !monster_hits.empty() ) {
             enriched += ",\"client_monster_hits\":" + monster_hits;
         }
+        enriched += ",\"char_stats\":" + char_stats;
         enriched += '}';
     }
     return enriched;
@@ -3102,7 +3321,6 @@ static void apply_vehicle_sync( JsonObject &jo )
 
         // Find the vehicle object.  Primary: look at last-known abs position.
         vehicle *found = nullptr;
-        const char *find_method = "none";
         auto pos_it = g_client_veh_pos.find( nid );
         const bool first_encounter = ( pos_it == g_client_veh_pos.end() );
         const tripoint_abs_ms search_abs = ( pos_it != g_client_veh_pos.end() )
@@ -3113,7 +3331,6 @@ static void apply_vehicle_sync( JsonObject &jo )
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == search_abs ) {
                     found = wv.v;
-                    find_method = "tracked_pos";
                     break;
                 }
             }
@@ -3123,7 +3340,6 @@ static void apply_vehicle_sync( JsonObject &jo )
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == new_abs ) {
                     found = wv.v;
-                    find_method = "server_pos";
                     break;
                 }
             }
@@ -3134,33 +3350,14 @@ static void apply_vehicle_sync( JsonObject &jo )
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->name == vname ) {
                     found = wv.v;
-                    find_method = "name";
                     break;
                 }
             }
         }
 
-        mp_log( "[cdda-mp] veh_sync nid=" + std::to_string( nid ) + " name=" + vname
-                + " found_by=" + find_method
-                + " search=(" + std::to_string( search_abs.x() ) + "," + std::to_string( search_abs.y() ) + ")"
-                + " target=(" + std::to_string( new_abs.x() ) + "," + std::to_string( new_abs.y() ) + ")"
-                + " inbounds_search=" + std::to_string( m.inbounds( search_abs ) )
-                + " inbounds_target=" + std::to_string( m.inbounds( new_abs ) )
-                + " face=" + std::to_string( face_deg )
-                + " vel=" + std::to_string( vel ) );
-
         if( !found ) {
-            // Vehicle not in the client's reality bubble — don't update tracked position.
-            mp_log( "[cdda-mp] veh_sync MISS nid=" + std::to_string( nid ) + " not found by any method" );
             continue;
         }
-
-        mp_log( "[cdda-mp] veh_sync found at=("
-                + std::to_string( found->pos_abs().x() ) + ","
-                + std::to_string( found->pos_abs().y() ) + ")"
-                + " cur_face=" + std::to_string( static_cast<int>(
-                      std::lround( to_degrees( found->face.dir() ) ) ) )
-                + " inbounds_new=" + std::to_string( m.inbounds( new_abs ) ) );
 
         // Compute target facing.
         const units::angle face_angle = units::from_degrees( face_deg );
@@ -3171,13 +3368,7 @@ static void apply_vehicle_sync( JsonObject &jo )
         // then calls add_vehicle_to_cache.  Without this, a pure translation (no face
         // change) would copy stale precalc[1] into the cache — wrong part positions.
         found->pivot_rotation[1] = face_angle;
-        found->precalc_mounts( 1, face_angle, found->pivot_anchor[1] );
-        if( face_changed ) {
-            mp_log( "[cdda-mp] veh_sync: face change nid=" + std::to_string( nid )
-                    + " from=" + std::to_string( static_cast<int>(
-                          std::lround( to_degrees( found->face.dir() ) ) ) )
-                    + " to=" + std::to_string( face_deg ) );
-        }
+        found->precalc_mounts( 1, face_angle, found->pivot_point( m ) );
 
         // Move vehicle to server-authoritative position if it has changed AND the
         // target is inside the client's loaded map.  Driving out of the bubble is
@@ -3189,12 +3380,7 @@ static void apply_vehicle_sync( JsonObject &jo )
             const tripoint_bub_ms new_bub = m.get_bub( new_abs );
             const tripoint_rel_ms dp      = new_bub - cur_bub;
             if( dp != tripoint_rel_ms::zero ) {
-                mp_log( "[cdda-mp] veh_sync: displacing nid=" + std::to_string( nid )
-                        + " dp=(" + std::to_string( dp.x() ) + "," + std::to_string( dp.y() ) + ")" );
-                const bool ok = m.displace_vehicle( *found, dp );
-                mp_log( "[cdda-mp] veh_sync: displace result=" + std::to_string( ok )
-                        + " post_pos=(" + std::to_string( found->pos_abs().x() )
-                        + "," + std::to_string( found->pos_abs().y() ) + ")" );
+                m.displace_vehicle( *found, dp );
                 did_displace = true;
                 // advance_precalc_mounts inside displace_vehicle already:
                 //   - cleared the rendering cache at old positions
@@ -3230,7 +3416,7 @@ static void apply_vehicle_sync( JsonObject &jo )
                                                           found->bub_part_pos( m, vpr.part() ) );
                     }
                 }
-                found->precalc_mounts( 0, face_angle, found->pivot_anchor[0] );
+                found->precalc_mounts( 0, face_angle, found->pivot_point( m ) );
                 m.add_vehicle_to_cache( found );
             }
             // did_displace case: cache and precalc[0] are already correct (set by
@@ -3442,13 +3628,6 @@ static void apply_monster_sync( JsonObject &jo )
         // from flush_action_msgs / host_capture_avatar_msgs cover those, and
         // the dumb HP-delta version creates confusing duplicates.
         if( nid != 0 && server_hp >= 0 ) {
-            const auto prev_it = g_last_monster_hp.find( nid );
-            if( prev_it != g_last_monster_hp.end() ) {
-                const int prev_hp = prev_it->second;
-                if( server_hp <= 0 && prev_hp > 0 ) {
-                    add_msg( m_good, "The " + best->name() + " dies!" );
-                }
-            }
             g_last_monster_hp[nid] = server_hp;
         }
 
@@ -3843,6 +4022,20 @@ std::string serialize_remote_player_state()
            ",\"tile_changes\":" + tile_changes +
            ",\"vehicles\":" + vehicles_json +
            ",\"msgs\":" + msgs_json +
+           ",\"sfx\":" + [&]() -> std::string {
+               std::string j = "[";
+               bool first = true;
+               for( const auto &e : g_host_sfx_queue ) {
+                   if( !first ) { j += ','; }
+                   first = false;
+                   j += "{\"id\":\"" + json_escape_str( e.id )
+                        + "\",\"v\":\"" + json_escape_str( e.variant )
+                        + "\",\"vol\":" + std::to_string( e.vol ) + "}";
+               }
+               g_host_sfx_queue.clear();
+               j += "]";
+               return j;
+           }() +
            ",\"map\":" + viewport + "}";
 }
 

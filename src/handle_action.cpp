@@ -2365,18 +2365,29 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return false;
         }
 
+        // Quickload would trash the MP session by reloading from disk.
+        if( act == ACTION_QUICKLOAD ) {
+            return false;
+        }
+
         // While locked, block anything that would cost moves via local fallthrough.
         // Movement/wait go through mp_dispatch (queued) and are fine.
         // Free UI actions (inventory, map, look, etc.) are also fine.
         if( mp_locked ) {
             static const std::set<action_id> blocked_while_locked = {
                 ACTION_WEAR, ACTION_TAKE_OFF, ACTION_WIELD, ACTION_UNLOAD, ACTION_MEND,
-                ACTION_EAT,
+                ACTION_EAT, ACTION_OPEN_CONSUME,
                 ACTION_DROP, ACTION_DIR_DROP,
                 ACTION_PICKUP, ACTION_PICKUP_ALL,
                 ACTION_FIRE, ACTION_FIRE_BURST, ACTION_BUTCHER, ACTION_LOOT,
-                ACTION_SLEEP,
+                ACTION_SLEEP, ACTION_CHAT,
                 ACTION_PEEK, ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
+                ACTION_GRAB, ACTION_HAUL,
+                ACTION_BIONICS, ACTION_MUTATIONS,
+                ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
+                ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
+                ACTION_WORKOUT, ACTION_AUTOATTACK,
+                ACTION_OPEN, ACTION_CLOSE, ACTION_SMASH,
             };
             if( blocked_while_locked.count( act ) ) {
                 return false;

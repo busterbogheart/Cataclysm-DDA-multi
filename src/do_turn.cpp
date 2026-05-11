@@ -835,7 +835,11 @@ bool do_turn()
     m.build_floor_caches();
 
     m.process_falling();
-    m.vehmove();
+    if( !cata_mp::is_client_mode() ) {
+        const size_t pre_veh = cata_mp::is_hosting() ? Messages::size() : 0;
+        m.vehmove();
+        cata_mp::host_capture_vehmove_msgs( pre_veh );
+    }
     if( !cata_mp::is_client_mode() ) {
         m.process_fields();
     }

@@ -42,6 +42,7 @@
 #include "units.h"
 #include "avatar.h"
 #include "game.h"
+#include "mp_gamestate.h"
 
 #define dbg(x) DebugLog((x),D_SDL) << __FILE__ << ":" << __LINE__ << ": "
 
@@ -968,6 +969,7 @@ void sfx::play_variant_sound( const std::string &id, const std::string &variant,
     if( !check_sound( volume ) ) {
         return;
     }
+    cata_mp::host_queue_sfx( id, variant, volume );
     const sound_effect *eff = find_random_effect( id, variant, season, is_indoors, is_night );
     if( eff == nullptr ) {
         eff = find_random_effect( id, "default", "", std::optional<bool>(), std::optional<bool>() );
@@ -1001,6 +1003,7 @@ void sfx::play_variant_sound( const std::string &id, const std::string &variant,
     if( !check_sound( volume ) ) {
         return;
     }
+    cata_mp::host_queue_sfx( id, variant, volume );
     const sound_effect *eff = find_random_effect( id, variant, season, is_indoors, is_night );
     if( eff == nullptr ) {
         return;

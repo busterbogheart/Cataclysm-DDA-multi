@@ -95,6 +95,9 @@ void set_last_monmove_ms( int ms );
 // for the client with "You" → host character name substitution.
 // Call from do_turn() after each handle_action() when a remote player is connected.
 void host_capture_avatar_msgs( size_t pre_msg );
+// Capture ALL messages from vehmove() and queue them for the remote client as
+// their own messages (vehicle collision/status messages the driver should see).
+void host_capture_vehmove_msgs( size_t pre_msg );
 
 // Write a [cdda-mp] log line to stdout AND to /tmp/cdda-mp-server.log or
 // /tmp/cdda-mp-client.log (depending on mode).  Use this for any event that
@@ -151,6 +154,10 @@ void set_client_ctrl_veh( bool b );
 // controlling, as broadcast by the server in the most recent state packet.
 // Returns a zero tripoint when not driving.
 tripoint_abs_ms client_ctrl_veh_abs();
+
+// Host only: called by sdlsound to enqueue an sfx event for forwarding to the
+// client in the next grant.  Silently ignored when not hosting.
+void host_queue_sfx( const std::string &id, const std::string &variant, int vol );
 
 } // namespace cata_mp
 
