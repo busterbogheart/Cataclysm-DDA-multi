@@ -3285,9 +3285,16 @@ bool cata_tiles::draw_from_id_string_internal( const std::string &id, TILE_CATEG
             seed = rng_bits(); // Doesn't need to be deterministic
             break;
         case TILE_CATEGORY::MONSTER:
-            // FIXME: add persistent id to Creature type, instead of using monster pointer address
             if( monster_override.find( tripoint_bub_ms( pos ) ) == monster_override.end() ) {
-                seed = reinterpret_cast<uintptr_t>( creatures.creature_at<monster>( pos ) );
+                const monster *mon = creatures.creature_at<monster>( pos );
+                if( mon != nullptr ) {
+                    // Use the stable network ID when available so both host and client
+                    // hash to the same tile variant.  Fall back to pointer address for
+                    // monsters that haven't been assigned a net ID yet (SP / pre-sync).
+                    seed = ( mon->mp_net_id != 0 )
+                           ? static_cast<unsigned int>( mon->mp_net_id )
+                           : reinterpret_cast<uintptr_t>( mon );
+                }
             }
             break;
         default:
