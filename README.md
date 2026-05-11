@@ -150,7 +150,7 @@ make -j$(sysctl -n hw.logicalcpu) NATIVE=osx CLANG=1 TILES=1 SOUND=1 PCH=0 LINTJ
 
 ### Two-machine LAN quickstart
 
-Both machines need the repo built. The shared save is in the repo — a `git pull` on the client is all that's needed to sync it.
+Both machines need the binary built locally (binaries are CPU-architecture specific and can't be shared). The shared save is in the repo — `git pull` on the client syncs it automatically at session start.
 
 Then use `start-mp.sh` — it handles world/character selection interactively and writes logs to `/tmp/`.
 

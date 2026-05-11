@@ -271,6 +271,9 @@ if [[ "$MODE" == "host" ]]; then
     echo "  Port   : $HOST_PORT"
     echo "  Log    : $HOST_LOG"
     echo ""
+    echo "  NOTE: If clients can't connect, allow this app through macOS Firewall:"
+    echo "    System Settings → Network → Firewall → Options → add cataclysm-tiles"
+    echo ""
     > "$HOST_LOG"
     "$GAME" --host --world "$WORLD" --char "$HOST_CHAR" 2>&1 | tee "$HOST_LOG"
     echo ""
@@ -292,8 +295,13 @@ elif [[ "$MODE" == "client" ]]; then
     echo "  Log    : $CLIENT_LOG"
     echo ""
     > "$CLIENT_LOG"
-    exec "$GAME" --client "${HOST_IP}:${HOST_PORT}" --client-name "$CLIENT_CHAR" \
+    "$GAME" --client "${HOST_IP}:${HOST_PORT}" --client-name "$CLIENT_CHAR" \
          --world "$WORLD" --char "$CLIENT_CHAR" 2>&1 | tee "$CLIENT_LOG"
+    echo ""
+    if git -C "$GAME_DIR" status --porcelain save/ | grep -q .; then
+        echo "Local save changes detected after client session — discarding (host is authoritative)."
+        git -C "$GAME_DIR" checkout -- save/
+    fi
 
 else
     # both — local co-op testing
