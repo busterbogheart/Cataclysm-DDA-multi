@@ -956,6 +956,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
     }
 
+    // Sync client facing direction so the remote NPC proxy flips correctly.
+    if( jo.has_int( "client_facing" ) ) {
+        remote->facing = jo.get_int( "client_facing" ) == 0
+                         ? FacingDirection::LEFT : FacingDirection::RIGHT;
+    }
+
     // Worn-item sync — client sends this once after joining (and after any
     // wear/take-off) so the remote NPC reflects the client's actual equipment.
     if( msg.find( "\"action\":\"worn_sync\"" ) != std::string::npos ) {
@@ -2411,6 +2417,15 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // Sync host facing direction for correct sprite flip.
+        if( jo.has_int( "host_facing" ) && client_host_npc_spawned ) {
+            npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
+            if( host_npc ) {
+                host_npc->facing = jo.get_int( "host_facing" ) == 0
+                                   ? FacingDirection::LEFT : FacingDirection::RIGHT;
+            }
+        }
+
         std::cout << "[cdda-mp] monster sync..." << std::flush;
         apply_monster_sync( jo );
         std::cout << " ok" << std::endl;
@@ -2865,6 +2880,8 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_monster_hits\":" + monster_hits;
         }
         enriched += ",\"char_stats\":" + char_stats;
+        enriched += ",\"client_facing\":" + std::to_string(
+                        av.facing == FacingDirection::LEFT ? 0 : 1 );
         enriched += '}';
     }
     return enriched;
@@ -3156,12 +3173,14 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
             out += ',';
         }
         first = false;
+        const int mon_facing = ( mon_ptr->facing == FacingDirection::LEFT ) ? 0 : 1;
         out += "{\"nid\":" + std::to_string( mon_ptr->mp_net_id )
                + ",\"id\":\"" + mon_ptr->type->id.str() + "\""
                + ",\"x\":" + std::to_string( mp.x() )
                + ",\"y\":" + std::to_string( mp.y() )
                + ",\"z\":" + std::to_string( mp.z() )
-               + ",\"hp\":" + std::to_string( mon_ptr->get_hp() ) + "}";
+               + ",\"hp\":" + std::to_string( mon_ptr->get_hp() )
+               + ",\"facing\":" + std::to_string( mon_facing ) + "}";
     }
     out += ']';
     return out;
@@ -3639,6 +3658,12 @@ static void apply_monster_sync( JsonObject &jo )
                 best->set_hp( server_hp );
             }
         }
+
+        // Sync facing direction for correct sprite flip.
+        if( mo.has_int( "facing" ) ) {
+            best->facing = mo.get_int( "facing" ) == 0
+                           ? FacingDirection::LEFT : FacingDirection::RIGHT;
+        }
     }
 
     // Any client monster in range that the server didn't mention is dead on the server.
@@ -4000,6 +4025,7 @@ std::string serialize_remote_player_state()
            "\"host_male\":" + host_male_str + ","
            "\"host_appearance\":" + host_appearance_json + ","
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
+           "\"host_facing\":" + std::to_string( host.facing == FacingDirection::LEFT ? 0 : 1 ) + ","
            "\"host_light\":" + std::to_string( host.active_light() ) + ","
            "\"bodyparts\":" + bparts_json +
            ",\"moves\":" + std::to_string( g_remote_moves ) +
