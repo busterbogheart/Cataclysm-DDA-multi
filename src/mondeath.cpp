@@ -56,15 +56,21 @@ item_location mdeath::normal( map *here, monster &z )
         //Currently it is possible to get multiple messages that a monster died.
         add_msg_if_player_sees( z, m_good, _( "The %s dies!" ), z.name() );
 
-        // MP: if a remote player NPC killed this monster, emit an attributed kill message.
-        // The between-action filter in serialize_remote_player_state forwards any message
-        // containing the NPC's name to the client as "You kill the zombie!"
+        // MP: emit attributed kill messages so both players know who got the kill.
         if( cata_mp::is_hosting() ) {
             const Creature *killer = z.get_killer();
-            if( killer && killer->is_npc() &&
-                cata_mp::is_remote_player( killer->as_character()->getID() ) ) {
-                add_msg_if_player_sees( z, m_good, _( "%s kills the %s!" ),
-                                        killer->get_name(), z.name() );
+            if( killer ) {
+                if( killer->is_avatar() ) {
+                    // Host kill: "You kill the X!" is captured by host_capture_avatar_msgs
+                    // and forwarded to the client as "Mitch kills the X!"
+                    add_msg( m_good, _( "You kill the %s!" ), z.name() );
+                } else if( killer->is_npc() &&
+                           cata_mp::is_remote_player( killer->as_character()->getID() ) ) {
+                    // Remote player kill: between-action filter forwards this to the client
+                    // as "You kill the X!" because it contains the NPC's name.
+                    add_msg_if_player_sees( z, m_good, _( "%s kills the %s!" ),
+                                            killer->get_name(), z.name() );
+                }
             }
         }
     }

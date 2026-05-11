@@ -3437,16 +3437,16 @@ static void apply_monster_sync( JsonObject &jo )
             }
         }
 
-        // Synthesise combat messages from HP deltas before applying the new value.
+        // Synthesise death messages from HP deltas before applying the new value.
+        // "takes N damage" is intentionally omitted — attributed hit messages
+        // from flush_action_msgs / host_capture_avatar_msgs cover those, and
+        // the dumb HP-delta version creates confusing duplicates.
         if( nid != 0 && server_hp >= 0 ) {
             const auto prev_it = g_last_monster_hp.find( nid );
             if( prev_it != g_last_monster_hp.end() ) {
                 const int prev_hp = prev_it->second;
                 if( server_hp <= 0 && prev_hp > 0 ) {
                     add_msg( m_good, "The " + best->name() + " dies!" );
-                } else if( server_hp < prev_hp ) {
-                    add_msg( m_info, "The " + best->name() + " takes " +
-                             std::to_string( prev_hp - server_hp ) + " damage." );
                 }
             }
             g_last_monster_hp[nid] = server_hp;
