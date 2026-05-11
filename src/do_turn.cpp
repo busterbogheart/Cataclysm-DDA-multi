@@ -708,9 +708,13 @@ bool do_turn()
                     g->queue_screenshot = false;
                 }
 
-                if( g->handle_action() ) {
-                    ++g->moves_since_last_save;
-                    u.action_taken();
+                {
+                    const size_t pre_msg = cata_mp::is_hosting() ? Messages::size() : 0;
+                    if( g->handle_action() ) {
+                        ++g->moves_since_last_save;
+                        u.action_taken();
+                        cata_mp::host_capture_avatar_msgs( pre_msg );
+                    }
                 }
 
                 // Auto-wait: if the client has had moves for > 500 ms without acting,

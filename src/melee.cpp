@@ -82,6 +82,7 @@
 #include "vpart_position.h"
 #include "weakpoint.h"
 #include "weighted_list.h"
+#include "mp_gamestate.h"
 
 static const anatomy_id anatomy_human_anatomy( "human_anatomy" );
 
@@ -2676,7 +2677,11 @@ void player_hit_message( Character *attacker, const std::string &message,
         msgtype = m_neutral;
     } else if( crit ) {
         //Player won't see exact numbers of damage dealt by NPC unless player has DEBUG_NIGHTVISION trait
-        if( attacker->is_npc() && !player_character.has_trait( trait_DEBUG_NIGHTVISION ) ) {
+        // Exception: remote player NPC always shows damage so the host can see co-op partner hits.
+        const bool suppress_npc_dam = attacker->is_npc()
+                                      && !player_character.has_trait( trait_DEBUG_NIGHTVISION )
+                                      && !cata_mp::is_remote_player( attacker->getID() );
+        if( suppress_npc_dam ) {
             //~ NPC hits something (critical)
             msg = string_format( _( "%s.  Critical!" ), message );
         } else if( technique && !wp_hit.empty() ) {
@@ -2690,7 +2695,10 @@ void player_hit_message( Character *attacker, const std::string &message,
         sSCTmod = _( "Critical!" );
         gmtSCTcolor = m_critical;
     } else {
-        if( attacker->is_npc() && !player_character.has_trait( trait_DEBUG_NIGHTVISION ) ) {
+        const bool suppress_npc_dam = attacker->is_npc()
+                                      && !player_character.has_trait( trait_DEBUG_NIGHTVISION )
+                                      && !cata_mp::is_remote_player( attacker->getID() );
+        if( suppress_npc_dam ) {
             //~ NPC hits something
             msg = string_format( _( "%s." ), message );
         } else if( technique && !wp_hit.empty() ) {

@@ -28,6 +28,8 @@
 #include "sounds.h"
 #include "translations.h"
 #include "type_id.h"
+#include "mp_gamestate.h"
+#include "character.h"
 #include "units.h"
 #include "value_ptr.h"
 
@@ -53,6 +55,18 @@ item_location mdeath::normal( map *here, monster &z )
 
         //Currently it is possible to get multiple messages that a monster died.
         add_msg_if_player_sees( z, m_good, _( "The %s dies!" ), z.name() );
+
+        // MP: if a remote player NPC killed this monster, emit an attributed kill message.
+        // The between-action filter in serialize_remote_player_state forwards any message
+        // containing the NPC's name to the client as "You kill the zombie!"
+        if( cata_mp::is_hosting() ) {
+            const Creature *killer = z.get_killer();
+            if( killer && killer->is_npc() &&
+                cata_mp::is_remote_player( killer->as_character()->getID() ) ) {
+                add_msg_if_player_sees( z, m_good, _( "%s kills the %s!" ),
+                                        killer->get_name(), z.name() );
+            }
+        }
     }
 
     if( z.death_drops ) {

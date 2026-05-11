@@ -91,6 +91,11 @@ void wait_for_client_action();
 // display on the debug HUD.  Call from do_turn() immediately after monmove().
 void set_last_monmove_ms( int ms );
 
+// Server only: capture avatar-generated messages since pre_msg and queue them
+// for the client with "You" → host character name substitution.
+// Call from do_turn() after each handle_action() when a remote player is connected.
+void host_capture_avatar_msgs( size_t pre_msg );
+
 // Write a [cdda-mp] log line to stdout AND to /tmp/cdda-mp-server.log or
 // /tmp/cdda-mp-client.log (depending on mode).  Use this for any event that
 // should be readable after a session without stopping the process.

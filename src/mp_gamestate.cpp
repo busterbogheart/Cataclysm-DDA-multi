@@ -140,6 +140,11 @@ static size_t g_last_forwarded_msg_count = 0;
 // Cleared by serialize_remote_player_state() when it consumes them.
 static std::vector<std::string> g_action_msgs_pending;
 
+// Server: messages from the avatar's own actions, forwarded to the client with
+// "You" → host character name so the client sees attributed host hits.
+// Populated by host_capture_avatar_msgs(); cleared by serialize_remote_player_state().
+static std::vector<std::string> g_host_action_msgs_pending;
+
 // Client: maps server-assigned network IDs to local monster pointers.
 // Rebuilt each sync tick from creature_tracker before applying updates.
 static std::unordered_map<uint32_t, monster *> g_net_id_map;
@@ -743,6 +748,35 @@ static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
         }
         mp_log( "[cdda-mp] flush_action_msgs queued: " + out );
         g_action_msgs_pending.push_back( out );
+    }
+}
+
+// Capture messages the avatar generated since pre_msg and queue them for the client,
+// replacing "You" with the host character's name so the client sees attributed hits.
+// Called from do_turn after each avatar handle_action() when a remote player is connected.
+void host_capture_avatar_msgs( size_t pre_msg )
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    const size_t cur = Messages::size();
+    if( cur <= pre_msg ) {
+        return;
+    }
+    const std::string host_name = get_avatar().name;
+    const auto new_msgs = Messages::recent_messages( cur - pre_msg );
+    for( const auto &[time_str, text] : new_msgs ) {
+        ( void )time_str;
+        // Only forward messages that look like avatar combat ("You " prefix).
+        // Inventory, UI, and ambient messages are excluded.
+        if( text.rfind( "You ", 0 ) != 0 ) {
+            continue;
+        }
+        std::string out = text;
+        // Replace "You" with the host's character name.
+        out.replace( 0, 3, host_name );
+        mp_log( "[cdda-mp] host_combat_msg: " + out );
+        g_host_action_msgs_pending.push_back( out );
     }
 }
 
@@ -3657,6 +3691,12 @@ std::string serialize_remote_player_state()
         append_msg( text );
     }
     g_action_msgs_pending.clear();
+
+    // 1b. Host avatar combat messages forwarded with "You" → host name attribution.
+    for( const std::string &text : g_host_action_msgs_pending ) {
+        append_msg( text );
+    }
+    g_host_action_msgs_pending.clear();
 
     // 2. Between-action messages mentioning the remote player's NPC or their vehicle.
     // When the client is driving, physics messages (engine dies, collision, etc.)
