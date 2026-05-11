@@ -113,6 +113,7 @@ Cataclysm.exe.lastcodeanalysissucceeded
 *.sw?
 *~
 \#*
+!save/**
 gmon.out
 
 # System Files
