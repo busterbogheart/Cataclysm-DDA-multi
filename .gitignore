@@ -261,3 +261,4 @@ VERSION.txt
 # Local dev notes / AI instructions — not for the repo
 CLAUDE.md
 MYNOTES.md
+*.a
