@@ -1992,6 +1992,11 @@ void npc::decide_needs()
 
 void npc::say( const std::string &line, const sounds::sound_t spriority ) const
 {
+    // Remote player proxy NPCs are real human players — suppress all NPC speech.
+    if( cata_mp::is_remote_player( getID() ) ) {
+        return;
+    }
+
     std::string formatted_line = line;
     Character &player_character = get_player_character();
     parse_tags( formatted_line, player_character, *this );
