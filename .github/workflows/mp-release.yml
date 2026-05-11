@@ -1,0 +1,87 @@
+name: MP Release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'data/**'
+      - '.github/workflows/mp-release.yml'
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-13
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Homebrew packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ matrix.arch }}-${{ hashFiles('.github/workflows/mp-release.yml') }}
+          restore-keys: brew-${{ matrix.arch }}-
+
+      - name: Install dependencies
+        run: |
+          brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext
+
+      - name: Cache build objects
+        uses: actions/cache@v4
+        with:
+          path: obj/
+          key: obj-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: obj-${{ matrix.arch }}-
+
+      - name: Build
+        run: |
+          make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+          mv cataclysm-tiles cataclysm-tiles-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cataclysm-tiles-${{ matrix.arch }}
+          path: cataclysm-tiles-${{ matrix.arch }}
+          retention-days: 7
+
+  release:
+    name: Publish latest release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Update latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          prerelease: true
+          body: |
+            Auto-built from `master` on every push.
+
+            **Download the binary for your architecture and place it in your cloned repo directory.**
+
+            | File | Platform |
+            |---|---|
+            | `cataclysm-tiles-arm64` | Apple Silicon (M1/M2/M3/M4) |
+            | `cataclysm-tiles-x86_64` | Intel Mac |
+
+            The data files (tiles, sound, save) come from the repo — clone it first, then drop the binary in.
+          files: |
+            cataclysm-tiles-arm64
+            cataclysm-tiles-x86_64
