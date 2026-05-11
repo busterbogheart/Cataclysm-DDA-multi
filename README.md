@@ -185,9 +185,11 @@ Both scripts prompt you to pick a world and character from the local save. The c
 | Flag | Argument | Default | Description |
 |---|---|---|---|
 | `--host` | — | — | Play normally while hosting a listen server |
+| `--server` | — | — | Run as a headless dedicated server (no display) |
 | `--world` | `<name>` | — | World to load on startup — required for host and client |
 | `--char` | `<name>` | — | Character name to load |
 | `--port` | `<number>` | 8080 | TCP port to listen on |
+| `--password` | `<string>` | — | Password required to join |
 | `--client` | `<host:port>` | — | Connect to a host as a client |
 | `--client-name` | `<name>` | player2 | Player name shown to the host |
 
