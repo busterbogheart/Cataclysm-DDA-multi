@@ -55,17 +55,43 @@ jobs:
               for line in r.stdout.splitlines()[1:]:
                   yield line.strip().split(" (")[0].strip()
 
+          def get_rpaths(path):
+              r = subprocess.run(["otool", "-l", path], capture_output=True, text=True)
+              rpaths = []
+              lines = r.stdout.splitlines()
+              for i, line in enumerate(lines):
+                  if "LC_RPATH" in line:
+                      for j in range(i, min(i + 5, len(lines))):
+                          if "path " in lines[j]:
+                              rp = lines[j].strip().split("path ")[1].split(" (")[0].strip()
+                              rpaths.append(rp)
+                              break
+              return rpaths
+
+          def resolve_dep(dep, rpaths):
+              if dep.startswith("/usr/local/opt/") or dep.startswith("/usr/local/lib/"):
+                  return dep if os.path.exists(dep) else None
+              if dep.startswith("@rpath/"):
+                  name = dep[len("@rpath/"):]
+                  for rp in rpaths:
+                      candidate = os.path.join(rp, name)
+                      if os.path.exists(candidate):
+                          return candidate
+              return None
+
           queue = deque([bin_name])
           while queue:
               current = queue.popleft()
+              rpaths = get_rpaths(current)
               for dep in otool_deps(current):
-                  if not dep.startswith("/usr/local/opt/"):
+                  resolved = resolve_dep(dep, rpaths)
+                  if not resolved:
                       continue
-                  name = os.path.basename(dep)
+                  name = os.path.basename(resolved)
                   if name in seen:
                       continue
-                  seen[name] = dep
-                  shutil.copy2(dep, name)
+                  seen[name] = resolved
+                  shutil.copy2(resolved, name)
                   os.chmod(name, 0o755)
                   subprocess.run(["install_name_tool", "-id",
                                   f"@executable_path/{name}", name], check=True)
@@ -73,11 +99,20 @@ jobs:
 
           all_files = [bin_name] + list(seen.keys())
           for target in all_files:
+              rpaths = get_rpaths(target)
               for dep in otool_deps(target):
                   name = os.path.basename(dep)
                   if name in seen:
                       subprocess.run(["install_name_tool", "-change",
                                       dep, f"@executable_path/{name}", target], check=True)
+                  elif dep.startswith("@rpath/"):
+                      rname = dep[len("@rpath/"):]
+                      if rname in seen:
+                          subprocess.run(["install_name_tool", "-change",
+                                          dep, f"@executable_path/{rname}", target], check=True)
+
+          for target in all_files:
+              subprocess.run(["codesign", "--force", "--sign", "-", target], check=True)
 
           with zipfile.ZipFile("cataclysm-tiles-x86_64.zip", "w",
                                compression=zipfile.ZIP_DEFLATED) as zf:
