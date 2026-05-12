@@ -44,11 +44,13 @@ jobs:
       - name: Bundle dylibs
         run: |
           python3 - << 'PYEOF'
-          import subprocess, os, shutil, zipfile
+          import subprocess, os, shutil, zipfile, stat
           from collections import deque
 
           bin_name = "cataclysm-tiles-x86_64"
           seen = {}   # basename -> original full path
+
+          SYSTEM_PREFIXES = ("/usr/lib/", "/System/", "/Library/Apple/")
 
           def otool_deps(path):
               r = subprocess.run(["otool", "-L", path], capture_output=True, text=True)
@@ -64,29 +66,40 @@ jobs:
                       for j in range(i, min(i + 5, len(lines))):
                           if "path " in lines[j]:
                               rp = lines[j].strip().split("path ")[1].split(" (")[0].strip()
-                              rpaths.append(rp)
+                              if not rp.startswith("@"):
+                                  rpaths.append(rp)
                               break
               return rpaths
 
-          def resolve_dep(dep, rpaths):
-              if dep.startswith("/usr/local/opt/") or dep.startswith("/usr/local/lib/"):
-                  return dep if os.path.exists(dep) else None
+          def resolve_dep(dep, rpaths, loader_path=None):
+              if any(dep.startswith(p) for p in SYSTEM_PREFIXES):
+                  return None
+              if dep.startswith("/") and os.path.exists(dep):
+                  return dep
               if dep.startswith("@rpath/"):
                   name = dep[len("@rpath/"):]
                   for rp in rpaths:
                       candidate = os.path.join(rp, name)
                       if os.path.exists(candidate):
                           return candidate
+              if dep.startswith("@loader_path/") and loader_path:
+                  candidate = os.path.join(loader_path, dep[len("@loader_path/"):])
+                  candidate = os.path.normpath(candidate)
+                  if os.path.exists(candidate):
+                      return candidate
               return None
 
-          queue = deque([bin_name])
+          queue = deque([(bin_name, None)])
           while queue:
-              current = queue.popleft()
+              current, loader_dir = queue.popleft()
+              if loader_dir is None:
+                  loader_dir = os.path.dirname(os.path.abspath(current))
               rpaths = get_rpaths(current)
               for dep in otool_deps(current):
-                  resolved = resolve_dep(dep, rpaths)
+                  resolved = resolve_dep(dep, rpaths, loader_dir)
                   if not resolved:
                       continue
+                  resolved = os.path.realpath(resolved)
                   name = os.path.basename(resolved)
                   if name in seen:
                       continue
@@ -95,11 +108,15 @@ jobs:
                   os.chmod(name, 0o755)
                   subprocess.run(["install_name_tool", "-id",
                                   f"@executable_path/{name}", name], check=True)
-                  queue.append(name)
+                  queue.append((name, os.path.dirname(resolved)))
+
+          print(f"Bundled {len(seen)} dylibs:")
+          for n in sorted(seen): print(f"  {n}  <-  {seen[n]}")
 
           all_files = [bin_name] + list(seen.keys())
           for target in all_files:
               rpaths = get_rpaths(target)
+              loader_dir = os.path.dirname(os.path.abspath(target))
               for dep in otool_deps(target):
                   name = os.path.basename(dep)
                   if name in seen:
@@ -114,12 +131,21 @@ jobs:
           for target in all_files:
               subprocess.run(["codesign", "--force", "--sign", "-", target], check=True)
 
+          launcher = "launch.command"
+          with open(launcher, "w") as f:
+              f.write('#!/bin/bash\n')
+              f.write('cd "$(dirname "$0")"\n')
+              f.write('xattr -cr . 2>/dev/null\n')
+              f.write('exec ./cataclysm-tiles-x86_64 "$@"\n')
+          os.chmod(launcher, 0o755)
+
           with zipfile.ZipFile("cataclysm-tiles-x86_64.zip", "w",
                                compression=zipfile.ZIP_DEFLATED) as zf:
               zf.write(bin_name)
+              zf.write(launcher)
               for name in seen:
                   zf.write(name)
-          print(f"Zipped {bin_name} + {len(seen)} dylibs")
+          print(f"Zipped {bin_name} + {launcher} + {len(seen)} dylibs")
           PYEOF
 
       - uses: actions/upload-artifact@v4
@@ -149,12 +175,24 @@ jobs:
           body: |
             Auto-built from `master` on every push.
 
-            **Download the binary and place it in your cloned repo directory.**
+            **Clone the repo first, then unzip the binary + dylibs into the repo root.**
 
             | File | Platform |
             |---|---|
             | `cataclysm-tiles-x86_64.zip` | Intel Mac |
 
-            The data files (tiles, sound, save) come from the repo — clone it first, then unzip the binary and dylibs into that directory.
+            ### First-run on macOS (Intel)
+            macOS will quarantine downloaded files. Two options:
+
+            **Option A — double-click launcher (easiest):**
+            Right-click `launch.command` → Open → Open Anyway.
+            This strips quarantine and starts the game. Subsequent launches work normally.
+
+            **Option B — Terminal:**
+            ```
+            cd /path/to/cataclysm-folder
+            xattr -cr .
+            ./cataclysm-tiles-x86_64
+            ```
           files: |
             cataclysm-tiles-x86_64.zip
