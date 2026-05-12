@@ -1878,13 +1878,7 @@ static void fire()
         int sel = uilist( _( "Draw what?" ), options );
         if( sel >= 0 ) {
             actions[sel]();
-            if( cata_mp::is_client_mode() ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                you.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action();
             return;
         }
     }
@@ -2838,10 +2832,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
             if( worn_after.size() != worn_before.size() ) {
                 // An item was actually worn — sync appearance and charge server a turn.
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
+                cata_mp::mp_client_post_action();
             }
             return true;
         }
@@ -2857,10 +2848,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
             if( worn_after.size() != worn_before.size() ) {
                 // An item was actually removed — sync appearance and charge server a turn.
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
+                cata_mp::mp_client_post_action();
             }
             return true;
         }
@@ -3360,26 +3348,14 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // while in the shell.  Eating, gear-changing, and item use are OK.
             const int pre_use_moves = player_character.get_moves();
             avatar_action::use_item( player_character );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_use_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_use_moves );
             break;
         }
 
         case ACTION_USE_WIELDED: {
             const int pre_use_moves = player_character.get_moves();
             player_character.use_wielded();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_use_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_use_moves );
             break;
         }
 
@@ -3412,13 +3388,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             item_location loc = game_menus::inv::wield();
             if( loc ) {
                 player_character.wield( loc );
-                if( cata_mp::is_client_mode() ) {
-                    cata_mp::client_resync_worn();
-                    cata_mp::client_send( cata_mp::client_enrich_action(
-                        "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                    player_character.set_moves( 0 );
-                    cata_mp::client_mark_action_sent();
-                }
+                cata_mp::mp_client_post_action();
             }
             break;
         }
@@ -3430,65 +3400,35 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         case ACTION_RELOAD_ITEM: {
             const int pre_reload_moves = player_character.get_moves();
             reload_item();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_reload_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_reload_moves );
             break;
         }
 
         case ACTION_RELOAD_WEAPON: {
             const int pre_reload_moves = player_character.get_moves();
             reload_weapon();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_reload_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_reload_moves );
             break;
         }
 
         case ACTION_RELOAD_WIELDED: {
             const int pre_reload_moves = player_character.get_moves();
             reload_wielded();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_reload_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_reload_moves );
             break;
         }
 
         case ACTION_UNLOAD: {
             const int pre_unload_moves = player_character.get_moves();
             avatar_action::unload( player_character );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_unload_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_unload_moves );
             break;
         }
 
         case ACTION_MEND: {
             const int pre_mend_moves = player_character.get_moves();
             avatar_action::mend( player_character, item_location() );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_mend_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_mend_moves );
             break;
         }
 
@@ -3496,65 +3436,35 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             const int pre_throw_moves = player_character.get_moves();
             item_location loc;
             avatar_action::plthrow( player_character, loc );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_throw_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_throw_moves );
             break;
         }
 
         case ACTION_THROW_WIELDED: {
             const int pre_throw_moves = player_character.get_moves();
             avatar_action::plthrow_wielded( player_character );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_throw_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_throw_moves );
             break;
         }
 
         case ACTION_FIRE: {
             const int pre_fire_moves = player_character.get_moves();
             fire();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_fire_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_fire_moves );
             break;
         }
 
         case ACTION_CAST_SPELL: {
             const int pre_cast_moves = player_character.get_moves();
             cast_spell();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_cast_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_cast_moves );
             break;
         }
 
         case ACTION_RECAST_SPELL: {
             const int pre_cast_moves = player_character.get_moves();
             cast_spell( true );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_cast_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_cast_moves );
             break;
         }
 
@@ -3565,13 +3475,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     avatar_action::fire_wielded_weapon( player_character );
                 }
             }
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_burst_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_burst_moves );
             break;
         }
 
@@ -3610,13 +3514,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         case ACTION_INSERT_ITEM: {
             const int pre_insert_moves = player_character.get_moves();
             insert_item();
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_insert_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_insert_moves );
             break;
         }
 
@@ -3624,13 +3522,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // You CAN drop things to your own tile while in the shell.
             const int pre_unload_moves = player_character.get_moves();
             unload_container( mouse_target );
-            if( cata_mp::is_client_mode() && player_character.get_moves() < pre_unload_moves ) {
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            }
+            cata_mp::mp_client_post_action( pre_unload_moves );
             break;
         }
 

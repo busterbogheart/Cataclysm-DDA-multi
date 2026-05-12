@@ -52,6 +52,13 @@ bool is_client_waiting_for_ack();
 // Save the last smash action JSON so it can be re-queued for "keep smashing".
 void client_set_autosmash_json( const std::string &json );
 
+// Client only: after any action that consumed avatar moves, send a "wait" to
+// the server so the grant/ack cycle advances.  If pre_moves is provided, only
+// fires when the avatar has fewer moves now than it did before the action
+// (i.e. moves were actually spent).  Pass INT_MAX to fire unconditionally.
+// Also resyncs worn items and clears local moves to 0.
+void mp_client_post_action( int pre_moves = INT_MAX );
+
 // Ensure the MP debug HUD overlay is active. Safe to call every turn.
 void ensure_mp_hud();
 

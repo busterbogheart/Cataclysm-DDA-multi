@@ -2994,6 +2994,20 @@ bool is_client_waiting_for_ack()
     return g_client_waiting_for_ack;
 }
 
+void mp_client_post_action( int pre_moves )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    if( get_avatar().get_moves() >= pre_moves ) {
+        return;
+    }
+    client_resync_worn();
+    client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+    get_avatar().set_moves( 0 );
+    client_mark_action_sent();
+}
+
 int ms_since_last_grant()
 {
     using namespace std::chrono;
