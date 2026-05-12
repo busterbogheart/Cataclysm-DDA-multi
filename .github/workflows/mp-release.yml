@@ -9,10 +9,15 @@ on:
       - 'data/**'
       - '.github/workflows/mp-release.yml'
 
+concurrency:
+  group: mp-release
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build (x86_64)
     runs-on: macos-14
+    if: "!startsWith(github.event.head_commit.message, 'save:')"
 
     steps:
       - uses: actions/checkout@v4
