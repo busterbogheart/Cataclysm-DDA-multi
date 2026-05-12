@@ -34,10 +34,43 @@ jobs:
           arch -x86_64 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
           mv cataclysm-tiles cataclysm-tiles-x86_64
 
+      - name: Bundle dylibs
+        run: |
+          BIN=cataclysm-tiles-x86_64
+          # Collect all /usr/local/opt dylib deps (BFS over transitive deps)
+          declare -A seen
+          queue=("$BIN")
+          while [ ${#queue[@]} -gt 0 ]; do
+            current="${queue[0]}"
+            queue=("${queue[@]:1}")
+            while IFS= read -r dep; do
+              dep="${dep%% (*}"
+              dep="${dep# }"
+              [[ "$dep" != /usr/local/opt/* ]] && continue
+              name="$(basename "$dep")"
+              [[ -n "${seen[$name]}" ]] && continue
+              seen[$name]=1
+              cp "$dep" "$name"
+              chmod +w "$name"
+              install_name_tool -id "@executable_path/$name" "$name"
+              queue+=("$name")
+            done < <(otool -L "$current" | tail -n +2)
+          done
+          # Rewrite all references in binary and each copied dylib
+          for lib in "${!seen[@]}"; do
+            orig="$(otool -L "$BIN" | awk -v n="$lib" '$0 ~ n {print $1}')"
+            [ -n "$orig" ] && install_name_tool -change "$orig" "@executable_path/$lib" "$BIN"
+            for other in "${!seen[@]}"; do
+              ref="$(otool -L "$other" | awk -v n="$lib" '$0 ~ n {print $1}')"
+              [ -n "$ref" ] && install_name_tool -change "$ref" "@executable_path/$lib" "$other"
+            done
+          done
+          zip cataclysm-tiles-x86_64.zip "$BIN" "${!seen[@]}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: cataclysm-tiles-x86_64
-          path: cataclysm-tiles-x86_64
+          path: cataclysm-tiles-x86_64.zip
           retention-days: 7
 
   release:
@@ -65,8 +98,8 @@ jobs:
 
             | File | Platform |
             |---|---|
-            | `cataclysm-tiles-x86_64` | Intel Mac |
+            | `cataclysm-tiles-x86_64.zip` | Intel Mac |
 
-            The data files (tiles, sound, save) come from the repo — clone it first, then drop the binary in.
+            The data files (tiles, sound, save) come from the repo — clone it first, then unzip the binary and dylibs into that directory.
           files: |
-            cataclysm-tiles-x86_64
+            cataclysm-tiles-x86_64.zip
