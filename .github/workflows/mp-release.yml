@@ -104,8 +104,8 @@ jobs:
                   resolved = resolve_dep(dep, rpaths, loader_dir)
                   if not resolved:
                       continue
+                  name = os.path.basename(resolved)  # use symlink name before realpath
                   resolved = os.path.realpath(resolved)
-                  name = os.path.basename(resolved)
                   if name in seen:
                       continue
                   seen[name] = resolved
