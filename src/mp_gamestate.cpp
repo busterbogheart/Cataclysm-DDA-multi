@@ -102,6 +102,11 @@ void set_host_mode( bool enabled )
     host_mode_ = enabled;
 }
 
+bool is_mp_mode()
+{
+    return server_mode_ || host_mode_;
+}
+
 bool is_hosting()
 {
     return get_active_server() != nullptr;

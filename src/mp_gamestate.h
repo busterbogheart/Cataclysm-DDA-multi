@@ -60,6 +60,9 @@ void ensure_mp_hud();
 bool is_server_mode();
 void set_server_mode( bool enabled );
 
+// True in any multiplayer role: host (--host) or dedicated server (--server).
+bool is_mp_mode();
+
 // True when running as an in-process host (--host flag, listen server in background thread).
 bool is_host_mode();
 void set_host_mode( bool enabled );

@@ -1,4 +1,5 @@
 #include "options.h"
+#include "mp_gamestate.h"
 
 #include <cfloat>
 #include <climits>
@@ -3626,6 +3627,10 @@ std::string options_manager::show( bool ingame, const bool world_options_only, b
             mvwprintz( w_options_tooltip, point( 3, 5 ), c_light_red, "%s", _( "Note: " ) );
             wprintz( w_options_tooltip, c_white, "%s",
                      _( "Some of these options may produce unexpected results if changed." ) );
+        }
+        if( cata_mp::is_mp_mode() && curr_item.data == "NPC_SPAWNTIME" ) {
+            mvwprintz( w_options_tooltip, point( 3, 6 ), c_yellow, "%s",
+                       _( "NPCs not available in co-op mode yet." ) );
         }
         wnoutrefresh( w_options_tooltip );
 

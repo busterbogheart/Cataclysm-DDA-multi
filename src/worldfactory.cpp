@@ -1,4 +1,5 @@
 #include "worldfactory.h"
+#include "mp_gamestate.h"
 
 #include <algorithm>
 #include <array>
@@ -1558,6 +1559,14 @@ int worldfactory::show_worldgen_basic( WORLD *world )
             wg_slevels.emplace_back( osl.default_level() );
         }
     }
+    if( cata_mp::is_mp_mode() ) {
+        for( int i = 0; i < static_cast<int>( wg_sliders.size() ); i++ ) {
+            if( wg_sliders[i].str() == "world_random_npcs" ) {
+                wg_slevels[i] = 0;
+                wg_sliders[i]->apply_opts( 0, world->WORLD_OPTIONS );
+            }
+        }
+    }
     const std::vector<int> wg_slvl_default = wg_slevels; // save default slider levels
 
     ui.on_redraw( [&]( const ui_adaptor & ) {
@@ -1601,22 +1610,27 @@ int worldfactory::show_worldgen_basic( WORLD *world )
         bool all_sliders_drawn = false;
         for( int i = top_opt == 0 ? 0 : top_opt - 1;
              i < static_cast<int>( wg_sliders.size() ) && y < content_height - 2; i++, y++ ) {
-            std::string sl_txt = get_opt_slider( win_width / 2 - 2, wg_slevels[i],
+            const bool mp_locked = cata_mp::is_mp_mode() && wg_sliders[i].str() == "world_random_npcs";
+            const int disp_level = mp_locked ? 0 : wg_slevels[i];
+            std::string sl_txt = get_opt_slider( win_width / 2 - 2, disp_level,
                                                  wg_sliders[i]->count() - 1,
-                                                 i == sel_opt - 1, custom_opts );
+                                                 !mp_locked && i == sel_opt - 1, custom_opts );
             trim_and_print( w_confirmation, point( 3, y++ ), win_width,
-                            c_white, wg_sliders[i]->name().translated() );
+                            mp_locked ? c_dark_gray : c_white, wg_sliders[i]->name().translated() );
             trim_and_print( w_confirmation, point( 3, y ), win_width,
-                            i == sel_opt - 1 ? hilite( c_white ) : c_white, sl_txt );
-            if( i == sel_opt - 1 ) {
+                            mp_locked ? c_dark_gray : ( i == sel_opt - 1 ? hilite( c_white ) : c_white ),
+                            sl_txt );
+            if( !mp_locked && i == sel_opt - 1 ) {
                 mvwputch( w_confirmation, point( 1, y ), hilite( c_yellow ), '<' );
                 mvwputch( w_confirmation, point( 2 + win_width / 2, y ), hilite( c_yellow ), '>' );
             }
             slider_inc_map.emplace( i * 2, inclusive_rectangle<point>( point( 1, y ), point( 1, y ) ) );
             slider_inc_map.emplace( i * 2 + 1, inclusive_rectangle<point>( point( 2 + win_width / 2, y ),
                                     point( 2 + win_width / 2, y ) ) );
-            mvwprintz( w_confirmation, point( 5 + win_width / 2, y++ ), c_white,
-                       custom_opts ? _( "Custom" ) : wg_sliders[i]->level_name( wg_slevels[i] ).translated() );
+            mvwprintz( w_confirmation, point( 5 + win_width / 2, y++ ),
+                       mp_locked ? c_dark_gray : c_white,
+                       mp_locked ? wg_sliders[i]->level_name( 0 ).translated().c_str()
+                       : ( custom_opts ? _( "Custom" ) : wg_sliders[i]->level_name( wg_slevels[i] ).translated().c_str() ) );
             btn_map.emplace( 1 + i,
                              inclusive_rectangle<point>( point( 1, y - 1 ), point( 2 + win_width / 2, y - 1 ) ) );
             if( i == static_cast<int>( wg_sliders.size() ) - 1 ) {
@@ -1680,6 +1694,9 @@ int worldfactory::show_worldgen_basic( WORLD *world )
                            ctxt.get_desc( "HELP_KEYBINDINGS", 1U ) );
         if( !custom_opts && sel_opt > 0 && sel_opt <= static_cast<int>( wg_sliders.size() ) ) {
             hint_txt = wg_sliders[sel_opt - 1]->level_desc( wg_slevels[sel_opt - 1] ).translated();
+        }
+        if( cata_mp::is_mp_mode() ) {
+            hint_txt += colorize( _( "\nNPCs not available in co-op mode yet." ), c_yellow );
         }
         y += fold_and_print( w_confirmation, point( 2, win_height - 9 ),
                              win_width - 1, c_light_gray, hint_txt ) + 1;
@@ -1791,13 +1808,17 @@ int worldfactory::show_worldgen_basic( WORLD *world )
             } else if( sel_opt == static_cast<int>( wg_sliders.size() + 3 ) ) {
                 // randomize
                 for( int i = 0; i < static_cast<int>( wg_sliders.size() ); i++ ) {
+                    if( cata_mp::is_mp_mode() && wg_sliders[i].str() == "world_random_npcs" ) {
+                        continue;
+                    }
                     wg_slevels[i] = wg_sliders[i]->random_level();
                 }
             }
         } else if( navigate_ui_list( action, sel_opt, 1, wg_sliders.size() + 2, true ) ) {
             recalc_startpos = true;
         } else if( action == "LEFT" || action == "RIGHT" ) {
-            if( sel_opt > 0 && sel_opt <= static_cast<int>( wg_sliders.size() ) ) {
+            if( sel_opt > 0 && sel_opt <= static_cast<int>( wg_sliders.size() ) &&
+                !( cata_mp::is_mp_mode() && wg_sliders[sel_opt - 1].str() == "world_random_npcs" ) ) {
                 if( custom_opts && query_yn( _( "Currently using customized advanced options.  "
                                                 "Reset world options to defaults?" ) ) ) {
                     world->WORLD_OPTIONS = get_options().get_world_defaults();

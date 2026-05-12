@@ -1,4 +1,5 @@
 #include "avatar.h" // IWYU pragma: associated
+#include "mp_gamestate.h"
 
 #include <algorithm>
 #include <climits>
@@ -3068,6 +3069,9 @@ void character_creator_uistate::recalc_scenario_list( const avatar &u )
         std::vector<const scenario *> new_scenarios;
         for( const scenario &scen : scenario::get_all() ) {
             if( scen.scen_is_blacklisted() ) {
+                continue;
+            }
+            if( cata_mp::is_mp_mode() && !scen.has_flag( "LONE_START" ) ) {
                 continue;
             }
             new_scenarios.push_back( &scen );
