@@ -38,36 +38,49 @@ jobs:
 
       - name: Bundle dylibs
         run: |
-          BIN=cataclysm-tiles-x86_64
-          # Collect all /usr/local/opt dylib deps (BFS over transitive deps)
-          declare -A seen
-          queue=("$BIN")
-          while [ ${#queue[@]} -gt 0 ]; do
-            current="${queue[0]}"
-            queue=("${queue[@]:1}")
-            while IFS= read -r dep; do
-              dep="${dep%% (*}"
-              dep="${dep# }"
-              [[ "$dep" != /usr/local/opt/* ]] && continue
-              name="$(basename "$dep")"
-              [[ -n "${seen[$name]}" ]] && continue
-              seen[$name]=1
-              cp "$dep" "$name"
-              chmod +w "$name"
-              install_name_tool -id "@executable_path/$name" "$name"
-              queue+=("$name")
-            done < <(otool -L "$current" | tail -n +2)
-          done
-          # Rewrite all references in binary and each copied dylib
-          for lib in "${!seen[@]}"; do
-            orig="$(otool -L "$BIN" | awk -v n="$lib" '$0 ~ n {print $1}')"
-            [ -n "$orig" ] && install_name_tool -change "$orig" "@executable_path/$lib" "$BIN"
-            for other in "${!seen[@]}"; do
-              ref="$(otool -L "$other" | awk -v n="$lib" '$0 ~ n {print $1}')"
-              [ -n "$ref" ] && install_name_tool -change "$ref" "@executable_path/$lib" "$other"
-            done
-          done
-          zip cataclysm-tiles-x86_64.zip "$BIN" "${!seen[@]}"
+          python3 - << 'PYEOF'
+          import subprocess, os, shutil, zipfile
+          from collections import deque
+
+          bin_name = "cataclysm-tiles-x86_64"
+          seen = {}   # basename -> original full path
+
+          def otool_deps(path):
+              r = subprocess.run(["otool", "-L", path], capture_output=True, text=True)
+              for line in r.stdout.splitlines()[1:]:
+                  yield line.strip().split(" (")[0].strip()
+
+          queue = deque([bin_name])
+          while queue:
+              current = queue.popleft()
+              for dep in otool_deps(current):
+                  if not dep.startswith("/usr/local/opt/"):
+                      continue
+                  name = os.path.basename(dep)
+                  if name in seen:
+                      continue
+                  seen[name] = dep
+                  shutil.copy2(dep, name)
+                  os.chmod(name, 0o755)
+                  subprocess.run(["install_name_tool", "-id",
+                                  f"@executable_path/{name}", name], check=True)
+                  queue.append(name)
+
+          all_files = [bin_name] + list(seen.keys())
+          for target in all_files:
+              for dep in otool_deps(target):
+                  name = os.path.basename(dep)
+                  if name in seen:
+                      subprocess.run(["install_name_tool", "-change",
+                                      dep, f"@executable_path/{name}", target], check=True)
+
+          with zipfile.ZipFile("cataclysm-tiles-x86_64.zip", "w",
+                               compression=zipfile.ZIP_DEFLATED) as zf:
+              zf.write(bin_name)
+              for name in seen:
+                  zf.write(name)
+          print(f"Zipped {bin_name} + {len(seen)} dylibs")
+          PYEOF
 
       - uses: actions/upload-artifact@v4
         with:
