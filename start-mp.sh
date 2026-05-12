@@ -263,6 +263,13 @@ fi
 HOST_LOG=/tmp/cdda-mp-server.log
 CLIENT_LOG=/tmp/cdda-mp-client.log
 
+# Kill any stale game instances so port 8080 is free and logs are clean.
+pkill -f "cataclysm-tiles --host" 2>/dev/null
+pkill -f "cataclysm-tiles --client" 2>/dev/null
+pkill -f "cataclysm --host" 2>/dev/null
+pkill -f "cataclysm --client" 2>/dev/null
+sleep 1
+
 if [[ "$MODE" == "host" ]]; then
     echo ""
     echo "  Mode   : HOST only"
