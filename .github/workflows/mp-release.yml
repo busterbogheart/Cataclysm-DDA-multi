@@ -32,7 +32,9 @@ jobs:
         with:
           path: ~/.ccache
           key: ccache-x86_64-${{ github.sha }}
-          restore-keys: ccache-x86_64-
+          restore-keys: |
+            ccache-x86_64-
+          save-always: true
 
       - name: Build
         run: |
