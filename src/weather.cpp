@@ -422,7 +422,7 @@ void wet_character( Character &target, int amount )
     target.drench( amount, drenched_parts, false );
 }
 
-void weather_sound( const translation &sound_message, const std::string &sound_effect )
+void weather_sound( const translation &sound_message, std::string_view sound_effect )
 {
     Character &player_character = get_player_character();
     map &here = get_map();

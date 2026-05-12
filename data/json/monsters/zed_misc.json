@@ -1054,6 +1054,7 @@
     "melee_skill": 1,
     "melee_dice_sides": 2,
     "grab_strength": 50,
+    "vision_day": 15,
     "fungalize_into": "mon_zombie_rot_dusted",
     "upgrades": false,
     "//": "No PARROT is deliberate, it's in no condition to speak",

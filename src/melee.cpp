@@ -1848,7 +1848,7 @@ void Character::perform_technique( const ma_technique &technique, Creature &t,
     if( technique.needs_ammo ) {
         const itype_id current_ammo = cur_weapon.get_item()->ammo_current();
         // if the weapon needs ammo we now expend it
-        cur_weapon.get_item()->ammo_consume( 1, pos, this );
+        cur_weapon.get_item()->consume_one_shot( get_map(), pos, this );
         // thing going off should be as loud as the ammo
         sounds::sound( pos, current_ammo->ammo->loudness, sounds::sound_t::combat, _( "Crack!" ),
                        true );

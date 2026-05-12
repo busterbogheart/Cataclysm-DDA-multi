@@ -33,6 +33,7 @@
 #include "item_transformation.h"
 #include "iuse.h" // use_function
 #include "mapdata.h"
+#include "material.h"
 #include "proficiency.h"
 #include "relic.h"
 #include "stomach.h"
@@ -102,6 +103,32 @@ class gunmod_location
         void deserialize( const JsonValue &jo ) {
             _id = jo.get_string();
         }
+};
+
+struct pocket_consumption_entry {
+    std::string pocket;
+    int qty = 0;
+
+    bool was_loaded = false;
+    void deserialize( const JsonObject &jo );
+};
+
+// Tools lower consumption_per_use into per_mode[DEFAULT]; guns use the
+// firing_requirements map directly.
+struct firing_requirement_set {
+    std::map<gun_mode_id, std::vector<pocket_consumption_entry>> per_mode;
+
+    bool empty() const {
+        return per_mode.empty();
+    }
+    const std::vector<pocket_consumption_entry> *for_mode( const gun_mode_id &m ) const {
+        const auto it = per_mode.find( m );
+        return it == per_mode.end() ? nullptr : &it->second;
+    }
+
+    bool was_loaded = false;
+    void deserialize_firing_requirements( const JsonObject &jo, std::string_view member );
+    void deserialize_consumption_per_use( const JsonObject &jo, std::string_view member );
 };
 
 struct islot_tool {
@@ -319,6 +346,18 @@ enum class encumbrance_modifier_type : int {
     MULT = 0,
     FLAT,
     last
+};
+
+enum class item_display_type {
+    DEFAULT, // count, charges, etc.
+    BY_WEIGHT, // e.g. "12lbs of salt"
+    BY_VOLUME, // e.g. "4 liters of water"
+    LAST
+};
+
+template<>
+struct enum_traits<item_display_type> {
+    static constexpr item_display_type last = item_display_type::LAST;
 };
 
 struct armor_portion_data {
@@ -1355,6 +1394,14 @@ struct itype {
         // information related to being able to store things inside the item.
         std::vector<pocket_data> pockets;
 
+        // Empty for legacy items. Tools use DEFAULT mode; guns use per-mode
+        // entries from the JSON map.
+        firing_requirement_set firing_requirements;
+        // Set on multimag tools converted from legacy charges_per_use > 1
+        // so existing recipes that pass raw charge counts get translated to
+        // uses without re-baselining recipe data.
+        int legacy_charges_per_use_factor = 1;
+
         // What it has to say.
         std::vector<std::string> chat_topics;
 
@@ -1544,6 +1591,9 @@ struct itype {
         /** Value after the Cataclysm, dependent upon practical usages. Price given is for a default-sized stack. */
         units::money price_post = -1_cent;
 
+        /** How should this display? */
+        item_display_type display_type = item_display_type::DEFAULT;
+
         // TODO: Add some very basic unwieldiness calc for non specified to_hit?
         int m_to_hit = -2;  // To-hit bonus for melee combat, see GAME_BALANCE.md#to-hit-value
         // itype specifies a legacy raw int to_hit, for use with for item_new_to_hit_enforcement TEST_CASE
@@ -1615,7 +1665,20 @@ struct itype {
         */
         int damage_level( int damage ) const;
 
+        /**
+         * Get the basic (main) material of this item. May return the null-material.
+         * This is the material with the highest "portion" value.
+         */
+        const material_type &get_base_material() const;
+
+        // Ways in which this itype does or does not explode.
+        fuel_explosion_data get_explosion_data() const;
+
         std::string get_item_type_string() const;
+
+        std::string count_or_volume_or_weight_prefix( unsigned int quantity ) const;
+
+        bool dont_display_count_or_charges() const;
 
         // Returns the name of the item type in the correct language and with respect to its grammatical number,
         // based on quantity (example: item type "anvil", nname(4) would return "anvils" (as in "4 anvils").

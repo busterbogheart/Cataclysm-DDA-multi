@@ -557,6 +557,8 @@ void advanced_inventory::print_items( side p, bool active )
     }
 }
 
+namespace
+{
 struct advanced_inv_sorter {
     advanced_inv_sortby sortby;
     explicit advanced_inv_sorter( advanced_inv_sortby sort ) {
@@ -692,6 +694,7 @@ struct advanced_inv_sorter {
         return localized_compare( sort_key( d1 ), sort_key( d2 ) );
     }
 };
+} // namespace
 
 int advanced_inventory::print_header( advanced_inventory_pane &pane, aim_location sel )
 {
@@ -2111,6 +2114,8 @@ void advanced_inventory::display()
     }
 }
 
+namespace
+{
 class query_destination_callback : public uilist_callback
 {
     private:
@@ -2129,6 +2134,7 @@ class query_destination_callback : public uilist_callback
             return rv;
         }
 };
+} // namespace
 
 void query_destination_callback::draw_squares( const uilist *menu )
 {
@@ -2461,7 +2467,7 @@ void advanced_inventory::do_return_entry()
 
 void advanced_inventory::temp_hide()
 {
-    ui.reset();
+    ui = nullptr;
     do_return_entry();
     cancel_aim_processing();
 }

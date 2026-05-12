@@ -893,6 +893,22 @@
   },
   {
     "type": "furniture",
+    "id": "f_steel_kiln",
+    "name": "tempering kiln",
+    "looks_like": "f_kiln_empty",
+    "description": "A very long electric kiln made for heat treating metal.  Unlike a forge, it can't get extremely hot, but its temperature is completely programmable.  Needs to be placed and plugged into a power source.",
+    "symbol": "8",
+    "color": "light_blue",
+    "move_cost_mod": -1,
+    "coverage": 10,
+    "required_str": 8,
+    "mass": "110 kg",
+    "examine_action": { "type": "appliance_convert", "furn_set": "f_null", "item": "steel_kiln" },
+    "flags": [ "EASY_DECONSTRUCT" ],
+    "bash": { "str_min": 40, "str_max": 150, "sound_fail": "clang!" }
+  },
+  {
+    "type": "furniture",
     "id": "f_firefly_terrarium",
     "name": "firefly terrarium",
     "description": "While many survivors would have focused on trying to bring back electric lights, whoever lives here has apparently decided to make use of the changes wrought by the Cataclysm to provide light.  This vivarium contains soil, strange plants you don't recognize immediately, and most strikingly, a giant mutant firefly.",

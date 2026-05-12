@@ -25,6 +25,7 @@
 #include "field.h"
 #include "field_type.h"
 #include "game.h"
+#include "gates.h"
 #include "item.h"
 #include "line.h"
 #include "map.h"
@@ -153,6 +154,14 @@ static bool z_is_valid( int z )
 bool monster::will_move_to( map *here, const tripoint_bub_ms &p ) const
 {
     const std::vector<field_type_id> impassable_field_ids = here->get_impassable_field_type_ids_at( p );
+
+    for( const std::pair<const int_id<field_type>, field_entry> &pair : here->field_at( p ) ) {
+        const field_type_id &fid = pair.first;
+        const field_type &ft = fid.obj();
+        if( ft.block_mtypes.count( type->id ) > 0 ) {
+            return false;
+        }
+    }
 
     if( here->has_flag( ter_furn_flag::TFLAG_MON_AVOID_STRICT, p ) ) {
         return false;
@@ -766,7 +775,22 @@ void monster::plan()
             set_dest( dest );
         } else if( mon_plan.fleeing ) {
             tripoint_abs_ms away = pos_abs() - dest + pos_abs();
-            away.z() = posz();
+            // Aloft fliers descend, grounded fliers take off; non-fliers stay
+            // at current z. Mirror in monster::hear_sound.
+            int chosen_z = posz();
+            if( flies() ) {
+                map &here = get_map();
+                const tripoint_bub_ms here_bub = pos_bub();
+                const bool grounded = here.has_floor_or_water( here_bub );
+                if( !grounded &&
+                    here.valid_move( here_bub, here_bub + tripoint::below, false, true ) ) {
+                    chosen_z = posz() - 1;
+                } else if( grounded &&
+                           here.valid_move( here_bub, here_bub + tripoint::above, false, true ) ) {
+                    chosen_z = posz() + 1;
+                }
+            }
+            away.z() = chosen_z;
             set_dest( away );
         }
         if( ( mon_plan.angers_hostile_weak || mon_plan.fears_hostile_weak ||
@@ -1276,6 +1300,11 @@ void monster::move()
             // is there an openable door?
             if( can_open_doors &&
                 here.open_door( *this, candidate, !here.is_outside( pos_bub() ), true ) ) {
+                moved = true;
+                next_step = candidate_abs;
+                continue;
+            } else if( can_open_doors && doors::can_unlock_door( here, *this, candidate ) ) {
+                doors::unlock_door( here, *this, candidate );
                 moved = true;
                 next_step = candidate_abs;
                 continue;
@@ -2432,9 +2461,16 @@ void monster::stumble_base( const bool is_voluntary )
     // The same-z radius scan above cannot produce straight-up or straight-down
     // candidates; add them here, gated by stair / climb / swim / fly rules.
     if( is_voluntary ) {
+        // Supported fliers can take off, aloft fliers prefer to settle and
+        // don't get a stumble path upward.
+        const bool flier_supported = flies() && here.has_floor_or_water( pos_bub() );
+        const bool flier_aloft = flies() && !here.has_floor_or_water( pos_bub() );
         const tripoint_bub_ms below( pos_bub() + tripoint::below );
         if( here.valid_move( pos_bub(), below, false, true ) ) {
             valid_stumbles.push_back( below );
+            if( flier_aloft ) {
+                valid_stumbles.push_back( below );
+            }
         }
         const tripoint_bub_ms above( pos_bub() + tripoint::above );
         const bool stair_up = here.has_flag( ter_furn_flag::TFLAG_GOES_UP, pos_bub() ) &&
@@ -2445,7 +2481,7 @@ void monster::stumble_base( const bool is_voluntary )
         const bool swim_up = swims() &&
                              here.has_flag( ter_furn_flag::TFLAG_SWIMMABLE, pos_bub() ) &&
                              here.has_flag( ter_furn_flag::TFLAG_SWIMMABLE, above );
-        if( ( flies() || stair_up || ladder_up || swim_up ) &&
+        if( ( flier_supported || stair_up || ladder_up || swim_up ) &&
             here.valid_move( pos_bub(), above, false, flies() ) ) {
             valid_stumbles.push_back( above );
         }

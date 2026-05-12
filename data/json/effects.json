@@ -5043,7 +5043,7 @@
     "id": "weakened_inertia",
     "type": "effect_type",
     "name": [ "Weakened Inertia" ],
-    "desc": [ "Your body moves strangely easily, as if it weighted less." ],
+    "desc": [ "Your body moves strangely easily, as if it weighed less." ],
     "apply_message": "Your inertia itself is damaged, but the outcome seems suspiciously beneficial.",
     "remove_message": "Reality reasserts itself and your inertia returns to normal.",
     "rating": "good",
@@ -5529,40 +5529,6 @@
   },
   {
     "type": "effect_type",
-    "id": "purple_incense_effect",
-    "name": [ "Spatial Dissociation" ],
-    "desc": [
-      "You feel strangely detached from the here and now.  It's like the world had been sliced into thin layers above which you move."
-    ],
-    "rating": "neutral",
-    "show_in_info": true,
-    "max_intensity": 1,
-    "remove_message": "Things seem to stitch back together.",
-    "enchantments": [
-      {
-        "values": [
-          { "value": "ARTIFACT_RESONANCE", "add": 4500 },
-          { "value": "PHASE_DISTANCE", "add": 2 },
-          { "value": "SPEED", "add": -10 },
-          { "value": "DODGE_CHANCE", "add": -25 },
-          { "value": "EVASION", "add": 10 }
-        ]
-      }
-    ]
-  },
-  {
-    "type": "effect_type",
-    "id": "red_incense_effect",
-    "name": [ "Ennervated" ],
-    "desc": [ "You feel like you have one foot in the grave." ],
-    "rating": "neutral",
-    "show_in_info": true,
-    "max_intensity": 1,
-    "remove_message": "The feeling of dread fades away.",
-    "enchantments": [ { "values": [ { "value": "MAX_HP", "multiply": -0.75 }, { "value": "SPEED", "add": -10 } ] } ]
-  },
-  {
-    "type": "effect_type",
     "id": "effect_hound_of_tindalos_slobber",
     "name": [ "Hound Ichor" ],
     "desc": [ "Your %s is stained with bluish ichor." ],
@@ -5696,6 +5662,14 @@
   },
   {
     "type": "effect_type",
+    "id": "effect_insect_wings_muscle_veh_boost",
+    "//": "Hidden effect, provides the muscle vehicle boost from active insect wings",
+    "name": [ "" ],
+    "desc": [ "" ],
+    "flags": [ "MUSCLE_VEH_BOOST" ]
+  },
+  {
+    "type": "effect_type",
     "id": "effect_dextrous_paws_no_practice_manipulation_penalty",
     "//": "Hidden effect, provides the limb score penalty from Little or Dextrous Paws when you haven't practiced",
     "name": [ "Clumsy Fingers" ],
@@ -5716,7 +5690,7 @@
     "type": "effect_type",
     "name": [ "Nauseating Stench" ],
     "desc": [ "Something smells unbelievably foul." ],
-    "apply_message": "Your are assaulted by one of the most vile smells you've ever smelled.",
+    "apply_message": "You are assaulted by one of the most vile smells you've ever smelled.",
     "remove_message": "The last traces of the foul stench leave your nostrils.",
     "rating": "bad",
     "max_duration": 120,

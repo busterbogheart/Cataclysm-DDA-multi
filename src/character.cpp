@@ -372,7 +372,6 @@ static const trait_id trait_SLIMY( "SLIMY" );
 static const trait_id trait_SPINES( "SPINES" );
 static const trait_id trait_SUNLIGHT_DEPENDENT( "SUNLIGHT_DEPENDENT" );
 static const trait_id trait_THORNS( "THORNS" );
-static const trait_id trait_URSINE_EYE( "URSINE_EYE" );
 static const trait_id trait_VISCOUS( "VISCOUS" );
 
 static const std::set<material_id> ferric = { material_iron, material_steel, material_budget_steel, material_ch_steel, material_hc_steel, material_lc_steel, material_mc_steel, material_qt_steel };
@@ -2454,9 +2453,6 @@ void Character::recalc_sight_limits()
     if( has_active_mutation( trait_NIGHTVISION2 ) ) {
         vision_mode_cache.set( NIGHTVISION_2 );
     }
-    if( has_active_mutation( trait_URSINE_EYE ) ) {
-        vision_mode_cache.set( URSINE_VISION );
-    }
     if( has_active_mutation( trait_NIGHTVISION ) ) {
         vision_mode_cache.set( NIGHTVISION_1 );
     }
@@ -2494,7 +2490,7 @@ float Character::get_vision_threshold( float light_level ) const
     float range = get_per() / 3.0f;
     if( vision_mode_cache[NIGHTVISION_3] ) {
         range += 10;
-    } else if( vision_mode_cache[NIGHTVISION_2] || vision_mode_cache[URSINE_VISION] ) {
+    } else if( vision_mode_cache[NIGHTVISION_2] ) {
         range += 4.5;
     } else if( vision_mode_cache[NIGHTVISION_1] ) {
         range += 2;
@@ -4026,11 +4022,14 @@ std::string Character::age_string( time_point when ) const
     return string_format( unformatted, age( when ) );
 }
 
+namespace
+{
 struct HeightLimits {
     int min_height = 0;
     int base_height = 0;
     int max_height = 0;
 };
+} // namespace
 
 /** Min and max heights in cm for each size category */
 static const std::map<creature_size, HeightLimits> size_category_height_limits {
@@ -4426,27 +4425,32 @@ bool Character::invoke_item( item *used, const std::string &method, const tripoi
         return false;
     }
     if( !used->ammo_sufficient( this, method ) ) {
-        int ammo_req = used->ammo_required();
         std::string it_name = used->tname();
-        if( used->has_flag( flag_USE_UPS ) ) {
-            add_msg_if_player( m_info,
-                               n_gettext( "Your %s needs %d charge from some UPS.",
-                                          "Your %s needs %d charges from some UPS.",
-                                          ammo_req ),
-                               it_name, ammo_req );
-        } else if( used->has_flag( flag_USES_BIONIC_POWER ) ) {
-            add_msg_if_player( m_info,
-                               n_gettext( "Your %s needs %d kJ of bionic power.",
-                                          "Your %s needs %d kJ of bionic power.",
-                                          ammo_req ),
-                               it_name, ammo_req );
+        if( used->uses_firing_requirements() ) {
+            const std::string req = used->format_consumption_requirements( method );
+            add_msg_if_player( m_info, _( "Your %s needs: %s." ), it_name, req );
         } else {
-            int ammo_rem = used->ammo_remaining( );
-            add_msg_if_player( m_info,
-                               n_gettext( "Your %s has %d charge, but needs %d.",
-                                          "Your %s has %d charges, but needs %d.",
-                                          ammo_rem ),
-                               it_name, ammo_rem, ammo_req );
+            int ammo_req = used->ammo_required();
+            if( used->has_flag( flag_USE_UPS ) ) {
+                add_msg_if_player( m_info,
+                                   n_gettext( "Your %s needs %d charge from some UPS.",
+                                              "Your %s needs %d charges from some UPS.",
+                                              ammo_req ),
+                                   it_name, ammo_req );
+            } else if( used->has_flag( flag_USES_BIONIC_POWER ) ) {
+                add_msg_if_player( m_info,
+                                   n_gettext( "Your %s needs %d kJ of bionic power.",
+                                              "Your %s needs %d kJ of bionic power.",
+                                              ammo_req ),
+                                   it_name, ammo_req );
+            } else {
+                int ammo_rem = used->ammo_remaining( );
+                add_msg_if_player( m_info,
+                                   n_gettext( "Your %s has %d charge, but needs %d.",
+                                              "Your %s has %d charges, but needs %d.",
+                                              ammo_rem ),
+                                   it_name, ammo_rem, ammo_req );
+            }
         }
         set_moves( pre_obtain_moves );
         return false;
@@ -4499,6 +4503,12 @@ bool Character::consume_charges( item &used, int qty )
         return false;
     }
 
+    if( used.uses_firing_requirements() ) {
+        debugmsg( "consume_charges called on multimag tool %s; caller must use "
+                  "consume_tool_uses instead", used.tname() );
+        return false;
+    }
+
     // Consume comestibles destroying them if no charges remain
     if( used.is_food() || used.is_medication() ) {
         used.charges -= qty;
@@ -4509,8 +4519,7 @@ bool Character::consume_charges( item &used, int qty )
         return false;
     }
 
-    // Tools which don't require ammo are instead destroyed
-    if( used.is_tool() && !used.ammo_required() ) {
+    if( used.is_tool() && !used.needs_charges_to_use() ) {
         if( has_item( used ) ) {
             i_rem( &used );
         } else {
@@ -7892,7 +7901,7 @@ bool Character::can_fly()
         return true;
     }
     // TODO: Remove grandfathering traits in after Limb Stuff
-    if( has_flag( json_flag_WINGS_2 ) || count_flag( json_flag_WING_ARMS ) >= 2 ) {
+    if( count_flag( json_flag_WINGS_2 ) >= 2 || count_flag( json_flag_WING_ARMS ) >= 2 ) {
 
         if( 100 * weight_carried() / weight_capacity() > 50 ) {
             return false;
@@ -8089,8 +8098,8 @@ bodypart_id Character::most_staunchable_bp()
 bodypart_id Character::most_staunchable_bp( int &max_staunch )
 {
     // Calculate max staunchable bleed level
-    // Top out at 20 intensity for base, unencumbered survivors
-    max_staunch = 20;
+    // Top out at 10 intensity for base, unencumbered survivors
+    max_staunch = 10;
     max_staunch *= get_modifier( character_modifier_bleed_staunch_mod );
     add_msg_debug( debugmode::DF_CHARACTER, "Staunch limit after limb score modifier %d", max_staunch );
 
@@ -8210,10 +8219,10 @@ void Character::pause()
         if( bp_id == bodypart_str_id::NULL_ID() ) {
             // We're bleeding, but couldn't find any bp we can staunch
             add_msg_player_or_npc( m_warning,
-                                   _( "Your bleeding is beyond staunching barehanded!  A tourniquet might help." ),
+                                   _( "Your bleeding is beyond staunching barehanded!  Bandaging it or using a tourniquet might help." ),
                                    _( "<npcname>'s bleeding is beyond staunching barehanded!" ) );
         } else {
-            // 5 - 30 sec per turn (with standard hands)
+            // 5 - 20 sec per turn (with standard hands)
             time_duration benefit = 5_turns + 1_turns * max;
             effect &e = get_effect( effect_bleed, bp_id );
             e.mod_duration( - benefit );

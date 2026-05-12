@@ -26,6 +26,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -128,6 +129,7 @@
 #include "item_pocket.h"
 #include "item_search.h"
 #include "item_stack.h"
+#include "item_wakeup.h"
 #include "iteminfo_query.h"
 #include "itype.h"
 #include "iuse.h"
@@ -3034,6 +3036,8 @@ void game::display_faction_epilogues()
     }
 }
 
+namespace
+{
 struct npc_dist_to_player {
     const tripoint_abs_omt ppos{};
     npc_dist_to_player() : ppos( get_player_character().pos_abs_omt() ) { }
@@ -3046,6 +3050,7 @@ struct npc_dist_to_player {
                square_dist( ppos.xy(), bpos.xy() );
     }
 };
+} // namespace
 
 void game::disp_NPCs()
 {
@@ -6529,9 +6534,9 @@ int game::get_user_action_counter() const
 }
 
 #if defined(TILES)
-bool game::take_screenshot( const std::string &path ) const
+bool game::take_screenshot( std::string_view path ) const
 {
-    return save_screenshot( path );
+    return save_screenshot( std::string( path ) );
 }
 
 bool game::take_screenshot() const
@@ -6558,7 +6563,7 @@ bool game::take_screenshot() const
     }
 }
 #else
-bool game::take_screenshot( const std::string &/*path*/ ) const
+bool game::take_screenshot( std::string_view /*path*/ ) const
 {
     return false;
 }
@@ -7031,6 +7036,9 @@ void game::butcher( const std::optional<tripoint_bub_ms> &p )
 static item::reload_option favorite_ammo_or_select( avatar &u, item_location &loc, bool empty,
         bool prompt )
 {
+    // TODO(multimag): favorite-ammo fast path uses list_ammo() with the
+    // legacy first-compatible-well fallback. A second well that accepts the
+    // same ammo type is not offered without an explicit menu step.
     if( u.ammo_location ) {
         std::vector<item::reload_option> ammo_list;
         if( u.list_ammo( loc, ammo_list, false ) ) {
@@ -7069,6 +7077,9 @@ void game::reload( item_location &loc, bool prompt, bool empty )
 
     switch( u.rate_action_reload( *loc ) ) {
         case hint_rating::iffy:
+            // TODO(multimag): remaining_ammo_capacity() is a first-loaded-mag
+            // fallback; multi-well items will report "already fully loaded"
+            // when only the first well is full.
             if( ( loc->is_ammo_container() || loc->is_magazine() ) && loc->ammo_remaining( ) > 0 &&
                 loc->remaining_ammo_capacity() == 0 ) {
                 add_msg( m_info, _( "The %s is already fully loaded!" ), loc->tname() );
@@ -7130,6 +7141,8 @@ void game::reload( item_location &loc, bool prompt, bool empty )
 }
 
 
+namespace
+{
 class reload_selector_preset : public inventory_selector_preset
 {
     public:
@@ -7143,6 +7156,7 @@ class reload_selector_preset : public inventory_selector_preset
     private:
         const Character &you;
 };
+} // namespace
 
 // Reload something.
 void game::reload_item()
@@ -7208,6 +7222,8 @@ void game::reload_weapon( bool try_everything )
             return a->is_gun();
         }
         // Finally sort by speed to reload.
+        // TODO(multimag): aggregate remaining_ammo_capacity() falls back to
+        // the first MAGAZINE_WELL; multi-well items rank by first-well only.
         return ( a->get_reload_time() * a->remaining_ammo_capacity() ) <
                ( b->get_reload_time() * b->remaining_ammo_capacity() );
     } );
@@ -7707,6 +7723,13 @@ bool game::walk_move( const tripoint_bub_ms &dest_loc, const bool via_ramp,
             }
             u.mounted_creature->shove_vehicle( dest_loc + diff.xy(),
                                                dest_loc );
+        } else if( vp_there && vp_there->vehicle().part_has_lock( vp_there->part_index() ) ) {
+            // Automatically try to open locked door. Prints appropriate messages to log, etc.
+            if( doors::can_unlock_door( here, u, dest_loc ) ) {
+                doors::unlock_door( here, u, dest_loc );
+            } else {
+                iexamine::locked_object( u, dest_loc );
+            }
         }
         return false;
     }
@@ -8968,6 +8991,8 @@ void game::on_move_effects()
 {
     // TODO: Move this to a character method
     if( !u.is_mounted() ) {
+        // FIXME: stop initializing new items every time this runs.
+        // Can't make it static, itype can change if we quit to menu and load a different set of mods...
         const item muscle( fuel_type_muscle );
         for( const bionic_id &bid : u.get_bionic_fueled_with_muscle() ) {
             if( u.has_active_bionic( bid ) ) {// active power gen
@@ -9012,6 +9037,7 @@ void game::on_options_changed()
 #if defined(TILES)
     tilecontext->on_options_changed();
 #endif
+    refresh_mouse_config();
 }
 
 void game::water_affect_items( Character &ch ) const
@@ -11577,6 +11603,11 @@ stats_tracker &get_stats()
 timed_event_manager &get_timed_events()
 {
     return g->timed_events;
+}
+
+item_wakeup_manager &get_item_wakeups()
+{
+    return *g->item_wakeup_manager_ptr;
 }
 
 weather_manager &get_weather()

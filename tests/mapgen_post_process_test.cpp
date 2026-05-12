@@ -77,6 +77,9 @@ static const ter_str_id ter_t_wall_wood( "t_wall_wood" );
 static const ter_str_id ter_t_water_dp( "t_water_dp" );
 static const ter_str_id ter_t_wood_stairs_up( "t_wood_stairs_up" );
 
+namespace
+{
+
 // Scan a 24x24 OMT area on a map and collect terrain/field statistics.
 struct pp_scan_result {
     int wall_wood_count = 0;
@@ -89,6 +92,8 @@ struct pp_scan_result {
     int fire_field_count = 0;
     int furniture_count = 0;
 };
+
+} // namespace
 
 static pp_scan_result scan_omt( map &m, int z_level )
 {
@@ -190,6 +195,9 @@ TEST_CASE( "post_process_riot_damage_seeded_smoke", "[mapgen][post_process]" )
     }
 }
 
+namespace
+{
+
 // Capture full tile-by-tile snapshot of a 24x24 OMT for exact comparison.
 struct tile_state {
     ter_id ter;
@@ -197,6 +205,8 @@ struct tile_state {
     int blood_intensity;
     int fire_intensity;
 };
+
+} // namespace
 
 static std::vector<tile_state> snapshot_omt( map &m, int z_level )
 {

@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <unordered_map>
 
@@ -146,7 +147,7 @@ class window
         virtual void draw();
         virtual void on_resized() {}
         bool is_bounds_changed();
-        size_t get_text_width( const std::string &text );
+        size_t get_text_width( std::string_view text );
         size_t get_text_height( const char *text );
         size_t str_width_to_pixels( size_t len );
         size_t str_height_to_pixels( size_t len );

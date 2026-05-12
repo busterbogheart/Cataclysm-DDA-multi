@@ -66,6 +66,7 @@ static const itype_id itype_aspirin( "aspirin" );
 static const itype_id itype_attachable_ear_muffs( "attachable_ear_muffs" );
 static const itype_id itype_backpack( "backpack" );
 static const itype_id itype_bag_plastic( "bag_plastic" );
+static const itype_id itype_barrel_glock_short( "barrel_glock_short" );
 static const itype_id itype_battery( "battery" );
 static const itype_id itype_bottle_plastic_small( "bottle_plastic_small" );
 static const itype_id itype_butter( "butter" );
@@ -76,6 +77,7 @@ static const itype_id itype_detergent( "detergent" );
 static const itype_id itype_duffelbag( "duffelbag" );
 static const itype_id itype_efile_photos( "efile_photos" );
 static const itype_id itype_efile_recipes( "efile_recipes" );
+static const itype_id itype_glock_19( "glock_19" );
 static const itype_id itype_hammer( "hammer" );
 static const itype_id itype_hat_hard( "hat_hard" );
 static const itype_id itype_jeans( "jeans" );
@@ -149,6 +151,20 @@ TEST_CASE( "gun_layer", "[item]" )
     gun.put_in( mod, pocket_type::MOD );
     CHECK( gun.get_layer().front() == layer_level::BELTED );
     CHECK( gun.get_category_of_contents().id == item_category_guns );
+}
+
+TEST_CASE( "gun_with_gunmod_price_sums_components", "[item][price][gunmod]" )
+{
+    item gun( itype_glock_19 );
+    item mod( itype_barrel_glock_short );
+    REQUIRE( gun.is_gunmod_compatible( mod ).success() );
+    const int gun_pre = gun.price_no_contents( false );
+    const int mod_pre = mod.price_no_contents( false );
+    const int gun_post = gun.price_no_contents( true );
+    const int mod_post = mod.price_no_contents( true );
+    gun.put_in( mod, pocket_type::MOD );
+    CHECK( gun.price( false ) == gun_pre + mod_pre );
+    CHECK( gun.price( true ) == gun_post + mod_post );
 }
 
 TEST_CASE( "stacking_cash_cards", "[item]" )

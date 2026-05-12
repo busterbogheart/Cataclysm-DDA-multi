@@ -3328,6 +3328,8 @@ options_manager::PageItem::fmt_tooltip( const std::string &group_id,
     }
 }
 
+namespace
+{
 /** String with color */
 struct string_col {
     std::string s;
@@ -3336,6 +3338,7 @@ struct string_col {
     string_col() : col( c_black ) { }
     string_col( const std::string &s, nc_color col ) : s( s ), col( col ) { }
 };
+} // namespace
 
 std::string options_manager::show( bool ingame, const bool world_options_only, bool with_tabs )
 {

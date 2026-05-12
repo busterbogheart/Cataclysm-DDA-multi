@@ -28,6 +28,7 @@
 #include "character_id.h"
 #include "color.h"
 #include "crafting.h"
+#include "crafting_enums.h"
 #include "crafting_gui_helpers.h"
 #include "display.h"
 #include "flag.h"
@@ -250,6 +251,8 @@ static input_context make_crafting_context( bool highlight_unread_recipes )
     return ctxt;
 }
 
+namespace
+{
 class recipe_result_info_cache
 {
         Character &crafter;
@@ -281,6 +284,7 @@ class recipe_result_info_cache
             return item_info_data( "", "", info, {}, scroll_pos );
         }
 };
+} // namespace
 
 std::pair<std::vector<const recipe *>, bool> recipes_from_cat( const recipe_subset
         &available_recipes, const crafting_category_id &cat, const std::string &subcat )
@@ -375,6 +379,8 @@ static bool filter_crafting_recipes( std::string &filterstring )
 // ImGui crafting UI implementation
 // ---------------------------------------------------------------------------
 
+namespace
+{
 class crafting_ui_impl : public cataimgui::window
 {
     public:
@@ -440,7 +446,6 @@ class crafting_ui_impl : public cataimgui::window
         int manual_batch = 1;
         bool show_hidden = false;
         bool is_wide = false;
-        bool steps_expanded = true;
 
         // --- Scroll state ---
         int line_item_info_popup = 0;
@@ -523,6 +528,7 @@ class crafting_ui_impl : public cataimgui::window
         void recalculate_unread();
         void invalidate_info_panels();
 };
+} // namespace
 
 // --- Constructor ---
 
@@ -1307,7 +1313,7 @@ void crafting_ui_impl::draw_recipe_info_panel()
             if( recp.has_steps() ) {
                 // Step details are collapsible; collapsed shows flat merged view
                 {
-                    const char *steps_label = steps_expanded
+                    const char *steps_label = uistate.crafting_expand_steps
                                               ? _( "- steps -" ) : _( "+ steps +" );
                     float btn_w = ImGui::CalcTextSize( steps_label ).x;
                     float rgn_w = ImGui::GetContentRegionAvail().x;
@@ -1316,11 +1322,11 @@ void crafting_ui_impl::draw_recipe_info_panel()
                                               ( rgn_w - btn_w ) / 2.f );
                     }
                     if( nav_clickable( steps_label, c_cyan ) ) {
-                        steps_expanded = !steps_expanded;
+                        uistate.crafting_expand_steps = !uistate.crafting_expand_steps;
                     }
                 }
 
-                if( steps_expanded ) {
+                if( uistate.crafting_expand_steps ) {
                     int tool_group_offset = 0;
                     float step_indent = ImGui::CalcTextSize( "    " ).x;
                     float sub_indent = ImGui::CalcTextSize( "  " ).x;
@@ -1364,6 +1370,11 @@ void crafting_ui_impl::draw_recipe_info_panel()
                         ImGui::SameLine( 0, ImGui::CalcTextSize( "  " ).x );
                         ImGui::TextColored( cataimgui::imvec4_from_color( act_col ), "%s",
                                             activity.c_str() );
+                        if( step.attention == step_attention::unattended ) {
+                            ImGui::SameLine( 0, ImGui::CalcTextSize( "  " ).x );
+                            ImGui::TextColored( cataimgui::imvec4_from_color( c_yellow ),
+                                                "%s", _( "[unattended]" ) );
+                        }
 
                         ImGui::Indent( step_indent );
 
@@ -1517,7 +1528,7 @@ void crafting_ui_impl::draw_modifier_table( const recipe &recp,
                                     _( "base (per item)" ) );
             } else {
                 ImGui::TextColored( cataimgui::imvec4_from_color( c_white ), "%s",
-                                    _( "base" ) );
+                                    pgettext( "Value without modifier", "base" ) );
             }
             ImGui::TableNextColumn();
             ImGui::TextColored( cataimgui::imvec4_from_color( c_light_gray ), "%s",
@@ -2364,7 +2375,6 @@ void crafting_ui_impl::invalidate_info_panels()
         info_nav_active = false;
         rebuild_keybinding_tips();
     }
-    steps_expanded = true;
 }
 
 // --- process_action ---

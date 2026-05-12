@@ -103,6 +103,12 @@ std::string pocket_data::check_definition() const
             return string_format( "invalid ammotype %s", at.str() );
         }
         const itype_id &it = at->default_ammotype();
+        // Abstract ammotypes (e.g. "components", "thrown") intentionally point
+        // their default at an undefined itype; ammunition_type::check_consistency
+        // skips them and so does the per-pocket phase check.
+        if( it.is_empty() || !item::type_is_defined( it ) ) {
+            continue;
+        }
         if( it->phase == phase_id::LIQUID && !watertight ) {
             return string_format( "restricted to liquid item %s but not watertight\n",
                                   it->get_id().str() );
@@ -143,6 +149,7 @@ void pocket_data::load( const JsonObject &jo )
     optional( jo, was_loaded, "material_restriction", material_restriction );
     optional( jo, was_loaded, "allowed_speedloaders", allowed_speedloaders );
     optional( jo, was_loaded, "default_magazine", default_magazine );
+    optional( jo, was_loaded, "id", pocket_id );
     optional( jo, was_loaded, "description", description );
     optional( jo, was_loaded, "name", pocket_name );
     if( jo.has_member( "ammo_restriction" ) && ammo_restriction.empty() ) {
@@ -2803,7 +2810,7 @@ const std::optional<std::string> &item_pocket::favorite_settings::get_preset_nam
 }
 
 template<typename T>
-std::string enumerate( cata::flat_set<T> container )
+static std::string enumerate( const cata::flat_set<T> &container )
 {
     std::vector<std::string> output;
     for( const T &id : container ) {

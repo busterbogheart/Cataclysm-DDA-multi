@@ -107,6 +107,8 @@ static const trait_id trait_PACIFIST( "PACIFIST" );
 
 namespace spell_detail
 {
+namespace
+{
 struct line_iterable {
     const std::vector<point_rel_ms> &delta_line;
     point_rel_ms cur_origin;
@@ -135,6 +137,7 @@ struct line_iterable {
         index = 0;
     }
 };
+} // namespace
 // Orientation of point C relative to line AB
 static int side_of( const point_rel_ms &a, const point_rel_ms &b, const point_rel_ms &c )
 {

@@ -174,7 +174,7 @@
         "y": "f_trashcan",
         "B": "f_trashcan",
         "v": "f_safe_l",
-        "1": "f_arcfurnace_empty",
+        "1": [ [ "f_arcfurnace_empty", 85 ], [ "f_steel_kiln", 15 ] ],
         "2": [ [ "f_hydraulic_press", 80 ], [ "f_power_hammer", 20 ] ],
         "3": "f_air_compressor",
         "4": "f_drill_press",

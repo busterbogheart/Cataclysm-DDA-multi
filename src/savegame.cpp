@@ -25,6 +25,7 @@
 #include "hash_utils.h"
 #include "horde_entity.h"
 #include "input.h"
+#include "item_wakeup.h"
 #include "json.h"
 #include "json_loader.h"
 #include "kill_tracker.h"
@@ -1272,6 +1273,8 @@ void overmap::serialize_view( std::ostream &fout ) const
     json.end_object();
 }
 
+namespace
+{
 // Compares all fields except position and monsters
 // If any group has monsters, it is never equal to any group (because monsters are unique)
 struct mongroup_bin_eq {
@@ -1301,6 +1304,7 @@ struct mongroup_hash {
         return ret;
     }
 };
+} // namespace
 
 void overmap::save_monster_groups( JsonOut &jout ) const
 {
@@ -1695,6 +1699,9 @@ void game::unserialize_master( const cata_path &file_name, std::istream &fin )
 
 void game::unserialize_master( const JsonValue &jv )
 {
+    // Reset state that has no clear-on-load hook of its own; otherwise a
+    // save without the field inherits the previous game's queue.
+    get_item_wakeups().clear();
     JsonObject game_json = jv;
     for( JsonMember jsin : game_json ) {
         std::string name = jsin.name();
@@ -1714,6 +1721,8 @@ void game::unserialize_master( const JsonValue &jv )
             weather_manager::unserialize_all( jsin );
         } else if( name == "timed_events" ) {
             timed_event_manager::unserialize_all( jsin );
+        } else if( name == "item_wakeups" ) {
+            get_item_wakeups().deserialize( jsin );
         } else if( name == "overmapbuffer" ) {
             overmap_buffer.global_state.deserialize( jsin );
         } else if( name == "placed_unique_specials" ) {
@@ -1915,6 +1924,9 @@ void game::serialize_master( std::ostream &fout )
 
         json.member( "timed_events" );
         timed_event_manager::serialize_all( json );
+
+        json.member( "item_wakeups" );
+        get_item_wakeups().serialize( json );
 
         json.member( "factions", *faction_manager_ptr );
         json.member( "seed", seed );

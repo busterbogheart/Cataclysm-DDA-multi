@@ -171,8 +171,8 @@ static void setup_list_detail_ui( const std::string &header = std::string(),
 
 static std::string get_character_stat_name( int selected_stat_index )
 {
-    return uppercase_first_letter( io::enum_to_full_string(
-                                       static_cast<character_stat>( selected_stat_index ) ) );
+    return uppercase_first_letter( _( io::enum_to_full_string(
+                                          static_cast<character_stat>( selected_stat_index ) ) ) );
 }
 
 static std::string get_skill_entry_text( const skill_id selected_skill, const avatar &u )
@@ -320,6 +320,8 @@ static int has_unspent_points( const Character &u )
     return points_used_total( u ) < point_pool_total();
 }
 
+namespace
+{
 struct multi_pool {
     // The amount of unspent points in the pool without counting the borrowed points
     const int pure_stat_points, pure_trait_points, pure_skill_points;
@@ -338,6 +340,7 @@ struct multi_pool {
     {}
 
 };
+} // namespace
 
 // Toggle this trait and all prereqs, removing upgrades on removal
 void Character::toggle_trait_deps( const trait_id &tr, const std::string &variant )
@@ -1928,11 +1931,13 @@ void draw_scenario_details( const avatar &u )
                 draw_colored_text_wrap( _( "Scenario Flags:" ), COL_HEADER );
                 flag_header_added = true;
             }
-            draw_colored_text_wrap( std::get<1>( flag_pair ), COL_NOTE_MINOR );
+            draw_colored_text_wrap( _( std::get<1>( flag_pair ) ), COL_NOTE_MINOR );
         }
     }
 }
 
+namespace
+{
 enum description_selector {
     NAME,
     GENDER,
@@ -1942,6 +1947,7 @@ enum description_selector {
     BLOOD,
     LOCATION
 };
+} // namespace
 
 void draw_name( const avatar &you, bool no_name_entered )
 {
@@ -2723,42 +2729,43 @@ void character_creator_ui_impl::draw_controls()
     }
 
     if( ImGui::BeginTabBar( "CHARACTER_CREATOR_TABS" ) ) {
-        if( ImGui::BeginTabItem( "SCENARIO", nullptr,
+        if( ImGui::BeginTabItem( _( "SCENARIO" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_SCENARIO )] ) ) {
             check_new_tab( CHARCREATOR_SCENARIO );
             draw_scenarios();
             ImGui::EndTabItem();
         }
-        if( ImGui::BeginTabItem( "PROFESSION", nullptr,
+        if( ImGui::BeginTabItem( _( "PROFESSION" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_PROFESSION )] ) ) {
             check_new_tab( CHARCREATOR_PROFESSION );
             draw_professions();
             ImGui::EndTabItem();
         }
-        if( ImGui::BeginTabItem( "BACKGROUND", nullptr,
+        if( ImGui::BeginTabItem( _( "BACKGROUND" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_BACKGROUND )] ) ) {
             check_new_tab( CHARCREATOR_BACKGROUND );
             draw_backgrounds();
             ImGui::EndTabItem();
         }
-        if( ImGui::BeginTabItem( "STATS", nullptr, tab_selected[static_cast<int>( CHARCREATOR_STATS )] ) ) {
+        if( ImGui::BeginTabItem( _( "STATS" ), nullptr,
+                                 tab_selected[static_cast<int>( CHARCREATOR_STATS )] ) ) {
             check_new_tab( CHARCREATOR_STATS );
             draw_stats();
             ImGui::EndTabItem();
         }
-        if( ImGui::BeginTabItem( "TRAITS", nullptr,
+        if( ImGui::BeginTabItem( _( "TRAITS" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_TRAITS )] ) ) {
             check_new_tab( CHARCREATOR_TRAITS );
             draw_traits();
             ImGui::EndTabItem();
         }
-        if( ImGui::BeginTabItem( "SKILLS", nullptr,
+        if( ImGui::BeginTabItem( _( "SKILLS" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_SKILLS )] ) ) {
             check_new_tab( CHARCREATOR_SKILLS );
             draw_skills();
             ImGui::EndTabItem();
         }
-        if( ImGui::BeginTabItem( "SUMMARY", nullptr,
+        if( ImGui::BeginTabItem( _( "SUMMARY" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_SUMMARY )] ) ) {
             check_new_tab( CHARCREATOR_SUMMARY );
             draw_summary();
@@ -2796,7 +2803,7 @@ void character_creator_ui_impl::draw_top_bar( const avatar &u ) const
         char_creation::draw_outfit();
 
         ImGui::TableSetColumnIndex( 1 );
-        cataimgui::draw_colored_text( "Randomize:", c_white );
+        cataimgui::draw_colored_text( _( "Randomize:" ), c_white );
         ImGui::SameLine();
         char_creation::draw_action_button( _( "Name" ), "RANDOMIZE_CHAR_NAME" );
         ImGui::SameLine();

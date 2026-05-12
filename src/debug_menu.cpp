@@ -2654,7 +2654,7 @@ static void character_edit_menu()
         case D_MISSION_ADD: {
             uilist types;
             types.text = _( "Choose mission type" );
-            const auto all_missions = mission_type::get_all();
+            const auto &all_missions = mission_type::get_all();
             std::vector<const mission_type *> mts;
             for( size_t i = 0; i < all_missions.size(); i++ ) {
                 types.addentry( i, true, -1, all_missions[i].tname() );
@@ -2890,11 +2890,13 @@ static void faction_edit_menu()
          << string_format( _( "Trust: %d" ), fac->trusts_u ) << std::endl;
     data << string_format( _( "Known by you: %s" ), fac->known_by_u ? "true" : "false" ) << " | "
          << string_format( _( "Lone wolf: %s" ), fac->lone_wolf_faction ? "true" : "false" ) << std::endl;
+    data << string_format( _( "Steal mode: %s" ),
+                           fac->steal_persist ? ( *fac->steal_persist ? "thief" : "honest" ) : "ask" ) << std::endl;
 
     nmenu.text = data.str();
 
     enum {
-        D_WEALTH, D_SIZE, D_POWER, D_FOOD, D_OPINION, D_KNOWN, D_LONE
+        D_WEALTH, D_SIZE, D_POWER, D_FOOD, D_OPINION, D_KNOWN, D_LONE, D_THIEF
     };
     nmenu.addentry( D_WEALTH, true, 'w', "%s", _( "Set wealth" ) );
     nmenu.addentry( D_SIZE, true, 's', "%s", _( "Set size" ) );
@@ -2903,6 +2905,7 @@ static void faction_edit_menu()
     nmenu.addentry( D_OPINION, true, 'o', "%s", _( "Set opinions" ) );
     nmenu.addentry( D_KNOWN, true, 'k', "%s", _( "Toggle Known by you" ) );
     nmenu.addentry( D_LONE, true, 'l', "%s", _( "Toggle Lone wolf" ) );
+    nmenu.addentry( D_THIEF, true, 't', "%s", _( "Reset steal mode" ) );
 
     nmenu.query();
     int value;
@@ -2936,6 +2939,9 @@ static void faction_edit_menu()
             break;
         case D_LONE:
             fac->lone_wolf_faction = !fac->lone_wolf_faction;
+            break;
+        case D_THIEF:
+            fac->steal_persist = std::nullopt;
             break;
     }
 }
@@ -3183,7 +3189,8 @@ static void debug_menu_game_state()
             creature_names_sorted.emplace_back( it );
         }
 
-        std::stable_sort( creature_names_sorted.begin(), creature_names_sorted.end(), []( auto a, auto b ) {
+        std::stable_sort( creature_names_sorted.begin(), creature_names_sorted.end(),
+        []( const auto & a, const auto & b ) {
             return a.second > b.second;
         } );
 
@@ -3308,7 +3315,7 @@ static void display_talk_topic()
             }
             talk_topic_menu.query();
             if( talk_topic_menu.ret >= 0 && talk_topic_menu.ret < static_cast<int>( dialogue_ids.size() ) ) {
-                const std::string selected_topic = dialogue_ids[talk_topic_menu.ret];
+                const std::string &selected_topic = dialogue_ids[talk_topic_menu.ret];
                 a.talk_to( get_talker_for( selected_npc ), false, false, false, selected_topic );
             }
         }

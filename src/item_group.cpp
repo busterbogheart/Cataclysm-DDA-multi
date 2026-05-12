@@ -611,6 +611,17 @@ void Item_modifier::modify( item &new_item, const std::string &context ) const
             new_item.charges = std::max( 1, max_capacity );
         }
 
+        const std::vector<itype_id> well_defaults = new_item.magazines_default();
+        const bool is_multi_well = well_defaults.size() > 1;
+
+        if( ch != -1 && is_multi_well ) {
+            // TODO(multimag): per-well charges JSON keys (e.g. well_charges: [N, M]).
+            debugmsg( "in %s: 'charges' is ambiguous on multi-well item '%s'; "
+                      "use per-well JSON when available",
+                      context, new_item.typeId().str() );
+            ch = -1;
+        }
+
         if( ch != -1 ) {
             if( new_item.count_by_charges() || new_item.made_of( phase_id::LIQUID ) ) {
                 // food, ammo
@@ -663,11 +674,17 @@ void Item_modifier::modify( item &new_item, const std::string &context ) const
 
         if( new_item.is_magazine() ||
             new_item.has_pocket_type( pocket_type::MAGAZINE_WELL ) ) {
-            bool spawn_ammo = rng( 0, 99 ) < with_ammo && new_item.ammo_remaining() == 0 && ch == -1;
-            bool spawn_mag = rng( 0, 99 ) < with_magazine && !new_item.magazine_integral() &&
-                             !new_item.magazine_current();
+            bool spawn_ammo = rng( 0, 99 ) < with_ammo && ch == -1;
+            bool spawn_mag = rng( 0, 99 ) < with_magazine && !new_item.magazine_integral();
+            if( !is_multi_well ) {
+                spawn_ammo = spawn_ammo && new_item.ammo_remaining() == 0;
+                spawn_mag = spawn_mag && !new_item.magazine_current();
+            }
 
-            if( spawn_mag ) {
+            if( is_multi_well ) {
+                // TODO(multimag): per-well ammo-chance / magazine-chance JSON keys.
+                new_item.dress_magazine_wells( spawn_mag, spawn_ammo );
+            } else if( spawn_mag ) {
                 item mag( new_item.magazine_default(), new_item.birthday() );
                 if( spawn_ammo && !mag.ammo_default().is_null() ) {
                     mag.ammo_set( mag.ammo_default() );

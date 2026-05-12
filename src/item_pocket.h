@@ -571,6 +571,8 @@ class pocket_data
         cata::flat_set<itype_id> allowed_speedloaders;
         // the first in the json array for item_id_restriction when loaded
         itype_id default_magazine = itype_id::NULL_ID();
+        // Optional handle referenced by firing_requirements / consumption_per_use.
+        std::string pocket_id;
         // container's size and encumbrance does not change based on contents.
         bool rigid = false;
         // Parent item of this pocket has flag NO_UNLOAD

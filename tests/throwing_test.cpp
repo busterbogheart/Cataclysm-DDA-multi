@@ -39,6 +39,8 @@ TEST_CASE( "throwing_distance_test", "[throwing], [balance]" )
     CHECK( thrower.throw_range( grenade ) <= 35 );
 }
 
+namespace
+{
 struct throw_test_data {
     statistics<bool> hits;
     statistics<double> dmg;
@@ -53,11 +55,12 @@ struct throw_test_pstats {
     int per;
 };
 
-static std::ostream &operator<<( std::ostream &stream, const throw_test_pstats &pstats )
+std::ostream &operator<<( std::ostream &stream, const throw_test_pstats &pstats )
 {
     return stream << "STR: " << pstats.str << " DEX: " << pstats.dex <<
            " PER: " << pstats.per << " SKL: " << pstats.skill_lvl;
 }
+} // namespace
 
 static void reset_player( Character &you, const throw_test_pstats &pstats,
                           const tripoint_bub_ms &pos )
