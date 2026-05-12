@@ -36,7 +36,10 @@ jobs:
 
       - name: Build
         run: |
-          arch -x86_64 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          arch -x86_64 env \
+            PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+            PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/opt/sdl2/lib/pkgconfig:/usr/local/opt/sdl2_image/lib/pkgconfig:/usr/local/opt/sdl2_ttf/lib/pkgconfig:/usr/local/opt/sdl2_mixer/lib/pkgconfig:/usr/local/opt/freetype/lib/pkgconfig" \
+            make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
             CC="/usr/local/bin/ccache clang" CXX="/usr/local/bin/ccache clang++" \
             cataclysm-tiles
           mv cataclysm-tiles cataclysm-tiles-x86_64
