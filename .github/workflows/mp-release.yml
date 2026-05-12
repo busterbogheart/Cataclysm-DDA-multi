@@ -22,7 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache x86_64 Homebrew prefix
+        id: cache-brew
+        uses: actions/cache@v4
+        with:
+          path: /usr/local
+          key: brew-x86_64-sdl2-pkgconf-ccache-v1
+          save-always: true
+
       - name: Install x86_64 Homebrew and dependencies
+        if: steps.cache-brew.outputs.cache-hit != 'true'
         run: |
           arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
           arch -x86_64 /usr/local/bin/brew install pkgconf sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache
