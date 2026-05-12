@@ -1,14 +1,6 @@
 name: SDL3 build matrix
 
 on:
-  push:
-    branches:
-    - master
-    paths-ignore:
-    - 'data/**'
-    - 'doc/**'
-    - 'doxygen_doc/**'
-    - 'lang/**'
   pull_request:
     branches:
     - master
