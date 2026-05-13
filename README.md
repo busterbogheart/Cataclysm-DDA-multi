@@ -133,9 +133,16 @@ This fork adds experimental co-op multiplayer. One player hosts; a second player
 
 ### Building (macOS)
 
-Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext`
+Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache`
 
+**macOS 12+ (Monterey and newer):**
 ```sh
+make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+```
+
+**macOS 11 (Big Sur) and older** — Homebrew bottles on newer macOS may reference symbols not available on 11.x. Build natively on the target machine:
+```sh
+brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache
 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
 ```
 
