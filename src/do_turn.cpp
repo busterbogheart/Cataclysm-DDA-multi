@@ -785,13 +785,18 @@ bool do_turn()
             sounds::reset_markers();
         } else {
             // Rate limit key polling to 10 times a second.
-            static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() );
-            const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now() );
-            if( ( now - start ).count() > 100 ) {
-                handle_key_blocking_activity();
-                start = now;
+            // Skip in client mode: handle_key_blocking_activity() blocks on
+            // keyboard input, which prevents do_turn() from returning and
+            // client_process_incoming() from running — stalling ACT_WAIT sync.
+            if( !cata_mp::is_client_mode() ) {
+                static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() );
+                const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() );
+                if( ( now - start ).count() > 100 ) {
+                    handle_key_blocking_activity();
+                    start = now;
+                }
             }
 
             // Client: poll input while locked so zoom and UI keys respond immediately.
