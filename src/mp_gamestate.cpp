@@ -1936,7 +1936,9 @@ void grant_client_turn()
     }
     g_client_acted_this_turn = false;
     g_remote_moves = remote->get_speed();
-    mp_log( "[cdda-mp] grant_client_turn: remote_moves=" + std::to_string( g_remote_moves ) );
+    const player_activity &ha = get_avatar().activity;
+    mp_log( "[cdda-mp] grant_client_turn: remote_moves=" + std::to_string( g_remote_moves ) +
+            " host_act=" + ( ha ? ha.id().str() : "none" ) );
     // Proxy skips npcmove so never auto-regenerates stamina. Replicate the
     // update_body() path that the real avatar gets each game turn.
     remote->update_stamina( 1 );
@@ -1952,17 +1954,25 @@ void wait_for_client_action()
         return;
     }
 
-    // During host sleep, don't block — just drain the event queue and return.
-    // Sleep is fast-forwarded (8 in-game hours in <1 s wall-clock).  Blocking
-    // up to 10 s per tick × ~28800 ticks would freeze the game for hours.
-    // Short wait activities (ACT_WAIT, ACT_WAIT_STAMINA, etc.) stay in lockstep:
-    // the client's 500 ms auto-wait fires once per activity tick, so the client
-    // gets one free turn per tick (~30 real seconds for a 1-minute in-game wait).
+    // During host sleep or wait activities, don't block — just drain the event
+    // queue and return so the client is free to act independently.
     {
         static const efftype_id eff_sleep( "sleep" );
-        if( get_avatar().has_effect( eff_sleep ) ) {
+        static const activity_id act_wait( "ACT_WAIT" );
+        static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
+        static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
+        static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
+        const player_activity &act = get_avatar().activity;
+        const bool host_waiting = get_avatar().has_effect( eff_sleep ) ||
+                                  ( act && ( act.id() == act_wait ||
+                                             act.id() == act_wait_stamina ||
+                                             act.id() == act_wait_weather ||
+                                             act.id() == act_wait_npc ) );
+        if( host_waiting ) {
             process_mp_events();
-            mp_log( "[cdda-mp] host sleeping — skipping client wait (fast-forward)" );
+            const std::string reason = get_avatar().has_effect( eff_sleep ) ? "sleep" : act.id().str();
+            mp_log( "[cdda-mp] lockstep-skip: host_act=" + reason +
+                    " client_acted=" + std::to_string( g_client_acted_this_turn ) );
             return;
         }
     }
@@ -1993,6 +2003,12 @@ void wait_for_client_action()
     g_wait_elapsed_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_start ).count() );
+    if( g_wait_elapsed_ms > 100 ) {
+        const player_activity &ha = get_avatar().activity;
+        mp_log( "[cdda-mp] wait_for_client: elapsed=" + std::to_string( g_wait_elapsed_ms ) +
+                "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
+                " acted=" + std::to_string( g_client_acted_this_turn ) );
+    }
 
     // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
     // before monmove() / process_vehicles() runs.  vehicle_move.cpp line ~892 skips
@@ -2495,8 +2511,9 @@ static bool apply_one_state_message( const std::string &msg )
                 get_avatar().set_moves( srv_moves );
             } else if( !g_client_waiting_for_ack ) {
                 // New grant and no unacked action in flight — apply normally.
+                const player_activity &ca = get_avatar().activity;
                 mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
-                        " (applied)" );
+                        " (applied) act=" + ( ca ? ca.id().str() : "none" ) );
                 get_avatar().set_moves( srv_moves );
                 g_last_grant_time = std::chrono::steady_clock::now();
             } else {

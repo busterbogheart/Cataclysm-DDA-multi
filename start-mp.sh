@@ -218,9 +218,30 @@ if [[ "$MODE" == "host" || "$MODE" == "both" ]]; then
     fi
 fi
 
+# In host mode: write the chosen char to a marker file and push it so the
+# client machine can filter it out of its character list after git pull.
+if [[ "$MODE" == "host" ]]; then
+    HOST_CHAR_FILE="$SAVE_DIR/$WORLD/.host_char"
+    printf '%s\n' "$HOST_CHAR" > "$HOST_CHAR_FILE"
+    git -C "$GAME_DIR" add -f "$HOST_CHAR_FILE" 2>/dev/null
+    if ! git -C "$GAME_DIR" diff --cached --quiet 2>/dev/null; then
+        git -C "$GAME_DIR" commit -m "mp: host char" --quiet 2>/dev/null
+        git -C "$GAME_DIR" push --quiet 2>/dev/null
+    fi
+fi
+
+# In client mode: read the host's marker file (synced via git pull above)
+# so the host's active character can be excluded from the selection list.
+if [[ "$MODE" == "client" ]]; then
+    HOST_CHAR_FILE="$SAVE_DIR/$WORLD/.host_char"
+    if [[ -f "$HOST_CHAR_FILE" ]]; then
+        HOST_CHAR=$(tr -d '[:space:]' < "$HOST_CHAR_FILE")
+    fi
+fi
+
 if [[ "$MODE" == "client" || "$MODE" == "both" ]]; then
     if [[ -z "$CLIENT_CHAR" ]]; then
-        # In both-mode, exclude the already-chosen host char
+        # Exclude the already-chosen/active host char
         remaining=()
         for c in "${char_arr[@]}"; do
             [[ "$c" != "$HOST_CHAR" ]] && remaining+=("$c")
@@ -285,6 +306,9 @@ if [[ "$MODE" == "host" ]]; then
     "$GAME" --host --world "$WORLD" --char "$HOST_CHAR" 2>&1 | tee "$HOST_LOG"
     echo ""
     echo "Session ended. Pushing save to remote..."
+    # Remove the host-char marker now that the session is over.
+    HOST_CHAR_FILE="$SAVE_DIR/$WORLD/.host_char"
+    rm -f "$HOST_CHAR_FILE"
     git -C "$GAME_DIR" add -f save/
     if git -C "$GAME_DIR" diff --cached --quiet; then
         echo "No save changes to push."
