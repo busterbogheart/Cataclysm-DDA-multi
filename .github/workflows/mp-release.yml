@@ -71,7 +71,7 @@ jobs:
               for line in r.stdout.splitlines()[1:]:
                   yield line.strip().split(" (")[0].strip()
 
-          def get_rpaths(path):
+          def get_rpaths(path, loader_dir=None):
               r = subprocess.run(["otool", "-l", path], capture_output=True, text=True)
               rpaths = []
               lines = r.stdout.splitlines()
@@ -80,8 +80,11 @@ jobs:
                       for j in range(i, min(i + 5, len(lines))):
                           if "path " in lines[j]:
                               rp = lines[j].strip().split("path ")[1].split(" (")[0].strip()
-                              if not rp.startswith("@"):
-                                  rpaths.append(rp)
+                              if rp.startswith("@loader_path") and loader_dir:
+                                  rp = os.path.normpath(rp.replace("@loader_path", loader_dir))
+                              elif rp.startswith("@"):
+                                  break
+                              rpaths.append(rp)
                               break
               return rpaths
 
@@ -108,7 +111,7 @@ jobs:
               current, loader_dir = queue.popleft()
               if loader_dir is None:
                   loader_dir = os.path.dirname(os.path.abspath(current))
-              rpaths = get_rpaths(current)
+              rpaths = get_rpaths(current, loader_dir)
               for dep in otool_deps(current):
                   resolved = resolve_dep(dep, rpaths, loader_dir)
                   if not resolved:
