@@ -1954,25 +1954,34 @@ void wait_for_client_action()
         return;
     }
 
-    // During host sleep or wait activities, don't block — just drain the event
-    // queue and return so the client is free to act independently.
+    // Sleep: skip lockstep entirely — 28800 ticks of blocking would freeze for hours.
     {
         static const efftype_id eff_sleep( "sleep" );
+        if( get_avatar().has_effect( eff_sleep ) ) {
+            process_mp_events();
+            mp_log( "[cdda-mp] lockstep-skip: host_act=sleep" );
+            return;
+        }
+    }
+    // Wait activities: rate-limit to 200 ms per tick so the client has time to
+    // move freely.  Host advances after the timeout even if client hasn't acted.
+    {
         static const activity_id act_wait( "ACT_WAIT" );
         static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
         static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
         static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
         const player_activity &act = get_avatar().activity;
-        const bool host_waiting = get_avatar().has_effect( eff_sleep ) ||
-                                  ( act && ( act.id() == act_wait ||
-                                             act.id() == act_wait_stamina ||
-                                             act.id() == act_wait_weather ||
-                                             act.id() == act_wait_npc ) );
-        if( host_waiting ) {
-            process_mp_events();
-            const std::string reason = get_avatar().has_effect( eff_sleep ) ? "sleep" : act.id().str();
-            mp_log( "[cdda-mp] lockstep-skip: host_act=" + reason +
-                    " client_acted=" + std::to_string( g_client_acted_this_turn ) );
+        if( act && ( act.id() == act_wait || act.id() == act_wait_stamina ||
+                     act.id() == act_wait_weather || act.id() == act_wait_npc ) ) {
+            mp_log( "[cdda-mp] wait-tick: host_act=" + act.id().str() + " window=200ms" );
+            const auto t_act = std::chrono::steady_clock::now();
+            while( !g_client_acted_this_turn &&
+                   std::chrono::steady_clock::now() - t_act < std::chrono::milliseconds( 200 ) ) {
+                process_mp_events();
+                std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
+            }
+            mp_log( "[cdda-mp] wait-tick done: client_acted=" +
+                    std::to_string( g_client_acted_this_turn ) );
             return;
         }
     }
