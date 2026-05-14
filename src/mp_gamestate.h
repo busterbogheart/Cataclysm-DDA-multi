@@ -78,6 +78,11 @@ void set_host_mode( bool enabled );
 // whether it is also a headless dedicated server.
 bool is_hosting();
 
+// True when hosting and the host avatar has an active wait activity (ACT_WAIT,
+// ACT_WAIT_STAMINA, etc.).  Used by do_turn to skip monmove() so monsters
+// freeze while the host fast-forwards, giving the client time to act freely.
+bool host_is_in_wait_activity();
+
 // Client only: returns true when the client host-NPC proxy occupies the given
 // absolute map position.  Used by handle_action to block walk-through-host.
 bool is_client_host_at( const tripoint_abs_ms &abs );
@@ -150,6 +155,12 @@ character_id get_remote_player_npc_character_id();
 // Used by do_turn() to auto-send "wait" when the player is idle and the host
 // is fast-forwarding through a long activity (wait, sleep, crafting).
 int ms_since_last_grant();
+
+// Client only: true when the server's last state packet indicated the host is
+// in a long automatic activity (ACT_WAIT via the | menu, sleep, crafting).
+// Used by do_turn() to lower the auto-wait idle threshold from 500ms → 100ms
+// so the client responds within the server's 200ms ACT_WAIT tick window.
+bool is_host_fenced();
 
 // Client only: true when the server has told us the proxy NPC is at vehicle controls.
 // handle_action uses this to route movement keys through pldrive instead of walk.

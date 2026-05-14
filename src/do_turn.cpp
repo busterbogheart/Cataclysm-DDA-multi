@@ -649,6 +649,10 @@ bool do_turn()
                          " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
         cata_mp::client_dispatch_wait_for_activity( pre_activity_id );
         mp_wait_dispatched = true;
+    } else if( cata_mp::is_client_mode() ) {
+        cata_mp::mp_log( "[cdda-mp] pre-loop dispatch SKIP: pre_moves=" + std::to_string( pre_activity_moves ) +
+                         " cur_moves=" + std::to_string( u.get_moves() ) +
+                         " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
     }
 
     // Process NPC sound events before they move or they hear themselves talking
@@ -725,12 +729,16 @@ bool do_turn()
                 if( cata_mp::is_client_mode() ) {
                     const int ms = cata_mp::ms_since_last_grant();
                     const bool ack = cata_mp::is_client_waiting_for_ack();
+                    // Lower threshold during host long activity (fenced): client must
+                    // respond within the server's 200ms ACT_WAIT tick window.
+                    const int auto_wait_ms = cata_mp::is_host_fenced() ? 100 : 500;
                     if( ms > 100 ) {
                         cata_mp::mp_log( "[cdda-mp] auto-wait check: ms=" + std::to_string( ms ) +
+                                         " threshold=" + std::to_string( auto_wait_ms ) +
                                          " ack=" + std::to_string( ack ) +
                                          " moves=" + std::to_string( u.get_moves() ) );
                     }
-                    if( !ack && u.get_moves() > 0 && ms > 500 ) {
+                    if( !ack && u.get_moves() > 0 && ms > auto_wait_ms ) {
                         cata_mp::mp_log( "[cdda-mp] auto-wait: idle " + std::to_string( ms ) + "ms" );
                         cata_mp::client_dispatch_wait_for_activity( activity_id(), true );
                         // Exit the input loop so do_turn advances to client_process_incoming.
@@ -867,14 +875,14 @@ bool do_turn()
     if( !cata_mp::is_client_mode() ) {
         if( cata_mp::is_hosting() ) {
             const auto t0 = std::chrono::steady_clock::now();
-            monmove();
-            const auto ms = static_cast<int>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t0 ).count() );
-            cata_mp::set_last_monmove_ms( ms );
-            if( ms > 50 ) {
-                cata_mp::mp_log( "[cdda-mp] monmove slow: " + std::to_string( ms ) + "ms" );
-            }
+                monmove();
+                const auto ms = static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0 ).count() );
+                cata_mp::set_last_monmove_ms( ms );
+                if( ms > 50 ) {
+                    cata_mp::mp_log( "[cdda-mp] monmove slow: " + std::to_string( ms ) + "ms" );
+                }
         } else {
             monmove();
         }

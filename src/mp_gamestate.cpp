@@ -209,6 +209,21 @@ static std::chrono::steady_clock::time_point g_ack_set_time;
 // Used by ms_since_last_grant() to auto-send "wait" when the player is idle.
 static std::chrono::steady_clock::time_point g_last_grant_time;
 
+// Server: monotonically increasing sequence number, incremented each grant_client_turn().
+// Included in every state packet so the client can distinguish a fresh grant from a
+// TCP-buffered duplicate of a previous grant.
+static uint32_t g_grant_seq = 0;
+
+// Client: last grant_seq that was successfully applied (moves > 0 path).
+// Guards the "new grant" branch: a packet with grant_seq <= g_client_last_grant_seq
+// is a stale buffered duplicate and its moves value is ignored.
+static uint32_t g_client_last_grant_seq = 0;
+
+// Client: true when the server's last state packet indicated the host is in a
+// long activity (ACT_WAIT via the | menu, sleep, etc.).  Used to lower the
+// auto-wait threshold so the client responds within the server's 200ms window.
+static bool g_host_is_fenced = false;
+
 // Server: set when the remote player has submitted at least one real action
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
@@ -732,6 +747,7 @@ static void remove_remote_player()
     remote_player_connected = false;
     remote_player_npc_id = character_id();
     g_separation_tier = 0;
+    g_grant_seq = 0;
     mp_save_npc_ids();  // ID is now invalid — clears the cleanup file entry
     add_msg( m_bad, "The other player has disconnected." );
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
@@ -1936,8 +1952,10 @@ void grant_client_turn()
     }
     g_client_acted_this_turn = false;
     g_remote_moves = remote->get_speed();
+    ++g_grant_seq;
     const player_activity &ha = get_avatar().activity;
     mp_log( "[cdda-mp] grant_client_turn: remote_moves=" + std::to_string( g_remote_moves ) +
+            " seq=" + std::to_string( g_grant_seq ) +
             " host_act=" + ( ha ? ha.id().str() : "none" ) );
     // Proxy skips npcmove so never auto-regenerates stamina. Replicate the
     // update_body() path that the real avatar gets each game turn.
@@ -1963,38 +1981,11 @@ void wait_for_client_action()
             return;
         }
     }
-    // Wait activities: rate-limit to 200 ms per tick so the client has time to
-    // move freely.  Host advances after the timeout even if client hasn't acted.
-    {
-        static const activity_id act_wait( "ACT_WAIT" );
-        static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
-        static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
-        static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
-        const player_activity &act = get_avatar().activity;
-        if( act && ( act.id() == act_wait || act.id() == act_wait_stamina ||
-                     act.id() == act_wait_weather || act.id() == act_wait_npc ) ) {
-            mp_log( "[cdda-mp] wait-tick: host_act=" + act.id().str() + " window=200ms" );
-            const auto t_act = std::chrono::steady_clock::now();
-            while( !g_client_acted_this_turn &&
-                   std::chrono::steady_clock::now() - t_act < std::chrono::milliseconds( 200 ) ) {
-                process_mp_events();
-                std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
-            }
-            mp_log( "[cdda-mp] wait-tick done: client_acted=" +
-                    std::to_string( g_client_acted_this_turn ) );
-            return;
-        }
-    }
 
     g_host_waiting_for_client = true;
     using namespace std::chrono_literals;
     const auto t_start = std::chrono::steady_clock::now();
-    auto deadline = t_start + 10s;
     while( !g_client_acted_this_turn && remote_player_connected ) {
-        if( std::chrono::steady_clock::now() >= deadline ) {
-            std::cout << "[cdda-mp] lockstep: timed out waiting for client action" << std::endl;
-            break;
-        }
         process_mp_events();
         if( g_client_acted_this_turn ) {
             break;
@@ -2033,6 +2024,20 @@ void wait_for_client_action()
             }
         }
     }
+}
+
+bool host_is_in_wait_activity()
+{
+    if( !is_hosting() ) {
+        return false;
+    }
+    static const activity_id act_wait( "ACT_WAIT" );
+    static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
+    static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
+    static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
+    const player_activity &act = get_avatar().activity;
+    return act && ( act.id() == act_wait || act.id() == act_wait_stamina ||
+                    act.id() == act_wait_weather || act.id() == act_wait_npc );
 }
 
 void set_last_monmove_ms( int ms )
@@ -2497,12 +2502,18 @@ static bool apply_one_state_message( const std::string &msg )
             g_client_waiting_for_ack = false;
         }
 
+        // Read seq and fenced flag before the ack-guard / moves logic.
+        const uint32_t grant_seq = jo.has_int( "grant_seq" )
+                                   ? static_cast<uint32_t>( jo.get_int( "grant_seq" ) ) : 0;
+        if( jo.has_bool( "host_fenced" ) ) {
+            g_host_is_fenced = jo.get_bool( "host_fenced" );
+        }
+
         // Apply server-authoritative move budget.
-        // While g_client_waiting_for_ack is set (we sent an action but haven't
-        // received the server's moves=0 ack yet), ignore moves>0 packets —
-        // those are stale pre-ack broadcasts still in the TCP buffer.
-        // Safety: if the ack hasn't arrived within 5 s (e.g. reconnect with stale
-        // flag, or server timeout path that never sends moves<=0), force-clear it.
+        // Two guards prevent double-application:
+        //  1. ack guard: we sent an action and are waiting for the server's moves=0 ack
+        //  2. seq guard: grant_seq <= last seen means this is a TCP-buffered duplicate
+        // Safety: force-clear ack guard after 5 s to recover from any stuck state.
         if( g_client_waiting_for_ack ) {
             using namespace std::chrono_literals;
             if( std::chrono::steady_clock::now() - g_ack_set_time > 5s ) {
@@ -2513,22 +2524,33 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_member( "moves" ) ) {
             const int srv_moves = jo.get_int( "moves" );
             if( srv_moves <= 0 ) {
-                // Server locked us — action was received and processed.
+                // ACK: server confirmed our action was received.  Always apply.
                 mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
-                        " (ACK — clearing ack guard)" );
+                        " seq=" + std::to_string( grant_seq ) +
+                        " (ACK — clearing ack guard) pending=" +
+                        ( g_pending_action.empty() ? "none" : g_pending_action.substr( 0, 40 ) ) );
                 g_client_waiting_for_ack = false;
                 get_avatar().set_moves( srv_moves );
-            } else if( !g_client_waiting_for_ack ) {
-                // New grant and no unacked action in flight — apply normally.
+            } else if( !g_client_waiting_for_ack &&
+                       ( grant_seq == 0 || grant_seq > g_client_last_grant_seq ) ) {
+                // New grant: no pending ack AND seq is fresh (or server predates seq feature).
+                if( grant_seq > 0 ) {
+                    g_client_last_grant_seq = grant_seq;
+                }
                 const player_activity &ca = get_avatar().activity;
                 mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
-                        " (applied) act=" + ( ca ? ca.id().str() : "none" ) );
+                        " seq=" + std::to_string( grant_seq ) +
+                        " (applied) fenced=" + std::to_string( g_host_is_fenced ) +
+                        " act=" + ( ca ? ca.id().str() : "none" ) );
                 get_avatar().set_moves( srv_moves );
                 g_last_grant_time = std::chrono::steady_clock::now();
             } else {
-                // srv_moves > 0 but waiting for ack → stale packet, skip.
+                // Stale: ack pending or seq already seen.
                 mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
-                        " (SKIPPED — ack pending)" );
+                        " seq=" + std::to_string( grant_seq ) + "/" +
+                        std::to_string( g_client_last_grant_seq ) +
+                        " (SKIPPED — " +
+                        ( g_client_waiting_for_ack ? "ack pending" : "old seq" ) + ")" );
             }
         }
 
@@ -2638,9 +2660,11 @@ void client_process_incoming()
     const bool was_joined = client_join_is_sent();
     client_send_join();
     if( !was_joined && client_join_is_sent() ) {
-        // Just sent the join — clear any stale ack guard from a previous session
+        // Just sent the join — clear any stale ack/seq state from a previous session
         // so the server's first move grant isn't silently ignored after reconnect.
         g_client_waiting_for_ack = false;
+        g_client_last_grant_seq = 0;
+        g_host_is_fenced = false;
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
     }
@@ -2652,6 +2676,11 @@ void client_process_incoming()
     // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
     // immediately after, giving the user the chance to queue the next action.
     // The ack guard (set below) prevents the input loop from double-sending.
+    if( !g_pending_action.empty() && get_avatar().get_moves() <= 0 ) {
+        mp_log( "[cdda-mp] auto-fire DEAD ZONE: pending=" + g_pending_action.substr( 0, 60 ) +
+                " moves=" + std::to_string( get_avatar().get_moves() ) +
+                " ack=" + std::to_string( g_client_waiting_for_ack ) );
+    }
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
         mp_log( "[cdda-mp] auto-fire: pending=" + g_pending_action.substr( 0, 60 ) );
         // If we're now in a wait activity, discard the stale queued action instead
@@ -3039,6 +3068,11 @@ int ms_since_last_grant()
     using namespace std::chrono;
     return static_cast<int>(
         duration_cast<milliseconds>( steady_clock::now() - g_last_grant_time ).count() );
+}
+
+bool is_host_fenced()
+{
+    return g_host_is_fenced;
 }
 
 bool client_ctrl_veh()
@@ -3791,6 +3825,21 @@ std::string serialize_remote_player_state()
     tripoint_abs_ms pos = remote->pos_abs();
     const avatar &host = get_avatar();
     tripoint_abs_ms host_pos = host.pos_abs();
+
+    // True when host is in a long automatic activity (| wait menu, sleep, crafting).
+    // Broadcast to client so it can lower its auto-wait threshold and respond within
+    // the server's 200ms ACT_WAIT tick window instead of the default 500ms.
+    static const efftype_id s_eff_sleep( "sleep" );
+    static const activity_id s_act_wait( "ACT_WAIT" );
+    static const activity_id s_act_wait_stamina( "ACT_WAIT_STAMINA" );
+    static const activity_id s_act_wait_weather( "ACT_WAIT_WEATHER" );
+    static const activity_id s_act_wait_npc( "ACT_WAIT_NPC" );
+    const player_activity &host_act = host.activity;
+    const bool host_fenced = host.has_effect( s_eff_sleep ) ||
+        ( host_act && ( host_act.id() == s_act_wait ||
+                        host_act.id() == s_act_wait_stamina ||
+                        host_act.id() == s_act_wait_weather ||
+                        host_act.id() == s_act_wait_npc ) );
     std::string viewport = build_viewport( pos_bub );
     std::string monsters     = build_monster_list( pos, 40 );
 
@@ -4093,6 +4142,8 @@ std::string serialize_remote_player_state()
            ",\"tile_changes\":" + tile_changes +
            ",\"vehicles\":" + vehicles_json +
            ",\"msgs\":" + msgs_json +
+           ",\"host_fenced\":" + ( host_fenced ? "true" : "false" ) +
+           ",\"grant_seq\":" + std::to_string( g_grant_seq ) +
            ",\"sfx\":" + [&]() -> std::string {
                std::string j = "[";
                bool first = true;
