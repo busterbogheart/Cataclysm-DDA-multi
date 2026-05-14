@@ -1,7 +1,7 @@
 # version 39
 {
-  "overmapbuffer": { "placed_unique_specials": [  ], "overmap_count": 34, "unique_special_count": {  }, "overmap_highway_intersection_grid": { "overmap_highway_offset": [ -2147483648, -2147483648 ], "overmap_highway_intersections": {  } }, "major_river_count": 0, "unique_special_decks": {  } },
-  "weather": { "lightning": false, "weather_id": "sunny", "next_weather": 5214300, "temperature": 53.872833, "winddirection": 67, "windspeed": 2, "snow_depth": [  ] },
+  "overmapbuffer": { "placed_unique_specials": [  ], "overmap_count": 38, "unique_special_count": {  }, "overmap_highway_intersection_grid": { "overmap_highway_offset": [ -2147483648, -2147483648 ], "overmap_highway_intersections": {  } }, "major_river_count": 0, "unique_special_decks": {  } },
+  "weather": { "lightning": false, "weather_id": "sunny", "next_weather": 5214308, "temperature": 53.863800, "winddirection": 247, "windspeed": 2, "snow_depth": [  ] },
   "region_type": "default",
-  "power_networks": { "next_id": 77, "networks": [ { "id": 70, "last_resolved": 5214007, "root_pos": [ -2008, 865, 0 ], "nodes": [ { "pos": [ -2008, 865, 0 ], "solar": "0 kW", "wind": "0 kW", "water": "0 kW", "consumption": "0 kW", "battery_cap": 3000 } ] }, { "id": 72, "last_resolved": 5214007, "root_pos": [ -1975, 929, 0 ], "nodes": [ { "pos": [ -1975, 929, 0 ], "solar": "0 kW", "wind": "0 kW", "water": "0 kW", "consumption": "0 kW", "battery_cap": 3000 } ] }, { "id": 73, "last_resolved": 5214007, "root_pos": [ -1962, 894, 0 ], "nodes": [ { "pos": [ -1962, 894, 0 ], "solar": "0 kW", "wind": "0 kW", "water": "0 kW", "consumption": "0 kW", "battery_cap": 3000 } ] }, { "id": 75, "last_resolved": 5214007, "root_pos": [ -1951, 858, 0 ], "nodes": [ { "pos": [ -1951, 858, 0 ], "solar": "0 kW", "wind": "0 kW", "water": "0 kW", "consumption": "0 kW", "battery_cap": 0 } ] }, { "id": 76, "last_resolved": 5214007, "root_pos": [ -1951, 928, 0 ], "nodes": [ { "pos": [ -1951, 928, 0 ], "solar": "0 kW", "wind": "0 kW", "water": "0 kW", "consumption": "0 kW", "battery_cap": 3000 } ] } ] }
+  "power_networks": { "next_id": 77, "networks": [  ] }
 }
