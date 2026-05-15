@@ -1,4 +1,5 @@
 #include "action.h"
+#include "mp_gamestate.h"
 
 #include <algorithm>
 #include <climits>

@@ -812,6 +812,7 @@ bool do_turn()
 
             if( cata_mp::is_client_mode() ) {
                 cata_mp::ensure_mp_hud();
+                g->handle_action();
             }
 
             g->mon_info_update();
