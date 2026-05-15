@@ -5,6 +5,8 @@
 #include "mp_server.h"
 
 #include "avatar.h"
+#include "character_martial_arts.h"
+#include "martialarts.h"
 #include "calendar.h"
 #include "cata_utility.h"
 #include "character_id.h"
@@ -40,6 +42,7 @@
 #include "player_activity.h"
 #include "trap.h"
 #include "type_id.h"
+#include "panels.h"
 #include "ui_manager.h"
 #include "rng.h"
 #include "units.h"
@@ -365,10 +368,18 @@ struct mp_hud_t {
 struct mp_strip_t {
     catacurses::window win;
     ui_adaptor ui;
+    bool right_side;
 
-    mp_strip_t() {
+    explicit mp_strip_t( bool right = false ) : right_side( right ) {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
-            win = catacurses::newwin( TERMY, 1, point( 0, 0 ) );
+            const int sidebar_w = panel_manager::get_manager().get_width_right();
+            const int x = right_side
+                          ? TERMX - sidebar_w - 1
+                          : 0;
+            mp_log( "[cdda-mp] mp_strip resize: right=" + std::to_string( right_side ) +
+                    " TERMX=" + std::to_string( TERMX ) + " sidebar_w=" + std::to_string( sidebar_w ) +
+                    " x=" + std::to_string( x ) );
+            win = catacurses::newwin( TERMY, 1, point( x, 0 ) );
             ua.position_from_window( win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
@@ -393,23 +404,30 @@ struct mp_strip_t {
         const bool go = get_avatar().get_moves() > 0 && !in_wait_act
                         && !g_host_waiting_for_client;
         const nc_color c = go ? c_light_green : c_red;
+        // ▌ left-half block on left edge; ▐ right-half block on right edge
+        const char *ch = right_side ? "\xe2\x96\x90" : "\xe2\x96\x8c";
         for( int y = 0; y < TERMY; y++ ) {
-            mvwprintz( win, point( 0, y ), c, "\xe2\x96\x88" );
+            mvwprintz( win, point( 0, y ), c, ch );
         }
         wnoutrefresh( win );
     }
 };
 
 static std::unique_ptr<mp_strip_t> g_mp_strip;
+static std::unique_ptr<mp_strip_t> g_mp_strip_right;
 static std::unique_ptr<mp_hud_t> g_mp_hud;
 
 void ensure_mp_hud()
 {
-    // Strip rendered first so panel draws on top in the overlap zone.
+    // Strips rendered first so panel draws on top in the overlap zone.
     if( !g_mp_strip ) {
-        g_mp_strip = std::make_unique<mp_strip_t>();
+        g_mp_strip = std::make_unique<mp_strip_t>( false );
     }
     g_mp_strip->ui.invalidate_ui();
+    if( !g_mp_strip_right ) {
+        g_mp_strip_right = std::make_unique<mp_strip_t>( true );
+    }
+    g_mp_strip_right->ui.invalidate_ui();
     if( !g_mp_hud ) {
         g_mp_hud = std::make_unique<mp_hud_t>();
     }
@@ -747,7 +765,11 @@ static void remove_remote_player()
     remote_player_connected = false;
     remote_player_npc_id = character_id();
     g_separation_tier = 0;
-    g_grant_seq = 0;
+    // Do NOT reset g_grant_seq here.  It must stay monotonically increasing so
+    // that a reconnecting client (which resets g_client_last_grant_seq=0 via the
+    // join path) always sees seq > 0 and accepts the first new grant.  Resetting
+    // to 0 here caused a deadlock: client last_seq=N, server restarts at seq=1..N
+    // which were all skipped as "old seq".
     mp_save_npc_ids();  // ID is now invalid — clears the cleanup file entry
     add_msg( m_bad, "The other player has disconnected." );
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
@@ -1068,6 +1090,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     remote->set_mutation( tid, var );
                     mp_log( "[cdda-mp] worn_sync: appearance type=" + mtype
                             + " id=" + mid + " var=" + ( var ? var->id : "" ) );
+                }
+            }
+            std::string ma_style_str;
+            jo.read( "ma_style", ma_style_str );
+            if( !ma_style_str.empty() ) {
+                const matype_id mid( ma_style_str );
+                if( mid.is_valid() ) {
+                    remote->martial_arts_data->set_style( mid, true );
+                    mp_log( "[cdda-mp] worn_sync: set ma_style=" + ma_style_str );
                 }
             }
         } catch( const JsonError &e ) {
@@ -1923,6 +1954,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( acted ) {
         g_client_acted_this_turn = true;
         g_remote_moves = 0;  // lock client; grant_client_turn() restores on next turn
+        mp_log( "[cdda-mp] SRV-ACK: sending moves=0 ack to client, grant_seq=" + std::to_string( g_grant_seq ) );
+    } else {
+        mp_log( "[cdda-mp] SRV-FREE: no-op move (wall/bump), sending free=true, moves=" + std::to_string( g_remote_moves ) );
     }
 
     // Broadcast updated state.  Wall bumps and other no-ops include "free":true
@@ -1985,10 +2019,20 @@ void wait_for_client_action()
     g_host_waiting_for_client = true;
     using namespace std::chrono_literals;
     const auto t_start = std::chrono::steady_clock::now();
+    mp_log( "[cdda-mp] SRV-WAIT: entering wait_for_client_action, grant_seq=" + std::to_string( g_grant_seq ) +
+            " acted=" + std::to_string( g_client_acted_this_turn ) );
+    auto t_last_heartbeat = t_start;
     while( !g_client_acted_this_turn && remote_player_connected ) {
         process_mp_events();
         if( g_client_acted_this_turn ) {
             break;
+        }
+        const auto t_now = std::chrono::steady_clock::now();
+        if( std::chrono::duration_cast<std::chrono::milliseconds>( t_now - t_last_heartbeat ).count() > 2000 ) {
+            mp_log( "[cdda-mp] SRV-WAIT: still waiting... grant_seq=" + std::to_string( g_grant_seq ) +
+                    " elapsed=" + std::to_string( std::chrono::duration_cast<std::chrono::milliseconds>(
+                        t_now - t_start ).count() ) + "ms" );
+            t_last_heartbeat = t_now;
         }
         ensure_mp_hud();
         // Pump SDL events and dispatch any pending input so the host can use
@@ -2525,10 +2569,11 @@ static bool apply_one_state_message( const std::string &msg )
             const int srv_moves = jo.get_int( "moves" );
             if( srv_moves <= 0 ) {
                 // ACK: server confirmed our action was received.  Always apply.
-                mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
+                mp_log( "[cdda-mp] CLI-ACK-CLEAR: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
-                        " (ACK — clearing ack guard) pending=" +
-                        ( g_pending_action.empty() ? "none" : g_pending_action.substr( 0, 40 ) ) );
+                        " ack_was=" + std::to_string( g_client_waiting_for_ack ) +
+                        " last_seq=" + std::to_string( g_client_last_grant_seq ) +
+                        " pending=" + ( g_pending_action.empty() ? "none" : g_pending_action.substr( 0, 40 ) ) );
                 g_client_waiting_for_ack = false;
                 get_avatar().set_moves( srv_moves );
             } else if( !g_client_waiting_for_ack &&
@@ -2538,19 +2583,19 @@ static bool apply_one_state_message( const std::string &msg )
                     g_client_last_grant_seq = grant_seq;
                 }
                 const player_activity &ca = get_avatar().activity;
-                mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
+                mp_log( "[cdda-mp] CLI-GRANT: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
-                        " (applied) fenced=" + std::to_string( g_host_is_fenced ) +
+                        " fenced=" + std::to_string( g_host_is_fenced ) +
                         " act=" + ( ca ? ca.id().str() : "none" ) );
                 get_avatar().set_moves( srv_moves );
                 g_last_grant_time = std::chrono::steady_clock::now();
             } else {
                 // Stale: ack pending or seq already seen.
-                mp_log( "[cdda-mp] grant recv: moves=" + std::to_string( srv_moves ) +
+                mp_log( "[cdda-mp] CLI-SKIP: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) + "/" +
                         std::to_string( g_client_last_grant_seq ) +
-                        " (SKIPPED — " +
-                        ( g_client_waiting_for_ack ? "ack pending" : "old seq" ) + ")" );
+                        " ack=" + std::to_string( g_client_waiting_for_ack ) +
+                        " reason=" + ( g_client_waiting_for_ack ? "ack-pending" : "old-seq" ) );
             }
         }
 
@@ -2677,12 +2722,19 @@ void client_process_incoming()
     // immediately after, giving the user the chance to queue the next action.
     // The ack guard (set below) prevents the input loop from double-sending.
     if( !g_pending_action.empty() && get_avatar().get_moves() <= 0 ) {
-        mp_log( "[cdda-mp] auto-fire DEAD ZONE: pending=" + g_pending_action.substr( 0, 60 ) +
+        mp_log( "[cdda-mp] CLI-DEADZONE: pending=" + g_pending_action.substr( 0, 60 ) +
                 " moves=" + std::to_string( get_avatar().get_moves() ) +
-                " ack=" + std::to_string( g_client_waiting_for_ack ) );
+                " ack=" + std::to_string( g_client_waiting_for_ack ) +
+                " last_seq=" + std::to_string( g_client_last_grant_seq ) );
+        if( !g_client_waiting_for_ack ) {
+            mp_log( "[cdda-mp] CLI-DEADZONE-RESET: seq was=" + std::to_string( g_client_last_grant_seq ) + " → 0" );
+            g_client_last_grant_seq = 0;
+        }
     }
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
-        mp_log( "[cdda-mp] auto-fire: pending=" + g_pending_action.substr( 0, 60 ) );
+        mp_log( "[cdda-mp] CLI-AUTOFIRE: pending=" + g_pending_action.substr( 0, 60 ) +
+                " moves=" + std::to_string( get_avatar().get_moves() ) +
+                " ack=" + std::to_string( g_client_waiting_for_ack ) );
         // If we're now in a wait activity, discard the stale queued action instead
         // of sending it — catching breath / ACT_WAIT should not dispatch a move.
         const player_activity &pact = get_avatar().activity;
@@ -2696,7 +2748,7 @@ void client_process_incoming()
             g_pending_action.clear();
             // Leave moves intact — activity loop will consume them below.
         } else {
-            mp_log( "[cdda-mp] auto-fire: SENDING" );
+            mp_log( "[cdda-mp] CLI-AUTOFIRE-SEND: sending last_seq=" + std::to_string( g_client_last_grant_seq ) );
             client_send( g_pending_action );
             g_pending_action.clear();
             // Keep moves > 0: input loop will run so the user can queue the next action.
@@ -3032,14 +3084,18 @@ void client_resync_worn()
         wielded_type = wielded->typeId().str();
     }
     const std::string male_str = av.male ? "true" : "false";
+    const std::string ma_style_str = av.martial_arts_data->selected_style().str();
     worn_json += "],\"male\":" + male_str
                  + ",\"appearance\":" + appearance_json
-                 + ",\"wielded\":\"" + wielded_type + "\"}";
+                 + ",\"wielded\":\"" + wielded_type + "\""
+                 + ",\"ma_style\":\"" + ma_style_str + "\"}";
     client_send( worn_json );
 }
 
 void client_mark_action_sent()
 {
+    mp_log( "[cdda-mp] CLI-ACK-SET: ack guard SET, was=" + std::to_string( g_client_waiting_for_ack ) +
+            " last_seq=" + std::to_string( g_client_last_grant_seq ) );
     g_client_waiting_for_ack = true;
     g_ack_set_time = std::chrono::steady_clock::now();
 }

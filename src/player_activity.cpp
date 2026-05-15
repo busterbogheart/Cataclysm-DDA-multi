@@ -18,6 +18,8 @@
 #include "event_bus.h"
 #include "field.h"
 #include "game.h"
+#include "mp_gamestate.h"
+#include "npc.h"
 #include "item.h"
 #include "itype.h"
 #include "messages.h"
@@ -504,6 +506,21 @@ std::map<distraction_type, std::string> player_activity::get_distractions() cons
         if( Creature *hostile_critter = g->is_hostile_very_close( true ) ) {
             res.emplace( distraction_type::hostile_spotted_near,
                          string_format( _( "The %s is dangerously close!" ), hostile_critter->get_name() ) );
+        }
+        // MP: also interrupt if a hostile is dangerously close to the remote player proxy.
+        if( cata_mp::is_hosting() ) {
+            const character_id proxy_id = cata_mp::get_remote_player_npc_character_id();
+            npc *remote = g->critter_by_id<npc>( proxy_id );
+            if( remote ) {
+                for( Creature *critter : remote->get_visible_creatures( 5 ) ) {
+                    if( remote->attitude_to( *critter ) == Creature::Attitude::HOSTILE ) {
+                        res.emplace( distraction_type::hostile_spotted_near,
+                                     string_format( _( "Your partner is in danger! The %s is close!" ),
+                                                    critter->get_name() ) );
+                        break;
+                    }
+                }
+            }
         }
     }
     if( uistate.distraction_dangerous_field &&

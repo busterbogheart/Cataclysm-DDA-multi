@@ -796,7 +796,10 @@ bool do_turn()
             // Skip in client mode: handle_key_blocking_activity() blocks on
             // keyboard input, which prevents do_turn() from returning and
             // client_process_incoming() from running — stalling ACT_WAIT sync.
-            if( !cata_mp::is_client_mode() ) {
+            // Skip in host mode too: the blocking poll gates grant_client_turn()
+            // to one grant per keypress.  UI keys are handled inside
+            // wait_for_client_action() via pump_events()+mp_poll_input() instead.
+            if( !cata_mp::is_client_mode() && !cata_mp::is_hosting() ) {
                 static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                         std::chrono::steady_clock::now() );
                 const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(

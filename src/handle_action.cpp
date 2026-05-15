@@ -50,6 +50,7 @@
 #include "gates.h"
 #include "gun_mode.h"
 #include "help.h"
+#include "input.h"
 #include "input_context.h"
 #include "input_enums.h"
 #include "input_popup.h"
@@ -2901,9 +2902,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return true;
         }
 
-        // Inventory-mutating actions that are not yet server-synced: log them.
-        if( act == ACTION_WIELD || act == ACTION_UNLOAD || act == ACTION_MEND ) {
-            cata_mp::mp_log( "[cdda-mp] client local-only action: " + action_ident( act ) );
+        if( act == ACTION_PICK_STYLE ) {
+            cata_mp::mp_log( "[cdda-mp] client local-only action: pick_style" );
         }
     }
 
@@ -3397,7 +3397,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         }
 
         case ACTION_PICK_STYLE:
-            player_character.martial_arts_data->pick_style( player_character );
+            if( player_character.martial_arts_data->pick_style( player_character ) ) {
+                cata_mp::client_resync_worn();
+            }
             break;
 
         case ACTION_RELOAD_ITEM: {
@@ -3529,9 +3531,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
         }
 
-        case ACTION_DROP:
+        case ACTION_DROP: {
+            const int pre_drop_moves = player_character.get_moves();
             drop_in_direction( player_character.pos_bub() );
+            cata_mp::mp_client_post_action( pre_drop_moves );
             break;
+        }
         case ACTION_DIR_DROP: {
             std::optional<tripoint_bub_ms> pnt = mouse_target;
             if( !pnt ) {
@@ -3541,7 +3546,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 if( *pnt != player_character.pos_bub() && in_shell ) {
                     add_msg( m_info, _( "You can't drop things to another tile while you're in your shell." ) );
                 } else {
+                    const int pre_drop_moves = player_character.get_moves();
                     drop_in_direction( *pnt );
+                    cata_mp::mp_client_post_action( pre_drop_moves );
                 }
             }
             break;
@@ -3977,6 +3984,13 @@ bool game::handle_action()
             destination_preview.clear();
             act = handle_main_menu();
             if( act == ACTION_NULL ) {
+                // In client mode, handle_action() is called on every do_turn tick even
+                // when locked (moves<=0).  The Escape that dismissed the uilist leaks
+                // back into the SDL event queue and would re-trigger ACTION_MAIN_MENU on
+                // the very next tick.  Drain pending events to swallow it.
+                if( cata_mp::is_client_mode() ) {
+                    inp_mngr.pump_events();
+                }
                 return false;
             }
         }
