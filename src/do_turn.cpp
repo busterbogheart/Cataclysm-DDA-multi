@@ -810,11 +810,8 @@ bool do_turn()
                 }
             }
 
-            // Client: poll input while locked so zoom and UI keys respond immediately.
-            // Move-costing fallthrough actions are blocked in handle_action when locked.
             if( cata_mp::is_client_mode() ) {
                 cata_mp::ensure_mp_hud();
-                g->handle_action(); // 125 ms timeout; zoom/UI keys run, game actions blocked
             }
 
             g->mon_info_update();
