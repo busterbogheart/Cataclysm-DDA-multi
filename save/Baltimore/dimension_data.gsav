@@ -1,7 +1,7 @@
 # version 39
 {
-  "overmapbuffer": { "placed_unique_specials": [  ], "overmap_count": 38, "unique_special_count": {  }, "overmap_highway_intersection_grid": { "overmap_highway_offset": [ -2147483648, -2147483648 ], "overmap_highway_intersections": {  } }, "major_river_count": 0, "unique_special_decks": {  } },
-  "weather": { "lightning": false, "weather_id": "sunny", "next_weather": 5214308, "temperature": 53.863800, "winddirection": 247, "windspeed": 2, "snow_depth": [  ] },
+  "overmapbuffer": { "placed_unique_specials": [  ], "overmap_count": 45, "unique_special_count": {  }, "overmap_highway_intersection_grid": { "overmap_highway_offset": [ -2147483648, -2147483648 ], "overmap_highway_intersections": {  } }, "major_river_count": 0, "unique_special_decks": {  } },
+  "weather": { "lightning": false, "weather_id": "sunny", "next_weather": 5214800, "temperature": 53.873322, "winddirection": 202, "windspeed": 4, "snow_depth": [  ] },
   "region_type": "default",
-  "power_networks": { "next_id": 77, "networks": [  ] }
+  "power_networks": { "next_id": 78, "networks": [ { "id": 77, "last_resolved": 5214549, "root_pos": [ -2008, 865, 0 ], "nodes": [ { "pos": [ -2008, 865, 0 ], "solar": "0 kW", "wind": "0 kW", "water": "0 kW", "consumption": "0 kW", "battery_cap": 3000 } ] } ] }
 }
