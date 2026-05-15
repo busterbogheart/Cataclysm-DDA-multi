@@ -3984,8 +3984,8 @@ bool game::handle_action()
             destination_preview.clear();
             act = handle_main_menu();
             if( act == ACTION_NULL ) {
+                cata_mp::mp_log( "[cdda-mp] main_menu: ACTION_NULL, is_client=" + std::to_string( cata_mp::is_client_mode() ) );
                 if( cata_mp::is_client_mode() ) {
-                    cata_mp::mp_log( "[cdda-mp] main_menu: ESC dismiss, calling pump_events" );
                     inp_mngr.pump_events();
                     cata_mp::mp_log( "[cdda-mp] main_menu: pump_events done" );
                 }
