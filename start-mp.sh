@@ -39,7 +39,8 @@ case "${1:-}" in
         HOST_IP="${2:-}"
         shift 2 2>/dev/null || shift 1 2>/dev/null || true
         echo "Pulling latest save from remote..."
-        git -C "$GAME_DIR" pull
+        git -C "$GAME_DIR" fetch origin
+        git -C "$GAME_DIR" reset --hard origin/master
         echo ""
         if [[ -z "$HOST_IP" ]]; then
             # Discover LAN candidates from ARP cache (hostname + IP)
