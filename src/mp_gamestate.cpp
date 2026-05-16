@@ -2688,8 +2688,14 @@ void client_process_incoming()
         client_resync_worn();
     }
     std::string msg;
+    bool got_any = false;
     while( client_recv_pop( msg ) ) {
+        got_any = true;
+        mp_log( "[cdda-mp] CLI-RECV: " + msg.substr( 0, 100 ) );
         apply_one_state_message( msg );
+    }
+    if( !got_any ) {
+        mp_log( "[cdda-mp] CLI-RECV-EMPTY: moves=" + std::to_string( get_avatar().get_moves() ) );
     }
     // Auto-fire any queued action now that the server has restored our moves.
     // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
