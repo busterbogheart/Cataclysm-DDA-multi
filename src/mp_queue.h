@@ -2,10 +2,11 @@
 #ifndef CATA_SRC_MP_QUEUE_H
 #define CATA_SRC_MP_QUEUE_H
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <queue>
 #include <string>
-#include <mutex>
-#include <condition_variable>
 
 namespace cata_mp {
 
@@ -23,8 +24,11 @@ struct mp_event {
 class event_queue {
     public:
         void push( mp_event e ) {
-            std::lock_guard<std::mutex> lock( mutex_ );
-            queue_.push( std::move( e ) );
+            {
+                std::lock_guard<std::mutex> lock( mutex_ );
+                queue_.push( std::move( e ) );
+            }
+            cv_.notify_one();
         }
 
         bool pop( mp_event &out ) {
@@ -42,9 +46,17 @@ class event_queue {
             return queue_.empty();
         }
 
+        // Block until an event is available or timeout expires.
+        // Returns true if an event is ready, false on timeout.
+        bool wait_for_event( std::chrono::milliseconds timeout ) {
+            std::unique_lock<std::mutex> lock( mutex_ );
+            return cv_.wait_for( lock, timeout, [this] { return !queue_.empty(); } );
+        }
+
     private:
         std::queue<mp_event> queue_;
         std::mutex mutex_;
+        std::condition_variable cv_;
 };
 
 // Global queue — Asio thread writes, game thread reads

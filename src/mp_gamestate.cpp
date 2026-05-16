@@ -245,6 +245,7 @@ static std::string g_last_client_action_label = "\xe2\x80\x94";
 // Shared by both host and client; resets on connect/disconnect.
 // Hysteresis: step up at 50/57, step down at 44/50.
 static int g_separation_tier = 0;
+static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_abs_ms &b );
 
 // Client: luminance emitted by the host player (flashlight, mutations, etc.).
 // Received from state packet each turn and injected into the lighting pass.
@@ -1997,6 +1998,7 @@ void grant_client_turn()
     // Proxy skips npcmove so never auto-regenerates stamina. Replicate the
     // update_body() path that the real avatar gets each game turn.
     remote->update_stamina( 1 );
+    check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
     server *srv = get_active_server();
     if( srv ) {
         srv->post_broadcast( serialize_remote_player_state() + "\n" );
@@ -2020,32 +2022,16 @@ void wait_for_client_action()
     }
 
     g_host_waiting_for_client = true;
-    using namespace std::chrono_literals;
     const auto t_start = std::chrono::steady_clock::now();
-    mp_log( "[cdda-mp] SRV-WAIT: entering wait_for_client_action, grant_seq=" + std::to_string( g_grant_seq ) +
-            " acted=" + std::to_string( g_client_acted_this_turn ) );
-    auto t_last_heartbeat = t_start;
+    mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) );
+
     while( !g_client_acted_this_turn && remote_player_connected ) {
+        // Block until the client sends something; wake every 100ms to pump SDL events.
+        get_mp_queue().wait_for_event( std::chrono::milliseconds( 100 ) );
         process_mp_events();
-        if( g_client_acted_this_turn ) {
-            break;
-        }
-        const auto t_now = std::chrono::steady_clock::now();
-        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>( t_now - t_start ).count();
-        if( elapsed_ms > 30000 ) {
-            mp_log( "[cdda-mp] SRV-WAIT: TIMEOUT after 30s, forcing disconnect" );
-            remote_player_connected = false;
-            break;
-        }
-        if( std::chrono::duration_cast<std::chrono::milliseconds>( t_now - t_last_heartbeat ).count() > 2000 ) {
-            mp_log( "[cdda-mp] SRV-WAIT: still waiting... grant_seq=" + std::to_string( g_grant_seq ) +
-                    " elapsed=" + std::to_string( elapsed_ms ) + "ms" );
-            t_last_heartbeat = t_now;
-        }
         ensure_mp_hud();
         inp_mngr.pump_events();
         g->mp_poll_input();
-        std::this_thread::sleep_for( 16ms );
     }
     g_host_waiting_for_client = false;
     ui_manager::redraw();
@@ -2054,9 +2040,8 @@ void wait_for_client_action()
             std::chrono::steady_clock::now() - t_start ).count() );
     if( g_wait_elapsed_ms > 100 ) {
         const player_activity &ha = get_avatar().activity;
-        mp_log( "[cdda-mp] wait_for_client: elapsed=" + std::to_string( g_wait_elapsed_ms ) +
-                "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
-                " acted=" + std::to_string( g_client_acted_this_turn ) );
+        mp_log( "[cdda-mp] SRV-WAIT: done, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
+                "ms host_act=" + ( ha ? ha.id().str() : "none" ) );
     }
 
     // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
@@ -2153,13 +2138,10 @@ void process_mp_events()
     // from a previous session (server and client share the same world directory).
     mp_cleanup_stale_npcs();
 
-    static int s_call_id = 0;
-    const int call_id = ++s_call_id;
     mp_event event;
     while( get_mp_queue().pop( event ) ) {
         if( event.evt_type == mp_event::type::action ) {
-            mp_log( "[cdda-mp] process_mp_events #" + std::to_string( call_id ) +
-                    " popped: " + event.data.substr( 0, 60 ) );
+            mp_log( "[cdda-mp] process_mp_events: " + event.data.substr( 0, 60 ) );
         }
         switch( event.evt_type ) {
             case mp_event::type::connect:
@@ -2171,19 +2153,6 @@ void process_mp_events()
             case mp_event::type::action:
                 handle_remote_action( event.session_id, event.data );
                 break;
-        }
-    }
-
-    // Broadcast host position every turn so the client sees the host move in real time.
-    if( remote_player_connected ) {
-        server *srv = get_active_server();
-        if( srv ) {
-            srv->post_broadcast( serialize_remote_player_state() + "\n" );
-        }
-        // Warn if the two players are drifting near the edge of the shared bubble.
-        npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
-        if( remote ) {
-            check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
         }
     }
 }
