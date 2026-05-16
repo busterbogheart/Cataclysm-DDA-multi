@@ -816,6 +816,7 @@ bool do_turn()
                                  std::to_string( u.get_moves() ) );
                 g->handle_action();
                 cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action" );
+                ui_manager::redraw();
             }
 
             g->mon_info_update();

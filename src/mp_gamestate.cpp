@@ -2221,7 +2221,6 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         std::cout << " → setpos+update_map..." << std::flush;
         u.setpos( m, new_pos );
         g->update_map( u );
-        ui_manager::redraw();
         std::cout << " done" << std::flush;
     } else {
         std::cout << " → already at target" << std::flush;
