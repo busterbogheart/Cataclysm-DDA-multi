@@ -320,10 +320,9 @@ if [[ "$MODE" == "host" ]]; then
 
 elif [[ "$MODE" == "client" ]]; then
     echo ""
-    echo "  Mode   : CLIENT only"
+    echo "  Mode   : CLIENT → $HOST_IP:$HOST_PORT"
     echo "  World  : $WORLD"
     echo "  Char   : $CLIENT_CHAR"
-    echo "  Host   : $HOST_IP:$HOST_PORT"
     echo "  Log    : $CLIENT_LOG"
     echo ""
     > "$CLIENT_LOG"
