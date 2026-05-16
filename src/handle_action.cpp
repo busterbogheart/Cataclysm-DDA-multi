@@ -3945,6 +3945,11 @@ bool game::handle_action()
         ctxt = get_player_input( action );
     }
 
+    if( cata_mp::is_client_mode() && action != "TIMEOUT" ) {
+        cata_mp::mp_log( "[cdda-mp] HA-ACTION: action=\"" + action +
+                         "\" moves=" + std::to_string( player_character.get_moves() ) );
+    }
+
     // Remove asynchronous animations if any action taken before the input timeout
     // Otherwise repeated input can cause animations to accumulate as the timeout is never reached
     g->void_async_anim_curses();
@@ -3981,8 +3986,11 @@ bool game::handle_action()
             // No auto-move actions have or can be set at this point.
             player_character.clear_destination();
             destination_preview.clear();
+            cata_mp::mp_log( "[cdda-mp] MAIN-MENU: enter" );
             act = handle_main_menu();
+            cata_mp::mp_log( "[cdda-mp] MAIN-MENU: exit, act=" + std::to_string( static_cast<int>( act ) ) );
             if( act == ACTION_NULL ) {
+                cata_mp::mp_log( "[cdda-mp] MAIN-MENU: dismissed (ACTION_NULL), returning false" );
                 return false;
             }
         }

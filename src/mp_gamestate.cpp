@@ -2028,17 +2028,18 @@ void wait_for_client_action()
             break;
         }
         const auto t_now = std::chrono::steady_clock::now();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>( t_now - t_start ).count();
+        if( elapsed_ms > 30000 ) {
+            mp_log( "[cdda-mp] SRV-WAIT: TIMEOUT after 30s, forcing disconnect" );
+            remote_player_connected = false;
+            break;
+        }
         if( std::chrono::duration_cast<std::chrono::milliseconds>( t_now - t_last_heartbeat ).count() > 2000 ) {
             mp_log( "[cdda-mp] SRV-WAIT: still waiting... grant_seq=" + std::to_string( g_grant_seq ) +
-                    " elapsed=" + std::to_string( std::chrono::duration_cast<std::chrono::milliseconds>(
-                        t_now - t_start ).count() ) + "ms" );
+                    " elapsed=" + std::to_string( elapsed_ms ) + "ms" );
             t_last_heartbeat = t_now;
         }
         ensure_mp_hud();
-        // Pump SDL events and dispatch any pending input so the host can use
-        // UI keys (@, ?, map, etc.) while waiting for the client.  The guard in
-        // handle_action() allows only pure-UI actions when moves<=0, so world
-        // state cannot be mutated from here.
         inp_mngr.pump_events();
         g->mp_poll_input();
         std::this_thread::sleep_for( 16ms );

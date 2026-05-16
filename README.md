@@ -140,10 +140,13 @@ Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gett
 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
 ```
 
-**macOS 11 (Big Sur) and older** — Homebrew bottles on newer macOS may reference symbols not available on 11.x. Build natively on the target machine. Older clang (12.x) doesn't recognize some warning flags; use `CLANG=1` which enables `-Wno-unknown-warning-option` suppression:
+**macOS 11 (Big Sur) and older / Intel client** — Homebrew bottles on newer macOS may reference symbols not available on 11.x. Build natively on the target machine. Apple clang 12 doesn't recognize some GCC warning flags in the Makefile; silence them with `CXXFLAGS="-Wno-unknown-warning-option"`. pkg-config and sdl2-config live in `/usr/local/bin` which is not on the default SSH PATH — use `bash -l` when building over SSH:
 ```sh
 brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache
-make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 CLANG=1 cataclysm-tiles
+# Local build:
+CXXFLAGS="-Wno-unknown-warning-option" make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+# Via SSH (always run in background — takes ~1 hour):
+ssh ethankemp@192.168.1.25 "bash -l -c 'cd ~/Cataclysm-DDA-multi && touch src/mp_gamestate.cpp && make -j\$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 CXXFLAGS=\"-Wno-unknown-warning-option\" cataclysm-tiles; echo EXIT:\$?'"
 ```
 
 Or, with MacPorts SDL via `pkg-config` and Clang:

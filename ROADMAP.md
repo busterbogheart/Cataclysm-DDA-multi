@@ -1,6 +1,6 @@
 # Multiplayer Roadmap
 
-Status as of 2026-05-12.
+Status as of 2026-05-13.
 
 ---
 
@@ -16,6 +16,7 @@ Status as of 2026-05-12.
 - [Medium-term](#medium-term)
   - [Vehicles (full sync)](#vehicles-full-sync)
   - [NPC proxy fidelity](#npc-proxy-fidelity)
+  - [MP-only scenarios](#mp-only-scenarios)
   - [Headless dedicated server](#headless-dedicated-server)
   - [Code quality](#code-quality)
 - [Long-term / Big ticket](#long-term--big-ticket)
@@ -86,6 +87,16 @@ The current client startup is a local scaffold — full CDDA character creation 
 - EOC (Effect on Condition) not processed on proxy NPC — conditional effects, missions, morale events targeting remote player silently no-op
 - NPC healing not applied to proxy — bleed/wound sync works but natural healing ticks are skipped
 - Static NPCs from mapgen (`map::place_npc()`, `create_starting_npcs()`) still spawn despite scenario filter; need mapgen guards
+
+### MP-only scenarios
+- Scenario picker already filters to `LONE_START` scenarios in MP mode (`newcharacter.cpp:3081`)
+- **Easy part** — new `MULTIPLAYER_ONLY` flag + one-line filter to hide those scenarios in SP:
+  ```cpp
+  if( !cata_mp::is_mp_mode() && scen.has_flag( "MULTIPLAYER_ONLY" ) ) continue;
+  ```
+- Then add JSON scenarios with tuned starting conditions for 2 players: threat density, complementary forced traits, co-op starting missions, co-op loot balance
+- **Hard part** — client spawn location: currently client always teleports to host position regardless of scenario; a proper MP scenario needs the host to designate a client-specific spawn point in the join message (protocol change)
+- Flag descriptions array in `newcharacter.cpp` (~line 1919) needs a new entry for `MULTIPLAYER_ONLY` to show in the UI
 
 ### Headless dedicated server
 - `--server` mode implemented (loads world without SDL) but not fully tested

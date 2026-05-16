@@ -812,7 +812,10 @@ bool do_turn()
 
             if( cata_mp::is_client_mode() ) {
                 cata_mp::ensure_mp_hud();
+                cata_mp::mp_log( "[cdda-mp] LOCKED-HA: enter handle_action, moves=" +
+                                 std::to_string( u.get_moves() ) );
                 g->handle_action();
+                cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action" );
             }
 
             g->mon_info_update();
