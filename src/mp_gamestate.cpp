@@ -1919,6 +1919,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             acted = true;
         } else if( !m.impassable( next ) ) {
             remote->setpos( m, next );
+            mp_log( "[cdda-mp] NPC-MOVE: setpos done, pos_abs=" + std::to_string( remote->pos_abs().x() ) +
+                    "," + std::to_string( remote->pos_abs().y() ) +
+                    " bub=" + std::to_string( remote->pos_bub().x() ) + "," + std::to_string( remote->pos_bub().y() ) );
             // Trigger traps on the destination tile, mirroring game.cpp:8351.
             m.creature_on_trap( *remote );
             // Use combined_movecost (same as game.cpp:7733) so the AP cost includes
@@ -2045,6 +2048,7 @@ void wait_for_client_action()
         std::this_thread::sleep_for( 16ms );
     }
     g_host_waiting_for_client = false;
+    ui_manager::redraw();
     g_wait_elapsed_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_start ).count() );
@@ -2217,6 +2221,7 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         std::cout << " → setpos+update_map..." << std::flush;
         u.setpos( m, new_pos );
         g->update_map( u );
+        ui_manager::redraw();
         std::cout << " done" << std::flush;
     } else {
         std::cout << " → already at target" << std::flush;
@@ -3880,6 +3885,8 @@ std::string serialize_remote_player_state()
 
     tripoint_bub_ms pos_bub = remote->pos_bub();
     tripoint_abs_ms pos = remote->pos_abs();
+    mp_log( "[cdda-mp] SRP: npc_abs=" + std::to_string( pos.x() ) + "," + std::to_string( pos.y() ) +
+            " bub=" + std::to_string( pos_bub.x() ) + "," + std::to_string( pos_bub.y() ) );
     const avatar &host = get_avatar();
     tripoint_abs_ms host_pos = host.pos_abs();
 
