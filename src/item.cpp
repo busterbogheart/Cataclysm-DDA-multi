@@ -2273,6 +2273,9 @@ bool item::has_flag( const flag_id &f ) const
         return false;
     }
 
+    if( !type ) {
+        return false;
+    }
     // Itype flags cover the common case; check them first.
     if( type->has_flag( f ) ) {
         return true;
