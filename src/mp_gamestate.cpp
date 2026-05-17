@@ -212,11 +212,6 @@ static uint32_t g_grant_seq = 0;
 // is a stale buffered duplicate and its moves value is ignored.
 static uint32_t g_client_last_grant_seq = 0;
 
-// Client: true when the server's last state packet indicated the host is in a
-// long activity (ACT_WAIT via the | menu, sleep, etc.).  Used to lower the
-// auto-wait threshold so the client responds within the server's 200ms window.
-static bool g_host_is_fenced = false;
-
 // Server: set when the remote player has submitted at least one real action
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
@@ -2013,16 +2008,17 @@ void wait_for_client_action()
 
     g_host_waiting_for_client = true;
     const auto t_start = std::chrono::steady_clock::now();
-    // Hybrid lockstep:
-    //  - Host in a long activity (ACT_WAIT family): bound at 100 ms, host
-    //    advances on its own clock so the client can act freely while the
-    //    waiter is occupied.
-    //  - Otherwise (normal play): wait for client ack like single-player
-    //    turn-based, capped at 5 s as a safety net in case the client
-    //    disconnects or hangs (in normal play ack should arrive in ms).
-    const bool host_in_wait = host_is_in_wait_activity();
-    const auto budget = host_in_wait ? std::chrono::milliseconds( 100 )
-                                       : std::chrono::milliseconds( 5000 );
+    // Pure lockstep: every game-turn requires a client ack — including turns
+    // the host spends inside a long activity (|-wait, sleep, craft).  The
+    // activity progresses one game-turn at a time, paced by the client's
+    // round-trip.  This keeps the shared calendar consistent: time only
+    // advances when both ends agree on an action for this turn.
+    //
+    // The budget is a disconnect-detection safety net, not a UX knob.  With
+    // each iteration capped at 16ms (SDL stays pumped), a long budget no
+    // longer blocks the main thread.
+    const bool host_in_wait = host_is_in_wait_activity();  // logged only
+    const auto budget = std::chrono::milliseconds( 2000 );
     {
         const player_activity &ha_enter = get_avatar().activity;
         mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) +
@@ -2031,28 +2027,44 @@ void wait_for_client_action()
                 " budget_ms=" + std::to_string( budget.count() ) );
     }
 
+    int iter_count = 0;
     while( remote_player_connected ) {
-        // Async path: exit once budget elapsed.  Lockstep path: also exit on
-        // client ack OR the safety-net budget.
         const auto elapsed = std::chrono::steady_clock::now() - t_start;
         if( elapsed >= budget ) {
-            if( !host_in_wait ) {
-                mp_log( "[cdda-mp] SRV-WAIT: SAFETY-TIMEOUT — client hung 5s, advancing" );
-            }
+            // In healthy lockstep this never fires: every host turn is acked
+            // within client RTT.  If this is firing repeatedly, the client is
+            // either disconnected, wedged, or unable to ack (e.g. mid-popup
+            // blocking).  The host advances anyway so it doesn't hang forever.
+            mp_log( "[cdda-mp] SRV-WAIT: DISCONNECT-TIMEOUT — no client ack in " +
+                    std::to_string( budget.count() ) + "ms (client wedged or offline?)" );
             break;
         }
-        if( !host_in_wait && g_client_acted_this_turn ) {
-            break;  // normal lockstep: client acted, advance
+        if( g_client_acted_this_turn ) {
+            break;  // client acted, advance shared clock by this turn
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    budget - elapsed );
-        get_mp_queue().wait_for_event( remaining );
+        // Cap each iteration at ~16ms so SDL gets pumped at 60Hz.  Without this
+        // the main thread blocks in TCP recv up to the full remaining budget
+        // (5s in lockstep), which trips the macOS spinning-beachball watchdog.
+        // mp_poll_input() (handle_action) is intentionally NOT called: it blocks
+        // waiting for a keypress, eating the async-tick budget by up to seconds.
+        // Re-adding host-side menu access during waits will need a non-blocking
+        // input peek, not a full action dispatcher.
+        const auto step = std::min( remaining, std::chrono::milliseconds( 16 ) );
+        get_mp_queue().wait_for_event( step );
         process_mp_events();
         ensure_mp_hud();
         inp_mngr.pump_events();
-        g->mp_poll_input();
+        iter_count++;
     }
     g_host_waiting_for_client = false;
+    // Force a main-UI repaint each turn cycle.  During a long activity (|-wait,
+    // crafting, sleep) the host's main game loop stays in a tight do_turn() loop
+    // because the avatar always has moves; without this, the time/wait-% HUD
+    // and recent messages don't visibly tick between turns.  ui_manager::redraw()
+    // is a no-op unless something has been invalidated.
+    g->invalidate_main_ui_adaptor();
     ui_manager::redraw();
     g_wait_elapsed_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2061,7 +2073,8 @@ void wait_for_client_action()
         const player_activity &ha = get_avatar().activity;
         mp_log( "[cdda-mp] SRV-WAIT: done, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
                 "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
-                " host_in_wait=" + std::to_string( host_in_wait ) );
+                " host_in_wait=" + std::to_string( host_in_wait ) +
+                " iters=" + std::to_string( iter_count ) );
     }
 
     // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
@@ -2540,12 +2553,8 @@ static bool apply_one_state_message( const std::string &msg )
             g_client_waiting_for_ack = false;
         }
 
-        // Read seq and fenced flag before the ack-guard / moves logic.
         const uint32_t grant_seq = jo.has_int( "grant_seq" )
                                    ? static_cast<uint32_t>( jo.get_int( "grant_seq" ) ) : 0;
-        if( jo.has_bool( "host_fenced" ) ) {
-            g_host_is_fenced = jo.get_bool( "host_fenced" );
-        }
 
         // Apply server-authoritative move budget.
         // Two guards prevent double-application:
@@ -2579,10 +2588,36 @@ static bool apply_one_state_message( const std::string &msg )
                 const player_activity &ca = get_avatar().activity;
                 mp_log( "[cdda-mp] CLI-GRANT: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
-                        " fenced=" + std::to_string( g_host_is_fenced ) +
                         " act=" + ( ca ? ca.id().str() : "none" ) );
                 get_avatar().set_moves( srv_moves );
                 g_last_grant_time = std::chrono::steady_clock::now();
+                // If the client is in any long activity, ack the grant
+                // immediately with a "wait" action.  Without this, multiple
+                // host grants pile up in the same process_mp_events drain and
+                // only one gets acked per do_turn, so the host races ahead via
+                // SAFETY-TIMEOUT and calendars desync.  Setting the ack guard
+                // here also causes subsequent grants in the same drain to take
+                // the CLI-SKIP branch, providing proper backpressure so the
+                // host advances at the client's pace.
+                if( ca ) {
+                    // Any active player_activity in MP is a long action: it needs
+                    // one tick per host grant, and we must ack the grant before
+                    // the next message in this drain (the host's ack-clear) zeroes
+                    // our moves.  Covers `|` wait, crafting, reading, butchering,
+                    // mining, construction, repair, etc. — every activity_actor.
+                    get_avatar().activity.do_turn( get_avatar() );
+                    mp_log( "[cdda-mp] CLI-GRANT-ACT-ACK: ticked activity & dispatched wait for " + ca.id().str() );
+                    client_send( client_enrich_action(
+                                     "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                    g_client_waiting_for_ack = true;
+                    g_ack_set_time = std::chrono::steady_clock::now();
+                    // Mirror the host's per-turn redraw so the client's HUD
+                    // (time, activity %, environmental messages) ticks live
+                    // while the activity runs.  Without this, do_turn never
+                    // exits to the main game loop's redraw path during a long
+                    // activity.
+                    g->invalidate_main_ui_adaptor();
+                }
             } else {
                 // Stale: ack pending or seq already seen.
                 mp_log( "[cdda-mp] CLI-SKIP: moves=" + std::to_string( srv_moves ) +
@@ -2703,7 +2738,6 @@ void client_process_incoming()
         // so the server's first move grant isn't silently ignored after reconnect.
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
-        g_host_is_fenced = false;
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
     }
@@ -2735,27 +2769,34 @@ void client_process_incoming()
         mp_log( "[cdda-mp] CLI-AUTOFIRE: pending=" + g_pending_action.substr( 0, 60 ) +
                 " moves=" + std::to_string( get_avatar().get_moves() ) +
                 " ack=" + std::to_string( g_client_waiting_for_ack ) );
-        // If we're now in a wait activity, discard the stale queued action instead
-        // of sending it — catching breath / ACT_WAIT should not dispatch a move.
+        // If we entered a wait activity AFTER queueing a move-style action,
+        // the queued action is stale (user intent is now "wait").  Replace it
+        // with a fresh wait so the host still receives our ack for this turn.
+        // Under Option-A pure lockstep, every grant must be ack'd or the host
+        // hits its 2s SAFETY-TIMEOUT and movement becomes sluggish.
         const player_activity &pact = get_avatar().activity;
         static const activity_id act_wait( "ACT_WAIT" );
         static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
         static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
         static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
-        if( pact && ( pact.id() == act_wait || pact.id() == act_wait_stamina ||
-                      pact.id() == act_wait_weather || pact.id() == act_wait_npc ) ) {
-            mp_log( "[cdda-mp] auto-fire suppressed: in wait activity " + pact.id().str() );
-            g_pending_action.clear();
-            // Leave moves intact — activity loop will consume them below.
-        } else {
-            mp_log( "[cdda-mp] CLI-AUTOFIRE-SEND: sending last_seq=" + std::to_string( g_client_last_grant_seq ) );
-            client_send( g_pending_action );
-            g_pending_action.clear();
-            // Keep moves > 0: input loop will run so the user can queue the next action.
-            // Ack guard prevents a second send before the server acknowledges this one.
-            g_client_waiting_for_ack = true;
-            g_ack_set_time = std::chrono::steady_clock::now();
+        const bool in_wait_activity = pact && (
+                pact.id() == act_wait || pact.id() == act_wait_stamina ||
+                pact.id() == act_wait_weather || pact.id() == act_wait_npc );
+        const bool pending_is_wait =
+                g_pending_action.find( "\"action\":\"wait\"" ) != std::string::npos;
+        if( in_wait_activity && !pending_is_wait ) {
+            mp_log( "[cdda-mp] auto-fire: replacing stale action with wait (in " +
+                    pact.id().str() + ")" );
+            g_pending_action = client_enrich_action(
+                    "{\"type\":\"action\",\"action\":\"wait\"}" );
         }
+        mp_log( "[cdda-mp] CLI-AUTOFIRE-SEND: sending last_seq=" + std::to_string( g_client_last_grant_seq ) );
+        client_send( g_pending_action );
+        g_pending_action.clear();
+        // Keep moves > 0: input loop will run so the user can queue the next action.
+        // Ack guard prevents a second send before the server acknowledges this one.
+        g_client_waiting_for_ack = true;
+        g_ack_set_time = std::chrono::steady_clock::now();
     }
     // Warn if the client is drifting too far from the host's reality bubble center.
     if( client_host_npc_id.is_valid() ) {
@@ -3124,11 +3165,6 @@ int ms_since_last_grant()
     using namespace std::chrono;
     return static_cast<int>(
         duration_cast<milliseconds>( steady_clock::now() - g_last_grant_time ).count() );
-}
-
-bool is_host_fenced()
-{
-    return g_host_is_fenced;
 }
 
 bool client_ctrl_veh()
@@ -3884,20 +3920,6 @@ std::string serialize_remote_player_state()
     const avatar &host = get_avatar();
     tripoint_abs_ms host_pos = host.pos_abs();
 
-    // True when host is in a long automatic activity (| wait menu, sleep, crafting).
-    // Broadcast to client so it can lower its auto-wait threshold and respond within
-    // the server's 200ms ACT_WAIT tick window instead of the default 500ms.
-    static const efftype_id s_eff_sleep( "sleep" );
-    static const activity_id s_act_wait( "ACT_WAIT" );
-    static const activity_id s_act_wait_stamina( "ACT_WAIT_STAMINA" );
-    static const activity_id s_act_wait_weather( "ACT_WAIT_WEATHER" );
-    static const activity_id s_act_wait_npc( "ACT_WAIT_NPC" );
-    const player_activity &host_act = host.activity;
-    const bool host_fenced = host.has_effect( s_eff_sleep ) ||
-        ( host_act && ( host_act.id() == s_act_wait ||
-                        host_act.id() == s_act_wait_stamina ||
-                        host_act.id() == s_act_wait_weather ||
-                        host_act.id() == s_act_wait_npc ) );
     std::string viewport = build_viewport( pos_bub );
     std::string monsters     = build_monster_list( pos, 40 );
 
@@ -4200,7 +4222,6 @@ std::string serialize_remote_player_state()
            ",\"tile_changes\":" + tile_changes +
            ",\"vehicles\":" + vehicles_json +
            ",\"msgs\":" + msgs_json +
-           ",\"host_fenced\":" + ( host_fenced ? "true" : "false" ) +
            ",\"grant_seq\":" + std::to_string( g_grant_seq ) +
            ",\"sfx\":" + [&]() -> std::string {
                std::string j = "[";

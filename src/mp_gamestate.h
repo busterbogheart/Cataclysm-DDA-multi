@@ -157,10 +157,6 @@ character_id get_remote_player_npc_character_id();
 int ms_since_last_grant();
 
 // Client only: true when the server's last state packet indicated the host is
-// in a long automatic activity (ACT_WAIT via the | menu, sleep, crafting).
-// Used by do_turn() to lower the auto-wait idle threshold from 500ms → 100ms
-// so the client responds within the server's 200ms ACT_WAIT tick window.
-bool is_host_fenced();
 
 // Client only: true when the server has told us the proxy NPC is at vehicle controls.
 // handle_action uses this to route movement keys through pldrive instead of walk.

@@ -729,9 +729,7 @@ bool do_turn()
                 if( cata_mp::is_client_mode() ) {
                     const int ms = cata_mp::ms_since_last_grant();
                     const bool ack = cata_mp::is_client_waiting_for_ack();
-                    // Lower threshold during host long activity (fenced): client must
-                    // respond within the server's 200ms ACT_WAIT tick window.
-                    const int auto_wait_ms = cata_mp::is_host_fenced() ? 100 : 500;
+                    constexpr int auto_wait_ms = 500;
                     if( ms > 100 ) {
                         cata_mp::mp_log( "[cdda-mp] auto-wait check: ms=" + std::to_string( ms ) +
                                          " threshold=" + std::to_string( auto_wait_ms ) +
@@ -793,13 +791,13 @@ bool do_turn()
             sounds::reset_markers();
         } else {
             // Rate limit key polling to 10 times a second.
-            // Skip in client mode: handle_key_blocking_activity() blocks on
-            // keyboard input, which prevents do_turn() from returning and
-            // client_process_incoming() from running — stalling ACT_WAIT sync.
-            // Skip in host mode too: the blocking poll gates grant_client_turn()
-            // to one grant per keypress.  UI keys are handled inside
-            // wait_for_client_action() via pump_events()+mp_poll_input() instead.
-            if( !cata_mp::is_client_mode() && !cata_mp::is_hosting() ) {
+            // Skip in host mode: the blocking poll would gate grant_client_turn()
+            // to one grant per keypress.  UI keys for the host are handled inside
+            // wait_for_client_action() via pump_events() instead.
+            // Client mode: enabled — handle_input(0) is non-blocking unless the
+            // user actually presses an interrupt key (e.g. `5`), in which case
+            // the cancel-confirmation popup blocking briefly is the correct UX.
+            if( !cata_mp::is_hosting() ) {
                 static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                         std::chrono::steady_clock::now() );
                 const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
