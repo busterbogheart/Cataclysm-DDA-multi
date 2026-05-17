@@ -2013,22 +2013,39 @@ void wait_for_client_action()
 
     g_host_waiting_for_client = true;
     const auto t_start = std::chrono::steady_clock::now();
-    // Async-server tick: host advances at ~10 Hz regardless of client ack.
-    // The legacy g_client_acted_this_turn flag is no longer a gate — action
-    // handlers still set it (used only by the HUD strip) but the host's clock
-    // is no longer waiting on it.  Client actions arriving inside this tick
-    // are drained by process_mp_events() below; any that arrive after the
-    // budget are processed on the next tick.
-    const auto tick_budget = std::chrono::milliseconds( 100 );
-    mp_log( "[cdda-mp] SRV-TICK: begin, grant_seq=" + std::to_string( g_grant_seq ) );
+    // Hybrid lockstep:
+    //  - Host in a long activity (ACT_WAIT family): bound at 100 ms, host
+    //    advances on its own clock so the client can act freely while the
+    //    waiter is occupied.
+    //  - Otherwise (normal play): wait for client ack like single-player
+    //    turn-based, capped at 5 s as a safety net in case the client
+    //    disconnects or hangs (in normal play ack should arrive in ms).
+    const bool host_in_wait = host_is_in_wait_activity();
+    const auto budget = host_in_wait ? std::chrono::milliseconds( 100 )
+                                       : std::chrono::milliseconds( 5000 );
+    {
+        const player_activity &ha_enter = get_avatar().activity;
+        mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) +
+                " host_in_wait=" + std::to_string( host_in_wait ) +
+                " host_act=" + ( ha_enter ? ha_enter.id().str() : "none" ) +
+                " budget_ms=" + std::to_string( budget.count() ) );
+    }
 
     while( remote_player_connected ) {
+        // Async path: exit once budget elapsed.  Lockstep path: also exit on
+        // client ack OR the safety-net budget.
         const auto elapsed = std::chrono::steady_clock::now() - t_start;
-        if( elapsed >= tick_budget ) {
+        if( elapsed >= budget ) {
+            if( !host_in_wait ) {
+                mp_log( "[cdda-mp] SRV-WAIT: SAFETY-TIMEOUT — client hung 5s, advancing" );
+            }
             break;
         }
+        if( !host_in_wait && g_client_acted_this_turn ) {
+            break;  // normal lockstep: client acted, advance
+        }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   tick_budget - elapsed );
+                                   budget - elapsed );
         get_mp_queue().wait_for_event( remaining );
         process_mp_events();
         ensure_mp_hud();
@@ -2040,11 +2057,11 @@ void wait_for_client_action()
     g_wait_elapsed_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_start ).count() );
-    // Log only if the tick overran the budget — useful for spotting heavy ticks.
-    if( g_wait_elapsed_ms > 150 ) {
+    if( g_wait_elapsed_ms > 200 ) {
         const player_activity &ha = get_avatar().activity;
-        mp_log( "[cdda-mp] SRV-TICK: overran, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
-                "ms host_act=" + ( ha ? ha.id().str() : "none" ) );
+        mp_log( "[cdda-mp] SRV-WAIT: done, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
+                "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
+                " host_in_wait=" + std::to_string( host_in_wait ) );
     }
 
     // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
