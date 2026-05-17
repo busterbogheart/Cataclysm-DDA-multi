@@ -25,6 +25,11 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     std::function<void( std::shared_ptr<client_session>, const std::string & )> on_message;
     std::function<void( std::shared_ptr<client_session> )> on_disconnect;
 
+    // Outgoing write queue — only one async_write may be in flight at a time.
+    // All send() / do_write() calls happen on the single Asio thread so no mutex needed.
+    std::deque<std::string> write_queue_;
+    bool writing_ = false;
+
     explicit client_session( tcp::socket sock )
         : socket( std::move( sock ) ) {}
 
@@ -34,15 +39,29 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     }
 
     void send( const std::string &msg ) {
-        // Keep the buffer alive until the async_write completes — ASIO holds a
-        // reference into the buffer memory, so the string must outlive the write.
+        write_queue_.push_back( msg );
+        if( !writing_ ) {
+            do_write();
+        }
+    }
+
+    void do_write() {
+        if( write_queue_.empty() ) {
+            writing_ = false;
+            return;
+        }
+        writing_ = true;
         auto self = shared_from_this();
-        auto buf = std::make_shared<std::string>( msg );
+        // Move the front message into a shared_ptr so it stays alive across the async op.
+        auto buf = std::make_shared<std::string>( std::move( write_queue_.front() ) );
+        write_queue_.pop_front();
         asio::async_write( socket, asio::buffer( *buf ),
         [self, buf]( std::error_code ec, std::size_t ) {
             if( ec ) {
                 self->disconnect();
+                return;
             }
+            self->do_write();
         } );
     }
 
