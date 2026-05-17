@@ -54,7 +54,6 @@
 #include "sounds.h"
 #endif
 #include <chrono>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -67,18 +66,9 @@ namespace cata_mp {
 
 void mp_log( const std::string &msg )
 {
+    // stdout only — start-mp.sh tees stdout to /tmp/cdda-mp-{server,client}.log.
+    // Writing to the file from here too would double every log line.
     std::cout << msg << std::endl;
-    static std::ofstream logfile;
-    if( !logfile.is_open() ) {
-        const std::string path = is_client_mode()
-                                 ? "/tmp/cdda-mp-client.log"
-                                 : "/tmp/cdda-mp-server.log";
-        logfile.open( path, std::ios::app );
-    }
-    if( logfile.is_open() ) {
-        logfile << msg << '\n';
-        logfile.flush();
-    }
 }
 
 static bool server_mode_ = false;
