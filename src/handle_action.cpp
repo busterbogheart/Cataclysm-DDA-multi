@@ -2406,13 +2406,21 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         // by the server's next state packet when they eventually fire.
         // charge_from_caller=true: caller already charged AP and burned stamina;
         // don't zero moves (they already reflect the real cost).
+        // mp_dispatch_pre_moves: set to get_moves() BEFORE any AP charge when
+        // charge_from_caller=true so the "had a grant" check works after the charge.
+        int mp_dispatch_pre_moves = 0;
         const auto mp_dispatch = [&]( const std::string & json, bool charge_from_caller = false ) {
             // Append move_mode so the server can update the NPC proxy's run/crouch/prone state.
             const std::string full_json = json.substr( 0, json.size() - 1 )
                                           + ",\"move_mode\":\"" + player_character.move_mode.str() + "\""
                                           + "}";
+            // When the caller pre-charges AP, get_moves() is already 0 — use the pre-charge
+            // snapshot instead so we correctly detect that a grant was active.
+            const bool had_grant = charge_from_caller
+                                   ? mp_dispatch_pre_moves > 0
+                                   : player_character.get_moves() > 0;
             // Don't double-send while a previous action is still awaiting ack — queue instead.
-            if( player_character.get_moves() > 0 && !cata_mp::is_client_waiting_for_ack() ) {
+            if( had_grant && !cata_mp::is_client_waiting_for_ack() ) {
                 cata_mp::client_send( cata_mp::client_enrich_action( full_json ) );
                 if( !charge_from_caller ) {
                     player_character.set_moves( 0 );
@@ -2567,6 +2575,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 const int mcost   = here.combined_movecost( cur_pos, next_pos );
                 const int ap_cost = player_character.run_cost( mcost, diag );
                 const int pre_moves = player_character.get_moves();
+                mp_dispatch_pre_moves = pre_moves;
                 player_character.mod_moves( -ap_cost );
                 player_character.burn_move_stamina( pre_moves - player_character.get_moves() );
                 player_character.set_activity_level(
