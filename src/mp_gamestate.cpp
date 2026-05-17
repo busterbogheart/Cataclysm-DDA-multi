@@ -2688,8 +2688,17 @@ void client_process_incoming()
         client_resync_worn();
     }
     std::string msg;
+    int recv_count = 0;
     while( client_recv_pop( msg ) ) {
+        ++recv_count;
+        const auto m_pos = msg.find( "\"moves\":" );
+        const std::string moves_str = ( m_pos != std::string::npos )
+                                      ? msg.substr( m_pos, 16 ) : "no-moves";
+        mp_log( "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) + ": " + moves_str );
         apply_one_state_message( msg );
+    }
+    if( recv_count == 0 ) {
+        mp_log( "[cdda-mp] CLI-RECV-EMPTY" );
     }
     // Auto-fire any queued action now that the server has restored our moves.
     // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
