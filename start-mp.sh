@@ -9,36 +9,14 @@
 # In all modes, world and character are auto-resolved from save/ with prompts.
 
 GAME_DIR="$(cd "$(dirname "$0")" && pwd)"
-GAME_TILES="$GAME_DIR/cataclysm-tiles"
-GAME_CURSES="$GAME_DIR/cataclysm"
-
-pick_binary() {
-    local have_tiles=0 have_curses=0
-    [[ -f "$GAME_TILES"  ]] && have_tiles=1
-    [[ -f "$GAME_CURSES" ]] && have_curses=1
-    if (( have_tiles && have_curses )); then
-        echo ""
-        echo "  Select build:"
-        echo "  1) Tiles  (cataclysm-tiles)"
-        echo "  2) Curses (cataclysm)"
-        echo ""
-        while true; do
-            read -rp "  Enter number: " choice
-            case "$choice" in
-                1) GAME="$GAME_TILES";  break ;;
-                2) GAME="$GAME_CURSES"; break ;;
-                *) echo "  Invalid choice." ;;
-            esac
-        done
-    elif (( have_tiles )); then
-        GAME="$GAME_TILES"
-    elif (( have_curses )); then
-        GAME="$GAME_CURSES"
-    else
-        echo "Error: no game binary found (expected cataclysm-tiles or cataclysm)"
-        exit 1
-    fi
-}
+if [[ -f "$GAME_DIR/cataclysm-tiles" ]]; then
+    GAME="$GAME_DIR/cataclysm-tiles"
+elif [[ -f "$GAME_DIR/cataclysm" ]]; then
+    GAME="$GAME_DIR/cataclysm"
+else
+    echo "Error: no game binary found (expected cataclysm-tiles or cataclysm)"
+    exit 1
+fi
 SAVE_DIR="$GAME_DIR/save"
 LAST_CFG="$GAME_DIR/.last-mp"
 HOST_PORT=8080
@@ -58,7 +36,6 @@ case "${1:-}" in
         ;;
     client)
         MODE="client"
-        pick_binary
         HOST_IP="${2:-}"
         shift 2 2>/dev/null || shift 1 2>/dev/null || true
         echo "Pulling latest save from remote..."
@@ -126,11 +103,6 @@ case "${1:-}" in
         fi
         ;;
 esac
-
-# Host and both modes: auto-select binary (no prompt — M4 only has tiles).
-if [[ "$MODE" != "client" ]]; then
-    pick_binary
-fi
 
 # ---------------------------------------------------------------------------
 # Helpers
