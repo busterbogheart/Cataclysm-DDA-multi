@@ -2013,41 +2013,37 @@ void wait_for_client_action()
 
     g_host_waiting_for_client = true;
     const auto t_start = std::chrono::steady_clock::now();
-    // When host is in a long activity (ACT_WAIT family), bound the wait so the
-    // host's clock advances at ~10 Hz regardless of client ack.  This is the
-    // first step toward async-server architecture: the host's simulation is no
-    // longer gated on client lockstep during long activities.  Client receives
-    // grants every ~100 ms and auto-waits to keep its own clock in sync; any
-    // client action queued in transit is applied on the next host tick.
-    const bool host_in_wait = host_is_in_wait_activity();
-    const auto wait_budget = std::chrono::milliseconds( 100 );
-    mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) +
-            " host_in_wait=" + std::to_string( host_in_wait ) );
+    // Async-server tick: host advances at ~10 Hz regardless of client ack.
+    // The legacy g_client_acted_this_turn flag is no longer a gate — action
+    // handlers still set it (used only by the HUD strip) but the host's clock
+    // is no longer waiting on it.  Client actions arriving inside this tick
+    // are drained by process_mp_events() below; any that arrive after the
+    // budget are processed on the next tick.
+    const auto tick_budget = std::chrono::milliseconds( 100 );
+    mp_log( "[cdda-mp] SRV-TICK: begin, grant_seq=" + std::to_string( g_grant_seq ) );
 
-    while( !g_client_acted_this_turn && remote_player_connected ) {
-        // Block until the client sends something; wake every 100ms to pump SDL events.
-        get_mp_queue().wait_for_event( std::chrono::milliseconds( 100 ) );
+    while( remote_player_connected ) {
+        const auto elapsed = std::chrono::steady_clock::now() - t_start;
+        if( elapsed >= tick_budget ) {
+            break;
+        }
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   tick_budget - elapsed );
+        get_mp_queue().wait_for_event( remaining );
         process_mp_events();
         ensure_mp_hud();
         inp_mngr.pump_events();
         g->mp_poll_input();
-        if( host_in_wait ) {
-            const auto elapsed = std::chrono::steady_clock::now() - t_start;
-            if( elapsed >= wait_budget ) {
-                mp_log( "[cdda-mp] SRV-WAIT: async-advance (host in long activity, "
-                        "no client ack within 100ms)" );
-                break;
-            }
-        }
     }
     g_host_waiting_for_client = false;
     ui_manager::redraw();
     g_wait_elapsed_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_start ).count() );
-    if( g_wait_elapsed_ms > 100 ) {
+    // Log only if the tick overran the budget — useful for spotting heavy ticks.
+    if( g_wait_elapsed_ms > 150 ) {
         const player_activity &ha = get_avatar().activity;
-        mp_log( "[cdda-mp] SRV-WAIT: done, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
+        mp_log( "[cdda-mp] SRV-TICK: overran, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
                 "ms host_act=" + ( ha ? ha.id().str() : "none" ) );
     }
 
