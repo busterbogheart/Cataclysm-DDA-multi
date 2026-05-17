@@ -2714,9 +2714,6 @@ void client_process_incoming()
         mp_log( "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) + ": " + moves_str );
         apply_one_state_message( msg );
     }
-    if( recv_count == 0 ) {
-        mp_log( "[cdda-mp] CLI-RECV-EMPTY" );
-    }
     // Auto-fire any queued action now that the server has restored our moves.
     // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
     // immediately after, giving the user the chance to queue the next action.
