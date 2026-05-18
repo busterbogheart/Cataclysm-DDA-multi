@@ -1013,7 +1013,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_array( "client_msgs" ) ) {
         for( const JsonValue &mv : jo.get_array( "client_msgs" ) ) {
             const std::string text = mv.get_string();
-            mp_log( "[cdda-mp] SRV-CLIENT-MSG: " + text.substr( 0, 80 ) );
             add_msg( m_info, text );
         }
         // Loop-break: messages forwarded FROM the client must not be picked
@@ -1972,8 +1971,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // a "wait") so the host's wait_for_client_action releases instead of
             // hitting DISCONNECT-TIMEOUT at 30s.  Without this, the client's ack
             // guard wedged at ack=1 and both players appeared locked.
-            mp_log( "[cdda-mp] SRV-BUMP-HOST: client moved into host tile — "
-                    "treating as wait so the turn advances" );
             g_remote_moves -= remote->get_speed();
             g_client_acted_this_turn = true;
             server *srv = get_active_server();
@@ -3182,15 +3179,11 @@ static void client_capture_avatar_msgs()
         return;
     }
     const auto new_msgs = Messages::recent_messages( cur - g_client_msg_watermark );
-    mp_log( "[cdda-mp] CLI-CAPTURE: scanning " + std::to_string( new_msgs.size() ) +
-            " new messages (watermark " + std::to_string( g_client_msg_watermark ) +
-            " → " + std::to_string( cur ) + ")" );
     g_client_msg_watermark = cur;
     const std::string client_name = get_avatar().name;
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
         if( text.rfind( "You ", 0 ) != 0 && text.rfind( "Now ", 0 ) != 0 ) {
-            mp_log( "[cdda-mp] CLI-CAPTURE-SKIP: " + text.substr( 0, 60 ) );
             continue;  // skip ambient/UI/inventory chatter
         }
         std::string out = text;
@@ -3203,7 +3196,6 @@ static void client_capture_avatar_msgs()
             // "Now reading X" → "Roy is now reading X"
             out = client_name + " is " + out;
         }
-        mp_log( "[cdda-mp] CLI-CAPTURE-QUEUE: " + out.substr( 0, 80 ) );
         g_client_msgs_pending.push_back( out );
     }
 }
