@@ -2513,9 +2513,23 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 // (the menu choice is what dispatches, if anything).
                 const tripoint_abs_ms next_abs = here.get_abs( next_pos );
                 const bool host_at = cata_mp::is_client_host_at( next_abs );
+                // Where does the proxy think it is right now?
+                std::string proxy_info = "no-proxy";
+                {
+                    npc *dbg_hnpc = g->critter_by_id<npc>(
+                                        cata_mp::get_host_npc_character_id() );
+                    if( dbg_hnpc ) {
+                        const tripoint_abs_ms proxy_abs =
+                            here.get_abs( dbg_hnpc->pos_bub() );
+                        proxy_info = std::to_string( proxy_abs.x() ) + "," +
+                                     std::to_string( proxy_abs.y() ) + "," +
+                                     std::to_string( proxy_abs.z() );
+                    }
+                }
                 cata_mp::mp_log( "[cdda-mp] CLI-BUMP-CHECK: next_abs=" +
                                  std::to_string( next_abs.x() ) + "," +
                                  std::to_string( next_abs.y() ) +
+                                 " proxy_abs=" + proxy_info +
                                  " host_at=" + std::to_string( host_at ) );
                 if( host_at ) {
                     npc *hnpc = g->critter_by_id<npc>(
