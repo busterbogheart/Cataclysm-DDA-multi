@@ -2850,8 +2850,18 @@ void client_process_incoming()
                 " ack=" + std::to_string( g_client_waiting_for_ack ) +
                 " last_seq=" + std::to_string( g_client_last_grant_seq ) );
         if( !g_client_waiting_for_ack ) {
-            mp_log( "[cdda-mp] CLI-DEADZONE-RESET: seq was=" + std::to_string( g_client_last_grant_seq ) + " → 0" );
-            g_client_last_grant_seq = 0;
+            // Wedge breaker: we have a queued action, no moves, no pending ack.
+            // Under pure lockstep this means the host already granted (we just
+            // missed the AUTOFIRE window because pending was empty at grant
+            // time) and is now blocked in wait_for_client_action.  Send the
+            // pending action directly; the host's ack-clear will restore our
+            // moves, and the next grant proceeds normally.  Without this, both
+            // sides wait on each other until the host's 30 s DISCONNECT-TIMEOUT.
+            mp_log( "[cdda-mp] CLI-DEADZONE-SEND: force-sending pending to break wedge" );
+            client_send( g_pending_action );
+            g_pending_action.clear();
+            g_client_waiting_for_ack = true;
+            g_ack_set_time = std::chrono::steady_clock::now();
         }
     }
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
