@@ -5315,8 +5315,14 @@ bool game::npc_menu( npc &who )
     amenu.addentry( examine_wounds, true, 'w', _( "Examine wounds" ) );
     amenu.addentry( examine_status, true, 'e', _( "Examine status" ) );
     amenu.addentry( use_item, true, 'i', _( "Use item on" ) );
-    amenu.addentry( sort_armor, true, 'r', _( "Sort armor" ) );
-    amenu.addentry( attack, true, 'a', _( "Attack" ) );
+    // Hide Sort armor and Attack for the MP partner — partner manages their
+    // own loadout, and Attack would be friendly-fire on a real player (no
+    // current v1 use case; trivial to re-enable for future PvP).
+    const bool partner = cata_mp::is_partner_npc( who.getID() );
+    if( !partner ) {
+        amenu.addentry( sort_armor, true, 'r', _( "Sort armor" ) );
+        amenu.addentry( attack, true, 'a', _( "Attack" ) );
+    }
     if( !who.is_player_ally() ) {
         amenu.addentry( disarm, who.is_armed(), 'd', _( "Disarm" ) );
         amenu.addentry( steal, !who.is_enemy(), 'S', _( "Steal" ) );
