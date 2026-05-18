@@ -1916,8 +1916,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         // Block movement onto the host avatar's tile.
         const tripoint_abs_ms host_abs = m.get_abs( get_avatar().pos_bub() );
         if( next_abs == host_abs ) {
-            // TODO: trigger an interaction menu on the host side here.
-            // For now, refuse the move and send a corrected state so the client snaps back.
+            // The client's local bump check (handle_action.cpp) is the intended
+            // UX path — it opens the partner menu locally before the move ever
+            // dispatches.  If that check missed (position-sync drift, etc.) we
+            // land here.  Treat the bump as a consumed turn (same accounting as
+            // a "wait") so the host's wait_for_client_action releases instead of
+            // hitting DISCONNECT-TIMEOUT at 30s.  Without this, the client's ack
+            // guard wedged at ack=1 and both players appeared locked.
+            mp_log( "[cdda-mp] SRV-BUMP-HOST: client moved into host tile — "
+                    "treating as wait so the turn advances" );
+            g_remote_moves -= remote->get_speed();
+            g_client_acted_this_turn = true;
             server *srv = get_active_server();
             if( srv ) {
                 srv->post_broadcast( serialize_remote_player_state() + "\n" );
