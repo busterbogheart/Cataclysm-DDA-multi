@@ -1768,11 +1768,23 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             remote->controlling_vehicle = false;
             g_remote_moves -= remote->get_speed();
         }
-        g_client_acted_this_turn = true;
+        // Mirror SP's pldrive: turning costs AP but doesn't end the turn unless
+        // AP runs out.  If the proxy still has moves, send a partial-turn update
+        // (free=true) so the client can do more driving inputs (more turns, cruise
+        // changes, pause to commit) in the same turn — matching SP behavior where
+        // the driver can chain inputs until moves reach 0.
+        const bool turn_ended = g_remote_moves <= 0;
+        if( turn_ended ) {
+            g_client_acted_this_turn = true;
+        }
         flush_action_msgs( pre_action_msg, remote->name );
         server *srv = get_active_server();
         if( srv ) {
-            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+            std::string state = serialize_remote_player_state();
+            if( !turn_ended ) {
+                state = state.substr( 0, state.size() - 1 ) + ",\"free\":true}";
+            }
+            srv->post_broadcast( state + "\n" );
         }
         return;
     }
@@ -2689,9 +2701,14 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
-        // "free":true means the server rejected the action as a no-op (e.g. wall bump).
-        // Clear the ack guard immediately so the restored moves value is accepted below.
-        if( jo.has_bool( "free" ) && jo.get_bool( "free" ) ) {
+        // "free":true means this isn't a turn-ending action.  Two cases:
+        //  - Wall bump or refused action (moves<=0 broadcast, free=true)
+        //  - Partial-turn update like pldrive that consumed only some AP and
+        //    left budget for more driving inputs (moves>0, free=true).
+        // Clear the ack guard so the restored/partial moves value is accepted
+        // by the seq-bypassed path further down.
+        const bool is_partial_turn = jo.has_bool( "free" ) && jo.get_bool( "free" );
+        if( is_partial_turn ) {
             g_client_waiting_for_ack = false;
         }
 
@@ -2718,7 +2735,14 @@ static bool apply_one_state_message( const std::string &msg )
             // a fresh grant" — the old metric let ack-clear-only periods (host
             // is busy processing our previous actions) look like wedges.
             g_last_grant_time = std::chrono::steady_clock::now();
-            if( srv_moves <= 0 ) {
+            if( is_partial_turn && srv_moves > 0 ) {
+                // Partial-turn update from host (e.g., pldrive consumed some AP
+                // but left budget).  Bypass the seq guard — this isn't a fresh
+                // grant, the host hasn't advanced the calendar.  Just sync the
+                // remaining AP so the client can issue more driving inputs.
+                mp_log( "[cdda-mp] CLI-PARTIAL: moves=" + std::to_string( srv_moves ) );
+                get_avatar().set_moves( srv_moves );
+            } else if( srv_moves <= 0 ) {
                 // ACK: server confirmed our action was received.  Always apply.
                 mp_log( "[cdda-mp] CLI-ACK-CLEAR: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
