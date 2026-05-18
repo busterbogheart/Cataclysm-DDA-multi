@@ -4192,5 +4192,8 @@ bool game::handle_action()
     dbg( D_INFO ) << string_format( "%s: [%d] %d - %d = %d", action_ident( act ),
                                     to_turn<int>( calendar::turn ), before_action_moves, player_character.movecounter,
                                     player_character.get_moves() );
+    if( cata_mp::is_hosting() && act != ACTION_NULL && act != ACTION_TIMEOUT ) {
+        cata_mp::set_last_host_action_label( action_ident( act ) );
+    }
     return !player_character.is_dead_state();
 }

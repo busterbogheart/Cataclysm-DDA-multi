@@ -106,6 +106,10 @@ void wait_for_client_action();
 // display on the debug HUD.  Call from do_turn() immediately after monmove().
 void set_last_monmove_ms( int ms );
 
+// Host only: record the host's most recent input action (e.g. "move_n", "wait")
+// so the Co-op HUD's "Queued" row reflects the host's last key, not the client's.
+void set_last_host_action_label( const std::string &label );
+
 // Server only: capture avatar-generated messages since pre_msg and queue them
 // for the client with "You" → host character name substitution.
 // Call from do_turn() after each handle_action() when a remote player is connected.

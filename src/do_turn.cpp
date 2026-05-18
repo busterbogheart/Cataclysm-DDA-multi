@@ -782,7 +782,14 @@ bool do_turn()
             // Client mode: enabled — handle_input(0) is non-blocking unless the
             // user actually presses an interrupt key (e.g. `5`), in which case
             // the cancel-confirmation popup blocking briefly is the correct UX.
-            if( !cata_mp::is_hosting() ) {
+            {
+                // Run for both host and client.  Earlier we gated on !is_hosting
+                // because mp_poll_input() in wait_for_client_action handled host
+                // UI keys.  That call was removed (it blocked on handle_action),
+                // leaving the host with no way to cancel its own |-wait/craft/etc.
+                // handle_input(0) is non-blocking unless the user actually presses
+                // a cancel key, in which case the cancel-confirmation popup is the
+                // correct UX — even on host.
                 static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                         std::chrono::steady_clock::now() );
                 const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(

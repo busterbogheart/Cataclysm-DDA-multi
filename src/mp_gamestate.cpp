@@ -226,6 +226,11 @@ static int g_last_monmove_ms = 0;
 // Displayed on the server HUD "Queued" row as the partner-side equivalent.
 static std::string g_last_client_action_label = "\xe2\x80\x94";
 
+// Host: the host's own last input action.  Captured at the end of handle_action
+// so the local "Queued" HUD field actually reflects the host's most recent key,
+// not the client's (which was the previous, misleading behavior).
+static std::string g_last_host_action_label = "\xe2\x80\x94";
+
 // Separation warning tier: 0=ok, 1=warn (≥50 tiles), 2=danger (≥57 tiles).
 // Shared by both host and client; resets on connect/disconnect.
 // Hysteresis: step up at 50/57, step down at 44/50.
@@ -320,11 +325,13 @@ struct mp_hud_t {
                        my_turn ? "waiting for you" : "acting..." );
 
         } else {
-            // Row 1: partner's last action
+            // Row 1: HOST's own last action (was previously showing
+            // g_last_client_action_label here, which was misleading — the host
+            // saw the client's last action labelled as "Queued").
             mvwprintz( win, point( 2, 1 ), c_white, "Queued: " );
             mvwprintz( win, point( 10, 1 ),
-                       g_last_client_action_label == "\xe2\x80\x94" ? c_dark_gray : c_yellow,
-                       g_last_client_action_label );
+                       g_last_host_action_label == "\xe2\x80\x94" ? c_dark_gray : c_yellow,
+                       g_last_host_action_label );
 
             // Row 2: partner connection status
             std::string plabel = remote_player_name_.empty() ? "Partner" : remote_player_name_;
@@ -2058,6 +2065,16 @@ void wait_for_client_action()
         process_mp_events();
         ensure_mp_hud();
         inp_mngr.pump_events();
+        // Redraw the side strip + Co-op panel ~10x/sec while we're blocked so
+        // the host's HUD actually flips to red while locked, instead of staying
+        // green until the wait exits.  Rate-limited because ui_manager::redraw
+        // isn't free and 60Hz redraws are wasteful when nothing visually changes.
+        static auto last_redraw = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_redraw ).count() > 100 ) {
+            ui_manager::redraw();
+            last_redraw = now;
+        }
         iter_count++;
     }
     g_host_waiting_for_client = false;
@@ -2112,6 +2129,11 @@ bool host_is_in_wait_activity()
 void set_last_monmove_ms( int ms )
 {
     g_last_monmove_ms = ms;
+}
+
+void set_last_host_action_label( const std::string &label )
+{
+    g_last_host_action_label = label;
 }
 
 bool is_remote_player( character_id id )
