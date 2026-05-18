@@ -73,6 +73,8 @@
 #include "messages.h"
 #include "monster.h"
 #include "morale.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "move_mode.h"
 #include "mtype.h"
 #include "mutation.h"
@@ -5269,6 +5271,15 @@ void Character::assign_activity( const player_activity &act )
     }
 
     activity.start_or_resume( *this, resuming );
+
+    // MP: capture the avatar's activity id immediately so client_enrich_action
+    // can include it in the next outgoing packet.  Without this, short
+    // activities (e.g. drop_activity_actor that completes in one tick) finish
+    // and clear av.activity before any enrich runs, and the host never sees
+    // the activity on the wire.
+    if( is_avatar() && cata_mp::is_client_mode() && activity ) {
+        cata_mp::set_client_turn_activity( activity.id().str() );
+    }
 
     if( is_npc() ) {
         cancel_stashed_activity();

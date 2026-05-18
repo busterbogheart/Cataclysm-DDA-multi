@@ -71,6 +71,7 @@
 #include "mapdata.h"
 #include "mapgen.h"
 #include "material.h"
+#include "mp_gamestate.h"
 #include "math_defines.h"
 #include "mission.h"
 #include "memory_fast.h"
@@ -904,6 +905,10 @@ void map::vehmove()
         if( !vehproceed( vehicle_list ) ) {
             break;
         }
+        // MP: broadcast each tile-step so the client renders smooth motion
+        // instead of teleporting to the final position once vehmove returns.
+        // No-op when not hosting.
+        cata_mp::host_broadcast_vehicle_step();
     }
     // Process item removal on the vehicles that were modified this turn.
     // Use a copy because part_removal_cleanup can modify the container.
@@ -1635,9 +1640,9 @@ void map::board_vehicle( const tripoint_bub_ms &pos, Character *p )
         if( psg == p ) {
             return; // already seated here — no-op
         }
-        add_msg( m_info, _( "Only one player can drive at a time (for now). [%s tried to board a seat occupied by %s]" ),
-                 p ? p->get_name() : "<null_boarder>",
-                 psg ? psg->get_name() : "<null_passenger>" );
+        add_msg( m_info, _( "%s is already in that seat. [%s tried to board it]" ),
+                 psg ? psg->get_name() : "<null_passenger>",
+                 p ? p->get_name() : "<null_boarder>" );
         return;
     }
     vp->part().set_flag( vp_flag::passenger_flag );

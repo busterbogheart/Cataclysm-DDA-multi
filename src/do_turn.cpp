@@ -640,6 +640,21 @@ bool do_turn()
     if( cata_mp::is_client_mode() ) {
         cata_mp::mp_log( "[cdda-mp] pre-act-loop: moves=" + std::to_string( pre_activity_moves ) +
                          " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
+        // Snapshot this turn's activity id for the wire so enrich uses it even
+        // if av.activity is cleared mid-turn by the activity finishing.
+        cata_mp::set_client_turn_activity( pre_activity_id ? pre_activity_id.str()
+                                           : std::string() );
+        // Client busy-loop fix: when we have an activity but no moves to tick
+        // it, do_turn just spins doing nothing — the input loop is skipped
+        // (moves <= 0) and the activity loop is skipped (moves <= 0).  The
+        // main loop calls do_turn again immediately, eating CPU at ~100kHz and
+        // starving the ASIO network thread so host grants never get processed
+        // through client_process_incoming.  Sleep briefly to yield to the
+        // network thread; when its broadcast arrives, our moves regen and the
+        // next do_turn iteration ticks the activity normally.
+        if( pre_activity_id && pre_activity_moves <= 0 ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        }
     }
     while( u.get_moves() > 0 && u.activity ) {
         u.activity.do_turn( u );
@@ -762,13 +777,25 @@ bool do_turn()
             //                            and the positive grant never clears the ack guard).
             //  !is_client_waiting_for_ack() — don't stack a "wait" on top of a pending movement ack;
             //                            the pre-loop dispatch will handle it on the next grant.
+            // Send a wait if either (a) moves were consumed this turn or (b) an
+            // activity that was running has just ended.  Case (b) catches the
+            // "drop completes mid-turn with moves left over" path that would
+            // otherwise leave the client blocked in handle_action and the host
+            // waiting through its 30s DISCONNECT-TIMEOUT.  Force the wait
+            // through even when no activity is current, so a short activity
+            // (drop_activity_actor finishing in one tick) still acks the host.
+            const bool activity_just_ended = pre_activity_id && !u.activity;
+            const bool moves_consumed = pre_activity_moves > 0 && u.get_moves() <= 0;
             if( cata_mp::is_client_mode() && !mp_wait_dispatched &&
-                pre_activity_moves > 0 && u.get_moves() <= 0 &&
+                ( moves_consumed || activity_just_ended ) &&
                 !cata_mp::is_client_waiting_for_ack() ) {
                 const activity_id post_id = u.activity ? u.activity.id() : activity_id();
                 cata_mp::mp_log( "[cdda-mp] post-loop dispatch: pre_moves=" + std::to_string( pre_activity_moves ) +
-                                 " act=" + ( post_id ? post_id.str() : "none" ) );
-                cata_mp::client_dispatch_wait_for_activity( post_id );
+                                 " cur_moves=" + std::to_string( u.get_moves() ) +
+                                 " act=" + ( post_id ? post_id.str() : "none" ) +
+                                 " ended=" + std::to_string( activity_just_ended ) +
+                                 " force_idle=1" );
+                cata_mp::client_dispatch_wait_for_activity( post_id, /*force_idle=*/true );
             } else if( cata_mp::is_client_mode() && pre_activity_moves > 0 && u.get_moves() <= 0 ) {
                 cata_mp::mp_log( "[cdda-mp] post-loop SKIPPED: dispatched=" + std::to_string( mp_wait_dispatched ) +
                                  " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +

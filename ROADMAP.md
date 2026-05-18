@@ -131,6 +131,21 @@ Creatures / furniture / non-engine parts:
 
 **Architectural pattern for most of the above:** each menu item runs as local SP code on whichever side opened the menu, but state changes don't propagate. Fix shape: dispatch a specific MP action from the client (e.g. `{"action":"toggle_door","vp_idx":N}`), host runs the SP code on its vehicle and broadcasts updated state. Same model that already works for `pldrive`/`cruise`/`handbrake`/`toggle_engine`/`stop_engine`/`honk`/`control_vehicle`.
 
+### Inventory sync + authoritative-host activities
+
+The proxy NPC currently only mirrors worn + wielded. Activities that mutate inventory (drop, craft, read, use, eat, wear/takeoff) all run locally on each side and the proxy can't actually take items out of inventory on the host. This blocks:
+
+- Authoritative host running `drop_activity_actor` on the proxy (SP-mirror of multi-turn drops)
+- Picking up world items (no MP path today)
+- Crafting (recipe components must be in the proxy's inventory)
+- Item use (drinking, applying, transforming) on the proxy
+- Trading between players
+- Death/respawn item recovery
+
+Design doc: [`doc/MP_INVENTORY_SYNC_DESIGN.md`](doc/MP_INVENTORY_SYNC_DESIGN.md). Recommended model is host-authoritative on the proxy NPC with client-side prediction. Migration in 8 steps, ~10–15 sessions of work; first 3 steps (stable UIDs, pickup, drop unification) deliver the highest-value chunk.
+
+Activity-id sync (display-only) shipped 2026-05-18: HUD label + one-line partner notice. That display layer is ready to hook into real authoritative activities once inventory sync lands.
+
 ### NPC proxy fidelity
 - EOC (Effect on Condition) not processed on proxy NPC — conditional effects, missions, morale events targeting remote player silently no-op
 - NPC healing not applied to proxy — bleed/wound sync works but natural healing ticks are skipped

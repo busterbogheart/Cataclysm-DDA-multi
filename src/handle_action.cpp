@@ -465,6 +465,15 @@ input_context game::get_player_input( std::string &action )
             }
 
             ui_manager::redraw_invalidated();
+            // Client: when the avatar has an active multi-turn activity,
+            // exit the input poll on TIMEOUT regardless of TURN_DURATION so
+            // the do_turn loop ticks the activity and dispatches a wait.
+            // Without this, turn-based mode (TURN_DURATION=0) blocks here
+            // forever and the host stalls until DISCONNECT-TIMEOUT.
+            if( cata_mp::is_client_mode() && action == "TIMEOUT" &&
+                get_avatar().activity ) {
+                break;
+            }
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
@@ -481,6 +490,10 @@ input_context game::get_player_input( std::string &action )
                 if( cata_mp::is_client_mode() ) {
                     cata_mp::client_process_incoming();
                     g->invalidate_main_ui_adaptor();
+                    // Same activity-escape as above.
+                    if( get_avatar().activity ) {
+                        break;
+                    }
                 }
             }
         }
@@ -3085,6 +3098,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_TIMEOUT:
+            // Client with an active activity: skip the auto-pause.  The TIMEOUT
+            // was forced by get_player_input to escape its block so the do_turn
+            // activity loop can tick.  Calling pause() here would consume the
+            // moves the activity needs.
+            if( cata_mp::is_client_mode() && player_character.activity ) {
+                break;
+            }
             if( check_safe_mode_allowed( false ) ) {
                 player_character.pause();
             }

@@ -127,6 +127,20 @@ void host_capture_avatar_msgs( size_t pre_msg );
 // their own messages (vehicle collision/status messages the driver should see).
 void host_capture_vehmove_msgs( size_t pre_msg );
 
+// Per-tile vehicle position broadcast, called from map::vehmove after each
+// successful vehproceed step.  Sends a slim "vehicle_step" packet with just
+// pos/face/turn_dir/vel for in-bubble vehicles so the client renders each
+// intermediate tile instead of teleporting to the final position.  No-op
+// when not hosting.
+void host_broadcast_vehicle_step();
+
+// Set by do_turn at turn start (before the activity loop runs) to the avatar's
+// current activity id, or empty if idle.  client_enrich_action reads this so
+// the value sent to the host is the activity that was active at the start of
+// the turn, not whatever av.activity holds after the activity may have
+// completed mid-turn.
+void set_client_turn_activity( const std::string &activity_id_str );
+
 // Write a [cdda-mp] log line to stdout AND to /tmp/cdda-mp-server.log or
 // /tmp/cdda-mp-client.log (depending on mode).  Use this for any event that
 // should be readable after a session without stopping the process.
