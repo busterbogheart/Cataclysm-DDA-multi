@@ -795,11 +795,20 @@ bool do_turn()
 
             if( cata_mp::is_client_mode() ) {
                 cata_mp::ensure_mp_hud();
-                cata_mp::mp_log( "[cdda-mp] LOCKED-HA: enter handle_action, moves=" +
-                                 std::to_string( u.get_moves() ) );
-                g->handle_action();
-                cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action" );
-                ui_manager::redraw();
+                // Skip the blocking handle_action() when an activity is running.
+                // Otherwise the wait_popup logic below never gets a chance to draw
+                // (handle_action blocks for a keypress, and ACTION_PAUSE just sends
+                // a wait dispatch — it never cancels the activity).  When activity
+                // is set, handle_key_blocking_activity() (called above at the 100ms
+                // poll) handles cancel-via-5 properly, and the wait_popup logic
+                // displays progress.
+                if( !u.activity ) {
+                    cata_mp::mp_log( "[cdda-mp] LOCKED-HA: enter handle_action, moves=" +
+                                     std::to_string( u.get_moves() ) );
+                    g->handle_action();
+                    cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action" );
+                    ui_manager::redraw();
+                }
             }
 
             g->mon_info_update();

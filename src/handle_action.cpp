@@ -2590,6 +2590,14 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return true;
         }
         if( act == ACTION_PAUSE ) {
+            // If the client is mid-activity (|-wait, crafting, reading, etc.), the
+            // user pressing 5 is asking to CANCEL it — not to dispatch another wait.
+            // Mirror handle_key_blocking_activity()'s cancel path so the prompt
+            // appears regardless of which code path caught the keypress.
+            if( player_character.activity && player_character.activity.is_interruptible_with_kb() ) {
+                g->cancel_activity_query( _( "Confirm:" ) );
+                return true;
+            }
             mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
             return true;
         }
