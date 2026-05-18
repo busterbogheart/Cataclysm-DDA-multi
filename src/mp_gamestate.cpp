@@ -2909,15 +2909,20 @@ void client_process_incoming()
                 " moves=" + std::to_string( get_avatar().get_moves() ) +
                 " ack=" + std::to_string( g_client_waiting_for_ack ) +
                 " last_seq=" + std::to_string( g_client_last_grant_seq ) );
-        if( !g_client_waiting_for_ack ) {
-            // Wedge breaker: pending exists, no moves, no ack pending.  In
-            // normal play this is fine — AUTOFIRE on the next grant will send
-            // the pending within ~RTT.  But if the host is wedged (waiting
-            // forever for us to act), no grant comes and we'd stall until the
-            // host's 30 s DISCONNECT-TIMEOUT.  Only force-send if we haven't
-            // seen a grant for > 1 s — otherwise normal-play DEADZONE states
-            // get force-sent on every ack-clear, letting the client effectively
-            // send multiple actions per host turn cycle.
+        if( !g_client_waiting_for_ack && g_client_last_grant_seq > 0 ) {
+            // Wedge breaker: pending exists, no moves, no ack pending, AND
+            // we've already received at least one grant.  In normal play
+            // AUTOFIRE on the next grant sends the pending within ~RTT.
+            // The wedge case is: host stopped sending grants because it's
+            // stuck waiting for our ack — no new grant comes for >1s.
+            //
+            // Gates:
+            //  - last_seq > 0: the host has actually started its grant cycle.
+            //    Otherwise we'd fire during the startup window where the host
+            //    is still wiring up the proxy NPC and can't grant yet, which
+            //    lets us spam actions before lockstep even starts.
+            //  - since_grant > 1s: normal-RTT play stays under this; only
+            //    true wedges hit it.
             using namespace std::chrono;
             const auto since_grant = duration_cast<milliseconds>(
                     steady_clock::now() - g_last_grant_time ).count();
