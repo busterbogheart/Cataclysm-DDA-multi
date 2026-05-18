@@ -32,6 +32,8 @@
 #include "material.h"
 #include "messages.h"
 #include "monster.h"
+#include "mp_gamestate.h"
+#include "npc.h"
 #include "options.h"
 #include "rng.h"
 #include "sounds.h"
@@ -723,9 +725,16 @@ void vehicle::turn( units::angle deg )
         deg = -deg;
     }
     last_turn = deg;
+    const int before = static_cast<int>( units::to_degrees( turn_dir ) );
     turn_dir = normalize( turn_dir + deg );
     // quick rounding the turn dir to a multiple of 15
     turn_dir = round_to_multiple_of( turn_dir, vehicles::steer_increment );
+    cata_mp::mp_log( "[veh-turn] vehicle::turn deg=" + std::to_string( static_cast<int>( units::to_degrees( deg ) ) ) +
+            " turn_dir " + std::to_string( before ) + "->" +
+            std::to_string( static_cast<int>( units::to_degrees( turn_dir ) ) ) +
+            " vel=" + std::to_string( velocity ) +
+            " skid=" + std::to_string( skidding ? 1 : 0 ) +
+            " name=" + name );
 }
 
 void vehicle::stop( map &here )
@@ -2112,12 +2121,15 @@ vehicle *vehicle::act_on_map( map &here )
         // But not if it's remotely controlled, is in water or can use rails
         if( !controlled && !pl_ctrl && !( is_watercraft() && can_float( here ) ) && !can_use_rails &&
             !is_flying && requested_z_change == 0 ) {
+            cata_mp::mp_log( "[veh-turn] UNMANNED-SKID-TRIGGER name=" + name +
+                             " vel=" + std::to_string( velocity ) );
             skidding = true;
         }
     }
 
     if( skidding && one_in( 4 ) ) {
         // Might turn uncontrollably while skidding
+        cata_mp::mp_log( "[veh-turn] skid random turn fires, name=" + name );
         turn( vehicles::steer_increment * ( one_in( 2 ) ? -1 : 1 ) );
     }
 
@@ -2134,6 +2146,10 @@ vehicle *vehicle::act_on_map( map &here )
             allow_turn_on_rail = allow_auto_turn_on_rails( here, corrected_turn_dir );
         }
         if( allow_turn_on_rail ) {
+            cata_mp::mp_log( "[veh-turn] rail correction turn_dir " +
+                    std::to_string( static_cast<int>( units::to_degrees( turn_dir ) ) ) + "->" +
+                    std::to_string( static_cast<int>( units::to_degrees( corrected_turn_dir ) ) ) +
+                    " name=" + name );
             turn_dir = corrected_turn_dir;
         }
     }

@@ -2419,6 +2419,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             const bool had_grant = charge_from_caller
                                    ? mp_dispatch_pre_moves > 0
                                    : player_character.get_moves() > 0;
+            cata_mp::mp_log( std::string( "[cdda-mp] mp_dispatch act=" ) +
+                             action_ident( act ) + " path=" +
+                             ( had_grant && !cata_mp::is_client_waiting_for_ack() ? "SEND" : "QUEUE" ) +
+                             " moves=" + std::to_string( player_character.get_moves() ) +
+                             " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +
+                             " json=" + full_json.substr( 0, 60 ) );
             // Don't double-send while a previous action is still awaiting ack — queue instead.
             if( had_grant && !cata_mp::is_client_waiting_for_ack() ) {
                 cata_mp::client_send( cata_mp::client_enrich_action( full_json ) );
@@ -2521,6 +2527,18 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 if( hnpc && here.get_abs( hnpc->pos_bub() ) == next_abs ) {
                     g->npc_menu( *hnpc );
                     return true;
+                }
+
+                // Mirror SP avatar_action::move theft prompt for boardable vehicles.
+                // If the destination tile is a boardable vehicle part owned by someone
+                // else, query the client before they walk onto it.  No host sync — the
+                // prompt happens locally; the host's avatar_action equivalent doesn't run
+                // for proxy NPCs, so we just gate the dispatch on the client's yes/no.
+                if( const auto dvp =
+                        here.veh_at( next_pos ).part_with_feature( "BOARDABLE", true ) ) {
+                    if( !dvp->vehicle().handle_potential_theft( player_character ) ) {
+                        return true; // declined to steal
+                    }
                 }
             }
 
@@ -2950,6 +2968,27 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 cata_mp::mp_log( "[cdda-mp] ^: client ctrl_veh hit, moves=" +
                                  std::to_string( player_character.get_moves() ) +
                                  " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+                // Mirror SP game::control_vehicle: theft prompt, then lock/hotwire
+                // gate, before dispatching the take-control action to the host.
+                map &cv_map = get_map();
+                const tripoint_bub_ms cv_pos = player_character.pos_bub();
+                if( const optional_vpart_position ovp = cv_map.veh_at( cv_pos ) ) {
+                    vehicle &veh = ovp->vehicle();
+                    if( !veh.handle_potential_theft( player_character ) ) {
+                        return true; // user declined to steal
+                    }
+                    if( veh.is_locked ) {
+                        // Same interact_with menu SP shows: hotwire option, alarm,
+                        // etc.  Activity runs locally on the client and ticks each
+                        // turn via the existing wait-dispatch path.
+                        // TODO: sync is_locked back to host after hotwire succeeds
+                        // (host doesn't currently check is_locked in its control_vehicle
+                        // handler, so this works by accident; revisit when adding
+                        // proper ownership/faction sync).
+                        veh.interact_with( &cv_map, cv_pos );
+                        return true;
+                    }
+                }
                 mp_dispatch( "{\"type\":\"action\",\"action\":\"control_vehicle\"}" );
             }
             return true;
@@ -3977,6 +4016,10 @@ bool game::handle_action()
     // Check if we have an auto-move destination
     if( player_character.has_destination() ) {
         act = player_character.get_next_auto_move_direction();
+        if( cata_mp::is_client_mode() ) {
+            cata_mp::mp_log( std::string( "[cdda-mp] HA-AUTOMOVE: dest=on next=" ) +
+                             action_ident( act ) );
+        }
         if( act == ACTION_NULL ) {
             add_msg( m_info, _( "Auto-move canceled" ) );
             player_character.abort_automove();

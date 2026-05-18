@@ -545,15 +545,16 @@ void vehicle::toggle_autopilot( map &here )
 
     menu.add( _( "Follow…" ) )
     .hotkey( "CONTROL_AUTOPILOT_FOLLOW" )
-    .desc( _( "Program the autopilot to follow you.  It might be a good idea to have a remote control available to tell it to stop, too." ) )
-    .on_submit( [this, &here] {
-        autopilot_on = true;
-        is_following = true;
-        is_patrolling = false;
-        if( !engine_on )
-        {
-            start_engines( here );
-        }
+    .desc( _( "Autopilot is disabled in multiplayer." ) )
+    .on_submit( [] {
+        add_msg( m_info, _( "Autopilot is disabled in multiplayer." ) );
+        // MP: autopilot/follow runs the vehicle AI on the host every turn,
+        // which conflicts with the client driving the same vehicle.  Disabled
+        // for both players until a co-op autopilot design exists.
+        // autopilot_on = true;
+        // is_following = true;
+        // is_patrolling = false;
+        // if( !engine_on ) { start_engines( here ); }
     } );
 
     menu.add( _( "Stop…" ) )
@@ -882,12 +883,13 @@ void vehicle::start_engines( map &here, Character *driver, const bool take_contr
 
 void vehicle::enable_patrol( map &here )
 {
-    is_patrolling = true;
-    autopilot_on = true;
-    autodrive_local_target = tripoint_abs_ms::zero;
-    if( !engine_on ) {
-        start_engines( here );
-    }
+    ( void )here;
+    add_msg( m_info, _( "Autopilot is disabled in multiplayer." ) );
+    // MP: patrol runs the vehicle AI on the host every turn.  Disabled.
+    // is_patrolling = true;
+    // autopilot_on = true;
+    // autodrive_local_target = tripoint_abs_ms::zero;
+    // if( !engine_on ) { start_engines( here ); }
 }
 
 void vehicle::honk_horn( map &here ) const

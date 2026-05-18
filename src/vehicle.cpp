@@ -630,7 +630,8 @@ void vehicle::activate_magical_follow()
     for( vehicle_part &vp : parts ) {
         if( vp.info().fuel_type == fuel_type_mana ) {
             vp.enabled = true;
-            is_following = true;
+            // MP: follow-the-player runs the vehicle AI on the host every turn.  Disabled.
+            // is_following = true;
             engine_on = true;
         } else {
             vp.enabled = true;
@@ -646,7 +647,8 @@ void vehicle::activate_animal_follow( map &here )
             monster *mon = get_monster( here,  e );
             if( mon && mon->has_effect( effect_harnessed ) ) {
                 vp.enabled = true;
-                is_following = true;
+                // MP: follow-the-player runs the vehicle AI on the host every turn.  Disabled.
+                // is_following = true;
                 engine_on = true;
             }
         } else {

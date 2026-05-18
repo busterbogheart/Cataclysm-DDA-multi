@@ -1658,9 +1658,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             mp_log( "[cdda-mp] control_vehicle: ctrl_idx=" + std::to_string( ctrl_idx ) +
                     " engine_on=" + std::to_string( veh.engine_on ) );
             if( ctrl_idx >= 0 ) {
-                if( !remote->in_vehicle ) {
-                    here.board_vehicle( bub, remote );  // register as passenger so vehicle moves NPC
-                }
+                // board_vehicle early-returns if proxy is already seated at this part,
+                // so this is safe to call unconditionally.  Without it, a proxy whose
+                // in_vehicle was set by the per-turn position sync (rather than by a
+                // prior board_vehicle) would never get passenger_flag on the seat.
+                here.board_vehicle( bub, remote );
                 remote->in_vehicle = true;
                 const bool engine_was_off = !veh.engine_on;
                 if( engine_was_off ) {
@@ -1998,10 +2000,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             g_remote_moves = remote->get_moves();
             acted = true;
         } else if( !m.impassable( next ) ) {
+            // Mirror avatar_action::move boarding semantics: unboard from current
+            // vehicle tile before setpos, then board at the new tile if boardable.
+            // Without this, board_vehicle is never called on the way in and the
+            // controls seat's passenger_flag stays clear, which makes the host
+            // flag the vehicle as unmanned and trigger spontaneous skids.
+            if( remote->in_vehicle ) {
+                m.unboard_vehicle( remote->pos_bub() );
+            }
             remote->setpos( m, next );
+            if( m.veh_at( remote->pos_bub() ).part_with_feature( "BOARDABLE", true ) ) {
+                m.board_vehicle( remote->pos_bub(), remote );
+            }
             mp_log( "[cdda-mp] NPC-MOVE: setpos done, pos_abs=" + std::to_string( remote->pos_abs().x() ) +
                     "," + std::to_string( remote->pos_abs().y() ) +
-                    " bub=" + std::to_string( remote->pos_bub().x() ) + "," + std::to_string( remote->pos_bub().y() ) );
+                    " bub=" + std::to_string( remote->pos_bub().x() ) + "," + std::to_string( remote->pos_bub().y() ) +
+                    " in_vehicle=" + std::to_string( remote->in_vehicle ) );
             // Trigger traps on the destination tile, mirroring game.cpp:8351.
             m.creature_on_trap( *remote );
             // Use combined_movecost (same as game.cpp:7733) so the AP cost includes
@@ -3101,9 +3115,13 @@ static std::string build_client_tile_changes( int radius = 10 )
                 fields_json += "]";
             }
 
-            // Trap — baseline-gated.
+            // Trap — baseline-gated. Skip terrain-builtin traps (e.g. downspout funnel
+            // on t_gutter_downspout); the peer derives those from the terrain itself,
+            // and re-applying via trap_set triggers a debugmsg.
             const trap &tr_here = m.tr_at( bub );
-            const std::string trap_sig_c = tr_here.is_null() ? "" : tr_here.id.str();
+            const trap_id &builtin_here = m.ter( bub )->trap;
+            const bool is_builtin_c = !tr_here.is_null() && tr_here.loadid == builtin_here;
+            const std::string trap_sig_c = ( tr_here.is_null() || is_builtin_c ) ? "" : tr_here.id.str();
             auto &trap_baseline = g_client_trap_baseline[abs];
             const bool trap_changed = ( trap_baseline != trap_sig_c );
             if( trap_changed ) {
@@ -3332,6 +3350,7 @@ std::string client_enrich_action( const std::string &json )
 void client_queue_action( const std::string &json )
 {
     g_pending_action = client_enrich_action( json );
+    mp_log( "[cdda-mp] client_queue_action: " + json.substr( 0, 80 ) );
 }
 
 float get_host_luminance()
@@ -3558,9 +3577,13 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 fields_json += "]";
             }
 
-            // Trap — id string, empty when no placed trap (tr_null).
+            // Trap — id string, empty when no placed trap (tr_null) or when the
+            // trap is just the terrain's built-in (peer derives those from the
+            // terrain itself; re-applying via trap_set triggers a debugmsg).
             const trap &tr      = m.tr_at( bub );
-            const std::string trap_sig = tr.is_null() ? "" : tr.id.str();
+            const trap_id &builtin = m.ter( bub )->trap;
+            const bool is_builtin = !tr.is_null() && tr.loadid == builtin;
+            const std::string trap_sig = ( tr.is_null() || is_builtin ) ? "" : tr.id.str();
 
             // Graffiti.
             const std::string graffiti_sig = m.has_graffiti_at( bub ) ? m.graffiti_at( bub ) : "";
