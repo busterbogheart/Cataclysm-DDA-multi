@@ -2247,14 +2247,14 @@ bool is_partner_npc( character_id id )
     if( is_remote_player( id ) ) {
         return true;
     }
-    // Client side: the host's proxy is client_host_npc_id.  Don't gate on
-    // client_host_npc_spawned — that flag desyncs from the actual NPC pointer
-    // and made the partner menu show Talk/Attack incorrectly.  Same bug pattern
-    // as is_client_host_at() had.
-    if( is_client_mode() && client_host_npc_id.is_valid() && id == client_host_npc_id ) {
-        return true;
-    }
-    return false;
+    // Client side: the host's proxy is client_host_npc_id.  Don't use
+    // character_id::is_valid() — it checks value > 0, but the MP-spawned
+    // proxy NPCs end up with negative IDs (e.g. -1) which is_valid() rejects
+    // even though the NPC is real and findable.  Just guard against the
+    // default-uninitialized id (value 0) and compare directly.
+    return is_client_mode() &&
+           client_host_npc_id.get_value() != 0 &&
+           id == client_host_npc_id;
 }
 
 bool is_client_host_at( const tripoint_abs_ms &abs )
