@@ -1016,6 +1016,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             mp_log( "[cdda-mp] SRV-CLIENT-MSG: " + text.substr( 0, 80 ) );
             add_msg( m_info, text );
         }
+        // Loop-break: messages forwarded FROM the client must not be picked
+        // up by the host's between-action forwarder (NPC-name substitution
+        // path in serialize_remote_player_state) and sent back as msgs.
+        // Otherwise we get an infinite ping-pong of the same notification.
+        g_last_forwarded_msg_count = Messages::size();
     }
 
     // Worn-item sync — client sends this once after joining (and after any
@@ -2780,6 +2785,13 @@ static bool apply_one_state_message( const std::string &msg )
                 mp_log( "[cdda-mp] client recv msg: " + txt );
                 add_msg( m_neutral, txt );
             }
+            // Loop-break: messages forwarded FROM the host must not be picked up
+            // by client_capture_avatar_msgs and forwarded back via client_msgs.
+            // Otherwise the host's "You X" → client adds → client captures and
+            // sends "Name X" back → host adds → host re-substitutes to "You X"
+            // → forwards back forever.  Advancing the watermark past these
+            // messages keeps them local-display-only.
+            g_client_msg_watermark = Messages::size();
         }
 
         // Play sfx events forwarded from the host's turn.
