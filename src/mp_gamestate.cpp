@@ -2910,18 +2910,25 @@ void client_process_incoming()
                 " ack=" + std::to_string( g_client_waiting_for_ack ) +
                 " last_seq=" + std::to_string( g_client_last_grant_seq ) );
         if( !g_client_waiting_for_ack ) {
-            // Wedge breaker: we have a queued action, no moves, no pending ack.
-            // Under pure lockstep this means the host already granted (we just
-            // missed the AUTOFIRE window because pending was empty at grant
-            // time) and is now blocked in wait_for_client_action.  Send the
-            // pending action directly; the host's ack-clear will restore our
-            // moves, and the next grant proceeds normally.  Without this, both
-            // sides wait on each other until the host's 30 s DISCONNECT-TIMEOUT.
-            mp_log( "[cdda-mp] CLI-DEADZONE-SEND: force-sending pending to break wedge" );
-            client_send( g_pending_action );
-            g_pending_action.clear();
-            g_client_waiting_for_ack = true;
-            g_ack_set_time = std::chrono::steady_clock::now();
+            // Wedge breaker: pending exists, no moves, no ack pending.  In
+            // normal play this is fine — AUTOFIRE on the next grant will send
+            // the pending within ~RTT.  But if the host is wedged (waiting
+            // forever for us to act), no grant comes and we'd stall until the
+            // host's 30 s DISCONNECT-TIMEOUT.  Only force-send if we haven't
+            // seen a grant for > 1 s — otherwise normal-play DEADZONE states
+            // get force-sent on every ack-clear, letting the client effectively
+            // send multiple actions per host turn cycle.
+            using namespace std::chrono;
+            const auto since_grant = duration_cast<milliseconds>(
+                    steady_clock::now() - g_last_grant_time ).count();
+            if( since_grant > 1000 ) {
+                mp_log( "[cdda-mp] CLI-DEADZONE-SEND: force-sending pending — "
+                        "no grant for " + std::to_string( since_grant ) + "ms" );
+                client_send( g_pending_action );
+                g_pending_action.clear();
+                g_client_waiting_for_ack = true;
+                g_ack_set_time = steady_clock::now();
+            }
         }
     }
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
