@@ -2512,34 +2512,34 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 // looks like a frozen turn.  Returns true to consume the action
                 // (the menu choice is what dispatches, if anything).
                 const tripoint_abs_ms next_abs = here.get_abs( next_pos );
-                const bool host_at = cata_mp::is_client_host_at( next_abs );
-                // Where does the proxy think it is right now?
+                const tripoint_abs_ms cur_abs  = here.get_abs( cur_pos );
+                // Inline the partner-bump check using the same lookup path as
+                // the diagnostic.  is_client_host_at() short-circuits on a
+                // client_host_npc_spawned flag which can desync from the
+                // actual NPC pointer existing — directly checking the proxy's
+                // position avoids that gap.
+                npc *hnpc = g->critter_by_id<npc>(
+                                cata_mp::get_host_npc_character_id() );
+                bool host_at = false;
                 std::string proxy_info = "no-proxy";
-                {
-                    npc *dbg_hnpc = g->critter_by_id<npc>(
-                                        cata_mp::get_host_npc_character_id() );
-                    if( dbg_hnpc ) {
-                        const tripoint_abs_ms proxy_abs =
-                            here.get_abs( dbg_hnpc->pos_bub() );
-                        proxy_info = std::to_string( proxy_abs.x() ) + "," +
-                                     std::to_string( proxy_abs.y() ) + "," +
-                                     std::to_string( proxy_abs.z() );
-                    }
+                if( hnpc ) {
+                    const tripoint_abs_ms proxy_abs =
+                        here.get_abs( hnpc->pos_bub() );
+                    proxy_info = std::to_string( proxy_abs.x() ) + "," +
+                                 std::to_string( proxy_abs.y() ) + "," +
+                                 std::to_string( proxy_abs.z() );
+                    host_at = ( proxy_abs == next_abs );
                 }
-                cata_mp::mp_log( "[cdda-mp] CLI-BUMP-CHECK: next_abs=" +
-                                 std::to_string( next_abs.x() ) + "," +
-                                 std::to_string( next_abs.y() ) +
+                cata_mp::mp_log( "[cdda-mp] CLI-BUMP-CHECK:"
+                                 " cur_abs="  + std::to_string( cur_abs.x() ) + "," + std::to_string( cur_abs.y() ) +
+                                 " next_abs=" + std::to_string( next_abs.x() ) + "," + std::to_string( next_abs.y() ) +
                                  " proxy_abs=" + proxy_info +
+                                 " dir=" + dir +
                                  " host_at=" + std::to_string( host_at ) );
-                if( host_at ) {
-                    npc *hnpc = g->critter_by_id<npc>(
-                                    cata_mp::get_host_npc_character_id() );
-                    cata_mp::mp_log( "[cdda-mp] CLI-BUMP-MENU: hnpc=" +
-                                     std::string( hnpc ? "found" : "null" ) );
-                    if( hnpc ) {
-                        g->npc_menu( *hnpc );
-                        cata_mp::mp_log( "[cdda-mp] CLI-BUMP-MENU-DONE" );
-                    }
+                if( host_at && hnpc ) {
+                    cata_mp::mp_log( "[cdda-mp] CLI-BUMP-MENU: opening" );
+                    g->npc_menu( *hnpc );
+                    cata_mp::mp_log( "[cdda-mp] CLI-BUMP-MENU-DONE" );
                     return true;
                 }
             }
