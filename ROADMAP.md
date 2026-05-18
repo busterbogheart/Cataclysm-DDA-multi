@@ -1,6 +1,6 @@
 # Multiplayer Roadmap
 
-Status as of 2026-05-13.
+Status as of 2026-05-18.
 
 ---
 
@@ -79,9 +79,57 @@ The current client startup is a local scaffold — full CDDA character creation 
 ## Medium-term
 
 ### Vehicles (full sync)
-- Host-driven vehicles not broadcast to client
+
+**Foundational sync gaps:**
+- Host-driven vehicles not broadcast to client (only client-driven via server authority)
 - Vehicle runtime spawn (debug-spawned mid-session) not visible to other player — no creation path in vehicle sync
-- Passengers not handled
+- Passengers not handled — boarding/disembarking flow, seat swap, operating non-driver parts from passenger seat
+
+**Vehicle interaction menu — actions NOT yet dispatched to host:**
+
+Driving / autopilot:
+- Reverse driving (known issue; not yet investigated — math looks right, likely a propagation/visual bug)
+- Smart controller settings (toggle + configure)
+- Individual engine control (turn specific engines on/off in multi-engine vehicles)
+- Autopilot — patrol / follow / stop modes
+- Pre-collision system toggle (`precollision_on` bool on vehicle; safety feature for autopilot)
+
+Doors / curtains / lights:
+- Open/close individual doors and curtains
+- Open/close ALL doors/curtains (bulk)
+- Control doors/curtains menu (remote operation)
+- Toggle headlights / aisle lights / dome lights / cargo lights
+- Camera system on/off
+
+Cargo / consumables:
+- Get items from vehicle cargo (open trunk)
+- Fill container with water (vehicle tank)
+- Have a drink (water tank)
+- Purify water in vehicle tank
+- Activate the boiler
+- Reload seed drill with seeds
+
+Security / maintenance:
+- Hotwire vehicle
+- Trigger / disable / smash alarm
+- Disconnect power connections between linked vehicles
+
+Turrets:
+- Set turret targeting modes
+- Set turret firing modes
+- Aim turrets manually / auto / individual
+
+Bike rack & towing:
+- Attach to / detach from bike rack
+- Hitch / unhitch towed vehicle
+
+Creatures / furniture / non-engine parts:
+- Capture/release creature in a cage part
+- Tie down or remove furniture
+- Harness an animal
+- Activate individual non-engine parts (planter, recharger, water purifier, kitchen, chemistry lab, welding rig, etc.)
+
+**Architectural pattern for most of the above:** each menu item runs as local SP code on whichever side opened the menu, but state changes don't propagate. Fix shape: dispatch a specific MP action from the client (e.g. `{"action":"toggle_door","vp_idx":N}`), host runs the SP code on its vehicle and broadcasts updated state. Same model that already works for `pldrive`/`cruise`/`handbrake`/`toggle_engine`/`stop_engine`/`honk`/`control_vehicle`.
 
 ### NPC proxy fidelity
 - EOC (Effect on Condition) not processed on proxy NPC — conditional effects, missions, morale events targeting remote player silently no-op
@@ -175,6 +223,8 @@ The current client startup is a local scaffold — full CDDA character creation 
 - Vehicle facing indicator on client; azimuth via `turn_dir`
 - `precalc_mounts` uses correct pivot path (matches host behavior)
 - Local physics prediction removed from client; all state server-driven
+- **Partial-turn pldrive** (commit `8e40ae27a4`, 2026-05-18) — turning charges only the SP-formula AP cost; host sends `free:true` with remaining moves so the client can chain more driving inputs (more turns, cruise changes, pause to commit) in the same turn instead of every input ending the turn
+- MP actions wired: `pldrive`, `cruise`, `handbrake`, `toggle_engine`, `stop_engine`, `honk`, `control_vehicle`
 
 **Light / bleed**
 - Client sends active light value; host injects point light at proxy position
