@@ -2241,6 +2241,11 @@ bool is_remote_player( character_id id )
     return remote_player_connected && id == remote_player_npc_id;
 }
 
+bool is_host_waiting_for_client()
+{
+    return g_host_waiting_for_client;
+}
+
 bool is_partner_npc( character_id id )
 {
     // Host side: the client's proxy is remote_player_npc_id.

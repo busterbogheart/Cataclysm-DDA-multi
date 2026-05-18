@@ -251,7 +251,10 @@ void handle_key_blocking_activity()
     const bool has_unfinished_activity = u.activity && (
             u.activity.id()->based_on() == based_on_type::NEITHER
             || u.activity.moves_left > 0 );
-    if( has_unfinished_activity || u.has_destination() ) {
+    // MP-locked host has no activity but should still be able to zoom, check
+    // inventory, see messages, etc. while waiting for the client to act.
+    if( has_unfinished_activity || u.has_destination()
+        || cata_mp::is_host_waiting_for_client() ) {
         input_context ctxt = get_default_mode_input_context();
         const std::string action = ctxt.handle_input( 0 );
         bool refresh = true;

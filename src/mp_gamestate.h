@@ -25,6 +25,11 @@ bool is_remote_player( character_id id );
 // (host: matches the client's proxy; client: matches the host's proxy.)
 bool is_partner_npc( character_id id );
 
+// Host: true while wait_for_client_action() is blocking — i.e. the host has
+// no moves and is waiting for the client to ack the current turn.  Used to
+// gate which keys are handled during the wait (zoom etc.).
+bool is_host_waiting_for_client();
+
 // Drain the server recv queue and apply each state message to the local avatar.
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();
