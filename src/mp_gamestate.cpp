@@ -1,5 +1,6 @@
 #include "mp_gamestate.h"
 #include "mp_client_conn.h"
+#include "do_turn.h"
 #include "input.h"
 #include "mp_queue.h"
 #include "mp_server.h"
@@ -2093,6 +2094,17 @@ void wait_for_client_action()
             ui_manager::redraw();
             last_redraw = now;
         }
+        // Poll host input ~10x/sec while we're blocked, so the host can cancel
+        // its own |-wait/craft/etc. without having to time a keypress for the
+        // narrow window between turn boundaries.  Previously cancel was only
+        // sampled in do_turn's else branch — when the client was acting
+        // rapidly, do_turn could spin without the host ever catching a key.
+        static auto last_input_poll = std::chrono::steady_clock::now();
+        if( std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_input_poll ).count() > 100 ) {
+            handle_key_blocking_activity();
+            last_input_poll = now;
+        }
         iter_count++;
     }
     g_host_waiting_for_client = false;
@@ -2151,7 +2163,18 @@ void set_last_monmove_ms( int ms )
 
 void set_last_host_action_label( const std::string &label )
 {
-    g_last_host_action_label = label;
+    // Normalize directional action_ident() output ("RIGHT", "LEFTUP", etc.)
+    // into the client's "move:DIR" format so the HUD's "Queued" row reads
+    // identically on both ends.  Non-movement labels pass through unchanged.
+    static const std::unordered_map<std::string, std::string> dir_map = {
+        { "UP", "move:n" },  { "DOWN", "move:s" },
+        { "LEFT", "move:w" }, { "RIGHT", "move:e" },
+        { "LEFTUP", "move:nw" }, { "RIGHTUP", "move:ne" },
+        { "LEFTDOWN", "move:sw" }, { "RIGHTDOWN", "move:se" },
+        { "LEVEL_UP", "move:up" }, { "LEVEL_DOWN", "move:down" },
+    };
+    const auto it = dir_map.find( label );
+    g_last_host_action_label = ( it != dir_map.end() ) ? it->second : label;
 }
 
 bool is_remote_player( character_id id )
@@ -3020,10 +3043,40 @@ static std::string build_client_monster_hits()
     return first ? std::string() : ( "[" + hits + "]" );
 }
 
+// Conjugate the first-word verb of `s` to third-person singular in place.
+// "finish waiting" → "finishes waiting", "watch X" → "watches X".
+// Inverse of fix_you_verb (which strips for host→client direction).
+static void add_third_person_s( std::string &s )
+{
+    size_t end = s.find( ' ' );
+    if( end == std::string::npos ) {
+        end = s.size();
+    }
+    if( end == 0 || end > 40 ) {
+        return;
+    }
+    const char last = s[end - 1];
+    if( last == 's' ) {
+        return;  // already conjugated
+    }
+    if( last == 'x' || last == 'z' ) {
+        s.insert( end, "es" );
+        return;
+    }
+    if( end >= 2 ) {
+        const std::string two = s.substr( end - 2, 2 );
+        if( two == "ch" || two == "sh" ) {
+            s.insert( end, "es" );
+            return;
+        }
+    }
+    s.insert( end, "s" );
+}
+
 // Snapshot any new "You ..." messages the client's avatar produced since the
 // last send.  Substitute "You" with the client's character name so the host
-// reads them in third person ("Roy starts crafting X").  Drains into the
-// enriched action payload below.
+// reads them in third person ("Roy finishes waiting", "Roy is now reading X").
+// Drains into the enriched action payload below.
 static void client_capture_avatar_msgs()
 {
     const size_t cur = Messages::size();
@@ -3041,10 +3094,13 @@ static void client_capture_avatar_msgs()
         }
         std::string out = text;
         if( out.rfind( "You ", 0 ) == 0 ) {
-            out.replace( 0, 3, client_name );
+            // "You finish waiting" → "finish waiting" → "finishes waiting" → "Roy finishes waiting"
+            std::string rest = out.substr( 4 );
+            add_third_person_s( rest );
+            out = client_name + " " + rest;
         } else {
-            // "Now reading X" / "Now crafting X" — prefix with client name.
-            out = client_name + " is " + out.substr( 4 );
+            // "Now reading X" → "Roy is now reading X"
+            out = client_name + " is " + out;
         }
         g_client_msgs_pending.push_back( out );
     }
