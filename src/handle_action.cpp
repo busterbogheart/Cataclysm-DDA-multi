@@ -2504,6 +2504,22 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                         return false; // solid wall — free, don't dispatch or consume AP
                     }
                 }
+                // Bump into the host's proxy NPC → open the local interaction menu
+                // (Swap, Push, Attack, etc.) just like SP avatar_action::move_player
+                // does for any other NPC.  Without this, the client's move just
+                // dispatches to the host and gets silently rejected (the host's
+                // own avatar is at the destination), which from the client's view
+                // looks like a frozen turn.  Returns true to consume the action
+                // (the menu choice is what dispatches, if anything).
+                const tripoint_abs_ms next_abs = here.get_abs( next_pos );
+                if( cata_mp::is_client_host_at( next_abs ) ) {
+                    npc *hnpc = g->critter_by_id<npc>(
+                                    cata_mp::get_host_npc_character_id() );
+                    if( hnpc ) {
+                        g->npc_menu( *hnpc );
+                    }
+                    return true;
+                }
             }
 
             // Block movement dispatch during wait activities — mirrors SP behavior

@@ -21,6 +21,10 @@ std::string serialize_remote_player_state();
 // Used by monmove() to skip AI processing for human-controlled NPCs.
 bool is_remote_player( character_id id );
 
+// True if `id` belongs to the MP partner's proxy NPC — works on either side.
+// (host: matches the client's proxy; client: matches the host's proxy.)
+bool is_partner_npc( character_id id );
+
 // Drain the server recv queue and apply each state message to the local avatar.
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();

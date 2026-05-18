@@ -5302,7 +5302,12 @@ bool game::npc_menu( npc &who )
 
     uilist amenu;
     amenu.text = string_format( _( "What to do with %s?" ), who.disp_name() );
-    amenu.addentry( talk, true, 't', _( "Talk" ) );
+    // Hide Talk for the MP partner — it's a human player on the other end,
+    // not an NPC with dialog trees.  Skipping the entry keeps every other
+    // hotkey letter stable (CDDA's uilist allows non-contiguous entry ids).
+    if( !cata_mp::is_partner_npc( who.getID() ) ) {
+        amenu.addentry( talk, true, 't', _( "Talk" ) );
+    }
     amenu.addentry( swap_pos, obeys && !who.is_mounted() &&
                     !u.is_mounted(), 's', _( "Swap positions" ) );
     amenu.addentry( push, ( debug_mode || ( !who.is_enemy() && !who.in_sleep_state() ) ) &&

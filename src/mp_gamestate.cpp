@@ -2182,6 +2182,20 @@ bool is_remote_player( character_id id )
     return remote_player_connected && id == remote_player_npc_id;
 }
 
+bool is_partner_npc( character_id id )
+{
+    // Host side: the client's proxy is remote_player_npc_id.
+    if( is_remote_player( id ) ) {
+        return true;
+    }
+    // Client side: the host's proxy is client_host_npc_id.
+    if( is_client_mode() && client_host_npc_spawned &&
+        client_host_npc_id.is_valid() && id == client_host_npc_id ) {
+        return true;
+    }
+    return false;
+}
+
 bool is_client_host_at( const tripoint_abs_ms &abs )
 {
     if( !client_host_npc_spawned || !client_host_npc_id.is_valid() ) {
