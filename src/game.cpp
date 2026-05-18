@@ -5333,20 +5333,30 @@ bool game::npc_menu( npc &who )
     amenu.query();
 
     const int choice = amenu.ret;
+    const bool mp_partner = cata_mp::is_client_mode() &&
+                            cata_mp::is_partner_npc( who.getID() );
     if( choice == talk ) {
         u.talk_to( get_talker_for( who ) );
     } else if( choice == swap_pos ) {
         if( !prompt_dangerous_tile( who.pos_bub() ) ) {
             return true;
         }
-        if( u.get_grab_type() == object_type::NONE ) {
-            // TODO: Make NPCs protest when displaced onto dangerous crap
+        if( u.get_grab_type() != object_type::NONE ) {
+            add_msg( _( "You cannot swap places while grabbing something." ) );
+        } else if( mp_partner ) {
+            // MP: don't swap locally — the host will, and the next state
+            // broadcast will put both characters in the right places.  Local
+            // swap caused the proxy NPC to bounce back overlaying us.
             add_msg( _( "You swap places with %s." ), who.get_name() );
-            swap_critters( u, who );
-            // TODO: Make that depend on stuff
+            cata_mp::client_send( cata_mp::client_enrich_action(
+                "{\"type\":\"action\",\"action\":\"swap_with_partner\"}" ) );
+            cata_mp::client_mark_action_sent();
             u.mod_moves( -200 );
         } else {
-            add_msg( _( "You cannot swap places while grabbing something." ) );
+            // Single-player / host-side path.
+            add_msg( _( "You swap places with %s." ), who.get_name() );
+            swap_critters( u, who );
+            u.mod_moves( -200 );
         }
     } else if( choice == push ) {
         if( !obeys ) {
@@ -5360,14 +5370,24 @@ bool game::npc_menu( npc &who )
             who.form_opinion( u );
 
         }
-        // TODO: Make NPCs protest when displaced onto dangerous crap
-        tripoint_bub_ms oldpos = who.pos_bub();
-        who.move_away_from( u.pos_bub(), true );
-        u.mod_moves( -20 );
-        if( oldpos != who.pos_bub() ) {
-            add_msg( _( "%s moves out of the way." ), who.get_name() );
+        if( mp_partner ) {
+            // MP: dispatch to host; the local push of the proxy NPC would
+            // just snap back to host_pos on the next broadcast.
+            add_msg( _( "You push %s." ), who.get_name() );
+            cata_mp::client_send( cata_mp::client_enrich_action(
+                "{\"type\":\"action\",\"action\":\"push_partner\"}" ) );
+            cata_mp::client_mark_action_sent();
+            u.mod_moves( -20 );
         } else {
-            add_msg( m_warning, _( "%s has nowhere to go!" ), who.get_name() );
+            // Single-player / host-side path.
+            tripoint_bub_ms oldpos = who.pos_bub();
+            who.move_away_from( u.pos_bub(), true );
+            u.mod_moves( -20 );
+            if( oldpos != who.pos_bub() ) {
+                add_msg( _( "%s moves out of the way." ), who.get_name() );
+            } else {
+                add_msg( m_warning, _( "%s has nowhere to go!" ), who.get_name() );
+            }
         }
     } else if( choice == examine_wounds ) {
         ///\EFFECT_PER slightly increases precision when examining NPCs' wounds

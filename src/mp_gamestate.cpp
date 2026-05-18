@@ -1326,6 +1326,50 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
     }
 
+    // Partner-menu swap: swap host's avatar with the client's proxy NPC.
+    // Triggered when the client picked "Swap positions" from the bump menu.
+    if( msg.find( "\"action\":\"swap_with_partner\"" ) != std::string::npos ) {
+        avatar &host_av = get_avatar();
+        add_msg( _( "%s swaps places with you." ), remote->get_name() );
+        g->swap_critters( host_av, *remote );
+        g_remote_moves -= 200;
+        g_client_acted_this_turn = true;
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
+    // Partner-menu push: host's avatar moves one tile away from the client's
+    // proxy.  Triggered when the client picked "Push away" from the bump menu.
+    // avatar has no move_away_from() (that's npc-only), so compute the step
+    // direction manually: sign of (host - proxy) on each axis.
+    if( msg.find( "\"action\":\"push_partner\"" ) != std::string::npos ) {
+        avatar &host_av = get_avatar();
+        const tripoint_bub_ms host_pos  = host_av.pos_bub();
+        const tripoint_bub_ms proxy_pos = remote->pos_bub();
+        const int dx = ( host_pos.x() > proxy_pos.x() ) ? 1
+                       : ( host_pos.x() < proxy_pos.x() ) ? -1 : 0;
+        const int dy = ( host_pos.y() > proxy_pos.y() ) ? 1
+                       : ( host_pos.y() < proxy_pos.y() ) ? -1 : 0;
+        const tripoint_bub_ms target = host_pos + tripoint_rel_ms( dx, dy, 0 );
+        if( ( dx != 0 || dy != 0 ) && !m.impassable( target ) ) {
+            host_av.setpos( m, target );
+            add_msg( _( "%s pushes you out of the way." ), remote->get_name() );
+        } else {
+            add_msg( m_warning, _( "%s tries to push you but you have nowhere to go." ),
+                     remote->get_name() );
+        }
+        g_remote_moves -= 20;
+        g_client_acted_this_turn = true;
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        }
+        return;
+    }
+
     // Wait — drain one turn's worth of AP.
     const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
                          msg.find( "\"action\": \"wait\"" ) != std::string::npos;
@@ -2203,9 +2247,11 @@ bool is_partner_npc( character_id id )
     if( is_remote_player( id ) ) {
         return true;
     }
-    // Client side: the host's proxy is client_host_npc_id.
-    if( is_client_mode() && client_host_npc_spawned &&
-        client_host_npc_id.is_valid() && id == client_host_npc_id ) {
+    // Client side: the host's proxy is client_host_npc_id.  Don't gate on
+    // client_host_npc_spawned — that flag desyncs from the actual NPC pointer
+    // and made the partner menu show Talk/Attack incorrectly.  Same bug pattern
+    // as is_client_host_at() had.
+    if( is_client_mode() && client_host_npc_id.is_valid() && id == client_host_npc_id ) {
         return true;
     }
     return false;
