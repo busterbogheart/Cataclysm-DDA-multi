@@ -723,26 +723,11 @@ bool do_turn()
                     }
                 }
 
-                // Auto-wait: if the client has had moves for > 500 ms without acting,
-                // the host is likely fast-forwarding through a long activity (wait, sleep,
-                // crafting).  Send "wait" so the host can advance without requiring a keypress.
-                if( cata_mp::is_client_mode() ) {
-                    const int ms = cata_mp::ms_since_last_grant();
-                    const bool ack = cata_mp::is_client_waiting_for_ack();
-                    constexpr int auto_wait_ms = 500;
-                    if( ms > 100 ) {
-                        cata_mp::mp_log( "[cdda-mp] auto-wait check: ms=" + std::to_string( ms ) +
-                                         " threshold=" + std::to_string( auto_wait_ms ) +
-                                         " ack=" + std::to_string( ack ) +
-                                         " moves=" + std::to_string( u.get_moves() ) );
-                    }
-                    if( !ack && u.get_moves() > 0 && ms > auto_wait_ms ) {
-                        cata_mp::mp_log( "[cdda-mp] auto-wait: idle " + std::to_string( ms ) + "ms" );
-                        cata_mp::client_dispatch_wait_for_activity( activity_id(), true );
-                        // Exit the input loop so do_turn advances to client_process_incoming.
-                        u.set_moves( 0 );
-                    }
-                }
+                // Pure lockstep: no idle auto-wait.  The host blocks on this
+                // client's action each turn — if the user doesn't press anything,
+                // game time doesn't advance.  In-activity auto-ack still fires
+                // (via CLI-GRANT-ACT-ACK) so wait/craft/read progress turn-by-turn
+                // without intervention.
 
                 // Pump MP events after each host action so the remote player's
                 // queued actions are processed immediately, not deferred until the

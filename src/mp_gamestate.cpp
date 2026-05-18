@@ -2014,11 +2014,13 @@ void wait_for_client_action()
     // round-trip.  This keeps the shared calendar consistent: time only
     // advances when both ends agree on an action for this turn.
     //
-    // The budget is a disconnect-detection safety net, not a UX knob.  With
-    // each iteration capped at 16ms (SDL stays pumped), a long budget no
-    // longer blocks the main thread.
+    // The budget is a disconnect-detection safety net only.  Pure lockstep
+    // means the host will sit here as long as the client takes to act —
+    // 30s is generous enough that thinking/menu time never trips it but
+    // short enough to surface a true network drop.  Each iter caps at 16ms
+    // so SDL stays pumped during long waits.
     const bool host_in_wait = host_is_in_wait_activity();  // logged only
-    const auto budget = std::chrono::milliseconds( 2000 );
+    const auto budget = std::chrono::milliseconds( 30000 );
     {
         const player_activity &ha_enter = get_avatar().activity;
         mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) +
@@ -2804,6 +2806,16 @@ void client_process_incoming()
         if( hnpc ) {
             check_separation_warning( get_avatar().pos_abs(), hnpc->pos_abs() );
         }
+    }
+    // Force a main-UI repaint whenever we processed any incoming messages.  The
+    // client's main game loop stays in tight do_turn() iterations during long
+    // activities — without an explicit redraw here, calendar/time/messages/tiles
+    // updated by apply_one_state_message() never reach the screen until the user
+    // happens to press a key.
+    if( recv_count > 0 ) {
+        g->invalidate_main_ui_adaptor();
+        ui_manager::redraw();
+        refresh_display();
     }
 }
 
