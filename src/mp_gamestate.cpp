@@ -3040,8 +3040,20 @@ static bool apply_one_state_message( const std::string &msg )
                     // the next message in this drain (the host's ack-clear) zeroes
                     // our moves.  Covers `|` wait, crafting, reading, butchering,
                     // mining, construction, repair, etc. — every activity_actor.
+                    const std::string pre_tick_id = ca.id().str();
                     get_avatar().activity.do_turn( get_avatar() );
-                    mp_log( "[cdda-mp] CLI-GRANT-ACT-ACK: ticked activity & dispatched wait for " + ca.id().str() );
+                    // If the activity completed during this tick, emit the
+                    // explicit end signal BEFORE the wait so the host clears
+                    // its lockstep-bypass state and the wait closes the turn.
+                    // do_turn's outer activity_just_ended detector misses this
+                    // case because pre_activity_id is captured AFTER
+                    // client_process_incoming runs.
+                    if( !get_avatar().activity ) {
+                        g_client_turn_activity.clear();
+                        client_send_activity_end( pre_tick_id );
+                    }
+                    mp_log( "[cdda-mp] CLI-GRANT-ACT-ACK: ticked activity & dispatched wait for " + pre_tick_id +
+                            " ended=" + std::to_string( !get_avatar().activity ) );
                     client_send( client_enrich_action(
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                     g_client_waiting_for_ack = true;
