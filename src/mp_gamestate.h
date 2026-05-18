@@ -159,6 +159,15 @@ void client_resync_worn();
 // fires when the activity consumed moves and then called finish() this same turn.
 void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id(), bool force_idle = false );
 
+// Client only: emit an explicit activity-lifecycle marker to the host.  These
+// are signal-only — they don't consume client moves and the host doesn't
+// dispatch a handler for them.  The host uses them to open / close the
+// lockstep bypass so it can run free while the client ticks a passive
+// activity (drop, read, craft, wait, etc.) and re-engages lockstep the
+// instant the activity ends, without relying on a stale-timer heuristic.
+void client_send_activity_start( const std::string &activity_id_str );
+void client_send_activity_end( const std::string &activity_id_str );
+
 // Client only: returns the luminance emitted by the host player (flashlight,
 // mutations, etc.) as received in the last state packet.  Used by lightmap.cpp
 // to inject a point light at the host NPC position during build_map_cache().

@@ -240,14 +240,6 @@ static std::string g_last_host_action_label = "\xe2\x80\x94";
 static std::string g_partner_activity;
 static std::string g_partner_activity_prev;
 
-// Timestamp of when the partner was last seen in a passive activity (e.g.
-// ACT_DROP).  The bypass in wait_for_client_action stays sticky for a short
-// window after the activity ends — short activities may only appear on the
-// wire for a single packet, but the host should stay responsive for a few
-// seconds after so the calendar can catch up without the 30s DISCONNECT
-// safety net firing.
-static std::chrono::steady_clock::time_point g_partner_passive_seen_at;
-
 // Client's avatar activity id snapshot at the start of each do_turn iteration.
 // Sent over the wire instead of av.activity at enrich-time because the activity
 // can finish (set_to_null) mid-turn, leaving av.activity null when the wait
@@ -276,12 +268,6 @@ static std::string mp_format_activity( const std::string &act_id )
 // before calling this.
 static void mp_partner_activity_transition_check()
 {
-    // Refresh the sticky timestamp any time we see a non-empty activity.  The
-    // bypass in wait_for_client_action reads this to stay active for a short
-    // window after a short activity completes on the partner side.
-    if( !g_partner_activity.empty() ) {
-        g_partner_passive_seen_at = std::chrono::steady_clock::now();
-    }
     if( g_partner_activity == g_partner_activity_prev ) {
         return;
     }
@@ -1064,11 +1050,37 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     JsonObject jo = jv_top.get_object();
     jo.allow_omitted_members();
 
-    // Track the client's current activity for HUD + partner-notice display.
-    // Field is empty when the client is idle.
+    // Track the client's current activity for HUD + partner-notice display
+    // AND for the lockstep bypass in wait_for_client_action.  Field is empty
+    // when the client is idle.  The heartbeat is belt-and-suspenders: the
+    // primary signal is the explicit activity_start / activity_end actions
+    // handled below, but every action carries this snapshot too so a missed
+    // start/end can still be reconciled on the next packet.
     if( jo.has_string( "client_activity" ) ) {
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
+    }
+
+    // Explicit lifecycle markers for the client's passive activities.  These
+    // are signal-only — they don't consume host moves and don't drive any
+    // simulation on the host side.  Their sole job is to open and close the
+    // lockstep bypass cleanly, so variable-duration activities like ACT_DROP
+    // don't race the heartbeat.
+    if( msg.find( "\"action\":\"activity_start\"" ) != std::string::npos ) {
+        const std::string id = jo.get_string( "activity_id", "" );
+        if( !id.empty() ) {
+            g_partner_activity = id;
+            mp_partner_activity_transition_check();
+        }
+        mp_log( "[cdda-mp] activity_start recv: " + id );
+        return;
+    }
+    if( msg.find( "\"action\":\"activity_end\"" ) != std::string::npos ) {
+        const std::string id = jo.get_string( "activity_id", "" );
+        g_partner_activity.clear();
+        mp_partner_activity_transition_check();
+        mp_log( "[cdda-mp] activity_end recv: " + id );
+        return;
     }
 
     // Apply the client's real character stats to the proxy so all action
@@ -2262,26 +2274,22 @@ void wait_for_client_action()
         }
     }
 
-    // Client in a passive multi-turn activity: skip lockstep so host stays
-    // free to act (move, attack, drop, etc.) while the client's activity
-    // auto-ticks on its own.  Mirror behavior of "host in activity" where the
-    // client is free.  Currently scoped to ACT_DROP only — expand to other
-    // passive activities (read, craft, |-wait, etc.) once verified.
+    // Client in any multi-turn activity: skip lockstep so host stays free to
+    // act (move, attack, drop, etc.) while the client's activity auto-ticks on
+    // its own.  Mirrors the host-side "in activity" bypass where the client is
+    // free to act independently.
     //
-    // Sticky: a short drop may only appear on the wire for one packet (single
-    // turn of activity).  Keep the bypass active for 2s after the last
-    // observed passive activity so the host advances the calendar enough for
-    // the client to catch up and send a follow-up packet.  Without this, the
-    // host falls back to the 30s DISCONNECT-TIMEOUT.
-    using namespace std::chrono;
-    const auto since_passive = duration_cast<milliseconds>(
-            steady_clock::now() - g_partner_passive_seen_at ).count();
-    if( g_partner_activity == "ACT_DROP" || since_passive < 2000 ) {
+    // State is driven by explicit activity_start / activity_end messages from
+    // the client (see handle_remote_action), with the heartbeat client_activity
+    // field on every action packet as belt-and-suspenders.  No timeouts: bypass
+    // is on while g_partner_activity is non-empty and off otherwise.  This
+    // mirrors how ACT_WAIT already works in practice — its dense per-turn move
+    // dispatches kept the old 2s sticky window alive, but variable-cost
+    // activities like ACT_DROP would let it drift closed mid-activity and
+    // trigger the 30s DISCONNECT-TIMEOUT.
+    if( !g_partner_activity.empty() ) {
         process_mp_events();
-        mp_log( "[cdda-mp] lockstep-skip: client_act=" +
-                ( g_partner_activity.empty() ? std::string( "(recent ACT_DROP)" )
-                  : g_partner_activity ) +
-                " since_ms=" + std::to_string( since_passive ) );
+        mp_log( "[cdda-mp] lockstep-skip: client_act=" + g_partner_activity );
         return;
     }
 
@@ -3569,12 +3577,13 @@ std::string client_enrich_action( const std::string &json )
         enriched += ",\"char_stats\":" + char_stats;
         enriched += ",\"client_facing\":" + std::to_string(
                         av.facing == FacingDirection::LEFT ? 0 : 1 );
-        // Sync current activity id for HUD/messaging.  Opportunistically update
-        // the turn snapshot whenever we see a non-null activity here, so short
-        // activities (drop_in_direction assigns + first tick completes within
-        // the same do_turn) still get reported to the host on the subsequent
-        // wait dispatch.  The snapshot is reset at the start of each do_turn,
-        // so it doesn't leak across turns.
+        // Sync current activity id for HUD/messaging and as a heartbeat for
+        // the host's lockstep bypass.  Primary signals are the explicit
+        // activity_start / activity_end actions emitted in assign_activity /
+        // do_turn — this field is belt-and-suspenders so a missed lifecycle
+        // packet still gets reconciled on the next normal action.  Refresh
+        // from live av.activity when present so an activity assigned mid-turn
+        // is reflected here too.
         if( av.activity ) {
             g_client_turn_activity = av.activity.id().str();
         }
@@ -3772,6 +3781,32 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_id
     mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) );
     client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
     client_mark_action_sent();
+}
+
+// Signal-only lifecycle markers.  Bypass enrich (no stat blob needed) and do
+// NOT set the ack guard — these are out-of-band notifications that don't
+// participate in the grant/wait/ack cycle.  The host treats them as pure
+// state-machine inputs that flip g_partner_activity.
+void client_send_activity_start( const std::string &activity_id_str )
+{
+    if( !is_client_mode() || activity_id_str.empty() ) {
+        return;
+    }
+    const std::string json = "{\"type\":\"action\",\"action\":\"activity_start\","
+                             "\"activity_id\":\"" + activity_id_str + "\"}";
+    mp_log( "[cdda-mp] activity_start SEND: " + activity_id_str );
+    client_send( json );
+}
+
+void client_send_activity_end( const std::string &activity_id_str )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    const std::string json = "{\"type\":\"action\",\"action\":\"activity_end\","
+                             "\"activity_id\":\"" + activity_id_str + "\"}";
+    mp_log( "[cdda-mp] activity_end SEND: " + activity_id_str );
+    client_send( json );
 }
 
 // Server: scan the sync area and emit tile entries whose ter/furn/items changed since last broadcast.

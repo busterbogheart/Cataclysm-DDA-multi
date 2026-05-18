@@ -763,8 +763,32 @@ bool do_turn()
                 if( g->uquit == QUIT_WATCH ) {
                     break;
                 }
+                const activity_id iter_pre_act = u.activity ? u.activity.id()
+                                                 : activity_id();
                 while( u.get_moves() > 0 && u.activity ) {
                     u.activity.do_turn( u );
+                }
+                // Client: if a multi-turn activity just ended mid-input-loop
+                // (e.g. a 1-tick ACT_DROP that finished with moves to spare),
+                // emit the end signal immediately so the host's lockstep
+                // bypass closes without waiting for the outer post-loop
+                // dispatch.  Then drop the remaining moves to ack the host's
+                // current grant — without this, the input loop loops back to
+                // handle_action waiting on a user keypress while the host
+                // sits in lockstep waiting for an ack that won't come until
+                // the user presses a key.  Mirrors how SP "spends the turn"
+                // on a drop: the post-activity moves are forfeit.
+                if( cata_mp::is_client_mode() && iter_pre_act && !u.activity ) {
+                    cata_mp::set_client_turn_activity( std::string() );
+                    cata_mp::client_send_activity_end( iter_pre_act.str() );
+                    if( !cata_mp::is_client_waiting_for_ack() ) {
+                        cata_mp::mp_log( "[cdda-mp] in-loop activity-end: burning "
+                                         + std::to_string( u.get_moves() )
+                                         + " moves to ack host" );
+                        u.set_moves( 0 );
+                        cata_mp::client_dispatch_wait_for_activity(
+                            activity_id(), /*force_idle=*/true );
+                    }
                 }
             }
             // Client: catch activities that started inside the input loop (e.g. ACT_WAIT_STAMINA
@@ -786,6 +810,14 @@ bool do_turn()
             // (drop_activity_actor finishing in one tick) still acks the host.
             const bool activity_just_ended = pre_activity_id && !u.activity;
             const bool moves_consumed = pre_activity_moves > 0 && u.get_moves() <= 0;
+            if( cata_mp::is_client_mode() && activity_just_ended ) {
+                // Explicit end-of-activity signal — closes the host's lockstep
+                // bypass immediately so the next host turn re-enters lockstep.
+                // Also clear the per-turn snapshot so the next enrich sends
+                // client_activity="" instead of the stale id.
+                cata_mp::set_client_turn_activity( std::string() );
+                cata_mp::client_send_activity_end( pre_activity_id.str() );
+            }
             if( cata_mp::is_client_mode() && !mp_wait_dispatched &&
                 ( moves_consumed || activity_just_ended ) &&
                 !cata_mp::is_client_waiting_for_ack() ) {

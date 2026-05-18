@@ -5276,9 +5276,13 @@ void Character::assign_activity( const player_activity &act )
     // can include it in the next outgoing packet.  Without this, short
     // activities (e.g. drop_activity_actor that completes in one tick) finish
     // and clear av.activity before any enrich runs, and the host never sees
-    // the activity on the wire.
+    // the activity on the wire.  Also emit an explicit activity_start signal
+    // so the host's lockstep bypass opens immediately — this is the primary
+    // signal; the per-action client_activity heartbeat is just belt-and-
+    // suspenders for missed start packets.
     if( is_avatar() && cata_mp::is_client_mode() && activity ) {
         cata_mp::set_client_turn_activity( activity.id().str() );
+        cata_mp::client_send_activity_start( activity.id().str() );
     }
 
     if( is_npc() ) {
