@@ -2712,6 +2712,12 @@ static bool apply_one_state_message( const std::string &msg )
         }
         if( jo.has_member( "moves" ) ) {
             const int srv_moves = jo.get_int( "moves" );
+            // Refresh the "last heard from host" timestamp on any moves-bearing
+            // state message (grants AND ack-clears).  The wedge-breaker uses
+            // this to detect "host went silent" rather than "host hasn't sent
+            // a fresh grant" — the old metric let ack-clear-only periods (host
+            // is busy processing our previous actions) look like wedges.
+            g_last_grant_time = std::chrono::steady_clock::now();
             if( srv_moves <= 0 ) {
                 // ACK: server confirmed our action was received.  Always apply.
                 mp_log( "[cdda-mp] CLI-ACK-CLEAR: moves=" + std::to_string( srv_moves ) +
