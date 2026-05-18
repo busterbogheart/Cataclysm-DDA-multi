@@ -231,6 +231,13 @@ static std::string g_last_client_action_label = "\xe2\x80\x94";
 // not the client's (which was the previous, misleading behavior).
 static std::string g_last_host_action_label = "\xe2\x80\x94";
 
+// Client → host message forwarding.  When the client's avatar generates a
+// notable "You ..." message (e.g. "Now reading X", "You start crafting Y"),
+// we capture it here and tack it onto the next outgoing action so the host
+// sees a name-substituted version ("Roy now reads X") in their own log.
+static size_t g_client_msg_watermark = 0;
+static std::vector<std::string> g_client_msgs_pending;
+
 // Separation warning tier: 0=ok, 1=warn (≥50 tiles), 2=danger (≥57 tiles).
 // Shared by both host and client; resets on connect/disconnect.
 // Hysteresis: step up at 50/57, step down at 44/50.
@@ -996,6 +1003,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_int( "client_facing" ) ) {
         remote->facing = jo.get_int( "client_facing" ) == 0
                          ? FacingDirection::LEFT : FacingDirection::RIGHT;
+    }
+
+    // Client-side avatar messages forwarded for display on the host's log.
+    // The client has already substituted "You" with their character name, so
+    // we just need to add_msg each verbatim.  Lets the host see notifications
+    // like "Roy is now reading [Adventure Novel], 5 to stop early."
+    if( jo.has_array( "client_msgs" ) ) {
+        for( const JsonValue &mv : jo.get_array( "client_msgs" ) ) {
+            const std::string text = mv.get_string();
+            add_msg( m_info, text );
+        }
     }
 
     // Worn-item sync — client sends this once after joining (and after any
@@ -3002,9 +3020,40 @@ static std::string build_client_monster_hits()
     return first ? std::string() : ( "[" + hits + "]" );
 }
 
+// Snapshot any new "You ..." messages the client's avatar produced since the
+// last send.  Substitute "You" with the client's character name so the host
+// reads them in third person ("Roy starts crafting X").  Drains into the
+// enriched action payload below.
+static void client_capture_avatar_msgs()
+{
+    const size_t cur = Messages::size();
+    if( cur <= g_client_msg_watermark ) {
+        g_client_msg_watermark = cur;
+        return;
+    }
+    const auto new_msgs = Messages::recent_messages( cur - g_client_msg_watermark );
+    g_client_msg_watermark = cur;
+    const std::string client_name = get_avatar().name;
+    for( const auto &[time_str, text] : new_msgs ) {
+        ( void )time_str;
+        if( text.rfind( "You ", 0 ) != 0 && text.rfind( "Now ", 0 ) != 0 ) {
+            continue;  // skip ambient/UI/inventory chatter
+        }
+        std::string out = text;
+        if( out.rfind( "You ", 0 ) == 0 ) {
+            out.replace( 0, 3, client_name );
+        } else {
+            // "Now reading X" / "Now crafting X" — prefix with client name.
+            out = client_name + " is " + out.substr( 4 );
+        }
+        g_client_msgs_pending.push_back( out );
+    }
+}
+
 std::string client_enrich_action( const std::string &json )
 {
     const avatar &av = get_avatar();
+    client_capture_avatar_msgs();
 
     std::string bleed_json = "[";
     bool bleed_first = true;
@@ -3069,6 +3118,20 @@ std::string client_enrich_action( const std::string &json )
         enriched += ",\"char_stats\":" + char_stats;
         enriched += ",\"client_facing\":" + std::to_string(
                         av.facing == FacingDirection::LEFT ? 0 : 1 );
+        if( !g_client_msgs_pending.empty() ) {
+            std::string msgs = "[";
+            bool first_m = true;
+            for( const std::string &m : g_client_msgs_pending ) {
+                if( !first_m ) {
+                    msgs += ',';
+                }
+                first_m = false;
+                msgs += "\"" + json_escape_str( m ) + "\"";
+            }
+            msgs += "]";
+            enriched += ",\"client_msgs\":" + msgs;
+            g_client_msgs_pending.clear();
+        }
         enriched += '}';
     }
     return enriched;
