@@ -2512,11 +2512,19 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 // looks like a frozen turn.  Returns true to consume the action
                 // (the menu choice is what dispatches, if anything).
                 const tripoint_abs_ms next_abs = here.get_abs( next_pos );
-                if( cata_mp::is_client_host_at( next_abs ) ) {
+                const bool host_at = cata_mp::is_client_host_at( next_abs );
+                cata_mp::mp_log( "[cdda-mp] CLI-BUMP-CHECK: next_abs=" +
+                                 std::to_string( next_abs.x() ) + "," +
+                                 std::to_string( next_abs.y() ) +
+                                 " host_at=" + std::to_string( host_at ) );
+                if( host_at ) {
                     npc *hnpc = g->critter_by_id<npc>(
                                     cata_mp::get_host_npc_character_id() );
+                    cata_mp::mp_log( "[cdda-mp] CLI-BUMP-MENU: hnpc=" +
+                                     std::string( hnpc ? "found" : "null" ) );
                     if( hnpc ) {
                         g->npc_menu( *hnpc );
+                        cata_mp::mp_log( "[cdda-mp] CLI-BUMP-MENU-DONE" );
                     }
                     return true;
                 }
