@@ -2805,6 +2805,18 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
             drop_in_direction( drop_pos );
 
+            // If drop_in_direction assigned a multi-turn drop activity (large
+            // pile that takes time to put down), log a kickoff message so the
+            // player has a clear record of when the activity started.  CDDA
+            // doesn't generate one naturally — there's only the wait_popup and
+            // per-item "You drop X" messages at completion.  In MP the
+            // activity auto-ticks across turns at lockstep rate, which can
+            // feel like a timeout if the player isn't watching the popup.
+            if( player_character.activity ) {
+                add_msg( m_info, _( "Now dropping items, %s to interrupt." ),
+                         press_x( ACTION_PAUSE ) );
+            }
+
             // Diff: newly added items (dropped ones).
             std::multiset<std::string> remaining_before = before_set;
             std::string items_json;
