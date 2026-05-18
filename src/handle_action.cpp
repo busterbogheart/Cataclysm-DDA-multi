@@ -2911,6 +2911,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     const std::string itype = loc->typeId().str();
                     avatar_action::eat_or_use( player_character, loc );
                     mp_dispatch( "{\"type\":\"action\",\"action\":\"eat\",\"item\":\"" + itype + "\"}" );
+                    // Kickoff message if a multi-turn consume activity was assigned —
+                    // otherwise the player just sees the wait_popup with no log marker
+                    // of when they started.  Same rationale as the drop kickoff.
+                    if( player_character.activity ) {
+                        add_msg( m_info, _( "Now consuming, %s to interrupt." ),
+                                 press_x( ACTION_PAUSE ) );
+                    }
                 }
             } else {
                 // Grazer/ruminant ate terrain — still costs a server turn.
