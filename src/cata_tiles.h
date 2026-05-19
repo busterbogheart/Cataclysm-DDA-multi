@@ -534,6 +534,16 @@ class cata_tiles
                                  const std::array<bool, 5> &invisible, bool memorize_only );
         bool draw_vpart( const tripoint_bub_ms &p, lit_level ll, int &height_3d,
                          const std::array<bool, 5> &invisible, bool roof, bool memorize_only );
+        // Precompute solid-color filler triangles for the wedge gaps that open
+        // between diagonally-adjacent vehicle parts at intermediate facings.
+        // Called once per frame at the top of draw(); populates a file-local
+        // bucket keyed by world tile.
+        void compute_vp_fillers();
+        // Per-tile filler draw — looks up precomputed triangles for this tile
+        // and emits them via SDL_RenderGeometry. Slotted between field/item and
+        // vpart layers in drawing_layers.
+        bool draw_vp_fillers( const tripoint_bub_ms &p, lit_level ll, int &height_3d,
+                              const std::array<bool, 5> &invisible, bool memorize_only );
         bool draw_vpart_no_roof( const tripoint_bub_ms &p, lit_level ll, int &height_3d,
                                  const std::array<bool, 5> &invisible, bool memorize_only );
         bool draw_vpart_roof( const tripoint_bub_ms &p, lit_level ll, int &height_3d,

@@ -2480,6 +2480,11 @@ void options_manager::add_options_graphics()
              true, COPT_CURSES_HIDE
            );
 
+        add( "VEHICLE_HULL_FILLERS", page_id, to_translation( "Fill vehicle gaps when turning" ),
+             to_translation( "If true, fill the staircase corners between vehicle parts at intermediate facings with small colored triangles, hiding the jagged rotation seam.  Disable for isometric tilesets or if it conflicts with custom sprite work." ),
+             false, COPT_CURSES_HIDE
+           );
+
         add( "SWAP_ZOOM", page_id, to_translation( "Zoom Threshold" ),
              to_translation( "Choose when you should swap tileset (lower is more zoomed out)." ),
              1, 4, 2, COPT_CURSES_HIDE
@@ -2490,6 +2495,7 @@ void options_manager::add_options_graphics()
         get_option( "DISTANT_TILES" ).setPrerequisite( "USE_DISTANT_TILES" );
         get_option( "SWAP_ZOOM" ).setPrerequisite( "USE_DISTANT_TILES" );
         get_option( "CREATURE_OVERLAY_ICONS" ).setPrerequisite( "USE_TILES" );
+        get_option( "VEHICLE_HULL_FILLERS" ).setPrerequisite( "USE_TILES" );
 
         add( "USE_OVERMAP_TILES", page_id, to_translation( "Use tiles to display overmap" ),
              to_translation( "If true, replaces some TTF-rendered text with tiles for overmap display." ),

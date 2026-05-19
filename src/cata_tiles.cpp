@@ -142,6 +142,22 @@ static_assert( TILE_CATEGORY_IDS.size() == static_cast<size_t>( TILE_CATEGORY::l
 namespace
 {
 
+// One filler triangle, in absolute screen pixel coords. Filled solid (no
+// texture). Per-vertex color enables an alpha gradient: vertex 0 is the
+// "anchor" corner (touching both adjacent part tiles, fully opaque) and
+// vertices 1/2 are the midpoint endpoints of the visible hypotenuse, which
+// fade toward the terrain when linear scaling is active.
+struct vp_filler_tri {
+    SDL_FPoint v[3];
+    SDL_Color colors[3];
+};
+
+// Precomputed wedge fillers, keyed by the world tile they're drawn into.
+// Populated once per frame by compute_vp_fillers, consumed per-tile by
+// draw_vp_fillers. File-local so adding/changing fillers doesn't trigger a
+// rebuild of every TU that includes cata_tiles.h.
+std::map<tripoint_bub_ms, std::vector<vp_filler_tri>> g_vp_fillers_by_tile;
+
 std::string get_ascii_tile_id( const uint32_t sym, const int FG, const int BG )
 {
     return std::string( { 'A', 'S', 'C', 'I', 'I', '_', static_cast<char>( sym ),
@@ -845,14 +861,18 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
     color_blocks = here.color_blocks_cache;
 
     // List all layers for a single z-level
-    const std::array<decltype( &cata_tiles::draw_furniture ), 11> drawing_layers = {{
+    const std::array<decltype( &cata_tiles::draw_furniture ), 12> drawing_layers = {{
             &cata_tiles::draw_terrain, &cata_tiles::draw_furniture, &cata_tiles::draw_graffiti, &cata_tiles::draw_trap, &cata_tiles::draw_part_con,
             &cata_tiles::draw_field_or_item,
+            &cata_tiles::draw_vp_fillers,
             &cata_tiles::draw_vpart_no_roof, &cata_tiles::draw_vpart_roof,
             &cata_tiles::draw_critter_at, &cata_tiles::draw_zone_mark,
             &cata_tiles::draw_zombie_revival_indicators
         }
     };
+    // Compute wedge fillers for all vehicles once per frame, before any row
+    // is drawn. Per-tile draw_vp_fillers then just looks up its tile.
+    compute_vp_fillers();
 
     // Skip drawing shadow of critters above if there is no shadow sprite
     bool do_draw_shadow = false;
@@ -3315,6 +3335,236 @@ bool cata_tiles::draw_field_or_item( const tripoint_bub_ms &p, const lit_level l
     return ret_draw_field && ret_draw_items;
 }
 
+void cata_tiles::compute_vp_fillers()
+{
+    g_vp_fillers_by_tile.clear();
+
+    // User toggle (Options → Graphics → Tileset options → "Smooth turning
+    // vehicle hulls"). Iso tilesets are auto-skipped because the corner
+    // geometry below assumes square axis-aligned tile bounds and produces
+    // oversized quads under the 2:1 iso projection.
+    if( !get_option<bool>( "VEHICLE_HULL_FILLERS" ) || is_isometric() ) {
+        return;
+    }
+    // Soft-edge fade on the triangle hypotenuse when the player has opted
+    // into linear scaling — keeps a consistent "smooth pixels" look. With
+    // "none" / "nearest" we keep hard edges to match the pixel-art intent.
+    const bool aa_edges = get_option<std::string>( "SCALING_MODE" ) == "linear";
+    const Uint8 edge_alpha = aa_edges ? 160 : 255;
+
+    static const vpart_location_id vpart_location_structure( "structure" );
+    map &here = get_map();
+    const float tw = static_cast<float>( tile_width );
+    const float th = static_cast<float>( tile_height );
+
+    VehicleList vehs = here.get_vehicles();
+    for( const wrapped_vehicle &wv : vehs ) {
+        const vehicle *veh = wv.v;
+        if( !veh ) {
+            continue;
+        }
+        // Skip cardinal-facing vehicles. At face=0°/90°/180°/270° the parts
+        // sit on the unrotated mount grid, so any L-shaped corners in the
+        // hull are intentional design features (front bumper protrusion,
+        // narrowed cab, mirrors) — smoothing them would distort the vehicle
+        // shape the artist drew. Fillers only fire when the vehicle is
+        // actually rotated off-cardinal and the staircase appears.
+        const double face_deg = units::to_degrees( normalize( veh->face.dir() ) );
+        double mod90 = std::fmod( face_deg, 90.0 );
+        if( mod90 < 0.0 ) {
+            mod90 += 90.0;
+        }
+        if( mod90 < 1.0 || mod90 > 89.0 ) {
+            continue;
+        }
+
+        // Per-vehicle scope so candidate tiles only consider this vehicle's
+        // parts — avoids false L-corners across two parked vehicles.
+        std::set<tripoint_bub_ms> part_tiles;
+        // Parallel: world tile → display color for the topmost real part at
+        // that tile. Used to color fillers so they blend with the hull.
+        std::map<tripoint_bub_ms, SDL_Color> tile_colors;
+        for( int i = 0; i < veh->part_count(); ++i ) {
+            const vehicle_part &part_p = veh->part( i );
+            if( part_p.is_fake || part_p.removed ) {
+                continue;
+            }
+            // Skip PROTRUSION parts (mirrors, exhaust pipes, forklifts).
+            // They intentionally stick out beyond the hull silhouette — treating
+            // them as hull would produce unwanted fillers "behind" the mirror
+            // that visually pull it back into the body.
+            if( part_p.info().has_flag( "PROTRUSION" ) ) {
+                continue;
+            }
+            const tripoint_bub_ms wp = veh->bub_part_pos( here, i );
+            part_tiles.insert( wp );
+            // Color the filler with the structural part's color (frames,
+            // walls), not whatever vpart_display would pick. get_display_of_tile
+            // prefers the topmost visible part — which at corner tiles is often
+            // a headlight / signal light / battery, producing jarring red/cyan
+            // fillers instead of the metal-gray hull. Structural parts always
+            // sit at the bottom of the stack and carry the hull silhouette
+            // color we want.
+            if( part_p.info().location == vpart_location_structure ) {
+                const int fg_idx =
+                    cata_cursesport::colorpairs[part_p.info().color.to_color_pair_index()].FG;
+                tile_colors[wp] = windowsPalette[fg_idx];
+            }
+        }
+
+        // Candidate empty tiles: tiles ortho-adjacent to a part tile that
+        // aren't themselves part tiles.
+        std::set<tripoint_bub_ms> candidates;
+        for( const tripoint_bub_ms &p : part_tiles ) {
+            for( const point &d : {
+                     point::north, point::east, point::south, point::west
+                 } ) {
+                const tripoint_bub_ms n( p.x() + d.x, p.y() + d.y, p.z() );
+                if( part_tiles.find( n ) == part_tiles.end() ) {
+                    candidates.insert( n );
+                }
+            }
+        }
+
+        for( const tripoint_bub_ms &e : candidates ) {
+        const bool n = part_tiles.count(
+                           tripoint_bub_ms( e.x(),     e.y() - 1, e.z() ) ) > 0;
+        const bool ea = part_tiles.count(
+                            tripoint_bub_ms( e.x() + 1, e.y(),     e.z() ) ) > 0;
+        const bool s = part_tiles.count(
+                           tripoint_bub_ms( e.x(),     e.y() + 1, e.z() ) ) > 0;
+        const bool w = part_tiles.count(
+                           tripoint_bub_ms( e.x() - 1, e.y(),     e.z() ) ) > 0;
+        if( static_cast<int>( n ) + ea + s + w < 2 ) {
+            continue;
+        }
+        const point sp = player_to_screen( e.xy() );
+        // Outset by a small pixel margin into the adjacent part tiles so the
+        // triangle overdraws any transparent sprite padding around the parts'
+        // edges. Tilesets vary — some sprites paint right to the tile boundary,
+        // others leave a 1-3px transparent border. The outset bridges that
+        // border, hiding the terrain sliver the user spotted at some corners.
+        // Inset on each axis scales with tile size so the bridge is consistent
+        // across pixel-art and higher-resolution tilesets.
+        const float inset = std::max( 2.0f, tw * 0.06f );
+        const float l = sp.x - inset;
+        const float r = sp.x + tw + inset;
+        const float t = sp.y - inset;
+        const float b = sp.y + th + inset;
+        const float mx = sp.x + tw * 0.5f;
+        const float my = sp.y + th * 0.5f;
+        // Each L of adjacent part-neighbors → fill the corner of E that
+        // touches both. Triangle: corner, midpoint of one shared edge,
+        // midpoint of the other shared edge.
+            auto color_at = [&]( const tripoint_bub_ms & t ) -> SDL_Color {
+                const auto it = tile_colors.find( t );
+                return it != tile_colors.end() ? it->second : SDL_Color{ 128, 128, 128, 255 };
+            };
+            const tripoint_bub_ms n_tile( e.x(),     e.y() - 1, e.z() );
+            const tripoint_bub_ms e_tile( e.x() + 1, e.y(),     e.z() );
+            const tripoint_bub_ms s_tile( e.x(),     e.y() + 1, e.z() );
+            const tripoint_bub_ms w_tile( e.x() - 1, e.y(),     e.z() );
+            auto add_tri = [&]( float cx, float cy, float ax, float ay, float bx, float by,
+            SDL_Color col ) {
+                vp_filler_tri tri;
+                tri.v[0] = { cx, cy };
+                tri.v[1] = { ax, ay };
+                tri.v[2] = { bx, by };
+                // Anchor corner: full opacity. Hypotenuse endpoints: faded
+                // (when AA enabled) so the visible edge softens into terrain.
+                tri.colors[0] = col;
+                tri.colors[1] = { col.r, col.g, col.b, edge_alpha };
+                tri.colors[2] = { col.r, col.g, col.b, edge_alpha };
+                g_vp_fillers_by_tile[e].push_back( tri );
+            };
+            // Channels (2 opposite neighbors) and interior holes (3+ neighbors)
+            // need a quad fill spanning the whole empty tile, not just a corner.
+            // Outset is applied only on edges that touch a part — terrain-facing
+            // edges stay flush to the empty tile so we don't spill onto terrain.
+            const float bx0 = sp.x;
+            const float bx1 = sp.x + tw;
+            const float by0 = sp.y;
+            const float by1 = sp.y + th;
+            auto add_quad = [&]( float x0, float y0, float x1, float y1, SDL_Color col ) {
+                SDL_Color fc = col;
+                fc.a = 255;
+                vp_filler_tri a;
+                a.v[0] = { x0, y0 };
+                a.v[1] = { x1, y0 };
+                a.v[2] = { x0, y1 };
+                a.colors[0] = a.colors[1] = a.colors[2] = fc;
+                g_vp_fillers_by_tile[e].push_back( a );
+                vp_filler_tri b2;
+                b2.v[0] = { x1, y0 };
+                b2.v[1] = { x1, y1 };
+                b2.v[2] = { x0, y1 };
+                b2.colors[0] = b2.colors[1] = b2.colors[2] = fc;
+                g_vp_fillers_by_tile[e].push_back( b2 );
+            };
+            const int neighbor_count = static_cast<int>( n ) + ea + s + w;
+            if( neighbor_count >= 3 || ( n && s && !ea && !w ) || ( ea && w && !n && !s ) ) {
+                // Per-edge outset: extend only into sides that have parts so
+                // the fill doesn't bleed onto terrain.
+                const float ql = w ? bx0 - inset : bx0;
+                const float qr = ea ? bx1 + inset : bx1;
+                const float qt = n ? by0 - inset : by0;
+                const float qb = s ? by1 + inset : by1;
+                // Pick a neighbor color in priority order. Any present neighbor's
+                // hull color is a reasonable match since these tiles are interior
+                // bridges between same-vehicle parts.
+                const SDL_Color col = n  ? color_at( n_tile ) :
+                                      ea ? color_at( e_tile ) :
+                                      s  ? color_at( s_tile ) :
+                                      color_at( w_tile );
+                add_quad( ql, qt, qr, qb, col );
+            } else {
+                if( n && ea ) {
+                    add_tri( r, t, mx, t, r, my, color_at( n_tile ) );    // NE
+                }
+                if( ea && s ) {
+                    add_tri( r, b, r, my, mx, b, color_at( e_tile ) );    // SE
+                }
+                if( s && w ) {
+                    add_tri( l, b, mx, b, l, my, color_at( s_tile ) );    // SW
+                }
+                if( w && n ) {
+                    add_tri( l, t, l, my, mx, t, color_at( w_tile ) );    // NW
+                }
+            }
+        }
+    }
+}
+
+bool cata_tiles::draw_vp_fillers( const tripoint_bub_ms &p, lit_level /*ll*/,
+                                  int &/*height_3d*/,
+                                  const std::array<bool, 5> &invisible,
+                                  const bool memorize_only )
+{
+    if( memorize_only || invisible[0] ) {
+        return false;
+    }
+    const auto it = g_vp_fillers_by_tile.find( p );
+    if( it == g_vp_fillers_by_tile.end() ) {
+        return false;
+    }
+    // Enable alpha blending so the faded hypotenuse vertices actually
+    // blend with the terrain underneath instead of being snapped to opaque.
+    SDL_BlendMode prev_blend = SDL_BLENDMODE_NONE;
+    SDL_GetRenderDrawBlendMode( renderer.get(), &prev_blend );
+    SDL_SetRenderDrawBlendMode( renderer.get(), SDL_BLENDMODE_BLEND );
+    for( const vp_filler_tri &tri : it->second ) {
+        SDL_Vertex verts[3];
+        for( int k = 0; k < 3; ++k ) {
+            verts[k].position = tri.v[k];
+            verts[k].color = tri.colors[k];
+            verts[k].tex_coord = { 0.0f, 0.0f };
+        }
+        SDL_RenderGeometry( renderer.get(), nullptr, verts, 3, nullptr, 0 );
+    }
+    SDL_SetRenderDrawBlendMode( renderer.get(), prev_blend );
+    return true;
+}
+
 bool cata_tiles::draw_vpart_no_roof( const tripoint_bub_ms &p, lit_level ll, int &height_3d,
                                      const std::array<bool, 5> &invisible, const bool memorize_only )
 {
@@ -3337,6 +3587,16 @@ bool cata_tiles::draw_vpart( const tripoint_bub_ms &p, lit_level ll, int &height
     const optional_vpart_position ovp = here.veh_at( p );
     if( ovp && !invisible[0] ) {
         const vehicle &veh = ovp->vehicle();
+        // Skip rendering fake parts. They're the duplicate-sprite "ghost"
+        // copies the fake-parts system inserts at offset mounts to plug
+        // lateral gaps at intermediate facings (see vehicle.cpp:6993). The
+        // procedural filler layer now handles the visual continuity. Fakes
+        // remain in parts[] for gameplay (collision / hitchhiker protection).
+        if( const auto pd = ovp->part_displayed() ) {
+            if( veh.part( pd->part_index() ).is_fake ) {
+                return false;
+            }
+        }
         const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
         if( !vd.id.is_null() ) {
             const int subtile = vd.is_open ? open_ : vd.is_broken ? broken : 0;
