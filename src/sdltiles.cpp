@@ -4467,6 +4467,33 @@ void set_title( const std::string &title )
     }
 }
 
+int draw_text_pixel( const std::string &text, const point &p, const nc_color &color )
+{
+    if( !map_font ) {
+        return 0;
+    }
+    // Convert nc_color → palette FG index the same way curses cells do: look up
+    // the color pair, then add 8 if bold (bright variant).
+    const int pair = color.to_color_pair_index();
+    unsigned char fg =
+        static_cast<unsigned char>( cata_cursesport::colorpairs[pair].FG );
+    if( color.is_bold() ) {
+        fg = static_cast<unsigned char>( fg + 8 );
+    }
+    // 1-pixel black drop-shadow at +1,+1 for readability over bright terrain.
+    const unsigned char shadow_fg = static_cast<unsigned char>( catacurses::black );
+    point shadow = p + point( 1, 1 );
+    point cursor = p;
+    for( char c : text ) {
+        const std::string ch( 1, c );
+        map_font->OutputChar( renderer, geometry, ch, shadow, shadow_fg );
+        map_font->OutputChar( renderer, geometry, ch, cursor, fg );
+        shadow.x += map_font->width;
+        cursor.x += map_font->width;
+    }
+    return cursor.x - p.x;
+}
+
 const SDL_Renderer_Ptr &get_sdl_renderer()
 {
     return renderer;

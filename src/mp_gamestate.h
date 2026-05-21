@@ -7,6 +7,8 @@
 #include "coordinates.h"
 #include <string>
 
+class npc;
+
 namespace cata_mp {
 
 // Called once per game turn from do_turn() — drains the event queue and
@@ -24,6 +26,29 @@ bool is_remote_player( character_id id );
 // True if `id` belongs to the MP partner's proxy NPC — works on either side.
 // (host: matches the client's proxy; client: matches the host's proxy.)
 bool is_partner_npc( character_id id );
+
+// True when the partner (on the other end of the connection) is currently
+// in an interruptible "wait several minutes" activity.  Reads the activity
+// id last broadcast over the wire — works in either direction (client sees
+// host's wait; host sees client's wait).
+bool is_partner_in_wait_activity();
+
+// Host-only: queue a one-shot "wake_client" signal that piggy-backs on the
+// next serialize_remote_player_state broadcast.  Client consumes it and
+// cancels its own wait activity.  Used by the host's tap-on-shoulder
+// dispatch when the host is interrupting the client's wait.
+void mark_wake_client_pending();
+
+// Current partner-separation tier (0 = close, 1 = mild warn, 2 = urgent
+// warn / leeway, 3 = pause).  Read by do_turn to auto-pause the calendar
+// at tier 3.
+int get_separation_tier();
+
+// Returns the partner NPC (proxy of the OTHER player) from this side's POV,
+// or nullptr if not connected. On the host that's the client's proxy; on
+// the client that's the host's proxy. Used by the tile renderer to draw a
+// direction indicator when the partner is off-screen.
+::npc *get_partner_npc();
 
 // Host: true while wait_for_client_action() is blocking — i.e. the host has
 // no moves and is waiting for the client to ack the current turn.  Used to

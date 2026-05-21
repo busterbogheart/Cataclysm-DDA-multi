@@ -8,7 +8,11 @@
 // the actual viewable playspace space due to how MAX_VIEW_DISTANCE evaluates
 // MAPSIZE 11 results in a reality bubble approximately 60 tiles in radius
 // MAPSIZE 21 results in approximately 120 tiles in radius
-constexpr int MAPSIZE = 11;
+// MP fork: bumped from upstream's 11 to 15 (~84-tile radius, +40%) so two
+// players can separate further before the simulated zone breaks down — in
+// particular while driving, where the original ~60-tile limit was easy to
+// blow past at highway speeds and caused vehicles to lose physics.
+constexpr int MAPSIZE = 15;
 constexpr int HALF_MAPSIZE = static_cast<int>( MAPSIZE / 2 );
 
 // SEEX/SEEY define the size of a nonant, or grid.

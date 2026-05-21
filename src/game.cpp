@@ -5288,6 +5288,7 @@ bool game::npc_menu( npc &who )
         talk = 0,
         swap_pos,
         push,
+        tap_shoulder,
         examine_wounds,
         examine_status,
         use_item,
@@ -5312,6 +5313,18 @@ bool game::npc_menu( npc &who )
                     !u.is_mounted(), 's', _( "Swap positions" ) );
     amenu.addentry( push, ( debug_mode || ( !who.is_enemy() && !who.in_sleep_state() ) ) &&
                     !who.is_mounted(), 'p', _( "Push away" ) );
+    // MP partner only: interrupt partner's "wait for several minutes" activity
+    // by tapping them. Hotkey 't' is free because Talk is suppressed for the
+    // partner above. Voice chat covers actual communication; this is a
+    // gameplay interrupt, not a message — so only show the entry when the
+    // partner is actually in a wait activity. Works in both directions:
+    // client→host dispatches an action message; host→client queues a
+    // wake_client signal on the next state broadcast.
+    if( ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) &&
+        cata_mp::is_partner_npc( who.getID() ) &&
+        cata_mp::is_partner_in_wait_activity() ) {
+        amenu.addentry( tap_shoulder, true, 't', _( "Tap on shoulder" ) );
+    }
     amenu.addentry( examine_wounds, true, 'w', _( "Examine wounds" ) );
     amenu.addentry( examine_status, true, 'e', _( "Examine status" ) );
     amenu.addentry( use_item, true, 'i', _( "Use item on" ) );
@@ -5388,6 +5401,22 @@ bool game::npc_menu( npc &who )
             } else {
                 add_msg( m_warning, _( "%s has nowhere to go!" ), who.get_name() );
             }
+        }
+    } else if( choice == tap_shoulder ) {
+        // Bidirectional: client→host goes through the action message which
+        // the host handler in mp_gamestate.cpp processes; host→client uses
+        // a one-shot wake_client flag on the next state broadcast. 10 moves
+        // cost in both directions keeps lockstep coherent.
+        if( mp_partner ) {
+            add_msg( _( "You tap %s on the shoulder." ), who.get_name() );
+            cata_mp::client_send( cata_mp::client_enrich_action(
+                                      "{\"type\":\"action\",\"action\":\"tap_partner\"}" ) );
+            cata_mp::client_mark_action_sent();
+            u.mod_moves( -10 );
+        } else if( cata_mp::is_hosting() && cata_mp::is_partner_npc( who.getID() ) ) {
+            add_msg( _( "You tap %s on the shoulder." ), who.get_name() );
+            cata_mp::mark_wake_client_pending();
+            u.mod_moves( -10 );
         }
     } else if( choice == examine_wounds ) {
         ///\EFFECT_PER slightly increases precision when examining NPCs' wounds

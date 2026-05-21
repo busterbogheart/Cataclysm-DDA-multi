@@ -2481,6 +2481,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // would hit the car's nose and short-circuit as a wall bump, preventing
             // acceleration from ever reaching the server.
             if( cata_mp::client_ctrl_veh() ) {
+                cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: ctrl_veh path" );
                 const int dx = offset_it != dir_to_offset.end() ? offset_it->second.x : 0;
                 const int dy = offset_it != dir_to_offset.end() ? offset_it->second.y : 0;
 
@@ -2520,6 +2521,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     const bool openable = here.open_door( player_character, next_pos,
                                                           true, true );
                     if( !has_creature && !openable ) {
+                        cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: wall bump dir=" + dir +
+                                         " moves=" + std::to_string( player_character.get_moves() ) );
                         return false; // solid wall — free, don't dispatch or consume AP
                     }
                 }
@@ -2538,7 +2541,22 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 npc *hnpc = g->critter_by_id<npc>(
                                 cata_mp::get_host_npc_character_id() );
                 if( hnpc && here.get_abs( hnpc->pos_bub() ) == next_abs ) {
+                    // Lock gate: don't open the partner-bump menu when the
+                    // client has no AP left (locked, waiting for next grant).
+                    // Swap and Push are moves-consuming server-side actions and
+                    // letting them dispatch while locked bypasses lockstep —
+                    // the bumped player visually lags one turn AND the bumper
+                    // gets a "free" action. Treat the bump as a wall bump and
+                    // consume the input without doing anything.
+                    if( player_character.get_moves() <= 0 ) {
+                        cata_mp::mp_log( "[cdda-mp] CLI-PARTNER-MENU-BLOCKED: locked, moves<=0" );
+                        return true;
+                    }
+                    cata_mp::mp_log( "[cdda-mp] CLI-PARTNER-MENU-OPEN: moves=" +
+                                     std::to_string( player_character.get_moves() ) );
                     g->npc_menu( *hnpc );
+                    cata_mp::mp_log( "[cdda-mp] CLI-PARTNER-MENU-CLOSE: moves=" +
+                                     std::to_string( player_character.get_moves() ) );
                     return true;
                 }
 
@@ -2550,6 +2568,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 if( const auto dvp =
                         here.veh_at( next_pos ).part_with_feature( "BOARDABLE", true ) ) {
                     if( !dvp->vehicle().handle_potential_theft( player_character ) ) {
+                        cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: declined boardable theft" );
                         return true; // declined to steal
                     }
                 }
@@ -2567,6 +2586,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
                 if( pact && ( pact.id() == act_wait || pact.id() == act_wait_stamina ||
                               pact.id() == act_wait_weather || pact.id() == act_wait_npc ) ) {
+                    cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: blocked by wait-activity " +
+                                     pact.id().str() );
                     player_character.set_moves( 0 );
                     return true;
                 }
@@ -2592,10 +2613,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     const std::string opt = get_option<std::string>( "DANGEROUS_TERRAIN_WARNING_PROMPT" );
                     if( opt == "ALWAYS" &&
                         !g->prompt_dangerous_tile( next_pos, &harmful_stuff ) ) {
+                        cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: danger-prompt ALWAYS declined" );
                         return true;
                     } else if( opt == "RUNNING" &&
                                ( !player_character.is_running() ||
                                  !g->prompt_dangerous_tile( next_pos, &harmful_stuff ) ) ) {
+                        cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: danger-prompt RUNNING blocked" );
                         add_msg( m_warning,
                                  _( "Stepping into that %1$s looks risky.  Run into it if you wish to enter anyway." ),
                                  enumerate_as_string( harmful_stuff ) );
@@ -2603,11 +2626,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     } else if( opt == "CROUCHING" &&
                                ( !player_character.is_crouching() ||
                                  !g->prompt_dangerous_tile( next_pos, &harmful_stuff ) ) ) {
+                        cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: danger-prompt CROUCHING blocked" );
                         add_msg( m_warning,
                                  _( "Stepping into that %1$s looks risky.  Crouch and move into it if you wish to enter anyway." ),
                                  enumerate_as_string( harmful_stuff ) );
                         return true;
                     } else if( opt == "NEVER" && !player_character.is_running() ) {
+                        cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: danger-prompt NEVER blocked" );
                         add_msg( m_warning,
                                  _( "Stepping into that %1$s looks risky.  Run into it if you wish to enter anyway." ),
                                  enumerate_as_string( harmful_stuff ) );
@@ -2813,9 +2838,23 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         }
 
         if( act == ACTION_DROP || act == ACTION_DIR_DROP ) {
-            map &here = get_map();
-
-            // For DIR_DROP determine the target tile; ACTION_DROP always lands underfoot.
+            // Pure SP-mirror.  drop_in_direction() runs the SP drop dialog and
+            // assigns drop_activity_actor — the same code SP uses.  The activity
+            // routes each tick through put_into_vehicle_or_drop() so items land
+            // in vehicle cargo (trunk/freezer/locker) if the target tile has a
+            // cargo part, with SP's natural fall-through to ground when the
+            // cargo is full or absent.
+            //
+            // Lockstep: the activity ticks once per MP turn via do_turn's
+            // inner activity loop (mirrors wear/read/wait/eat).  After each
+            // tick, the per-turn wait dispatch sends client_enrich_action,
+            // which now piggybacks BOTH client_tile_changes (ground items)
+            // and client_veh_cargo_changes (vehicle cargo).  The host applies
+            // both, so the world stays in sync without us hand-rolling diffs.
+            //
+            // Worn items can be dropped directly, which mutates worn list —
+            // call client_resync_worn so the host's proxy mirrors the worn
+            // change.  (Non-worn drops will resync as a no-op cheaply.)
             tripoint_bub_ms drop_pos = player_character.pos_bub();
             if( act == ACTION_DIR_DROP ) {
                 const std::optional<tripoint_bub_ms> pnt = choose_adjacent( _( "Drop where?" ) );
@@ -2824,67 +2863,20 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 }
                 drop_pos = *pnt;
             }
-
-            const tripoint_abs_ms abs_pos = here.get_abs( drop_pos );
             const int pre_drop_moves = player_character.get_moves();
-
-            // Snapshot items on the target tile before drop.
-            std::multiset<std::string> before_set;
-            for( const item &it : here.i_at( drop_pos ) ) {
-                before_set.insert( it.typeId().str() );
-            }
-
             drop_in_direction( drop_pos );
-
-            // If drop_in_direction assigned a multi-turn drop activity (large
-            // pile that takes time to put down), log a kickoff message so the
-            // player has a clear record of when the activity started.  CDDA
-            // doesn't generate one naturally — there's only the wait_popup and
-            // per-item "You drop X" messages at completion.  In MP the
-            // activity auto-ticks across turns at lockstep rate, which can
-            // feel like a timeout if the player isn't watching the popup.
+            if( !player_character.activity && player_character.get_moves() == pre_drop_moves ) {
+                // Multidrop menu cancelled with nothing selected — no activity,
+                // no moves consumed.  Treat as a free action so we don't burn a
+                // turn or trip the lockstep wait dispatch.
+                return true;
+            }
             if( player_character.activity ) {
                 add_msg( m_info, _( "Now dropping items, %s to interrupt." ),
                          press_x( ACTION_PAUSE ) );
             }
-
-            // Diff: newly added items (dropped ones).
-            std::multiset<std::string> remaining_before = before_set;
-            std::string items_json;
-            bool first = true;
-            for( const item &it : here.i_at( drop_pos ) ) {
-                const std::string t = it.typeId().str();
-                auto found = remaining_before.find( t );
-                if( found != remaining_before.end() ) {
-                    remaining_before.erase( found ); // was already there before
-                } else {
-                    if( !first ) {
-                        items_json += ',';
-                    }
-                    first = false;
-                    items_json += serialize( it );
-                }
-            }
-
-            if( !items_json.empty() ) {
-                const std::string json =
-                    "{\"type\":\"action\",\"action\":\"drop\""
-                    ",\"x\":" + std::to_string( abs_pos.x() ) +
-                    ",\"y\":" + std::to_string( abs_pos.y() ) +
-                    ",\"z\":" + std::to_string( abs_pos.z() ) +
-                    ",\"items\":[" + items_json + "]}";
-                // Force-send rather than queue: drop_in_direction may have consumed
-                // moves already, which would cause mp_dispatch to queue (not send),
-                // letting the server timeout and immediately re-grant moves.
-                cata_mp::client_resync_worn();
-                cata_mp::client_send( cata_mp::client_enrich_action( json ) );
-                player_character.set_moves( 0 );
-                cata_mp::client_mark_action_sent();
-            } else {
-                // Dialog was cancelled or nothing to drop — restore moves so this
-                // counts as a free action and the server doesn't time out.
-                player_character.set_moves( pre_drop_moves );
-            }
+            // Worn items dropped by the activity will sync via the per-tick
+            // worn-list diff in client_enrich_action — no manual resync here.
             return true;
         }
 
@@ -3020,20 +3012,30 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             ACTION_ZOOM_IN, ACTION_ZOOM_OUT,
             ACTION_MAP, ACTION_LIST_ITEMS,
             ACTION_INVENTORY, ACTION_COMPARE, ACTION_ORGANIZE,
-            ACTION_LOOK, ACTION_EXAMINE,
+            ACTION_LOOK, ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
             ACTION_HELP, ACTION_MESSAGES,
             ACTION_PL_INFO, ACTION_MORALE,
+            ACTION_FACTIONS, ACTION_MISSIONS, ACTION_MEDICAL,
+            ACTION_MUTATIONS, ACTION_BIONICS,
+            ACTION_DIARY,
+            ACTION_LOOT,
+            // Move-mode toggles are zero-AP and just flip flags.
+            ACTION_TOGGLE_RUN, ACTION_TOGGLE_CROUCH, ACTION_TOGGLE_PRONE,
+            ACTION_CYCLE_MOVE, ACTION_CYCLE_MOVE_REVERSE,
             // Main-menu entries: all pure UI/config, safe while waiting for client.
             ACTION_OPTIONS, ACTION_TOGGLE_PANEL_ADM,
             ACTION_AUTOPICKUP, ACTION_AUTONOTES,
             ACTION_SAFEMODE, ACTION_DISTRACTION_MANAGER,
             ACTION_COLOR, ACTION_WORLD_MODS,
-            ACTION_QUICKSAVE,
+            ACTION_QUICKSAVE, ACTION_SAVE,
+            ACTION_KEYBINDINGS,
             ACTION_EXPORT_BUG_REPORT_ARCHIVE,
         };
         if( !host_ui_actions.count( act ) ) {
+            cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-BLOCK: act=" + std::to_string( act ) );
             return false;
         }
+        cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-ALLOW: act=" + std::to_string( act ) );
         // Allowed — fall through to regular single-player handling below.
     }
 

@@ -75,6 +75,12 @@ inline SDL_Color color_pixel_custom( const SDL_Color &color )
 
 SDL_Color curses_color_to_SDL( const nc_color &color );
 
+// Draw a short ASCII string at absolute window pixel coordinates using the
+// map font, color-matched to the given nc_color.  A 1-pixel black drop-shadow
+// is drawn first for readability over bright terrain.  Returns the pixel
+// width drawn.  Used by the MP partner direction indicator.
+int draw_text_pixel( const std::string &text, const point &p, const nc_color &color );
+
 ///@throws std::exception upon errors.
 ///@returns Always a valid pointer.
 SDL_Surface_Ptr create_surface_32( int w, int h );

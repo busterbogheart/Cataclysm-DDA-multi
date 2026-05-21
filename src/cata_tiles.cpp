@@ -1352,6 +1352,109 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
         }
     }
 
+    // MP partner direction indicator — when the partner is off-screen, draw an
+    // arrow at the edge of the play area pointing toward them, color-coded by
+    // separation tier. Works at any zoom level because player_to_screen and
+    // tile_width are already zoom-scaled.
+    if( npc *partner = cata_mp::get_partner_npc() ) {
+        const point partner_screen_topleft = player_to_screen( partner->pos_bub().xy() );
+        const SDL_FPoint partner_pt{
+            static_cast<float>( partner_screen_topleft.x + tile_width / 2 ),
+            static_cast<float>( partner_screen_topleft.y + tile_height / 2 )
+        };
+        const SDL_Rect view{ dest.x, dest.y, width, height };
+        // Fixed pixel dead-zone and edge inset so the arrow's position and
+        // padding from the screen edge stay constant across zoom levels.  The
+        // bottom inset is larger so the arrow clears the Co-op HUD that sits
+        // at the bottom of the map area.
+        constexpr float on_screen_margin = 32.0f;
+        constexpr float edge_inset = 30.0f;
+        constexpr float bottom_inset = 70.0f;
+        // Skip when partner is comfortably within the visible map area.
+        const bool on_screen =
+            partner_pt.x >= view.x + on_screen_margin &&
+            partner_pt.x <  view.x + view.w - on_screen_margin &&
+            partner_pt.y >= view.y + on_screen_margin &&
+            partner_pt.y <  view.y + view.h - on_screen_margin;
+        if( !on_screen ) {
+            const SDL_FPoint center_pt{
+                static_cast<float>( view.x + view.w * 0.5f ),
+                static_cast<float>( view.y + view.h * 0.5f )
+            };
+            float dx = partner_pt.x - center_pt.x;
+            float dy = partner_pt.y - center_pt.y;
+            const float dlen = std::sqrt( dx * dx + dy * dy );
+            if( dlen > 1.0f ) {
+                dx /= dlen;
+                dy /= dlen;
+                // Clip the ray from center toward partner against the view
+                // rect, inset by a fixed number of pixels so the arrow sits
+                // flush at the edge regardless of zoom.
+                const float left   = view.x + edge_inset;
+                const float right  = view.x + view.w - edge_inset;
+                const float top    = view.y + edge_inset;
+                const float bottom = view.y + view.h - bottom_inset;
+                float tmax = std::numeric_limits<float>::infinity();
+                if( dx > 1e-6f ) {
+                    tmax = std::min( tmax, ( right - center_pt.x ) / dx );
+                } else if( dx < -1e-6f ) {
+                    tmax = std::min( tmax, ( left - center_pt.x ) / dx );
+                }
+                if( dy > 1e-6f ) {
+                    tmax = std::min( tmax, ( bottom - center_pt.y ) / dy );
+                } else if( dy < -1e-6f ) {
+                    tmax = std::min( tmax, ( top - center_pt.y ) / dy );
+                }
+                const SDL_FPoint tip{
+                    center_pt.x + dx * tmax,
+                    center_pt.y + dy * tmax
+                };
+                // Arrow triangle: tip + two base vertices offset back and to
+                // the sides. Fixed pixel size so the arrow stays the same on
+                // screen regardless of zoom level.  Long/narrow for a sharp,
+                // pointy look.
+                constexpr float arrow_len = 20.4f;
+                constexpr float arrow_half_w = 5.4f;
+                const float bx = tip.x - dx * arrow_len;
+                const float by = tip.y - dy * arrow_len;
+                const float px = -dy;
+                const float py =  dx;
+                const SDL_FPoint b1{ bx + px * arrow_half_w, by + py * arrow_half_w };
+                const SDL_FPoint b2{ bx - px * arrow_half_w, by - py * arrow_half_w };
+                // Bright "ally green" — matches the color used for the
+                // partner @ glyph in the sidebar / nearby-creature listing.
+                const nc_color label_nc = c_light_green;
+                SDL_Color col = curses_color_to_SDL( label_nc );
+                col.a = 255;
+                SDL_Vertex verts[3];
+                verts[0].position = tip;
+                verts[1].position = b1;
+                verts[2].position = b2;
+                for( SDL_Vertex &v : verts ) {
+                    v.color = col;
+                    v.tex_coord = { 0.0f, 0.0f };
+                }
+                SDL_RenderGeometry( renderer.get(), nullptr, verts, 3, nullptr, 0 );
+
+                // Distance label in tiles, drawn just inside the arrow base so
+                // it stays inside the view rect.  Same palette color as the
+                // arrow / partner @.
+                const tripoint_abs_ms me_abs = get_map().get_abs( get_avatar().pos_bub() );
+                const tripoint_abs_ms partner_abs = get_map().get_abs( partner->pos_bub() );
+                const int tiles = std::max( std::abs( me_abs.x() - partner_abs.x() ),
+                                            std::abs( me_abs.y() - partner_abs.y() ) );
+                const std::string label = std::to_string( tiles );
+                // Place the label just inside the arrow base, offset back
+                // toward the viewport center so it stays inside the view rect
+                // and doesn't overlap the arrow itself.
+                const point text_pos(
+                    static_cast<int>( bx - dx * 14.0f ) - static_cast<int>( label.size() ) * 4,
+                    static_cast<int>( by - dy * 14.0f ) - 6 );
+                draw_text_pixel( label, text_pos, label_nc );
+            }
+        }
+    }
+
     RenderSetClipRect( renderer, nullptr );
 }
 

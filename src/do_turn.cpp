@@ -257,6 +257,10 @@ void handle_key_blocking_activity()
         || cata_mp::is_host_waiting_for_client() ) {
         input_context ctxt = get_default_mode_input_context();
         const std::string action = ctxt.handle_input( 0 );
+        if( cata_mp::is_hosting() && cata_mp::is_host_waiting_for_client() &&
+            !action.empty() && action != "ANY_INPUT" && action != "TIMEOUT" ) {
+            cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-INPUT: action=\"" + action + "\"" );
+        }
         bool refresh = true;
         if( action == "pause" ) {
             if( u.activity.is_interruptible_with_kb() ) {
@@ -553,6 +557,11 @@ bool do_turn()
         g->load_npcs();
     }
 
+    if( cata_mp::is_hosting() ) {
+        cata_mp::mp_log( "[cdda-mp] HOST-DO-TURN-ENTRY: avatar_moves=" +
+                         std::to_string( get_avatar().get_moves() ) +
+                         " av_act=" + ( get_avatar().activity ? get_avatar().activity.id().str() : "none" ) );
+    }
     // Process multiplayer events from network thread
     cata_mp::process_mp_events();
     // Apply any server state updates received since the last turn (client mode)
@@ -561,6 +570,10 @@ bool do_turn()
         avatar &u_dbg = get_avatar();
         cata_mp::mp_log( "[cdda-mp] post-incoming moves=" + std::to_string( u_dbg.get_moves() ) +
                          " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+    }
+    if( cata_mp::is_hosting() ) {
+        cata_mp::mp_log( "[cdda-mp] HOST-POST-MP-EVENTS: avatar_moves=" +
+                         std::to_string( get_avatar().get_moves() ) );
     }
     // Lockstep: grant the client their turn at the start of each game turn.
     if( cata_mp::is_hosting() ) {
@@ -636,7 +649,10 @@ bool do_turn()
     // the activity pointer is null, so client_dispatch_wait_for_activity() needs the
     // pre-loop ID as a fallback to know it should still send a "wait" to unblock the server.
     const int pre_activity_moves = u.get_moves();
-    const activity_id pre_activity_id = u.activity ? u.activity.id() : activity_id();
+    // Default-constructed activity_id is empty-but-not-null, so it evaluates
+    // truthy in bool context.  Use NULL_ID so downstream `if( pre_activity_id )`
+    // checks correctly distinguish "had an activity" from "no activity".
+    const activity_id pre_activity_id = u.activity ? u.activity.id() : activity_id::NULL_ID();
     if( cata_mp::is_client_mode() ) {
         cata_mp::mp_log( "[cdda-mp] pre-act-loop: moves=" + std::to_string( pre_activity_moves ) +
                          " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
@@ -701,6 +717,12 @@ bool do_turn()
         u.healall( 100 );
     }
 
+    if( cata_mp::is_hosting() ) {
+        cata_mp::mp_log( "[cdda-mp] HOST-INPUT-GATE: avatar_moves=" + std::to_string( u.get_moves() ) +
+                         " has_act=" + ( u.activity ? u.activity.id().str() : "none" ) +
+                         " sleep=" + std::to_string( u.has_effect( effect_sleep ) ) +
+                         " enter_loop=" + std::to_string( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) );
+    }
     if( !u.has_effect( effect_sleep ) || g->uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
             if( cata_mp::is_client_mode() ) {
@@ -708,6 +730,9 @@ bool do_turn()
                                  std::to_string( u.get_moves() ) +
                                  " ms_grant=" + std::to_string( cata_mp::ms_since_last_grant() ) +
                                  " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+            }
+            if( cata_mp::is_hosting() ) {
+                cata_mp::mp_log( "[cdda-mp] HOST-INPUT-LOOP enter: moves=" + std::to_string( u.get_moves() ) );
             }
             while( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
                 m.process_falling();
@@ -734,7 +759,17 @@ bool do_turn()
 
                 {
                     const size_t pre_msg = cata_mp::is_hosting() ? Messages::size() : 0;
-                    if( g->handle_action() ) {
+                    if( cata_mp::is_hosting() ) {
+                        cata_mp::mp_log( "[cdda-mp] HOST-HANDLE-ACTION: calling, pre_moves=" +
+                                         std::to_string( u.get_moves() ) );
+                    }
+                    const bool acted = g->handle_action();
+                    if( cata_mp::is_hosting() ) {
+                        cata_mp::mp_log( "[cdda-mp] HOST-HANDLE-ACTION: returned acted=" +
+                                         std::to_string( acted ) +
+                                         " post_moves=" + std::to_string( u.get_moves() ) );
+                    }
+                    if( acted ) {
                         ++g->moves_since_last_save;
                         u.action_taken();
                         cata_mp::host_capture_avatar_msgs( pre_msg );
@@ -764,7 +799,7 @@ bool do_turn()
                     break;
                 }
                 const activity_id iter_pre_act = u.activity ? u.activity.id()
-                                                 : activity_id();
+                                                 : activity_id::NULL_ID();
                 while( u.get_moves() > 0 && u.activity ) {
                     u.activity.do_turn( u );
                 }
@@ -821,7 +856,7 @@ bool do_turn()
             if( cata_mp::is_client_mode() && !mp_wait_dispatched &&
                 ( moves_consumed || activity_just_ended ) &&
                 !cata_mp::is_client_waiting_for_ack() ) {
-                const activity_id post_id = u.activity ? u.activity.id() : activity_id();
+                const activity_id post_id = u.activity ? u.activity.id() : activity_id::NULL_ID();
                 cata_mp::mp_log( "[cdda-mp] post-loop dispatch: pre_moves=" + std::to_string( pre_activity_moves ) +
                                  " cur_moves=" + std::to_string( u.get_moves() ) +
                                  " act=" + ( post_id ? post_id.str() : "none" ) +
@@ -971,11 +1006,19 @@ bool do_turn()
         }
     }
     g->mon_info_update();
+    // Client: process_turn() unconditionally adds get_speed() moves.  The
+    // client's move allowance comes only from server grant packets, so we
+    // need to discard process_turn's regen — but NOT any grant moves the
+    // client already has.  Snapshot before, restore after.
+    //
+    // The naive "if moves > 0 set_moves(0)" wedged: when a grant arrives
+    // during a locked-HA input poll (between turns), moves=92 entering
+    // this block.  process_turn adds ~100 → 192.  Naive zero clobbers
+    // the grant, autofire never fires, both players freeze forever.
+    const int pre_process_turn_moves = u.get_moves();
     u.process_turn();
-    // Client: process_turn() unconditionally adds get_speed() moves. Discard that
-    // budget — the client's move allowance comes only from server grant packets.
-    if( cata_mp::is_client_mode() && u.get_moves() > 0 ) {
-        u.set_moves( 0 );
+    if( cata_mp::is_client_mode() ) {
+        u.set_moves( pre_process_turn_moves );
     }
     if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
         ui_manager::redraw();

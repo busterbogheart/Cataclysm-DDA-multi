@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sys/stat.h>
 #include <exception>
 #include <functional>
 #include <iostream>
@@ -39,9 +40,11 @@
 #include "cached_options.h"
 #include "cata_allocator.h"
 #include "cata_path.h"
+#include "cata_utility.h"
 #include "color.h"
 #include "compatibility.h"
 #include "crash.h"
+#include "string_formatter.h"
 #include "cursesdef.h"
 #include "debug.h"
 #include "do_turn.h"
@@ -1086,6 +1089,32 @@ int main( int argc, const char *argv[] )
     // set_language_from_options() was called during SDL init, before the flags existed.
     if( !test_mode ) {
         set_language_from_options();
+    }
+
+    // MP build tag — uses the binary's on-disk mtime (not __DATE__/__TIME__,
+    // which only reflect main.cpp's last compile and stay stale when other
+    // translation units rebuild).  Helpful when iterating on MP features.
+    if( !test_mode ) {
+        std::string role;
+        if( cli.host_mode ) {
+            role = "HOST";
+        } else if( cli.client_mode ) {
+            role = "CLIENT";
+        } else {
+            role = "SP";
+        }
+        std::string stamp = "?";
+        struct stat st {};
+        if( argc > 0 && argv[0] && stat( argv[0], &st ) == 0 ) {
+            char buf[32];
+            std::tm tm_local{};
+            const time_t mtime = st.st_mtime;
+            localtime_r( &mtime, &tm_local );
+            if( std::strftime( buf, sizeof( buf ), "%b %d %H:%M:%S", &tm_local ) > 0 ) {
+                stamp = buf;
+            }
+        }
+        set_title( string_format( "CDDA — %s — build %s", role, stamp ) );
     }
 
     while( true ) {
