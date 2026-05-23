@@ -31,23 +31,49 @@ runs:
           mingw-w64-x86_64-SDL2_ttf
           mingw-w64-x86_64-gettext
           mingw-w64-x86_64-ntldd
+          mingw-w64-x86_64-ccache
           zip
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ccache-win-x64-${{ github.sha }}
+        restore-keys: |
+          ccache-win-x64-
+
+    - name: Configure ccache
+      shell: msys2 {0}
+      run: |
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+        mkdir -p "$HOME/.ccache"
+        ccache -z
 
     - name: Strip CC-Sounds for slim ZIP
       shell: msys2 {0}
       run: rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
 
-    - name: Build cataclysm-tiles.exe
+    - name: Write version header
       shell: msys2 {0}
       env:
         VERSION: ${{ inputs.version }}
       run: |
+        printf '#pragma once\n#define CDDACOOP_VERSION "%s"\n' "$VERSION" \
+          > src/cata_version_generated.h
+
+    - name: Build cataclysm-tiles.exe
+      shell: msys2 {0}
+      run: |
         make -j$(nproc) \
-          MSYS2=1 \
+          MSYS2=1 CCACHE=1 \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           RELEASE=1 \
-          EXTRA_CXXFLAGS='-DCDDACOOP_VERSION=\"'"$VERSION"'\"' \
           cataclysm-tiles
+
+    - name: ccache stats
+      shell: msys2 {0}
+      run: ccache -s
 
     - name: Package ZIP
       id: package

@@ -26,7 +26,40 @@ runs:
           sdl2 sdl2_image sdl2_mixer sdl2_ttf \
           gettext \
           dylibbundler \
-          create-dmg
+          create-dmg \
+          ccache
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        # Versioned per-arch so arm64 / x64 don't share entries. SHA in the
+        # primary key means we save a fresh slice each commit; the
+        # restore-keys fallback warms it from the most recent prior build.
+        key: ccache-mac-${{ inputs.arch }}-${{ github.sha }}
+        restore-keys: |
+          ccache-mac-${{ inputs.arch }}-
+
+    - name: Configure ccache
+      shell: bash
+      run: |
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+        # CCACHE_SLOPPINESS is set inside CDDA's Makefile (see CCACHEBIN);
+        # we just need the dir + size budget.
+        mkdir -p "$HOME/.ccache"
+        ccache -z  # zero stats for this run
+
+    - name: Write version header
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        # Generated header instead of passing -DCDDACOOP_VERSION to every
+        # translation unit. Only the (future) MP handshake .cpp includes
+        # this, so version changes don't invalidate the entire ccache.
+        printf '#pragma once\n#define CDDACOOP_VERSION "%s"\n' "$VERSION" \
+          > src/cata_version_generated.h
 
     - name: Rebrand bundle identity (Cataclysm → Cddacoop)
       shell: bash
@@ -41,22 +74,23 @@ runs:
 
     - name: Build cataclysm-tiles
       shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
       run: |
         # No FRAMEWORK var → link against brew-installed SDL2 dylibs, then
         # let dylibbundler copy them into the .app at packaging time.
         # (Makefile uses ifdef FRAMEWORK — even FRAMEWORK=0 triggers the
         # framework path, so the var must not be defined at all.)
         # RELEASE=1 strips symbols and turns on optimization.
-        # CDDACOOP_VERSION is exposed to the binary so the MP handshake can
-        # refuse mismatched peers.
+        # CCACHE=1 wires CDDA's own ccache integration (CCACHE_SLOPPINESS,
+        # CCACHE_CPP2 already set by Makefile around CCACHEBIN).
         make -j"$(sysctl -n hw.logicalcpu)" \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
-          NATIVE=osx CLANG=1 \
+          NATIVE=osx CLANG=1 CCACHE=1 \
           RELEASE=1 \
-          EXTRA_CXXFLAGS='-DCDDACOOP_VERSION=\"'"$VERSION"'\"' \
           cataclysm-tiles
+
+    - name: ccache stats
+      shell: bash
+      run: ccache -s
 
     - name: Strip CC-Sounds for slim DMG
       shell: bash

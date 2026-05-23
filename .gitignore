@@ -263,3 +263,6 @@ VERSION.txt
 CLAUDE.md
 MYNOTES.md
 *.a
+
+# Generated at build time by CI (or local dev with --version):
+src/cata_version_generated.h
