@@ -1,0 +1,129 @@
+name: Test build
+
+# Private test builds: trigger via the Actions tab (workflow_dispatch) or by
+# pushing a tag matching test-*. Builds both archs, then opens a DRAFT
+# GitHub Release with the DMGs attached. Draft releases are only visible to
+# repo collaborators — the maintainer manually shares the assets with
+# testers as needed, or promotes the draft to a real release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Short label for this build (shown in the release body, no spaces)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'test-*'
+
+permissions:
+  contents: write
+
+jobs:
+  compute-version:
+    name: Compute version string
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          DATE="$(date -u +%Y%m%d)"
+          SHA="$(git rev-parse --short=7 HEAD)"
+          LABEL="${{ inputs.label }}"
+          if [ -n "${LABEL}" ]; then
+            VERSION="test-${DATE}-${SHA}-${LABEL}"
+          else
+            VERSION="test-${DATE}-${SHA}"
+          fi
+          # If triggered by a test-* tag, prefer the tag itself.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    needs: compute-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, arch: arm64 }
+          - { runner: macos-13, arch: x64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build + package
+        uses: ./.github/actions/build-mac
+        with:
+          arch: ${{ matrix.arch }}
+          version: ${{ needs.compute-version.outputs.version }}
+
+  draft-release:
+    name: Create draft release
+    needs: [compute-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cddacoop-macos-arm64
+          path: dist/
+
+      - name: Download x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cddacoop-macos-x64
+          path: dist/
+
+      - name: Build commit list since last v*
+        id: changelog
+        run: |
+          LAST_TAG="$(git describe --tags --abbrev=0 --match='v*' 2>/dev/null || echo '')"
+          if [ -n "${LAST_TAG}" ]; then
+            RANGE="${LAST_TAG}..HEAD"
+            HEADER="Commits since ${LAST_TAG}:"
+          else
+            RANGE="HEAD"
+            HEADER="Recent commits:"
+          fi
+          {
+            echo "header<<EOF"
+            echo "${HEADER}"
+            echo "EOF"
+            echo "log<<EOF"
+            git log --pretty=format:'- %s (%h)' "${RANGE}" | head -50
+            echo
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.compute-version.outputs.tag }}
+          tag_name: ${{ needs.compute-version.outputs.tag }}
+          draft: true
+          prerelease: true
+          body: |
+            ## Test build ${{ needs.compute-version.outputs.version }}
+
+            Internal verification build — not for general release.
+
+            ${{ steps.changelog.outputs.header }}
+
+            ${{ steps.changelog.outputs.log }}
+          files: |
+            dist/cddacoop-*-macos-arm64.dmg
+            dist/cddacoop-*-macos-x64.dmg

@@ -1,0 +1,103 @@
+name: Build macOS binary
+description: >
+  Build cataclysm-tiles, package it as Cddacoop.app inside a DMG, and upload
+  the DMG as a workflow artifact named cddacoop-macos-<arch>.
+
+inputs:
+  arch:
+    description: 'arm64 (Apple Silicon) or x64 (Intel)'
+    required: true
+  version:
+    description: 'Version string baked into the binary (e.g. v0.1.0 or test-20260523-a1b2c3d).'
+    required: true
+
+outputs:
+  dmg-path:
+    description: 'Filesystem path of the produced DMG, relative to the repo root.'
+    value: ${{ steps.package.outputs.dmg-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        brew install \
+          sdl2 sdl2_image sdl2_mixer sdl2_ttf \
+          gettext \
+          dylibbundler \
+          create-dmg
+
+    - name: Rebrand bundle identity (Cataclysm → Cddacoop)
+      shell: bash
+      run: |
+        # Patch in place rather than committing renamed files to keep
+        # upstream merge conflicts minimal (per CLAUDE.md rule).
+        # macOS sed needs -i '' for in-place edits.
+        sed -i '' \
+          -e 's|com\.cataclysmdda\.en\.cataclysm|com.cddacoop.app|g' \
+          -e 's|<string>Cataclysm</string>|<string>Cddacoop</string>|' \
+          build-data/osx/Info.plist
+
+    - name: Build cataclysm-tiles
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        # FRAMEWORK=0 → link against brew-installed SDL2 dylibs, then let
+        # dylibbundler copy them into the .app at packaging time. Avoids
+        # the .framework-download dance.
+        # RELEASE=1 strips symbols and turns on optimization.
+        # CDDACOOP_VERSION is exposed to the binary so the MP handshake can
+        # refuse mismatched peers.
+        make -j"$(sysctl -n hw.logicalcpu)" \
+          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          NATIVE=osx FRAMEWORK=0 CLANG=1 \
+          RELEASE=1 \
+          EXTRA_CXXFLAGS='-DCDDACOOP_VERSION=\"'"$VERSION"'\"' \
+          cataclysm-tiles
+
+    - name: Package .app bundle
+      shell: bash
+      run: |
+        # `make app` produces Cataclysm.app at the repo root (name is
+        # hardcoded in the Makefile). The trailing dylibbundler step copies
+        # the SDL2 dylibs into Contents/Resources/ and rewrites the binary's
+        # load paths to @executable_path/.
+        make app \
+          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          NATIVE=osx FRAMEWORK=0 CLANG=1 \
+          RELEASE=1
+        # Rename post-hoc so the user-visible app inside the DMG matches the
+        # site / DMG filename without patching the Makefile.
+        mv Cataclysm.app Cddacoop.app
+
+    - name: Build DMG
+      id: package
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ARCH: ${{ inputs.arch }}
+      run: |
+        DMG="cddacoop-${VERSION}-macos-${ARCH}.dmg"
+        # `create-dmg` builds a styled .dmg with the Applications drop-link.
+        # Volume name shows in Finder when mounted.
+        create-dmg \
+          --volname "Cddacoop ${VERSION}" \
+          --window-size 540 380 \
+          --icon-size 96 \
+          --icon "Cddacoop.app" 140 190 \
+          --app-drop-link 400 190 \
+          --hide-extension "Cddacoop.app" \
+          --no-internet-enable \
+          "${DMG}" \
+          Cddacoop.app
+        echo "dmg-path=${DMG}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload DMG artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cddacoop-macos-${{ inputs.arch }}
+        path: ${{ steps.package.outputs.dmg-path }}
+        retention-days: 30
+        if-no-files-found: error
