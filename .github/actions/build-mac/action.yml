@@ -44,15 +44,16 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
       run: |
-        # FRAMEWORK=0 → link against brew-installed SDL2 dylibs, then let
-        # dylibbundler copy them into the .app at packaging time. Avoids
-        # the .framework-download dance.
+        # No FRAMEWORK var → link against brew-installed SDL2 dylibs, then
+        # let dylibbundler copy them into the .app at packaging time.
+        # (Makefile uses ifdef FRAMEWORK — even FRAMEWORK=0 triggers the
+        # framework path, so the var must not be defined at all.)
         # RELEASE=1 strips symbols and turns on optimization.
         # CDDACOOP_VERSION is exposed to the binary so the MP handshake can
         # refuse mismatched peers.
         make -j"$(sysctl -n hw.logicalcpu)" \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
-          NATIVE=osx FRAMEWORK=0 CLANG=1 \
+          NATIVE=osx CLANG=1 \
           RELEASE=1 \
           EXTRA_CXXFLAGS='-DCDDACOOP_VERSION=\"'"$VERSION"'\"' \
           cataclysm-tiles
@@ -66,7 +67,7 @@ runs:
         # load paths to @executable_path/.
         make app \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
-          NATIVE=osx FRAMEWORK=0 CLANG=1 \
+          NATIVE=osx CLANG=1 \
           RELEASE=1
         # Rename post-hoc so the user-visible app inside the DMG matches the
         # site / DMG filename without patching the Makefile.
