@@ -2692,6 +2692,20 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     player_character.reset_move_mode();
                 }
             }
+            // Mirror SP avatar_action::move's facing update — the client never
+            // calls into avatar_action::move (we dispatch to the host instead),
+            // so av.facing would otherwise stay stale and enrich_action would
+            // always send RIGHT to the host.  Replicates the non-iso branch
+            // exactly: dx > 0 → RIGHT, dx < 0 → LEFT, dx == 0 unchanged.
+            // TODO: iso-tileset branch (mirror avatar_action.cpp:318-329) if
+            // anyone uses an isometric tileset in MP.
+            if( offset_it != dir_to_offset.end() && !g->is_tileset_isometric() ) {
+                if( offset_it->second.x > 0 ) {
+                    player_character.facing = FacingDirection::RIGHT;
+                } else if( offset_it->second.x < 0 ) {
+                    player_character.facing = FacingDirection::LEFT;
+                }
+            }
             const std::string json = "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
                                      dir + "\"}";
             mp_dispatch( json, /*charge_from_caller=*/true );
