@@ -5,6 +5,7 @@
 #include "mp_queue.h"
 #include "mp_server.h"
 
+#include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "character_martial_arts.h"
 #include "martialarts.h"
@@ -68,9 +69,19 @@ namespace cata_mp {
 
 void mp_log( const std::string &msg )
 {
+    // Wall-clock ms since the previous mp_log line — lets us read the log as a
+    // timeline ("this step took 47ms") without having to add timing helpers
+    // around every call site.  Reset each line: prefix shows the gap since the
+    // last log call, so a long gap = something blocked the main thread.
+    static std::chrono::steady_clock::time_point last =
+        std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    const long long delta_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>( now - last ).count();
+    last = now;
     // stdout only — start-mp.sh tees stdout to /tmp/cdda-mp-{server,client}.log.
     // Writing to the file from here too would double every log line.
-    std::cout << msg << std::endl;
+    std::cout << "[+" << delta_ms << "ms] " << msg << std::endl;
 }
 
 static bool server_mode_ = false;
@@ -141,6 +152,28 @@ static uint32_t g_next_net_id = 0;
 
 // Server: maps vehicle pointers to stable network IDs for vehicle position sync.
 static std::unordered_map<vehicle *, uint32_t> g_server_veh_ids;
+
+// Server: nids for which the full vehicle save-format snapshot has already been
+// broadcast to the current client.  First broadcast of a previously-unknown
+// vehicle includes the "snapshot" payload so the client can mirror the SP
+// map::add_vehicle path; subsequent broadcasts stay slim.  Cleared on client
+// connect so a fresh client receives snapshots for every visible vehicle.
+// Also dropped per-nid when the vehicle's parts vector changes size (install,
+// remove, fold/unfold, damage-purge) so a structural mutation triggers a full
+// re-snapshot — the slim parts/cargo deltas cover state-on-existing-parts only.
+static std::unordered_set<uint32_t> g_client_known_veh_nids;
+
+// Server: per-nid baseline of the parts vector size from the last broadcast.
+// Any change (install/remove/purge) invalidates that nid's snapshot tracking
+// so the client receives a fresh full snapshot rather than indices that drift
+// from the host's vector.
+static std::unordered_map<uint32_t, size_t> g_server_veh_parts_count;
+
+// Server: nids broadcast in the most recent state packet.  Diffed against the
+// current iteration to detect vehicles that have disappeared (folded, fully
+// destroyed, driven out of bubble) so we can emit a "removed_vehicles" entry
+// in the state packet for the client to clean up.
+static std::unordered_set<uint32_t> g_server_veh_live_nids;
 
 // Client: maps server vehicle network IDs to the last-known absolute tile position.
 // Used to look up the vehicle object before moving it to the server-authoritative position.
@@ -243,6 +276,30 @@ static std::string g_last_host_action_label = "\xe2\x80\x94";
 // activity ticks on the side that owns the player.  Used by the Co-op HUD and
 // transition-edge messages.
 static std::string g_partner_activity;
+// Progress % (0-100) of the partner's current activity.  Forwarded each
+// action/state packet alongside g_partner_activity.  Read by the Co-op panel.
+static int g_partner_activity_pct = 0;
+// Total moves required by the partner's current activity (act.moves_total).
+// Read by the bump-menu predicate to decide whether the "Help with task"
+// option should appear (gate: >= HELPER_MIN_MOVES_TOTAL).  Zero when idle.
+static int g_partner_activity_moves_total = 0;
+// Last calendar turn the partner reported.  Used to display sync drift in the
+// Co-op panel: drift = local calendar - partner calendar.  Under lockstep
+// both sides should always advance together; nonzero drift is a useful sanity
+// indicator for the player.
+static int g_partner_calendar_turn = 0;
+// Last name the partner reported.  Used by the Co-op panel as a fallback when
+// the local proxy NPC isn't (yet) resolvable — proxy spawn races the panel on
+// first connect; this lets the panel still show *something* instead of
+// "Partner unknown".
+static std::string g_partner_name_cached;
+
+// Host-only: tracks whether the proxy NPC was previously resolvable.  Used to
+// detect the alive→gone transition so we can distinguish "proxy died in
+// combat on host" (notify client, disconnect) from "proxy was never spawned
+// yet" or "still null after a recent disconnect".  Cleared on disconnect; set
+// to true on the first grant where the proxy resolves.
+static bool g_proxy_was_alive = false;
 static std::string g_partner_activity_prev;
 
 // Client's avatar activity id snapshot at the start of each do_turn iteration.
@@ -268,27 +325,68 @@ static std::string mp_format_activity( const std::string &act_id )
     return s;
 }
 
-// Fire "Partner begins X." / "Partner has finished." on the transition edges.
-// Caller is responsible for setting g_partner_activity to the latest value
-// before calling this.
+// Look up the partner's display name.  On host: the proxy NPC representing
+// the connected client.  On client: the proxy NPC representing the host.
+// Falls back to "Partner" when the proxy isn't yet known.  This is the single
+// source of truth for any MP message that needs to address the other player.
+static std::string mp_partner_display_name()
+{
+    const character_id &id = is_hosting() ? remote_player_npc_id : client_host_npc_id;
+    if( id.is_valid() ) {
+        if( npc *n = g->critter_by_id<npc>( id ) ) {
+            if( !n->name.empty() ) {
+                return n->name;
+            }
+        }
+    }
+    return _( "Partner" );
+}
+
+// Translate an activity id (e.g. ACT_VEHICLE) to a human verb phrase suitable
+// for "<name> begins <X>." sentences.  Prefers the activity_type::verb()
+// translation maintained in JSON ("constructing a vehicle", "reading", etc.).
+// Falls back to a stripped/lowercased id when no verb is registered.
+static std::string mp_activity_verb_phrase( const std::string &act_id )
+{
+    if( act_id.empty() ) {
+        return std::string();
+    }
+    const activity_id aid( act_id );
+    if( aid.is_valid() ) {
+        const std::string v = aid->verb().translated();
+        if( !v.empty() ) {
+            return v;
+        }
+    }
+    return mp_format_activity( act_id );
+}
+
+// Forward decl — defined further down with the other co-op helper functions.
+static void mp_cancel_help_if_partner_done();
+
+// Fire "<partner> begins <verb>." / "<partner> has finished." on the
+// transition edges.  Caller is responsible for setting g_partner_activity to
+// the latest value before calling this.
 static void mp_partner_activity_transition_check()
 {
     if( g_partner_activity == g_partner_activity_prev ) {
         return;
     }
-    const std::string partner_name = is_hosting() ? remote_player_name_
-                                     : ( client_host_npc_id.is_valid()
-                                         ? []() -> std::string {
-                                             npc *hn = g->critter_by_id<npc>( client_host_npc_id );
-                                             return hn ? hn->name : std::string( "Partner" );
-                                         }() : std::string( "Partner" ) );
+    const std::string partner_name = mp_partner_display_name();
     if( g_partner_activity_prev.empty() && !g_partner_activity.empty() ) {
-        add_msg( m_info, _( "%s begins %s." ), partner_name,
-                 mp_format_activity( g_partner_activity ) );
+        add_msg( m_info, _( "%1$s begins %2$s." ), partner_name,
+                 mp_activity_verb_phrase( g_partner_activity ) );
     } else if( !g_partner_activity_prev.empty() && g_partner_activity.empty() ) {
-        add_msg( m_info, _( "%s has finished." ), partner_name );
+        // Use the just-ended activity's verb so the message reads "<name> has
+        // finished reading." instead of the generic "<name> has finished."
+        add_msg( m_info, _( "%1$s has finished %2$s." ), partner_name,
+                 mp_activity_verb_phrase( g_partner_activity_prev ) );
     }
     g_partner_activity_prev = g_partner_activity;
+    // Partner's activity changed — if we were helping with the OLD one and
+    // they've moved on (or stopped entirely), drop our local commitment so
+    // the SP helper bonus stops being applied.
+    mp_cancel_help_if_partner_done();
 }
 
 // Client → host message forwarding.  When the client's avatar generates a
@@ -313,41 +411,6 @@ static float g_mp_host_luminance = 0.0f;
 static float g_mp_remote_player_luminance = 0.0f;
 
 static const efftype_id effect_bleed( "bleed" );
-
-// ---------------------------------------------------------------------------
-// MP debug HUD
-// ---------------------------------------------------------------------------
-
-static std::string pending_label()
-{
-    if( g_pending_action.empty() ) {
-        return "\xe2\x80\x94"; // em dash
-    }
-    if( g_pending_action.find( "\"action\":\"move\"" ) != std::string::npos ) {
-        for( const char *d : { "ne", "nw", "se", "sw", "n", "s", "e", "w" } ) {
-            if( g_pending_action.find( std::string( "\"dir\":\"" ) + d + "\"" ) != std::string::npos ) {
-                return std::string( "move:" ) + d;
-            }
-        }
-        return "move";
-    }
-    if( g_pending_action.find( "\"action\":\"pickup\"" ) != std::string::npos ) {
-        return "pickup";
-    }
-    if( g_pending_action.find( "\"action\":\"wait\"" ) != std::string::npos ) {
-        return "wait";
-    }
-    if( g_pending_action.find( "\"action\":\"smash\"" ) != std::string::npos ) {
-        return "smash";
-    }
-    if( g_pending_action.find( "\"action\":\"open\"" ) != std::string::npos ) {
-        return "open";
-    }
-    if( g_pending_action.find( "\"action\":\"close\"" ) != std::string::npos ) {
-        return "close";
-    }
-    return "?";
-}
 
 // ---------------------------------------------------------------------------
 // Info panel (bottom-left corner)
@@ -375,56 +438,127 @@ struct mp_hud_t {
         werase( win );
         draw_border( win );
 
-        mvwprintz( win, point( ( W - 8 ) / 2, 0 ), c_cyan, " Co-op " );
-
-        // Single content row: queued action | partner/host status.
-        if( is_client_mode() ) {
-            const std::string pend = pending_label();
-            mvwprintz( win, point( 2, 1 ), c_white, "Queued: " );
-            mvwprintz( win, point( 10, 1 ),
-                       pend == "\xe2\x80\x94" ? c_dark_gray : c_yellow, "%-12s", pend.c_str() );
-
-            const bool my_turn = get_avatar().get_moves() > 0;
-            mvwprintz( win, point( 26, 1 ), c_white, "Host: " );
-            if( !g_partner_activity.empty() ) {
-                // Partner is in a long-running activity — show it instead of the
-                // lockstep state, which would otherwise read "acting..." even
-                // when the host is just passively waiting.
-                mvwprintz( win, point( 32, 1 ), c_yellow, "%-15s",
-                           mp_format_activity( g_partner_activity ).c_str() );
-            } else {
-                mvwprintz( win, point( 32, 1 ),
-                           my_turn ? c_dark_gray : c_light_green,
-                           my_turn ? "waiting for you" : "acting..." );
-            }
-        } else {
-            // Host has no concept of a "queued" action — show the last action
-            // it actually executed so the user can confirm input registered.
-            mvwprintz( win, point( 2, 1 ), c_white, "Last:   " );
-            mvwprintz( win, point( 10, 1 ),
-                       g_last_host_action_label == "\xe2\x80\x94" ? c_dark_gray : c_yellow,
-                       "%-12s", g_last_host_action_label.c_str() );
-
-            std::string plabel = remote_player_name_.empty() ? "Partner" : remote_player_name_;
-            if( plabel.size() > 10 ) {
-                plabel = plabel.substr( 0, 9 ) + "~";
-            }
-            plabel += ":";
-            mvwprintz( win, point( 26, 1 ), c_white, "%s ", plabel.c_str() );
-            const int status_x = 26 + static_cast<int>( plabel.size() ) + 1;
-            if( remote_player_connected ) {
-                const bool acted = g_client_acted_this_turn;
-                if( !g_partner_activity.empty() ) {
-                    mvwprintz( win, point( status_x, 1 ), c_yellow, "%-15s",
-                               mp_format_activity( g_partner_activity ).c_str() );
-                } else {
-                    mvwprintz( win, point( status_x, 1 ),
-                               acted ? c_light_green : c_yellow,
-                               acted ? "ready" : "acting..." );
+        // Partner-centric single content row.  Host sees the connected client;
+        // client sees the host.  Both read from the local NPC proxy that the
+        // wire-state apply path keeps fresh (HP, move_mode, position), plus
+        // the latest g_partner_activity / g_partner_activity_pct received
+        // from the wire.
+        const character_id &partner_id = is_hosting()
+                                         ? remote_player_npc_id
+                                         : client_host_npc_id;
+        npc *partner = partner_id.is_valid()
+                       ? g->critter_by_id<npc>( partner_id )
+                       : nullptr;
+        // Fallback: id may be stale or invalid after a reconnect/respawn but
+        // a matching NPC still exists in the active world.  Scan by cached
+        // name so we can still pull HP / move_mode for the panel.
+        if( !partner && !g_partner_name_cached.empty() ) {
+            for( npc &candidate : g->all_npcs() ) {
+                if( candidate.name == g_partner_name_cached ) {
+                    partner = &candidate;
+                    break;
                 }
-            } else {
-                mvwprintz( win, point( status_x, 1 ), c_dark_gray, "not connected" );
             }
+        }
+
+        if( !remote_player_connected && is_hosting() ) {
+            mvwprintz( win, point( 2, 1 ), c_dark_gray, "%s",
+                       _( "Partner not connected" ) );
+            wnoutrefresh( win );
+            return;
+        }
+
+        // Column 0: partner name.  Prefer the live proxy NPC's name; fall back
+        // to the cached name from the wire when the proxy isn't resolvable
+        // (first-frame race after connect, between npc despawn/respawn).
+        // Truncated to 10 chars with a ".." continuation marker.
+        std::string pname = partner ? partner->name : g_partner_name_cached;
+        if( pname.empty() ) {
+            pname = "Partner";
+        }
+        if( pname.size() > 10 ) {
+            pname = pname.substr( 0, 8 ) + "..";
+        }
+        int x = 1;
+        mvwprintz( win, point( x, 1 ), c_white, "%-10s", pname.c_str() );
+        x += 11;
+
+        // Move mode in square brackets — first char only (w/r/c/p) for compactness.
+        // Requires the proxy NPC; show a placeholder when it isn't available.
+        char mm = '?';
+        if( partner ) {
+            const std::string mode_str = partner->move_mode.str();
+            if( !mode_str.empty() ) {
+                mm = mode_str[0];
+            }
+        }
+        mvwprintz( win, point( x, 1 ), partner ? c_white : c_dark_gray, "[%c]", mm );
+        x += 4;
+
+        // HP bar — 6 chars colored by the WORST body part's HP fraction.
+        // Summing across all parts hid critical damage: a half-shredded
+        // torso gets averaged out by full limbs and the bar stays in the
+        // green band even when the partner is one hit from going down.
+        // The min-across-parts metric answers "is my partner in trouble?"
+        // which is what the player actually wants to glance at.
+        const int bar_w = 6;
+        int filled = 0;
+        nc_color hp_color = c_dark_gray;
+        if( partner ) {
+            float worst = 1.0f;
+            for( const bodypart_id &bp : partner->get_all_body_parts() ) {
+                const int hpm = partner->get_hp_max( bp );
+                if( hpm <= 0 ) {
+                    continue;
+                }
+                const float f = std::clamp(
+                                    static_cast<float>( partner->get_hp( bp ) ) / hpm,
+                                    0.0f, 1.0f );
+                if( f < worst ) {
+                    worst = f;
+                }
+            }
+            hp_color = worst > 0.66f ? c_green
+                       : worst > 0.33f ? c_yellow : c_red;
+            filled = static_cast<int>( std::round( worst * bar_w ) );
+        }
+        mvwprintz( win, point( x, 1 ), c_white, "[" );
+        for( int i = 0; i < bar_w; ++i ) {
+            mvwprintz( win, point( x + 1 + i, 1 ),
+                       i < filled ? hp_color : c_dark_gray, "#" );
+        }
+        mvwprintz( win, point( x + 1 + bar_w, 1 ), c_white, "]" );
+        x += bar_w + 3;
+
+        // Activity + progress %.  Use the verb phrase (e.g. "reading",
+        // "constructing a vehicle") so the panel matches the begin/finish
+        // sentences.  Empty when partner is idle.
+        if( !g_partner_activity.empty() ) {
+            const std::string verb = mp_activity_verb_phrase( g_partner_activity );
+            // Compose "<verb> NN%" — clamp verb length so the % stays on row.
+            const int avail = W - x - 8; // reserve room for " NN%" + drift
+            std::string vshown = verb;
+            if( static_cast<int>( vshown.size() ) > avail ) {
+                vshown = vshown.substr( 0, std::max( 0, avail - 2 ) ) + "..";
+            }
+            mvwprintz( win, point( x, 1 ), c_yellow, "%s", vshown.c_str() );
+            x += static_cast<int>( vshown.size() ) + 1;
+            mvwprintz( win, point( x, 1 ), c_light_blue, "%d%%",
+                       g_partner_activity_pct );
+            x += 5;
+        }
+
+        // Calendar drift indicator on the right edge.  Δ followed by signed
+        // turn count.  Green when 0 (in sync), yellow nonzero, red large.
+        // Always-on so it's a visible sanity light, not just an error popup.
+        if( g_partner_calendar_turn != 0 ) {
+            const int local_turn = to_turn<int>( calendar::turn );
+            const int drift = local_turn - g_partner_calendar_turn;
+            const nc_color dc = drift == 0 ? c_green
+                                : std::abs( drift ) <= 1 ? c_yellow : c_red;
+            const std::string ds = "Δ" + std::to_string( drift );
+            mvwprintz( win, point( W - static_cast<int>( ds.size() ) - 1, 1 ),
+                       dc, "%s", ds.c_str() );
         }
 
         wnoutrefresh( win );
@@ -445,16 +579,22 @@ struct mp_strip_t {
     mutable std::chrono::steady_clock::time_point last_go_time =
         std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
 
+    // Bar width in columns.  Two columns of full block chars gives a chunky
+    // solid bar that's easy to read with peripheral vision while focused on
+    // the game view.  One half-block column blended into the adjacent black
+    // space and was hard to glance-read.
+    static constexpr int strip_w = 2;
+
     explicit mp_strip_t( bool right = false ) : right_side( right ) {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
             const int sidebar_w = panel_manager::get_manager().get_width_right();
             const int x = right_side
-                          ? TERMX - sidebar_w - 1
+                          ? TERMX - sidebar_w - strip_w
                           : 0;
             mp_log( "[cdda-mp] mp_strip resize: right=" + std::to_string( right_side ) +
                     " TERMX=" + std::to_string( TERMX ) + " sidebar_w=" + std::to_string( sidebar_w ) +
                     " x=" + std::to_string( x ) );
-            win = catacurses::newwin( TERMY, 1, point( x, 0 ) );
+            win = catacurses::newwin( TERMY, strip_w, point( x, 0 ) );
             ua.position_from_window( win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
@@ -488,10 +628,13 @@ struct mp_strip_t {
                                      now - last_go_time ).count();
         const bool show_green = !in_wait_act && ( go || since_go_ms < 400 );
         const nc_color c = show_green ? c_light_green : c_red;
-        // ▌ left-half block on left edge; ▐ right-half block on right edge
-        const char *ch = right_side ? "\xe2\x96\x90" : "\xe2\x96\x8c";
+        // █ full block — fills the whole cell vs the previous left/right half
+        // block which left half the column black against the game view.
+        static constexpr const char *ch = "\xe2\x96\x88";
         for( int y = 0; y < TERMY; y++ ) {
-            mvwprintz( win, point( 0, y ), c, ch );
+            for( int x = 0; x < strip_w; x++ ) {
+                mvwprintz( win, point( x, y ), c, ch );
+            }
         }
         wnoutrefresh( win );
     }
@@ -795,6 +938,9 @@ static void spawn_remote_player( const std::string &name )
         remote->normalize();
         remote->name = name;
     }
+    // Cache the partner's name so the Co-op panel has a stable fallback even
+    // if the NPC pointer briefly becomes unresolvable (load/unload races).
+    g_partner_name_cached = name;
 
     // Ensure the NPC has a valid character_id before inserting into the world.
     // make_shared_fast<npc>() + normalize() never calls setID(), so we must
@@ -829,6 +975,9 @@ static void spawn_remote_player( const std::string &name )
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
     g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
+    g_client_known_veh_nids.clear();  // re-snapshot every visible vehicle for the fresh client
+    g_server_veh_parts_count.clear();
+    g_server_veh_live_nids.clear();
     g_separation_tier = 0;
     g_last_forwarded_msg_count = Messages::size();  // don't forward pre-connect history
     mp_save_npc_ids();  // persist ID so next session can clean it up
@@ -868,6 +1017,7 @@ static void remove_remote_player()
 
     remote_player_connected = false;
     remote_player_npc_id = character_id();
+    g_proxy_was_alive = false;
     g_separation_tier = 0;
     // Do NOT reset g_grant_seq here.  It must stay monotonically increasing so
     // that a reconnecting client (which resets g_client_last_grant_seq=0 via the
@@ -882,6 +1032,104 @@ static void remove_remote_player()
 // After substituting an NPC name → "You", the verb is still third-person singular.
 // Strip the suffix so "You guts" → "You gut", "You misses" → "You miss", etc.
 // Also fixes "You's " → "your " for possessive constructions.
+// Rewrite a first-person message ("You drop your hand mirror on the grass.")
+// into a third-person version with the subject's name and proper conjugation
+// ("Wilford Rubin drops Wilford Rubin's hand mirror on the grass.").
+//
+// Handles three substitutions and one conjugation pass:
+//   1. Leading "You " → "<name> " + s/-verb conjugation
+//   2. Mid-string " you " → " <name> "  (any case)
+//   3. Possessives "your "/"Your "/"yours" → "<name>'s " / "<name>'s"
+//   4. Reflexive "yourself" → "themself"
+//
+// Use this any time the host's own avatar messages need to be presented to
+// the OTHER player from a third-person view — typically when forwarding the
+// host's "You X" messages to the client.  Without the possessive pass, the
+// client sees "FrozenFoxy drops your X" which reads as "the host dropped
+// MY (client's) X" — semantically wrong.
+static void mp_rewrite_first_to_third( std::string &s, const std::string &subject )
+{
+    if( subject.empty() ) {
+        return;
+    }
+    const std::string possessive = subject + "'s";
+
+    auto replace_all = []( std::string & dst, const std::string & from, const std::string & to ) {
+        if( from.empty() ) {
+            return;
+        }
+        size_t p = 0;
+        while( ( p = dst.find( from, p ) ) != std::string::npos ) {
+            dst.replace( p, from.size(), to );
+            p += to.size();
+        }
+    };
+
+    // Possessives first — "your" before "you" so a later " you " sub doesn't
+    // chew the start of "your".
+    replace_all( s, " your ", " " + possessive + " " );
+    replace_all( s, " Your ", " " + possessive + " " );
+    replace_all( s, " yours ", " " + possessive + " " );
+    replace_all( s, " yourself ", " themself " );
+    if( s.size() >= 5 && s.compare( 0, 5, "Your " ) == 0 ) {
+        s.replace( 0, 4, possessive );
+    }
+
+    // Mid-string "you" (lowercase, e.g., "the can hit you in the head") becomes
+    // the subject name.
+    replace_all( s, " you ", " " + subject + " " );
+
+    // Leading "You " — handled last so the verb conjugation pass below can
+    // assume the subject already sits at position 0.
+    if( s.size() >= 4 && s.compare( 0, 4, "You " ) == 0 ) {
+        s.replace( 0, 3, subject );
+        // Now conjugate the verb that follows (e.g., "drop" → "drops").
+        const size_t vs = subject.size() + 1; // skip "<name> "
+        size_t ve = s.find( ' ', vs );
+        if( ve == std::string::npos ) {
+            ve = s.size();
+        }
+        if( ve > vs + 1 ) {
+            const std::string v = s.substr( vs, ve - vs );
+            std::string fixed;
+            // Irregular verbs (second-person plural → third-person singular).
+            // Must run before the generic "add s" rule below, otherwise
+            // "have" → "haves", "do" → "dos", "are" → "ares".
+            static const std::vector<std::pair<std::string, std::string>> irregulars = {
+                { "have", "has" }, { "do", "does" }, { "are", "is" }, { "were", "was" },
+                { "go", "goes" }, { "say", "says" }, { "Have", "has" }, { "Do", "does" },
+                { "Are", "is" }, { "Were", "was" },
+            };
+            bool matched = false;
+            for( const auto &p : irregulars ) {
+                if( v == p.first ) {
+                    fixed = p.second;
+                    matched = true;
+                    break;
+                }
+            }
+            auto ends_with = [&]( const char *suf, size_t n ) {
+                return v.size() >= n && v.compare( v.size() - n, n, suf ) == 0;
+            };
+            if( !matched ) {
+                if( ends_with( "y", 1 ) && v.size() > 1 ) {
+                    // try → tries (but not "stay" → "stays" — vowel before 'y' keeps it)
+                    const char before_y = v[v.size() - 2];
+                    const bool vowel_before_y = before_y == 'a' || before_y == 'e' ||
+                                                before_y == 'i' || before_y == 'o' || before_y == 'u';
+                    fixed = vowel_before_y ? v + "s" : v.substr( 0, v.size() - 1 ) + "ies";
+                } else if( ends_with( "s", 1 ) || ends_with( "x", 1 ) || ends_with( "z", 1 ) ||
+                           ends_with( "ch", 2 ) || ends_with( "sh", 2 ) ) {
+                    fixed = v + "es";
+                } else {
+                    fixed = v + "s";
+                }
+            }
+            s.replace( vs, ve - vs, fixed );
+        }
+    }
+}
+
 static void fix_you_verb( std::string &s )
 {
     for( size_t p = 0; ( p = s.find( "You's ", p ) ) != std::string::npos; ) {
@@ -904,19 +1152,36 @@ static void fix_you_verb( std::string &s )
     const std::string v = s.substr( vs, ve - vs );
     std::string fixed;
 
+    // Irregular verbs (third-person singular → second-person plural).  These
+    // must be handled before the generic "trim trailing s" rule, otherwise
+    // "has" → "ha", "does" → "doe", "is" → "i".
+    static const std::vector<std::pair<std::string, std::string>> irregulars = {
+        { "has", "have" }, { "does", "do" }, { "is", "are" }, { "was", "were" },
+        { "goes", "go" }, { "says", "say" }, { "Has", "have" }, { "Does", "do" },
+        { "Is", "are" }, { "Was", "were" },
+    };
+    bool matched = false;
+    for( const auto &p : irregulars ) {
+        if( v == p.first ) {
+            fixed = p.second;
+            matched = true;
+            break;
+        }
+    }
     auto ends_with = [&]( const char *suffix, size_t n ) {
         return v.size() >= n && v.compare( v.size() - n, n, suffix ) == 0;
     };
-
-    if( ends_with( "ies", 3 ) ) {
-        fixed = v.substr( 0, v.size() - 3 ) + "y";
-    } else if( ends_with( "sses", 4 ) || ends_with( "xes", 3 ) || ends_with( "zes", 3 ) ||
-               ends_with( "ches", 4 ) || ends_with( "shes", 4 ) ) {
-        fixed = v.substr( 0, v.size() - 2 );
-    } else if( v.size() > 1 && v.back() == 's' ) {
-        fixed = v.substr( 0, v.size() - 1 );
-    } else {
-        return;
+    if( !matched ) {
+        if( ends_with( "ies", 3 ) ) {
+            fixed = v.substr( 0, v.size() - 3 ) + "y";
+        } else if( ends_with( "sses", 4 ) || ends_with( "xes", 3 ) || ends_with( "zes", 3 ) ||
+                   ends_with( "ches", 4 ) || ends_with( "shes", 4 ) ) {
+            fixed = v.substr( 0, v.size() - 2 );
+        } else if( v.size() > 1 && v.back() == 's' ) {
+            fixed = v.substr( 0, v.size() - 1 );
+        } else {
+            return;
+        }
     }
 
     s.replace( vs, ve - vs, fixed );
@@ -1061,11 +1326,29 @@ void host_capture_avatar_msgs( size_t pre_msg )
             continue;
         }
         std::string out = text;
-        // Replace "You" with the host's character name.
-        out.replace( 0, 3, host_name );
+        // Convert first-person to third-person properly: subject substitution,
+        // verb conjugation ("drop" → "drops"), AND possessive substitution
+        // ("your X" → "<name>'s X").  Without the possessive pass the client
+        // sees "<host> drops your X" and reads "your" as referring to itself
+        // — wrong subject.
+        mp_rewrite_first_to_third( out, host_name );
         mp_log( "[cdda-mp] host_combat_msg: " + out );
         g_host_action_msgs_pending.push_back( out );
     }
+}
+
+void host_broadcast_post_action()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    server *srv = get_active_server();
+    if( !srv ) {
+        return;
+    }
+    mp_log( "[cdda-mp] HOST-ACK: post-action broadcast grant_seq="
+            + std::to_string( g_grant_seq ) );
+    srv->post_broadcast( serialize_remote_player_state() + "\n" );
 }
 
 // Standard turn-ending broadcast for handlers in handle_remote_action.
@@ -1138,6 +1421,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
     }
+    if( jo.has_int( "client_activity_pct" ) ) {
+        g_partner_activity_pct = jo.get_int( "client_activity_pct" );
+    }
+    if( jo.has_int( "client_activity_moves_total" ) ) {
+        g_partner_activity_moves_total = jo.get_int( "client_activity_moves_total" );
+    }
+    if( jo.has_int( "client_calendar_turn" ) ) {
+        g_partner_calendar_turn = jo.get_int( "client_calendar_turn" );
+    }
 
     // Explicit lifecycle markers for the client's passive activities.  These
     // are signal-only — they don't consume host moves and don't drive any
@@ -1146,18 +1438,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // don't race the heartbeat.
     if( msg.find( "\"action\":\"activity_start\"" ) != std::string::npos ) {
         const std::string id = jo.get_string( "activity_id", "" );
+        const std::string prev = g_partner_activity;
         if( !id.empty() ) {
             g_partner_activity = id;
             mp_partner_activity_transition_check();
         }
-        mp_log( "[cdda-mp] activity_start recv: " + id );
+        mp_log( "[cdda-mp] ACT-START RECV: id=" + id
+                + " g_partner_activity prev=" + prev + " now=" + g_partner_activity );
         return;
     }
     if( msg.find( "\"action\":\"activity_end\"" ) != std::string::npos ) {
         const std::string id = jo.get_string( "activity_id", "" );
+        const std::string prev = g_partner_activity;
         g_partner_activity.clear();
         mp_partner_activity_transition_check();
-        mp_log( "[cdda-mp] activity_end recv: " + id );
+        mp_log( "[cdda-mp] ACT-END RECV: id=" + id
+                + " g_partner_activity prev=" + prev + " now=" + g_partner_activity );
         return;
     }
 
@@ -2186,6 +2482,39 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     }
 
     // Honk horn.
+    // Client → host vehicle construction sync.  Client runs the activity
+    // locally (timer, moves, items, messages, local vehicle mutation) and on
+    // finish dispatches this action with the actor's serialized state.  Host
+    // reconstructs the actor and runs complete_vehicle against the proxy NPC's
+    // crafting inventory and the host's authoritative vehicle.  Piece A's
+    // parts-count-change detection then triggers a snapshot rebroadcast so
+    // the client's local vehicle is replaced with the post-construction
+    // snapshot — covers install, remove (including appliance), repair,
+    // refill, change-shape paths in vehicle_activity_actor.
+    if( msg.find( "\"action\":\"vehicle_construct\"" ) != std::string::npos ) {
+        try {
+            JsonValue actor_jv = jo.get_member( "actor" );
+            std::unique_ptr<activity_actor> actor =
+                vehicle_activity_actor::deserialize( actor_jv );
+            if( !actor ) {
+                mp_log( "[cdda-mp] vehicle_construct: actor deserialize returned null" );
+            } else {
+                player_activity tmp_act( *actor );
+                // complete_vehicle mutates the actor's internal state (vp_index
+                // adjustments etc.) so call it on the deserialized instance
+                // rather than the temp player_activity's clone.
+                static_cast<vehicle_activity_actor *>( actor.get() )
+                    ->complete_vehicle( tmp_act, *remote );
+                mp_log( "[cdda-mp] HOST-VEH-CONSTRUCT applied for proxy NPC" );
+            }
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] vehicle_construct parse error: " + std::string( e.what() ) );
+        }
+        flush_action_msgs( pre_action_msg, remote->name );
+        srv_emit_ack( "vehicle_construct" );
+        return;
+    }
+
     if( msg.find( "\"action\":\"honk\"" ) != std::string::npos ) {
         map &here = get_map();
         const tripoint_bub_ms bub = remote->pos_bub();
@@ -2357,8 +2686,25 @@ void grant_client_turn()
     }
     npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
     if( !remote ) {
+        // If we previously had a live proxy and it's now gone, treat it as a
+        // death (monsters on the host's side killed the NPC representing the
+        // client).  Notify the client cleanly so they get a "You died." flow
+        // instead of a silent "Lost connection to server" 20 seconds later
+        // when something else times out.  Then tear down the host-side state.
+        if( g_proxy_was_alive ) {
+            mp_log( "[cdda-mp] PROXY-DIED: notifying client and disconnecting" );
+            if( server *srv = get_active_server() ) {
+                srv->post_broadcast( "{\"type\":\"you_died\"}\n" );
+                // Brief flush window so the packet leaves before the socket
+                // is torn down — same pattern as notify_client_host_died.
+                std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+            }
+            g_proxy_was_alive = false;
+            remove_remote_player();
+        }
         return;
     }
+    g_proxy_was_alive = true;
     g_client_acted_this_turn = false;
     g_remote_moves = remote->get_speed();
     ++g_grant_seq;
@@ -2425,6 +2771,14 @@ void wait_for_client_action()
     }
 
     int iter_count = 0;
+    // Per-phase max times across this SRV-WAIT, logged once on exit so we
+    // don't spam per-iter.  Anything that spikes above ~16ms is blocking the
+    // SDL input pump and explains "I pressed zoom and it didn't react."
+    int max_waitev_ms = 0;
+    int max_drain_ms  = 0;
+    int max_pump_ms   = 0;
+    int max_redraw_ms = 0;
+    int max_input_ms  = 0;
     while( remote_player_connected ) {
         if( g_client_acted_this_turn ) {
             break;  // client acted, advance shared clock by this turn
@@ -2436,11 +2790,21 @@ void wait_for_client_action()
         // async-tick budget by up to seconds.  Re-adding host-side menu access
         // during waits will need a non-blocking input peek, not a full action
         // dispatcher.
-        const auto step = std::chrono::milliseconds( 16 );
+        // Burst mode: both players in non-interactive activities (e.g. crafting +
+        // helping).  Drop the 16ms throttle so the shared clock advances as fast
+        // as the host's CPU can serialize ticks — turns an 8-hour craft from
+        // minutes of staring at the wait popup into seconds.
+        const auto step = mp_in_burst_mode()
+                          ? std::chrono::milliseconds( 0 )
+                          : std::chrono::milliseconds( 16 );
+        const auto t_iter0 = std::chrono::steady_clock::now();
         get_mp_queue().wait_for_event( step );
+        const auto t_after_wait = std::chrono::steady_clock::now();
         process_mp_events();
+        const auto t_after_drain = std::chrono::steady_clock::now();
         ensure_mp_hud();
         inp_mngr.pump_events();
+        const auto t_after_pump = std::chrono::steady_clock::now();
         // Redraw the side strip + Co-op panel ~10x/sec while we're blocked so
         // the host's HUD actually flips to red while locked, instead of staying
         // green until the wait exits.  Rate-limited because ui_manager::redraw
@@ -2451,6 +2815,7 @@ void wait_for_client_action()
             ui_manager::redraw();
             last_redraw = now;
         }
+        const auto t_after_redraw = std::chrono::steady_clock::now();
         // Mirror the client's locked-input branch: call full handle_action so
         // every free UI action (zoom, morale, map, inventory, messages, look)
         // works while the host is waiting for the client.  handle_action gates
@@ -2469,6 +2834,34 @@ void wait_for_client_action()
             // poll path; handle_action would dispatch its own actions which
             // is not what we want during a long activity.
             handle_key_blocking_activity();
+        }
+        const auto t_after_input = std::chrono::steady_clock::now();
+        const int waitev_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>( t_after_wait - t_iter0 ).count() );
+        const int drain_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>( t_after_drain - t_after_wait ).count() );
+        const int pump_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>( t_after_pump - t_after_drain ).count() );
+        const int redraw_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>( t_after_redraw - t_after_pump ).count() );
+        const int input_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>( t_after_input - t_after_redraw ).count() );
+        max_waitev_ms = std::max( max_waitev_ms, waitev_ms );
+        max_drain_ms  = std::max( max_drain_ms,  drain_ms );
+        max_pump_ms   = std::max( max_pump_ms,   pump_ms );
+        max_redraw_ms = std::max( max_redraw_ms, redraw_ms );
+        max_input_ms  = std::max( max_input_ms,  input_ms );
+        // Flag any single iter where a phase spent > 30ms — that's a smoking
+        // gun for input lag, since the SDL queue can only drain via pump_events
+        // and any phase that hogs the main thread blocks the next keypress.
+        if( waitev_ms > 30 || drain_ms > 30 || pump_ms > 30 ||
+            redraw_ms > 30 || input_ms > 30 ) {
+            mp_log( "[cdda-mp] SRV-WAIT-ITER#" + std::to_string( iter_count ) +
+                    " SLOW: wait=" + std::to_string( waitev_ms ) +
+                    "ms drain=" + std::to_string( drain_ms ) +
+                    "ms pump=" + std::to_string( pump_ms ) +
+                    "ms redraw=" + std::to_string( redraw_ms ) +
+                    "ms input=" + std::to_string( input_ms ) + "ms" );
         }
         iter_count++;
     }
@@ -2489,7 +2882,12 @@ void wait_for_client_action()
                 "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
                 " host_in_wait=" + std::to_string( host_in_wait ) +
                 " iters=" + std::to_string( iter_count ) +
-                " acted_flag=" + std::to_string( g_client_acted_this_turn ) );
+                " acted_flag=" + std::to_string( g_client_acted_this_turn ) +
+                " max_wait=" + std::to_string( max_waitev_ms ) +
+                "ms max_drain=" + std::to_string( max_drain_ms ) +
+                "ms max_pump=" + std::to_string( max_pump_ms ) +
+                "ms max_redraw=" + std::to_string( max_redraw_ms ) +
+                "ms max_input=" + std::to_string( max_input_ms ) + "ms" );
     }
 
     // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
@@ -2563,6 +2961,11 @@ bool is_host_waiting_for_client()
     return g_host_waiting_for_client;
 }
 
+bool client_acted_this_turn()
+{
+    return g_client_acted_this_turn;
+}
+
 bool is_partner_in_wait_activity()
 {
     // g_partner_activity is the activity id string last broadcast from the
@@ -2572,6 +2975,121 @@ bool is_partner_in_wait_activity()
            g_partner_activity == "ACT_WAIT_STAMINA" ||
            g_partner_activity == "ACT_WAIT_WEATHER" ||
            g_partner_activity == "ACT_WAIT_NPC";
+}
+
+bool is_partner_helping_us()
+{
+    return g_partner_activity == "ACT_HELP_PARTNER";
+}
+
+bool partner_activity_accepts_help()
+{
+    // SP's helper system (get_crafting_helpers + skill/proficiency math)
+    // engages for these activities.  ACT_READ is intentionally excluded:
+    // its "learn alongside" semantics need a separate design pass.
+    static const std::set<std::string> eligible = {
+        "ACT_CRAFT",
+        "ACT_LONG_CRAFT",
+        "ACT_BUILD",
+        "ACT_VEHICLE",
+        "ACT_VEHICLE_REPAIR",
+        "ACT_BUTCHER",
+        "ACT_BUTCHER_FULL",
+        "ACT_FIELD_DRESS",
+        "ACT_QUARTER",
+        "ACT_DISMEMBER",
+        "ACT_SKIN",
+        "ACT_DISASSEMBLE",
+        "ACT_DISASSEMBLE_RECURSIVELY",
+    };
+    return eligible.count( g_partner_activity ) > 0;
+}
+
+int partner_activity_moves_total()
+{
+    return g_partner_activity_moves_total;
+}
+
+int partner_activity_pct()
+{
+    return g_partner_activity_pct;
+}
+
+bool mp_in_burst_mode()
+{
+    // Both sides committed to non-interactive activities (neither needs
+    // user input this turn).  Skip the lockstep throttle so the calendar
+    // doesn't crawl at 1 turn/sec when nobody is actually playing.
+    if( !is_hosting() && !is_client_mode() ) {
+        return false;
+    }
+    if( !get_avatar().activity ) {
+        return false;
+    }
+    if( g_partner_activity.empty() ) {
+        return false;
+    }
+    return true;
+}
+
+// Compute a 0–100 progress percent for an arbitrary player_activity.  Most
+// actors populate moves_total + moves_left, but a few (craft, vehicle) leave
+// moves_total at 0 and track progress elsewhere.  This helper hides those
+// special cases so the wire field `*_activity_pct` reflects what the player
+// sees in their wait popup, not 0%.
+int mp_compute_activity_pct( const player_activity &act )
+{
+    if( !act ) {
+        return 0;
+    }
+    // Helper activity: mirror the partner's reported progress so both sides
+    // display the same percent.  ACT_HELP_PARTNER uses a long fallback
+    // duration on assign (since craft/vehicle leave moves_total=0), which
+    // would otherwise read 1% throughout the entire help.  Check this BEFORE
+    // the moves_total branch.
+    static const activity_id ACT_HELP_PARTNER_ID( "ACT_HELP_PARTNER" );
+    if( act.id() == ACT_HELP_PARTNER_ID ) {
+        return g_partner_activity_pct;
+    }
+    // Standard path — works for ACT_WAIT and any other actor that sets
+    // moves_total properly.
+    if( act.moves_total > 0 ) {
+        const int done = act.moves_total - act.moves_left;
+        return std::clamp( done * 100 / act.moves_total, 0, 100 );
+    }
+    // Crafting: progress lives in the craft item's item_counter (scale of
+    // 100,000 per percent, max 10,000,000).  Same calculation as SP's
+    // tname display (`"%s (%d%%)"`).
+    static const activity_id ACT_CRAFT_ID( "ACT_CRAFT" );
+    static const activity_id ACT_LONG_CRAFT_ID( "ACT_LONG_CRAFT" );
+    if( act.id() == ACT_CRAFT_ID || act.id() == ACT_LONG_CRAFT_ID ) {
+        if( !act.targets.empty() && act.targets[0] ) {
+            const item *it = act.targets[0].get_item();
+            if( it && it->is_craft() ) {
+                return std::clamp( it->item_counter / 100000, 0, 100 );
+            }
+        }
+    }
+    return 0;
+}
+
+// If our avatar is locally running ACT_HELP_PARTNER but the partner just
+// finished / cancelled / switched to a non-helper-eligible activity, cancel
+// our help commitment so we get our moves back and the SP helper bonus stops
+// applying on their side.  Called from each wire-parse site that mutates
+// g_partner_activity.  Safe to call when the avatar isn't helping (no-op).
+static void mp_cancel_help_if_partner_done()
+{
+    avatar &av = get_avatar();
+    if( !av.activity || av.activity.id().str() != "ACT_HELP_PARTNER" ) {
+        return;
+    }
+    if( partner_activity_accepts_help() ) {
+        return;
+    }
+    mp_log( "[cdda-mp] HELP-CANCEL: partner activity ended, dropping ACT_HELP_PARTNER" );
+    add_msg( m_info, _( "Your partner finished — you stop helping." ) );
+    av.cancel_activity();
 }
 
 void mark_wake_client_pending()
@@ -2894,6 +3412,18 @@ static bool apply_one_state_message( const std::string &msg )
         return true;
     }
 
+    // Our character died on the host (proxy NPC was killed by monsters there).
+    // Mirror the SP death path locally: zero our HP and let the next do_turn
+    // trigger the standard death-screen / game-over flow.  Without this the
+    // client would just see a "Lost connection to server" 20 seconds later
+    // when the silent host stops granting turns — confusing UX for what is
+    // really "your character died".
+    if( msg.find( "\"type\":\"you_died\"" ) != std::string::npos ) {
+        add_msg( m_bad, "%s", _( "You died." ) );
+        get_avatar().die( &get_map(), nullptr );
+        return true;
+    }
+
     const bool is_state = msg.find( "\"type\":\"state\"" ) != std::string::npos ||
                           msg.find( "\"type\": \"state\"" ) != std::string::npos;
     if( !is_state ) {
@@ -2934,6 +3464,9 @@ static bool apply_one_state_message( const std::string &msg )
 
         std::string host_name;
         jo.read( "host_name", host_name );
+        if( !host_name.empty() ) {
+            g_partner_name_cached = host_name;
+        }
 
         if( jo.has_object( "host_pos" ) ) {
             std::cout << "[cdda-mp] updating host NPC..." << std::flush;
@@ -2954,6 +3487,19 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_string( "host_activity" ) ) {
             g_partner_activity = jo.get_string( "host_activity" );
             mp_partner_activity_transition_check();
+        }
+        if( jo.has_int( "host_activity_pct" ) ) {
+            g_partner_activity_pct = jo.get_int( "host_activity_pct" );
+        }
+        if( jo.has_int( "host_activity_moves_total" ) ) {
+            g_partner_activity_moves_total = jo.get_int( "host_activity_moves_total" );
+        }
+        // Snapshot host's calendar BEFORE the local sync above overwrites it,
+        // so the panel can show drift = local - last_received_partner.  Since
+        // the client sets local = host on every state packet, drift here is
+        // the gap between packets — useful sanity indicator.
+        if( jo.has_int( "calendar_turn" ) ) {
+            g_partner_calendar_turn = jo.get_int( "calendar_turn" );
         }
 
         // Host→client tap-on-shoulder: cancel local wait activity if the
@@ -3236,7 +3782,12 @@ static bool apply_one_state_message( const std::string &msg )
                     // our moves.  Covers `|` wait, crafting, reading, butchering,
                     // mining, construction, repair, etc. — every activity_actor.
                     const std::string pre_tick_id = ca.id().str();
+                    const int pre_tick_moves = get_avatar().get_moves();
+                    const int pre_tick_moves_left = ca.moves_left;
                     get_avatar().activity.do_turn( get_avatar() );
+                    const int post_tick_moves = get_avatar().get_moves();
+                    const player_activity &post_ca = get_avatar().activity;
+                    const int post_tick_moves_left = post_ca ? post_ca.moves_left : 0;
                     // If the activity completed during this tick, emit the
                     // explicit end signal BEFORE the wait so the host clears
                     // its lockstep-bypass state and the wait closes the turn.
@@ -3247,8 +3798,11 @@ static bool apply_one_state_message( const std::string &msg )
                         g_client_turn_activity.clear();
                         client_send_activity_end( pre_tick_id );
                     }
-                    mp_log( "[cdda-mp] CLI-GRANT-ACT-ACK: ticked activity & dispatched wait for " + pre_tick_id +
-                            " ended=" + std::to_string( !get_avatar().activity ) );
+                    mp_log( "[cdda-mp] CLI-GRANT-ACT-ACK: id=" + pre_tick_id
+                            + " moves " + std::to_string( pre_tick_moves ) + "->" + std::to_string( post_tick_moves )
+                            + " moves_left " + std::to_string( pre_tick_moves_left ) + "->" + std::to_string( post_tick_moves_left )
+                            + " ended=" + std::to_string( !get_avatar().activity )
+                            + " grant_seq=" + std::to_string( grant_seq ) );
                     client_send( client_enrich_action(
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                     g_client_waiting_for_ack = true;
@@ -3411,11 +3965,21 @@ void client_process_incoming()
     }
     // Snapshot state right before autofire check.  If a grant set moves=92 in
     // an earlier iteration of this drain loop but a later message zeroed them,
-    // we should see it here.
-    mp_log( "[cdda-mp] CLI-DRAIN-END: moves=" + std::to_string( get_avatar().get_moves() ) +
-            " ack=" + std::to_string( g_client_waiting_for_ack ) +
-            " last_seq=" + std::to_string( g_client_last_grant_seq ) +
-            " pending=" + ( g_pending_action.empty() ? "none" : "yes" ) );
+    // we should see it here.  Deduped against the previous emission so an
+    // idle/locked client (do_turn spinning at ~60Hz with no state change)
+    // doesn't flood the log — fresh state changes still emit immediately.
+    {
+        const std::string msg = "[cdda-mp] CLI-DRAIN-END: moves=" +
+                                std::to_string( get_avatar().get_moves() ) +
+                                " ack=" + std::to_string( g_client_waiting_for_ack ) +
+                                " last_seq=" + std::to_string( g_client_last_grant_seq ) +
+                                " pending=" + ( g_pending_action.empty() ? "none" : "yes" );
+        static std::string last;
+        if( msg != last ) {
+            mp_log( msg );
+            last = msg;
+        }
+    }
     // Auto-fire any queued action now that the server has restored our moves.
     // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
     // immediately after, giving the user the chance to queue the next action.
@@ -3906,6 +4470,18 @@ std::string client_enrich_action( const std::string &json )
         }
         const std::string client_act_id = g_client_turn_activity;
         enriched += ",\"client_activity\":\"" + client_act_id + "\"";
+        // Progress percentage of the live activity, for the host's Co-op panel.
+        // mp_compute_activity_pct handles crafting (item_counter-based) as
+        // well as standard moves_total-based activities.
+        enriched += ",\"client_activity_pct\":" + std::to_string(
+                        mp_compute_activity_pct( av.activity ) );
+        // Total moves of the live activity, so the host's bump menu can gate
+        // the "Help with task" option on "long enough to warrant it".
+        enriched += ",\"client_activity_moves_total\":" + std::to_string(
+                        av.activity ? av.activity.moves_total : 0 );
+        // Local calendar turn so the host can show a sync-drift indicator.
+        enriched += ",\"client_calendar_turn\":" + std::to_string(
+                        to_turn<int>( calendar::turn ) );
         if( !g_client_msgs_pending.empty() ) {
             std::string msgs = "[";
             bool first_m = true;
@@ -3934,6 +4510,11 @@ void client_queue_action( const std::string &json )
 void set_client_turn_activity( const std::string &activity_id_str )
 {
     g_client_turn_activity = activity_id_str;
+}
+
+const std::string &get_client_turn_activity()
+{
+    return g_client_turn_activity;
 }
 
 float get_host_luminance()
@@ -4111,7 +4692,11 @@ void client_send_activity_start( const std::string &activity_id_str )
     }
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_start\","
                              "\"activity_id\":\"" + activity_id_str + "\"}";
-    mp_log( "[cdda-mp] activity_start SEND: " + activity_id_str );
+    const player_activity &cur = get_avatar().activity;
+    mp_log( "[cdda-mp] ACT-START SEND: id=" + activity_id_str
+            + " g_client_turn_activity=" + g_client_turn_activity
+            + " av.activity=" + ( cur ? cur.id().str() : "none" )
+            + " moves=" + std::to_string( get_avatar().get_moves() ) );
     client_send( json );
 }
 
@@ -4122,7 +4707,12 @@ void client_send_activity_end( const std::string &activity_id_str )
     }
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_end\","
                              "\"activity_id\":\"" + activity_id_str + "\"}";
-    mp_log( "[cdda-mp] activity_end SEND: " + activity_id_str );
+    const player_activity &cur = get_avatar().activity;
+    mp_log( "[cdda-mp] ACT-END SEND: id=" + activity_id_str
+            + " g_client_turn_activity=" + g_client_turn_activity
+            + " av.activity=" + ( cur ? cur.id().str() : "none" )
+            + " ack=" + std::to_string( g_client_waiting_for_ack )
+            + " moves=" + std::to_string( get_avatar().get_moves() ) );
     client_send( json );
 }
 
@@ -4501,6 +5091,38 @@ static void apply_vehicle_sync( JsonObject &jo )
         return;
     }
     map &m = get_map();
+
+    // Process host-reported removals first: any nid the host no longer tracks
+    // (folded, fully destroyed, driven out of bubble) should be torn down on
+    // the client to mirror SP's map::destroy_vehicle.  Done before the apply
+    // loop so a vehicle removed-and-replaced in the same broadcast doesn't
+    // collide with its successor at the same tile.
+    if( jo.has_array( "removed_vehicles" ) ) {
+        for( const JsonValue &rv : jo.get_array( "removed_vehicles" ) ) {
+            const auto rnid = static_cast<uint32_t>( rv.get_int() );
+            auto pos_it = g_client_veh_pos.find( rnid );
+            if( pos_it == g_client_veh_pos.end() ) {
+                continue;
+            }
+            const tripoint_abs_ms rabs = pos_it->second;
+            g_client_veh_pos.erase( pos_it );
+            if( !m.inbounds( rabs ) ) {
+                continue;
+            }
+            const optional_vpart_position vp = m.veh_at( m.get_bub( rabs ) );
+            if( !vp ) {
+                continue;
+            }
+            vehicle &dveh = vp->vehicle();
+            mp_log( "[cdda-mp] CLI-VEH-REMOVE: nid=" + std::to_string( rnid )
+                    + " abs=" + std::to_string( rabs.x() )
+                    + "," + std::to_string( rabs.y() )
+                    + "," + std::to_string( rabs.z() )
+                    + " name=\"" + dveh.name + "\"" );
+            m.destroy_vehicle( &dveh );
+        }
+    }
+
     const VehicleList vehs = m.get_vehicles();
 
     for( const JsonValue &entry : jo.get_array( "vehicles" ) ) {
@@ -4521,8 +5143,92 @@ static void apply_vehicle_sync( JsonObject &jo )
         std::string vname;
         vo.read( "name", vname );
 
-        // Find the vehicle object.  Primary: look at last-known abs position.
         vehicle *found = nullptr;
+
+        // Snapshot path: the host emits a full save-format snapshot for this
+        // nid on first encounter AND any time the parts vector mutates
+        // (install, remove, fold, damage-purge).  Treat it as an authoritative
+        // replacement: destroy any prior local instance for this nid, then
+        // deserialize-and-place.  The snapshot is complete state, so we skip
+        // the slim per-part / cargo apply that follows and move on.
+        if( vo.has_object( "snapshot" ) && m.inbounds( new_abs ) ) {
+            // Tear down the previous local instance (if any) so a structural
+            // change doesn't end up with two overlapping vehicles at the same
+            // tile.  Look up by tracked position; fall back to scanning by name.
+            auto prev_it = g_client_veh_pos.find( nid );
+            tripoint_abs_ms prev_abs = ( prev_it != g_client_veh_pos.end() )
+                                       ? prev_it->second
+                                       : new_abs;
+            vehicle *prev = nullptr;
+            if( m.inbounds( prev_abs ) ) {
+                if( const optional_vpart_position vp = m.veh_at( m.get_bub( prev_abs ) ) ) {
+                    prev = &vp->vehicle();
+                }
+            }
+            if( !prev && !vname.empty() ) {
+                for( const wrapped_vehicle &wv : vehs ) {
+                    if( wv.v && wv.v->name == vname ) {
+                        prev = wv.v;
+                        break;
+                    }
+                }
+            }
+            if( prev ) {
+                mp_log( "[cdda-mp] CLI-VEH-REPLACE: nid=" + std::to_string( nid )
+                        + " name=\"" + prev->name + "\"" );
+                m.destroy_vehicle( prev );
+            }
+            if( prev_it != g_client_veh_pos.end() ) {
+                g_client_veh_pos.erase( prev_it );
+            }
+
+            JsonObject snap = vo.get_object( "snapshot" );
+            snap.allow_omitted_members();
+            static const vproto_id vehicle_prototype_none( "none" );
+            auto veh_up = std::make_unique<vehicle>( vehicle_prototype_none );
+            veh_up->deserialize( snap );
+            // Re-anchor sm_pos+pos to the broadcast abs position — the
+            // serialized "posx"/"posy" are submap-relative and need to match
+            // the client's bubble origin.  Mirrors map::add_vehicle().
+            const tripoint_bub_ms new_bub = m.get_bub( new_abs );
+            tripoint_bub_sm quotient;
+            point_sm_ms remainder;
+            std::tie( quotient, remainder ) =
+                coords::project_remain<coords::sm>( new_bub );
+            veh_up->sm_pos = m.get_abs_sub().xy() + rebase_rel( quotient );
+            veh_up->pos = remainder;
+            // Preserve the deserialized pivot_anchor / pivot_rotation — those
+            // were set by vehicle::deserialize from the snapshot's "pivot" and
+            // "faceDir" fields, and reflect the host's authoritative state.
+            // Passing point_rel_ms::zero here (as map::add_vehicle does for a
+            // freshly-spawned vehicle from a prototype) would clobber any
+            // non-zero pivot the host has accumulated through rotations or
+            // part changes, shifting every part by a fixed offset relative
+            // to pos_abs.  pos_abs matches the host's, but the rendered
+            // tiles end up several squares off — visible as the bus
+            // appearing at the wrong location on the client after load.
+            veh_up->precalc_mounts( 0, veh_up->pivot_rotation[0],
+                                    veh_up->pivot_anchor[0] );
+            vehicle *placed = m.add_vehicle_from_snapshot( std::move( veh_up ) );
+            if( !placed ) {
+                mp_log( "[cdda-mp] CLI-VEH-CREATE-FAIL: nid=" + std::to_string( nid )
+                        + " abs=" + std::to_string( new_abs.x() )
+                        + "," + std::to_string( new_abs.y() )
+                        + "," + std::to_string( new_abs.z() ) );
+                continue;
+            }
+            g_client_veh_pos[nid] = placed->pos_abs();
+            mp_log( "[cdda-mp] CLI-VEH-CREATE: nid=" + std::to_string( nid )
+                    + " abs=" + std::to_string( new_abs.x() )
+                    + "," + std::to_string( new_abs.y() )
+                    + "," + std::to_string( new_abs.z() )
+                    + " name=\"" + placed->name + "\"" );
+            // Snapshot is fully authoritative — no need to re-apply slim deltas.
+            continue;
+        }
+
+        // Slim path: no snapshot.  Find the existing local vehicle by tracked
+        // position, server's new_abs, or name.  Same fallback chain as before.
         auto pos_it = g_client_veh_pos.find( nid );
         const bool first_encounter = ( pos_it == g_client_veh_pos.end() );
         const tripoint_abs_ms search_abs = ( pos_it != g_client_veh_pos.end() )
@@ -4537,7 +5243,6 @@ static void apply_vehicle_sync( JsonObject &jo )
                 }
             }
         }
-        // Fallback: server's authoritative position (first packet, or vehicle there).
         if( !found && m.inbounds( new_abs ) ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == new_abs ) {
@@ -4546,8 +5251,6 @@ static void apply_vehicle_sync( JsonObject &jo )
                 }
             }
         }
-        // Name fallback: client physics may have drifted the vehicle away from both
-        // the tracked position and new_abs.  Match by name so we can snap it back.
         if( !found && !vname.empty() ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->name == vname ) {
@@ -4558,6 +5261,15 @@ static void apply_vehicle_sync( JsonObject &jo )
         }
 
         if( !found ) {
+            // No local vehicle and no snapshot in this packet (slim
+            // vehicle_step before first state, or out-of-bounds).  Skip and
+            // wait for the next full state broadcast which will carry one.
+            mp_log( "[cdda-mp] CLI-VEH-SKIP-UNKNOWN: nid=" + std::to_string( nid )
+                    + " new_abs=" + std::to_string( new_abs.x() )
+                    + "," + std::to_string( new_abs.y() )
+                    + "," + std::to_string( new_abs.z() )
+                    + " name=\"" + vname + "\""
+                    + " first_encounter=" + std::to_string( first_encounter ) );
             continue;
         }
 
@@ -5186,6 +5898,7 @@ std::string serialize_remote_player_state()
     // Build vehicle sync payload: position, facing, and velocity for all vehicles
     // in the active reality bubble.  Clients use this to keep vehicle sprites in sync.
     std::string vehicles_json = "[";
+    std::unordered_set<uint32_t> alive_now;
     {
         bool vfirst = true;
         map &vmap = get_map();
@@ -5201,6 +5914,29 @@ std::string serialize_remote_player_state()
                 vid_it = g_server_veh_ids.find( v );
             }
             const uint32_t nid = vid_it->second;
+            alive_now.insert( nid );
+
+            // Detect structural change: if the parts vector grew or shrank since
+            // the last broadcast (install, remove, damage-purge, fold-merge), the
+            // sequential part indices the slim sync relies on no longer line up
+            // with the client's local vector.  Drop the nid from the snapshot
+            // tracking so the very next broadcast re-emits the full snapshot
+            // and the client mirrors the new structural state via the existing
+            // CLI-VEH-CREATE path.  Use part_count_real() — part_count()
+            // includes fake parts that are added/removed transiently by
+            // refresh()/remove_fake_parts() between broadcasts (e.g. for
+            // turn-rendering), which would oscillate the baseline and trigger
+            // a snapshot resend on every turn, looping client+host indefinitely.
+            const size_t parts_now = v->part_count_real();
+            auto pc_it = g_server_veh_parts_count.find( nid );
+            if( pc_it != g_server_veh_parts_count.end() && pc_it->second != parts_now ) {
+                mp_log( "[cdda-mp] HOST-VEH-PARTS-CHANGED: nid=" + std::to_string( nid )
+                        + " was=" + std::to_string( pc_it->second )
+                        + " now=" + std::to_string( parts_now )
+                        + " name=\"" + v->name + "\"" );
+                g_client_known_veh_nids.erase( nid );
+            }
+            g_server_veh_parts_count[nid] = parts_now;
             const tripoint_abs_ms vabs = v->pos_abs();
             const int face_deg     = static_cast<int>( std::lround( to_degrees( v->face.dir() ) ) );
             const int turn_dir_deg = static_cast<int>( std::lround( to_degrees( v->turn_dir ) ) );
@@ -5284,6 +6020,21 @@ std::string serialize_remote_player_state()
                 vehicles_json += ',';
             }
             vfirst = false;
+            // First-encounter snapshot: include the full save-format vehicle
+            // JSON so the client can mirror SP's add_vehicle / save-load path
+            // for vehicles it has no local instance of (debug spawn, deployed
+            // foldable, mid-game-constructed frame, mapgen-into-bubble).  The
+            // snapshot is only emitted once per nid per client connection;
+            // subsequent broadcasts stay slim.  Field name "snapshot" is a
+            // nested JSON object so no escaping is needed.
+            std::string snapshot_field;
+            if( !g_client_known_veh_nids.count( nid ) ) {
+                snapshot_field = ",\"snapshot\":" + ::serialize( *v );
+                g_client_known_veh_nids.insert( nid );
+                mp_log( "[cdda-mp] HOST-VEH-SNAPSHOT: nid=" + std::to_string( nid )
+                        + " name=\"" + v->name + "\" bytes="
+                        + std::to_string( snapshot_field.size() ) );
+            }
             vehicles_json += "{\"nid\":" + std::to_string( nid )
                              + ",\"x\":" + std::to_string( vabs.x() )
                              + ",\"y\":" + std::to_string( vabs.y() )
@@ -5294,10 +6045,37 @@ std::string serialize_remote_player_state()
                              + ",\"cruise\":" + std::to_string( v->cruise_velocity )
                              + ",\"name\":\"" + vname_escaped + "\""
                              + ",\"parts\":" + parts_json
-                             + ",\"cargo\":" + cargo_json + "}";
+                             + ",\"cargo\":" + cargo_json
+                             + snapshot_field + "}";
         }
     }
     vehicles_json += ']';
+
+    // Diff against the previous broadcast: any nid that was live last time but
+    // isn't in alive_now has disappeared (folded, fully destroyed, driven out
+    // of bubble, etc.).  Emit a removed_vehicles array so the client can
+    // mirror SP's map::destroy_vehicle path.  Also drop those nids from the
+    // snapshot/parts-count tracking so a future re-encounter triggers a fresh
+    // snapshot.
+    std::string removed_vehicles_json = "[";
+    {
+        bool rfirst = true;
+        for( const uint32_t old_nid : g_server_veh_live_nids ) {
+            if( alive_now.count( old_nid ) ) {
+                continue;
+            }
+            if( !rfirst ) {
+                removed_vehicles_json += ',';
+            }
+            rfirst = false;
+            removed_vehicles_json += std::to_string( old_nid );
+            g_client_known_veh_nids.erase( old_nid );
+            g_server_veh_parts_count.erase( old_nid );
+            mp_log( "[cdda-mp] HOST-VEH-REMOVED: nid=" + std::to_string( old_nid ) );
+        }
+    }
+    removed_vehicles_json += ']';
+    g_server_veh_live_nids = std::move( alive_now );
 
     return "{\"type\":\"state\","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
@@ -5318,6 +6096,10 @@ std::string serialize_remote_player_state()
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
+           "\"host_activity_pct\":" + std::to_string(
+               mp_compute_activity_pct( host.activity ) ) + ","
+           "\"host_activity_moves_total\":" + std::to_string(
+               host.activity ? host.activity.moves_total : 0 ) + ","
            + ( []() -> std::string {
                // One-shot wake_client signal — emit on this broadcast then clear.
                if( g_pending_wake_client ) {
@@ -5346,6 +6128,7 @@ std::string serialize_remote_player_state()
            ",\"monsters\":" + monsters +
            ",\"tile_changes\":" + tile_changes +
            ",\"vehicles\":" + vehicles_json +
+           ",\"removed_vehicles\":" + removed_vehicles_json +
            ",\"msgs\":" + msgs_json +
            ",\"grant_seq\":" + std::to_string( g_grant_seq ) +
            ",\"sfx\":" + [&]() -> std::string {

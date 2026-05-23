@@ -854,6 +854,13 @@ class map
         // Vehicles: Common to 2D and 3D
         VehicleList get_vehicles();
         bool place_vehicle( std::unique_ptr<vehicle> &&new_vehicle );
+        // Mirrors the placement + cache-registration logic of add_vehicle(),
+        // but for a vehicle that has already been deserialized from JSON
+        // (sm_pos and pos already set by caller).  Used by MP to materialize
+        // a vehicle on the client from a host-broadcast snapshot.  Returns
+        // the placed pointer (now owned by its submap), or nullptr if the
+        // target submap can't be located.
+        vehicle *add_vehicle_from_snapshot( std::unique_ptr<vehicle> &&new_vehicle );
         void add_vehicle_to_cache( vehicle * );
         void clear_vehicle_point_from_cache( vehicle *veh, const tripoint_bub_ms &pt );
         // clears all vehicle level caches

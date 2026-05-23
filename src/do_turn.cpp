@@ -527,6 +527,16 @@ void game::handle_progress_ui()
     } else if( const std::optional<std::string> progress = u.activity.get_progress_message( u ) ) {
         wait_redraw = true;
         wait_message = *progress;
+        // MP: when our local activity is ACT_HELP_PARTNER, mirror the partner's
+        // reported progress.  Our own moves_total uses a long fallback that
+        // doesn't track the actual craft/build/etc the partner is doing — so
+        // without this the popup would say 1% throughout the entire help.
+        if( ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) &&
+            u.activity.id().str() == "ACT_HELP_PARTNER" ) {
+            wait_message = string_format( _( "%s: %d%%" ),
+                                          u.activity.get_verb().translated(),
+                                          cata_mp::partner_activity_pct() );
+        }
         if( u.activity.is_interruptible() && u.activity.interruptable_with_kb ) {
             wait_message += string_format( _( "\n%s to interrupt" ), press_x( ACTION_PAUSE ) );
         }
@@ -536,6 +546,13 @@ void game::handle_progress_ui()
             wait_refresh_rate = 5_turns;
         } else {
             wait_refresh_rate = 5_minutes;
+        }
+        // In MP, 1 grant = 1 game turn ≈ 1s real-time, so a 5_minute (or
+        // 1_minute outer cap) refresh fires at most once during a sub-minute
+        // activity like eating an apple — the progress bar jumps from 10% to
+        // done.  Cap to 1_turns so the popup updates every grant cycle.
+        if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
+            wait_refresh_rate = 1_turns;
         }
     }
     if( wait_redraw ) {
@@ -615,8 +632,14 @@ bool game::do_turn()
     cata_mp::client_process_incoming();
     if( cata_mp::is_client_mode() ) {
         avatar &u_dbg = get_avatar();
-        cata_mp::mp_log( "[cdda-mp] post-incoming moves=" + std::to_string( u_dbg.get_moves() ) +
-                         " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) );
+        const std::string msg = "[cdda-mp] post-incoming moves=" +
+                                std::to_string( u_dbg.get_moves() ) +
+                                " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() );
+        static std::string last;
+        if( msg != last ) {
+            cata_mp::mp_log( msg );
+            last = msg;
+        }
     }
     if( cata_mp::is_hosting() ) {
         cata_mp::mp_log( "[cdda-mp] HOST-POST-MP-EVENTS: avatar_moves=" +
@@ -704,8 +727,14 @@ bool game::do_turn()
     // checks correctly distinguish "had an activity" from "no activity".
     const activity_id pre_activity_id = u.activity ? u.activity.id() : activity_id::NULL_ID();
     if( cata_mp::is_client_mode() ) {
-        cata_mp::mp_log( "[cdda-mp] pre-act-loop: moves=" + std::to_string( pre_activity_moves ) +
-                         " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
+        const std::string msg = "[cdda-mp] pre-act-loop: moves=" +
+                                std::to_string( pre_activity_moves ) +
+                                " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" );
+        static std::string last;
+        if( msg != last ) {
+            cata_mp::mp_log( msg );
+            last = msg;
+        }
         // Snapshot this turn's activity id for the wire so enrich uses it even
         // if av.activity is cleared mid-turn by the activity finishing.
         cata_mp::set_client_turn_activity( pre_activity_id ? pre_activity_id.str()
@@ -734,9 +763,15 @@ bool game::do_turn()
         cata_mp::client_dispatch_wait_for_activity( pre_activity_id );
         mp_wait_dispatched = true;
     } else if( cata_mp::is_client_mode() ) {
-        cata_mp::mp_log( "[cdda-mp] pre-loop dispatch SKIP: pre_moves=" + std::to_string( pre_activity_moves ) +
-                         " cur_moves=" + std::to_string( u.get_moves() ) +
-                         " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
+        const std::string msg = "[cdda-mp] pre-loop dispatch SKIP: pre_moves=" +
+                                std::to_string( pre_activity_moves ) +
+                                " cur_moves=" + std::to_string( u.get_moves() ) +
+                                " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" );
+        static std::string last;
+        if( msg != last ) {
+            cata_mp::mp_log( msg );
+            last = msg;
+        }
     }
 
     // Process NPC sound events before they move or they hear themselves talking
@@ -827,6 +862,7 @@ bool game::do_turn()
                         ++moves_since_last_save;
                         u.action_taken();
                         cata_mp::host_capture_avatar_msgs( pre_msg );
+                        cata_mp::host_broadcast_post_action();
                     }
                 }
 
@@ -869,13 +905,30 @@ bool game::do_turn()
                 // sits in lockstep waiting for an ack that won't come until
                 // the user presses a key.  Mirrors how SP "spends the turn"
                 // on a drop: the post-activity moves are forfeit.
-                if( cata_mp::is_client_mode() && iter_pre_act && !u.activity ) {
+                // Detect either:
+                //  - activity present at iter start, gone now (natural finish or
+                //    cancel from inside the activity loop above)
+                //  - activity assigned AND cleared within this same iter (typical
+                //    veh_interact "assign ACT_VEHICLE then cancel" — iter_pre_act
+                //    is NULL because the assign happened during handle_action).
+                //    In that case g_client_turn_activity holds the id we already
+                //    sent activity_start for.
+                const std::string &mid_iter_act = cata_mp::get_client_turn_activity();
+                const bool mid_iter_orphan =
+                    !mid_iter_act.empty() && !u.activity;
+                if( cata_mp::is_client_mode() && ( iter_pre_act || mid_iter_orphan ) && !u.activity ) {
+                    const std::string ended_id = iter_pre_act ? iter_pre_act.str() : mid_iter_act;
+                    cata_mp::mp_log( "[cdda-mp] ORPHAN-IN-LOOP: ended_id=" + ended_id
+                                     + " iter_pre_act=" + ( iter_pre_act ? iter_pre_act.str() : "none" )
+                                     + " mid_iter_act=" + mid_iter_act
+                                     + " path=" + ( iter_pre_act ? "iter_pre_act" : "mid_iter_orphan" )
+                                     + " moves=" + std::to_string( u.get_moves() ) );
                     cata_mp::set_client_turn_activity( std::string() );
-                    cata_mp::client_send_activity_end( iter_pre_act.str() );
+                    cata_mp::client_send_activity_end( ended_id );
                     if( !cata_mp::is_client_waiting_for_ack() ) {
                         cata_mp::mp_log( "[cdda-mp] in-loop activity-end: burning "
                                          + std::to_string( u.get_moves() )
-                                         + " moves to ack host" );
+                                         + " moves to ack host (id=" + ended_id + ")" );
                         u.set_moves( 0 );
                         cata_mp::client_dispatch_wait_for_activity(
                             activity_id(), /*force_idle=*/true );
@@ -899,15 +952,29 @@ bool game::do_turn()
             // waiting through its 30s DISCONNECT-TIMEOUT.  Force the wait
             // through even when no activity is current, so a short activity
             // (drop_activity_actor finishing in one tick) still acks the host.
-            const bool activity_just_ended = pre_activity_id && !u.activity;
+            // Same orphan-activity detection as the in-loop check above: an
+            // activity assigned and cancelled within this do_turn is invisible
+            // to pre_activity_id (captured at do_turn entry), but
+            // g_client_turn_activity still holds the id we already sent
+            // activity_start for.  Without this, host's lockstep bypass
+            // believes the activity is still running and waits forever.
+            const std::string &post_loop_act = cata_mp::get_client_turn_activity();
+            const bool post_orphan = !post_loop_act.empty() && !u.activity;
+            const bool activity_just_ended = ( pre_activity_id || post_orphan ) && !u.activity;
             const bool moves_consumed = pre_activity_moves > 0 && u.get_moves() <= 0;
             if( cata_mp::is_client_mode() && activity_just_ended ) {
                 // Explicit end-of-activity signal — closes the host's lockstep
                 // bypass immediately so the next host turn re-enters lockstep.
                 // Also clear the per-turn snapshot so the next enrich sends
                 // client_activity="" instead of the stale id.
+                const std::string ended_id = pre_activity_id ? pre_activity_id.str() : post_loop_act;
+                cata_mp::mp_log( "[cdda-mp] ORPHAN-POST-LOOP: ended_id=" + ended_id
+                                 + " pre_activity_id=" + ( pre_activity_id ? pre_activity_id.str() : "none" )
+                                 + " post_loop_act=" + post_loop_act
+                                 + " path=" + ( pre_activity_id ? "pre_activity_id" : "post_orphan" )
+                                 + " moves_consumed=" + std::to_string( moves_consumed ) );
                 cata_mp::set_client_turn_activity( std::string() );
-                cata_mp::client_send_activity_end( pre_activity_id.str() );
+                cata_mp::client_send_activity_end( ended_id );
             }
             if( cata_mp::is_client_mode() && !mp_wait_dispatched &&
                 ( moves_consumed || activity_just_ended ) &&
@@ -955,6 +1022,17 @@ bool game::do_turn()
 
             if( cata_mp::is_client_mode() ) {
                 cata_mp::ensure_mp_hud();
+                // Track activity before/after handle_action so we can detect a
+                // mid-call assignment.  Common scenario: the LOCKED branch's
+                // blocking handle_action() polls process_mp_events on TIMEOUT,
+                // a host grant arrives mid-poll bumping moves 0→100, and the
+                // user picks "remove a vehicle part" — veh_interact then calls
+                // set_moves(0) + assign_activity(ACT_VEHICLE).  Without the
+                // dispatch fallback below, do_turn exits with an activity but
+                // 0 moves, the LOCKED branch on subsequent turns sees
+                // !u.activity is false and skips handle_action entirely, and
+                // we never send a "wait" to the host so it stops granting.
+                const bool had_activity_before_ha = static_cast<bool>( u.activity );
                 // Skip the blocking handle_action() when an activity is running.
                 // Otherwise the wait_popup logic below never gets a chance to draw
                 // (handle_action blocks for a keypress, and ACTION_PAUSE just sends
@@ -966,8 +1044,22 @@ bool game::do_turn()
                     cata_mp::mp_log( "[cdda-mp] LOCKED-HA: enter handle_action, moves=" +
                                      std::to_string( u.get_moves() ) );
                     g->handle_action();
-                    cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action" );
+                    cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action moves=" +
+                                     std::to_string( u.get_moves() ) +
+                                     " act=" + ( u.activity ? u.activity.id().str() : "none" ) );
                     ui_manager::redraw();
+                }
+                // If handle_action assigned an activity (or otherwise drained
+                // moves) AND no ack is pending, dispatch a "wait" so the host
+                // closes its lockstep and grants the next turn — without this
+                // the LOCKED branch is a dead end for newly-assigned
+                // activities (see veh_interact remove flow above).
+                const bool act_just_assigned = !had_activity_before_ha && u.activity;
+                if( act_just_assigned && !cata_mp::is_client_waiting_for_ack() ) {
+                    cata_mp::mp_log( "[cdda-mp] LOCKED-DISPATCH: activity just assigned in locked HA, dispatching wait id="
+                                     + u.activity.id().str() );
+                    cata_mp::client_dispatch_wait_for_activity(
+                        u.activity.id(), /*force_idle=*/true );
                 }
             }
 

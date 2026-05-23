@@ -3017,6 +3017,15 @@ std::list<item> Character::consume_items( const comp_selection<item_comp> &is, i
     if( has_trait( trait_DEBUG_HS ) ) {
         return ret;
     }
+    // NPCs don't get the interactive "Select which component to use" uilist.
+    // Mirrors select_item_component's NPC auto-pick branch.  Without this the
+    // map::use_amount path blocks waiting for user input that an NPC will
+    // never provide — in MP this freezes the host's main thread when the
+    // host runs vehicle_activity_actor::complete_vehicle on a client's proxy
+    // NPC for installs/removes that have multiple matching ground items.
+    if( is_npc() ) {
+        select_ind = false;
+    }
     // populate a grid of spots that can be reached
     const std::vector<tripoint_bub_ms> &reachable_pts = m.reachable_flood_steps( pos_bub(),
             PICKUP_RANGE, 1, 100 );
@@ -4208,10 +4217,20 @@ std::vector<Character *> Character::get_crafting_helpers() const
 {
     return g->get_characters_if( [this]( const Character & guy ) {
         // NPCs can help craft if awake, taking orders, within pickup range and have clear path.
-        // Exclude the remote player proxy NPC — it has skill 0 and would skew crafting rolls.
+        // MP partner gate: by default the partner proxy NPC is excluded (the SP
+        // helper math would otherwise grant a phantom bonus for proximity even
+        // when the real player isn't engaged with this task).  The proxy IS
+        // included when the partner has actively committed to help — bumped
+        // into us and chose "Help with task" from the partner menu, putting
+        // their avatar into ACT_HELP_PARTNER.  When that flag flips, SP's
+        // skill/proficiency math runs naturally against the proxy's synced
+        // stats.  See roadmap.md § "Co-op partner assistance & time curve".
+        // OLD: only filtered the host-side proxy direction:
+        // && !cata_mp::is_remote_player( guy.getID() )
+        const bool is_mp_partner = cata_mp::is_partner_npc( guy.getID() );
         return getID() != guy.getID()
                && guy.is_npc()
-               && !cata_mp::is_remote_player( guy.getID() )
+               && ( !is_mp_partner || cata_mp::is_partner_helping_us() )
                && !guy.in_sleep_state()
                && guy.is_obeying( *this )
                && rl_dist( guy.pos_bub(), pos_bub() ) < PICKUP_RANGE
@@ -4222,8 +4241,11 @@ std::vector<Character *> Character::get_crafting_helpers() const
 std::vector<Character *> Character::get_crafting_group() const
 {
     return g->get_characters_if( [this]( const Character & guy ) {
+        // OLD: only filtered the host-side proxy direction:
+        // && !cata_mp::is_remote_player( guy.getID() )
+        const bool is_mp_partner = cata_mp::is_partner_npc( guy.getID() );
         return guy.is_ally( *this )
-               && !cata_mp::is_remote_player( guy.getID() )
+               && ( !is_mp_partner || cata_mp::is_partner_helping_us() )
                && rl_dist( guy.pos_bub(), pos_bub() ) < PICKUP_RANGE
                && get_map().clear_path( pos_bub(), guy.pos_bub(), PICKUP_RANGE, 1, 100 );
     } );

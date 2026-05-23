@@ -95,6 +95,8 @@
 #include "math_parser_diag_value.h"
 #include "memory_fast.h"
 #include "messages.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "mongroup.h"
 #include "monster.h"
 #include "mtype.h"
@@ -11282,6 +11284,21 @@ void vehicle_activity_actor::start( player_activity &act, Character & )
 
 void vehicle_activity_actor::finish( player_activity &act, Character &you )
 {
+    // MP client: dispatch the construction to the host BEFORE running local
+    // complete_vehicle so the host applies the same operation against its
+    // authoritative vehicle.  Client still runs locally too — both sides have
+    // synced proxy/avatar inventories, so item consumption stays consistent.
+    // Host's parts-count baseline trips on the vehicle mutation and triggers
+    // a snapshot rebroadcast that replaces the client's local vehicle with
+    // the host-authoritative state — mirrors how movement is predicted
+    // locally and corrected by the host's next state packet.
+    if( cata_mp::is_client_mode() && you.is_avatar() ) {
+        const std::string payload = ::serialize( *this );
+        const std::string action_json =
+            "{\"type\":\"action\",\"action\":\"vehicle_construct\","
+            "\"actor\":" + payload + "}";
+        cata_mp::client_send( cata_mp::client_enrich_action( action_json ) );
+    }
     map &here = get_map();
     //Grab this now, in case the vehicle gets shifted
     const optional_vpart_position vp = here.veh_at( here.get_bub( vp_location ) );
@@ -11393,7 +11410,17 @@ void vehicle_activity_actor::complete_vehicle( player_activity &act, Character &
                 break;
             }
             ::vehicle_part &vp_new = veh.part( partnum );
-            if( vp_new.info().variants.size() > 1 ) {
+            // Variant-pick menu is interactive; skip when running as an NPC
+            // (in MP this is the proxy NPC executing vehicle_construct on the
+            // host on the client's behalf — only the actual installer's
+            // session should be prompted).  The default variant is fine for
+            // the host's copy; the snapshot rebroadcast carries the host's
+            // variant back to the client.  TODO: thread the client's chosen
+            // variant through the vehicle_construct dispatch so the host's
+            // installed part matches the user's selection — until then the
+            // client's variant choice is silently overwritten by the host
+            // snapshot.
+            if( !you.is_npc() && vp_new.info().variants.size() > 1 ) {
                 veh_shape( here, veh ).change_part_shape( vpart_reference( veh, partnum ) );
             }
 

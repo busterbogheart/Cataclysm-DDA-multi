@@ -5289,6 +5289,7 @@ bool game::npc_menu( npc &who )
         swap_pos,
         push,
         tap_shoulder,
+        help_with_task,
         examine_wounds,
         examine_status,
         use_item,
@@ -5324,6 +5325,23 @@ bool game::npc_menu( npc &who )
         cata_mp::is_partner_npc( who.getID() ) &&
         cata_mp::is_partner_in_wait_activity() ) {
         amenu.addentry( tap_shoulder, true, 't', _( "Tap on shoulder" ) );
+    }
+    // MP partner only: opt into helping with the partner's long task.  Gate
+    // is "they're doing something SP's helper system can speed up, and we
+    // aren't already busy ourselves".  The earlier `moves_total >= 10000`
+    // threshold was dropped because crafting/vehicle actors leave
+    // moves_total at 0 (progress lives in the item itself), so the threshold
+    // hid every realistic case.  The eligible-activity set
+    // (partner_activity_accepts_help) already implies "long enough to merit
+    // helping".  Choosing this assigns ACT_HELP_PARTNER locally; the wire
+    // heartbeat tells the partner, whose get_crafting_helpers() then
+    // includes our proxy NPC — SP code does the rest (skill multipliers,
+    // "X helps with this task" message, etc.).
+    if( ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) &&
+        cata_mp::is_partner_npc( who.getID() ) &&
+        cata_mp::partner_activity_accepts_help() &&
+        !u.activity ) {
+        amenu.addentry( help_with_task, true, 'h', _( "Help with task" ) );
     }
     amenu.addentry( examine_wounds, true, 'w', _( "Examine wounds" ) );
     amenu.addentry( examine_status, true, 'e', _( "Examine status" ) );
@@ -5418,6 +5436,26 @@ bool game::npc_menu( npc &who )
             cata_mp::mark_wake_client_pending();
             u.mod_moves( -10 );
         }
+    } else if( choice == help_with_task ) {
+        // Commit to helping the partner.  ACT_HELP_PARTNER consumes the
+        // helper's moves for the duration so they can't act on anything else
+        // without first interrupting; the activity id itself flows through
+        // the existing client_activity/host_activity heartbeat and is what
+        // flips get_crafting_helpers()'s gate on the partner's side.  No new
+        // MP action message is needed — the activity assignment IS the signal.
+        //
+        // Duration: prefer the partner's moves_total when known (ACT_WAIT etc).
+        // Crafting/vehicle actors leave moves_total=0; fall back to a long
+        // cap so the helper sticks around regardless.  mp_cancel_help_if_-
+        // partner_done() pulls them out automatically when the partner's
+        // activity ends, so over-budget here is fine — under-budget would
+        // drop them out early.
+        static const activity_id ACT_HELP_PARTNER( "ACT_HELP_PARTNER" );
+        constexpr int help_fallback_moves = 1'000'000;  // ~10000 turns; well beyond any realistic task
+        const int partner_total = cata_mp::partner_activity_moves_total();
+        const int duration = partner_total > 0 ? partner_total : help_fallback_moves;
+        u.assign_activity( ACT_HELP_PARTNER, duration );
+        add_msg( m_info, _( "You join %s to help with their task." ), who.get_name() );
     } else if( choice == examine_wounds ) {
         ///\EFFECT_PER slightly increases precision when examining NPCs' wounds
         ///\EFFECT_FIRSTAID increases precision when examining NPCs' wounds

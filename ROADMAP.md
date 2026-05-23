@@ -15,6 +15,7 @@ Status as of 2026-05-18.
 - [Known bugs](#known-bugs)
 - [Medium-term](#medium-term)
   - [Vehicles (full sync)](#vehicles-full-sync)
+  - [Co-op partner assistance & time curve](#co-op-partner-assistance--time-curve)
   - [NPC proxy fidelity](#npc-proxy-fidelity)
   - [MP-only scenarios](#mp-only-scenarios)
   - [Headless dedicated server](#headless-dedicated-server)
@@ -145,6 +146,97 @@ The proxy NPC currently only mirrors worn + wielded. Activities that mutate inve
 Design doc: [`doc/MP_INVENTORY_SYNC_DESIGN.md`](doc/MP_INVENTORY_SYNC_DESIGN.md). Recommended model is host-authoritative on the proxy NPC with client-side prediction. Migration in 8 steps, ~10–15 sessions of work; first 3 steps (stable UIDs, pickup, drop unification) deliver the highest-value chunk.
 
 Activity-id sync (display-only) shipped 2026-05-18: HUD label + one-line partner notice. That display layer is ready to hook into real authoritative activities once inventory sync lands.
+
+### Co-op partner assistance & time curve
+
+Two intertwined problems that the SP code model doesn't address natively:
+
+1. **Phantom helping** — SP's `get_crafting_helpers()` automatically counts nearby ally NPCs as helpers (giving speed bonuses and "X helps with this task…" log lines). In MP the partner NPC qualifies even when the actual human player isn't trying to help — they might be eating, browsing inventory, or AFK. The bonus is currently free for proximity.
+2. **Wall-clock pacing of long activities** — SP fast-forwards activities at native speed (8h sleep finishes in ~10–30 real seconds). MP lockstep ties each turn to ~1s of network RTT, so 8h would be 8 hours real-time. Players shouldn't have to watch the screen for a long craft when both are committed to non-interactive work.
+
+The design below treats these as one feature because they share state (who is "committed" right now) and the same interruption rules (combat / range / cancel).
+
+#### Consent model — state machine per partner
+
+A partner is in exactly one of:
+- **Idle** — not helping, not engaged in a long task.
+- **Available** — willingness flag on, idle, in range (eligible to be asked).
+- **Helping** — committed to the lead player's activity; moves drain in lockstep.
+- **Engaged** — running their own long activity; can't help.
+- **Interrupted** — was helping, then combat / range / cancel pulled them out.
+
+Two layers of consent:
+
+- **Willingness flag** (per-session, off by default) — a toggle that says "if my partner bumps me and asks, I'll consider it." Without this, the "Help with task" option doesn't appear on the lead player's bump menu.
+- **Active engagement** — the helper bumps into the working lead player, the existing partner-menu gets a new "Help with task" entry. Selecting it commits the helper, mirroring the existing "tap on shoulder" UX.
+
+The lead player doesn't need to confirm; they get a "X joined to help" message. The helper had to physically bump in and pick the option — that's the explicit consent.
+
+#### Reusing SP helper code
+
+The SP system already handles skill curves, proficiency bonuses, mood, sleep-state gating, line-of-sight, range — all the math we don't want to rebuild. The integration point:
+
+- `get_crafting_helpers()` ([crafting.cpp:3739](src/crafting.cpp#L3739)) returns the helper list. The current MP filter excludes the partner proxy via `is_remote_player(id)`, but that check is host-only (the symmetric `is_partner_npc(id)` covers both sides — current code uses the wrong one for the symmetric helper case, but the fix is fine even though it kills today's "phantom" bonus).
+- Switch the filter to: `is_partner_npc(id) && partner_state == Helping`. The proxy joins the helper list only when actively committed. Everything downstream (speed math, "helps with this task" message, observe-and-learn skill rub-off via `activity_actor.cpp:2262`) is SP code that just runs.
+
+#### Helper-side activity
+
+New JSON-defined activity `ACT_HELP_PARTNER`:
+- Assigned to the helper avatar when they choose "Help with task".
+- Mirrors the lead player's activity duration — same `moves_left` / `moves_total`, ticks with each grant.
+- Empty `do_turn()`; the activity exists to consume moves and serve as the "Helping" signal flowing through the existing `client_activity` heartbeat.
+- Helper sees a progress popup matching the lead player's percentage ("Helping with constructing a vehicle 47%").
+- Inherits the standard distraction system — zombie shows up → existing prompt fires → activity cancels → helper drops back to Available.
+- `5` to interrupt manually, same key as any other activity.
+
+The host watches `client_activity` for `ACT_HELP_PARTNER` and flips the proxy's helper-eligibility flag accordingly. Same mechanism that already syncs ACT_WAIT / ACT_VEHICLE / ACT_CRAFT.
+
+#### Interruption / blocker handling
+
+- **Helper in combat** — SP distraction prompt fires for the helper → they drop ACT_HELP_PARTNER → host sees the activity clear → proxy flag flips off → lead player gets "X stopped helping (combat)" message. Lead player's activity continues solo.
+- **Helper walks out of range** — same path; the helper's activity self-cancels and the host updates state.
+- **Lead player cancels their own activity** — host detects the lead activity ended; sends a one-shot signal to cancel the helper's ACT_HELP_PARTNER cleanly.
+- **Lead player blocked (missing component, exhausted, etc.)** — same as cancel; lead activity ends with a failure path, helper is released. SP already handles this for the lead side.
+- **Helper out of ingredients** — non-issue. SP helper code only contributes moves + skill; it doesn't draw from the helper's inventory. Lead player's inventory still gates the activity.
+
+#### Time curve / fast-forward when both committed
+
+When both avatars are in non-interactive activities (ACT_WAIT, ACT_HELP_PARTNER, ACT_CRAFT, ACT_READ, ACT_CONSUME, sleep, etc.) **and** neither is in combat, the host enters "burst mode":
+
+- SRV-WAIT skips its 16ms per-iter throttle and the redraw rate-limit.
+- Grants/acks fly back-to-back as fast as the network round-trip allows; both sides advance one game turn per RTT instead of waiting on a frame budget.
+- Optionally batch: a grant could authorize N turns of activity at once (host computes the bound from the shorter of the two `moves_left`), client ticks N times locally and acks the batch. RTT becomes the bottleneck instead of frame pacing.
+- Any interrupt — distraction prompt, manual `5`, activity-finish, monster in sight — instantly drops out of burst mode back to normal lockstep cadence.
+- Visible indicator in the Co-op panel ("⏩" or color shift) so the player can see why time is flying.
+
+Exit conditions, in priority order:
+1. Either side leaves the eligible activity set (new monster, manual cancel, activity finishes)
+2. Calendar advances enough that a periodic event (per-minute/hour/day) fires that requires player attention
+3. Network RTT spikes (burst-mode produces no benefit if RTT is the bottleneck anyway)
+
+The sleep bypass that already exists ([mp_gamestate.cpp:2625](src/mp_gamestate.cpp#L2625)) is a hard-coded special case of this. Generalize and remove the special case.
+
+#### Open questions
+
+- **Symmetric or asymmetric willingness?** Does "I'm available" automatically imply "you're available to me", or are these two independent flags? Asymmetric matches reality (one player might be in DND, the other open) but doubles the protocol surface.
+- **Burst-mode time scale visible to the user?** SP shows the wait_popup percentage advancing; that already conveys "time is moving". Maybe no extra UI needed beyond the burst indicator.
+- **How long can burst mode run before forcing a re-check?** Probably tied to existing calendar `once_every` events — anything that already gates SP fast-forward should gate this too.
+- **Helper progress bonus to skills/morale** — SP gives helpers skill XP and modifies morale. Do those apply to the helper player or just the proxy on the host? Want to verify the existing char_stats sync propagates skill XP back to the client.
+- **What if the helper's character is a different sex / faction / role with helper restrictions?** SP already gates on `is_obeying` and skill checks. Should just work but worth a test pass.
+
+#### Sketch of concrete code changes (when this leaves planning)
+
+- New action message `{"type":"action","action":"request_help"}` from helper-side, sent when "Help with task" is chosen from the partner bump menu.
+- New activity definition in `data/json/player_activities.json` for `ACT_HELP_PARTNER` with `verb: "helping"`.
+- Updated filter inside `get_crafting_helpers()` to `is_partner_npc(id) && partner_activity == "ACT_HELP_PARTNER"`.
+- New willingness flag on each side (per-session bool), wired into the partner bump menu's option visibility.
+- New burst-mode condition inside `wait_for_client_action()` — when both avatars qualify, skip the 16ms cap and the redraw throttle. Replace the hard-coded sleep bypass with the general predicate.
+- New Co-op panel field: small icon/text when burst mode is active.
+
+Order I'd ship:
+1. Filter swap `is_remote_player` → `is_partner_npc` in the helper functions (kills phantom help today, regardless of when the rest lands).
+2. ACT_HELP_PARTNER activity + bump-menu entry + willingness flag — wires up the consent + engagement model.
+3. Burst-mode time curve — generalizes existing sleep bypass.
 
 ### NPC proxy fidelity
 - EOC (Effect on Condition) not processed on proxy NPC — conditional effects, missions, morale events targeting remote player silently no-op

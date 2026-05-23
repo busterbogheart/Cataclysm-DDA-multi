@@ -476,6 +476,16 @@ input_context game::get_player_input( std::string &action )
                 get_avatar().activity ) {
                 break;
             }
+            // Host symmetric escape: when wait_for_client_action() called us
+            // via mp_poll_input() and the partner has already acked this turn,
+            // unblock immediately instead of sitting on a host keypress.
+            // Without this the SRV-WAIT loop sees 1–13s input phases and the
+            // HUD stays locked even though the lockstep already advanced.
+            if( cata_mp::is_hosting() && action == "TIMEOUT" &&
+                cata_mp::is_host_waiting_for_client() &&
+                cata_mp::client_acted_this_turn() ) {
+                break;
+            }
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
@@ -488,6 +498,11 @@ input_context game::get_player_input( std::string &action )
                 }
                 if( cata_mp::is_hosting() ) {
                     cata_mp::process_mp_events();
+                    // Same host escape as the animation-loop branch above.
+                    if( cata_mp::is_host_waiting_for_client() &&
+                        cata_mp::client_acted_this_turn() ) {
+                        break;
+                    }
                 }
                 if( cata_mp::is_client_mode() ) {
                     cata_mp::client_process_incoming();
@@ -2382,26 +2397,43 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return false;
         }
 
-        // While locked, block anything that would cost moves via local fallthrough.
-        // Movement/wait go through mp_dispatch (queued) and are fine.
-        // Free UI actions (inventory, map, look, etc.) are also fine.
+        // While locked, two policies apply.
+        //
+        // Menu-first actions (the SP handler opens a selector before doing
+        // anything): cancelling the menu costs no AP, no activity is
+        // assigned, and mp_client_post_action's pre/post-moves gate ensures
+        // nothing hits the wire.  Confirming assigns an activity that ticks
+        // via the CLI-GRANT-ACT-ACK loop on the next grant.  Safe to allow.
+        //
+        // Direct-action actions commit on the first keypress past any
+        // prompt — there's no menu to cancel.  Must be blocked when locked,
+        // otherwise the client either bypasses lockstep (free action) or
+        // mutates state with negative moves.
         if( mp_locked ) {
-            static const std::set<action_id> blocked_while_locked = {
+            static const std::set<action_id> menu_allowed_while_locked = {
                 ACTION_WEAR, ACTION_TAKE_OFF, ACTION_WIELD, ACTION_UNLOAD, ACTION_MEND,
                 ACTION_EAT, ACTION_OPEN_CONSUME,
                 ACTION_DROP, ACTION_DIR_DROP,
                 ACTION_PICKUP, ACTION_PICKUP_ALL,
-                ACTION_FIRE, ACTION_FIRE_BURST, ACTION_BUTCHER, ACTION_LOOT,
-                ACTION_SLEEP, ACTION_CHAT,
-                ACTION_PEEK, ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
-                ACTION_GRAB, ACTION_HAUL,
+                ACTION_BUTCHER, ACTION_LOOT, ACTION_CHAT,
                 ACTION_BIONICS, ACTION_MUTATIONS,
                 ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
                 ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
-                ACTION_WORKOUT, ACTION_AUTOATTACK,
-                ACTION_OPEN, ACTION_CLOSE, ACTION_SMASH,
             };
-            if( blocked_while_locked.count( act ) ) {
+            static const std::set<action_id> blocked_while_locked = {
+                ACTION_FIRE, ACTION_FIRE_BURST, ACTION_AUTOATTACK,
+                ACTION_SMASH, ACTION_GRAB, ACTION_HAUL,
+                ACTION_OPEN, ACTION_CLOSE, ACTION_PEEK,
+                ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
+                ACTION_SLEEP, ACTION_WORKOUT,
+            };
+            if( menu_allowed_while_locked.count( act ) ) {
+                cata_mp::mp_log( "[cdda-mp] CLI-LOCKED-ALLOW: act=" +
+                                 std::to_string( act ) );
+                // Fall through to SP handler.
+            } else if( blocked_while_locked.count( act ) ) {
+                cata_mp::mp_log( "[cdda-mp] CLI-LOCKED-BLOCK: act=" +
+                                 std::to_string( act ) );
                 return false;
             }
         }

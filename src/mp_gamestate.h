@@ -33,6 +33,43 @@ bool is_partner_npc( character_id id );
 // host's wait; host sees client's wait).
 bool is_partner_in_wait_activity();
 
+// Minimum moves_total for the partner's activity to surface the "Help with
+// task" bump-menu entry.  Below this threshold the activity is short enough
+// that the menu interaction friction outweighs the helper bonus.  ~10000
+// moves ≈ 100 turns ≈ ~100 seconds real-time under MP lockstep cadence.
+constexpr int HELPER_MIN_MOVES_TOTAL = 10000;
+
+// True when the partner is currently in the helper activity (ACT_HELP_PARTNER),
+// committed to helping with our long task.  Read by Character::get_crafting_helpers()
+// to decide whether to include the partner proxy NPC in the SP helper list
+// (which feeds skill / proficiency / time-bonus math).
+bool is_partner_helping_us();
+
+// True when the partner's current activity is one that SP's helper system
+// supports (crafting, construction, vehicle, butchery, disassembly).  Reading
+// is intentionally excluded — its "learn alongside" semantics need separate
+// design.  Used by the bump-menu gate.
+bool partner_activity_accepts_help();
+
+// Total moves required by the partner's current activity (act.moves_total),
+// snapshotted by the partner's actor::start() and propagated each tick.  Read
+// by the bump-menu predicate.  Zero when partner is idle.
+int partner_activity_moves_total();
+
+// Last progress percent (0-100) the partner reported for their current
+// activity.  Used by the helper's local wait popup to mirror the lead's
+// actual progress (otherwise the helper's popup tracks ACT_HELP_PARTNER's
+// long fallback duration and reads as 1% throughout the entire help).
+int partner_activity_pct();
+
+// True when both avatars are committed to non-interactive activities (host
+// has an activity AND partner has an activity per the heartbeat).  When true,
+// wait_for_client_action() drops its 16ms per-iter throttle so turns advance
+// as fast as the network round-trip allows — long crafts/sleeps don't
+// require watching a 1Hz progress bar for 8 game-hours.  Activity completion,
+// distraction prompts, or manual interrupts all break burst mode naturally.
+bool mp_in_burst_mode();
+
 // Host-only: queue a one-shot "wake_client" signal that piggy-backs on the
 // next serialize_remote_player_state broadcast.  Client consumes it and
 // cancels its own wait activity.  Used by the host's tap-on-shoulder
@@ -54,6 +91,12 @@ int get_separation_tier();
 // no moves and is waiting for the client to ack the current turn.  Used to
 // gate which keys are handled during the wait (zoom etc.).
 bool is_host_waiting_for_client();
+
+// Host: true once the client has acked the current host turn.  Cleared by
+// grant_client_turn().  Used by get_player_input()'s TIMEOUT escape so the
+// host's blocking handle_action call unwinds the moment the partner acks,
+// instead of sitting idle until the next host keypress.
+bool client_acted_this_turn();
 
 // Drain the server recv queue and apply each state message to the local avatar.
 // Called once per game turn from do_turn() when in client mode.
@@ -167,12 +210,30 @@ void host_capture_vehmove_msgs( size_t pre_msg );
 // when not hosting.
 void host_broadcast_vehicle_step();
 
+// Server only: broadcast the full remote_player_state after a successful host
+// action (handle_action returned acted=true).  Mirrors srv_emit_ack's
+// post-mutation broadcast for client actions: each host action that mutates
+// world state must push the new state to the client immediately, otherwise
+// the client only sees host position/world updates at grant boundaries and
+// can miss intermediate states when the host takes multiple actions per
+// grant cycle.  No-op when not hosting or no remote player connected.
+void host_broadcast_post_action();
+
 // Set by do_turn at turn start (before the activity loop runs) to the avatar's
 // current activity id, or empty if idle.  client_enrich_action reads this so
 // the value sent to the host is the activity that was active at the start of
 // the turn, not whatever av.activity holds after the activity may have
 // completed mid-turn.
 void set_client_turn_activity( const std::string &activity_id_str );
+
+// Read the cached activity id we last told the host about (via activity_start
+// dispatch from assign_activity, or the per-turn pre_activity_id snapshot).
+// Used to detect activities that started AND ended within a single input-loop
+// iteration (typical case: vehicle interact menu assigns ACT_VEHICLE then the
+// user cancels) — the natural iter_pre_act/pre_activity_id detectors miss this
+// because both were NULL at their respective capture points.  Empty string
+// means "we last told the host: no activity".
+const std::string &get_client_turn_activity();
 
 // Write a [cdda-mp] log line to stdout AND to /tmp/cdda-mp-server.log or
 // /tmp/cdda-mp-client.log (depending on mode).  Use this for any event that
