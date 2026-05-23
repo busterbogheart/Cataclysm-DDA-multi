@@ -2,6 +2,9 @@
 
 Why die alone when you can die together?
 
+**Project home:** [cddacoop.com](https://cddacoop.com) &middot;
+**Upstream:** [CleverRaven/Cataclysm-DDA](https://github.com/CleverRaven/Cataclysm-DDA)
+
 ## Contents
 
 - [Multiplayer (This co-op fork)](#multiplayer-co-op-fork)
@@ -28,13 +31,10 @@ Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gett
 make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
 ```
 
-**macOS 11 (Big Sur) and older / Intel client** — Homebrew bottles on newer macOS may reference symbols not available on 11.x. Build natively on the target machine. Apple clang 12 doesn't recognize some GCC warning flags in the Makefile; silence them with `CXXFLAGS="-Wno-unknown-warning-option"`. pkg-config and sdl2-config live in `/usr/local/bin` which is not on the default SSH PATH — use `bash -l` when building over SSH:
+**macOS 11 (Big Sur) and older / Intel** — Homebrew bottles on newer macOS may reference symbols not available on 11.x, so build natively on the target machine. Apple clang 12 doesn't recognize some GCC warning flags in the Makefile; silence them with `CXXFLAGS="-Wno-unknown-warning-option"`:
 ```sh
 brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache
-# Local build:
 CXXFLAGS="-Wno-unknown-warning-option" make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
-# Via SSH (always run in background — takes ~1 hour):
-ssh ethankemp@192.168.1.25 "bash -l -c 'cd ~/Cataclysm-DDA-multi && touch src/mp_gamestate.cpp && make -j\$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 CXXFLAGS=\"-Wno-unknown-warning-option\" cataclysm-tiles; echo EXIT:\$?'"
 ```
 
 Or, with MacPorts SDL via `pkg-config` and Clang:
@@ -66,6 +66,8 @@ Then use `start-mp.sh` — it handles world/character selection interactively an
 
 Both scripts prompt you to pick a world and character from the local save. The client teleports to the host's location on the first tick. Logs land at `/tmp/cdda-mp-server.log` and `/tmp/cdda-mp-client.log`.
 
+**Playing across the internet:** [cddacoop.com](https://cddacoop.com) has step-by-step instructions for Tailscale, ZeroTier, ngrok, and router port forwarding. The host always listens on port 8080; only the route between the two machines changes.
+
 ---
 
 ### start-mp.sh modes
@@ -96,8 +98,9 @@ Both scripts prompt you to pick a world and character from the local save. The c
 ### What works
 
 - Movement, melee combat, smashing terrain and furniture
-- Item pickup (single tile `g`, all nearby tiles `Q`)
+- Item pickup (single tile `g`, all nearby tiles `Q`), drop, wear, wield
 - Item use and wielded-item use forwarded to server
+- Eating, drinking, and similar short consumption activities (both players can run them simultaneously)
 - Host and client appear as NPC proxies in each other's world with correct clothing and skin tone
 - Monster sync with damage messages
 - Client ranged/thrown/spell damage forwarded to and applied on the server
@@ -106,17 +109,41 @@ Both scripts prompt you to pick a world and character from the local save. The c
 - Trap sync — client triggers traps on the server
 - Vehicle driving by client (turning deducts AP; cruise speed is free)
 - Vehicle state sync (part HP, fuel, name messages)
+- Vehicle construction — install and remove parts, including parts spawned via debug
+- Drop-into-vehicle (drop items into the storage of a vehicle you're standing on)
+- **Co-op HUD** — bottom-left panel showing partner name, movement mode, worst-body-part HP bar, current activity + progress, and calendar drift
+- **Partner menu** — bump into your partner to open a menu with "Tap on shoulder" and "Help with task" (helping engages SP's crafting helper math against the partner's synced stats)
 
 ### Current limitations
 
-- Only two players supported
-- The sleep issue
+- Two players only — no third or fourth slot
+- **One reality bubble**, centered on the host. A client more than ~66 tiles from the host falls outside the simulated area; entities there don't tick.
+- **Sleep** is functional but two-player sleep dynamics are not yet validated — if one player sleeps and the other keeps acting, the world's lockstep is fine but expect rough edges around partner-status messages.
+- **Long crafts (multi-hour)** work in same-machine testing; not yet validated across machines with real network latency.
+- **No reconnect** — if the TCP connection drops, both players need to quit and re-launch.
+- **Save format** is shared with upstream CDDA but the MP fork adds a few fields; saves between the fork and upstream are not interchangeable.
 
 ---
 
 ## Frequently Asked Questions
 
+**Why a fork instead of a PR to upstream?**
+The upstream project's lead developer has stated that multiplayer "simply can not be added" without overhauling most of the core game code. This fork is an experiment in doing exactly that without disrupting the upstream codebase. Where possible, MP-specific logic lives in `mp_*.cpp`/`mp_*.h` files so future upstream merges stay manageable.
 
+**Does it run on Linux or Windows?**
+Probably — the upstream build supports both — but only macOS has been tested against the multiplayer source. PRs welcome.
+
+**Can I play with more than one friend?**
+Not yet. The networking is hard-wired to one host + one client. A future change could allow more, but the reality-bubble limit (one simulated zone, host-centered) keeps everyone within ~66 tiles of the host regardless of slot count.
+
+**Are saves between this fork and upstream CDDA interchangeable?**
+No. The fork adds fields to the save format. Loading a fork save in upstream (or vice-versa) is not supported.
+
+**My client disconnects mid-session — what now?**
+For now: both quit, relaunch, and re-join. Automatic reconnection is on the roadmap.
+
+**Is there a public test server?**
+No. The architecture is peer-to-peer: one of the two players hosts directly. See [cddacoop.com](https://cddacoop.com) for how to expose the host to the other player.
 
 ---
 
