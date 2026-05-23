@@ -205,6 +205,8 @@ class weather_manager
 {
     public:
         weather_manager();
+        // sets weather_override
+        void on_game_start();
         const weather_generator &get_cur_weather_gen() const;
         // Updates the temperature and weather patten
         void update_weather();

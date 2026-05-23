@@ -352,6 +352,7 @@ enum class item_display_type {
     DEFAULT, // count, charges, etc.
     BY_WEIGHT, // e.g. "12lbs of salt"
     BY_VOLUME, // e.g. "4 liters of water"
+    BY_LENGTH, // e.g. "12ft of duct tape"
     LAST
 };
 
@@ -1677,8 +1678,6 @@ struct itype {
         std::string get_item_type_string() const;
 
         std::string count_or_volume_or_weight_prefix( unsigned int quantity ) const;
-
-        bool dont_display_count_or_charges() const;
 
         // Returns the name of the item type in the correct language and with respect to its grammatical number,
         // based on quantity (example: item type "anvil", nname(4) would return "anvils" (as in "4 anvils").

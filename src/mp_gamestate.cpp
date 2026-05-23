@@ -2522,6 +2522,16 @@ bool host_is_in_wait_activity()
                     act.id() == act_wait_weather || act.id() == act_wait_npc );
 }
 
+bool should_advance_calendar()
+{
+    // SP / host: always advance.  Client: only advance when moves > 0 — that
+    // means a grant just landed and the current do_turn iteration represents
+    // an actual game turn.  Without this guard, calendar::turn would tick at
+    // every main-loop iteration (~10/sec) regardless of whether the client
+    // had been granted a turn, racing past the host's authoritative time.
+    return !is_client_mode() || get_avatar().get_moves() > 0;
+}
+
 void set_last_monmove_ms( int ms )
 {
     g_last_monmove_ms = ms;

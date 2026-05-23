@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -610,19 +611,18 @@ class item : public visitable
                 reload_option( const reload_option & );
                 reload_option &operator=( const reload_option & );
 
-                reload_option( const Character *who, const item_location &target, const item_location &ammo );
                 reload_option( const Character *who, const item_location &target, const item_location &ammo,
                                int pocket_index );
+
+                // pocket_index sentinel: defer well choice to reload runtime.
+                static constexpr int POCKET_FALLBACK = -1;
 
                 const Character *who = nullptr;
                 item_location target;
                 item_location ammo;
                 bool is_reload_one = false;
-                // MAGAZINE_WELL pocket index in target->contents. Negative =
-                // first-compatible-well fallback.
-                // TODO(multimag): drop the default once all callers carry an
-                // explicit pocket_index.
-                int pocket_index = -1;
+                // MAGAZINE_WELL index in target->contents, or POCKET_FALLBACK.
+                int pocket_index = POCKET_FALLBACK;
 
                 int qty() const {
                     return qty_;
@@ -2062,9 +2062,9 @@ class item : public visitable
          * already used somewhere.
          */
         /*@{*/
-        double get_var( const std::string &key, double default_value ) const;
-        std::string get_var( const std::string &key, std::string default_value = {} ) const;
-        tripoint_abs_ms get_var( const std::string &key, tripoint_abs_ms default_value ) const;
+        double get_var( std::string_view key, double default_value ) const;
+        std::string get_var( std::string_view key, std::string default_value = {} ) const;
+        tripoint_abs_ms get_var( std::string_view key, tripoint_abs_ms default_value ) const;
 
         void set_var( const std::string &key, diag_value value );
         template <typename... Args>
@@ -2073,10 +2073,10 @@ class item : public visitable
         }
 
         void remove_var( const std::string &key );
-        diag_value const &get_value( const std::string &name ) const;
-        diag_value const *maybe_get_value( const std::string &name ) const;
+        diag_value const &get_value( std::string_view name ) const;
+        diag_value const *maybe_get_value( std::string_view name ) const;
         /** Whether the variable is defined at all. */
-        bool has_var( const std::string &name ) const;
+        bool has_var( std::string_view name ) const;
         /** Erase the value of the given variable. */
         void erase_var( const std::string &name );
         /** Removes all item variables. */
@@ -2092,7 +2092,7 @@ class item : public visitable
             void serialize( JsonOut &jsout ) const;
         };
         bool read_extended_photos( std::vector<extended_photo_def> &extended_photos,
-                                   const std::string &var_name, bool insert_at_begin ) const;
+                                   std::string_view var_name, bool insert_at_begin ) const;
         void write_extended_photos( const std::vector<extended_photo_def> &, const std::string & );
 
         /**
@@ -2877,6 +2877,11 @@ class item : public visitable
         // nullptr if no MAGAZINE_WELL exists.
         const item_pocket *primary_ammo_pocket() const;
 
+        // Pocket (well or integral mag) that accepts `at`. Beats
+        // magazine_current() which returns the first loaded mag regardless
+        // of ammotype.
+        const item_pocket *pocket_for_ammo( const ammotype &at ) const;
+
         // Magazine driving ammo-identity queries: primary_ammo_pocket's mag
         // for multimag guns, magazine_current otherwise.
         const item *ammo_identity_mag() const;
@@ -3089,6 +3094,9 @@ class item : public visitable
          * Returns the item type of the given identifier. Never returns null.
          */
         static const itype *find_type( const itype_id &type );
+        // Ammotype of id's ammo slot, or nullopt when it has none. Null-safe for
+        // NULL-ammo guns and pocket-defined magazines.
+        static std::optional<ammotype> ammotype_of( const itype_id &id );
         /**
          * Whether the item is counted by charges, this is a static wrapper
          * around @ref count_by_charges, that does not need an items instance.
@@ -3232,8 +3240,10 @@ class item : public visitable
 
         void set_tools_to_continue( bool value );
         bool has_tools_to_continue() const;
-        void set_cached_tool_selections( const std::vector<comp_selection<tool_comp>> &selections );
-        const std::vector<comp_selection<tool_comp>> &get_cached_tool_selections() const;
+        // Per-step tool allocations, indexed by recipe step (single entry for
+        // stepless recipes).
+        void set_step_tool_allocs( const std::vector<std::vector<step_tool_alloc>> &allocs );
+        const std::vector<std::vector<step_tool_alloc>> &get_step_tool_allocs() const;
 
         // Step iteration state for step recipes.
         // get_current_step clamps to valid range as a defensive measure.
@@ -3264,6 +3274,8 @@ class item : public visitable
         void set_saved_alarm_at( time_point t );
         time_point get_saved_fail_at() const;
         void set_saved_fail_at( time_point t );
+        time_point get_env_check_at() const;
+        void set_env_check_at( time_point t );
 
         character_id get_crafter_id() const;
         void set_crafter_id( character_id id );
@@ -3359,6 +3371,9 @@ class item : public visitable
         std::list<const item *> all_ablative_armor() const;
 
         void clear_items();
+        /** Engage bulk-fill mode on this container's pockets. See item_pocket::begin_bulk_fill. */
+        void begin_bulk_fill();
+        void end_bulk_fill();
         bool empty() const;
         /** Check if contents is empty. Checking only CONTAINER pockets. */
         bool empty_container() const;
@@ -3539,7 +3554,7 @@ class item : public visitable
                 // If the crafter has insufficient tools to continue to the next 5% progress step
                 bool tools_to_continue = false;
                 int batch_size = -1;
-                std::vector<comp_selection<tool_comp>> cached_tool_selections;
+                std::vector<std::vector<step_tool_alloc>> step_tool_allocs;
                 std::optional<units::mass> cached_weight; // NOLINT(cata-serialize)
                 std::optional<units::volume> cached_volume; // NOLINT(cata-serialize)
 
@@ -3565,6 +3580,10 @@ class item : public visitable
                 time_point saved_ready_at = calendar::before_time_starts;
                 time_point saved_alarm_at = calendar::before_time_starts;
                 time_point saved_fail_at  = calendar::before_time_starts;
+                // Periodic env-check cursor while step is live, has env
+                // reqs, and is not env-paused.  before_time_starts otherwise
+                // (during pause, ready_at is the 1-minute polling cursor).
+                time_point env_check_at = calendar::before_time_starts;
 
                 // Counter bounds snapshotted at passive-step entry; item_tname
                 // projects linearly between them without mutation.

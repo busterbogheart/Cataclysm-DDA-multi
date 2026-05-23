@@ -1230,7 +1230,9 @@ class Creature : public viewer
 
         void migrate_effects();
     protected:
-        // How many moves do we have to work with
+        /*
+        * moves are spent and replenished during game::do_turn()
+        */
         int moves;
         Creature *killer; // whoever killed us. this should be NULL unless we are dead
         void set_killer( Creature *killer );
@@ -1262,7 +1264,12 @@ class Creature : public viewer
         int num_dodges_bonus = 0;
 
         std::map<damage_type_id, float> armor_bonus;
-        int speed_base = 0; // only speed needs a base, the rest are assumed at 0 and calculated off skills
+
+        /*
+        * speed is measured in moves and replenishes Creature::moves in game::do_turn()
+        * only speed needs a base, the other bonuses are assumed at 0 and calculated off skills
+        */
+        int speed_base = 0;
 
         int speed_bonus = 0;
         float dodge_bonus = 0.0f;

@@ -34,7 +34,8 @@
       "ƥ": "t_nl_metal_floor",
       "Ṫ": "t_nl_metal_floor",
       "ϟ": "t_nl_metal_floor",
-      "ß": "t_nl_metal_floor"
+      "ß": "t_nl_metal_floor",
+      "W": "t_nl_metal_floor"
     },
     "furniture": {
       "â": "f_autodoc",
@@ -60,7 +61,8 @@
       "ƥ": "f_exodii_printer_small",
       "Ṫ": "f_metal_table",
       "ϟ": "f_capacitor",
-      "ß": "f_metal_bench"
+      "ß": "f_metal_bench",
+      "W": "f_workbench"
     },
     "monsters": {
       "_": { "monster": "GROUP_Labyrinth_Room", "density": 0.00015 },
@@ -155,6 +157,7 @@
       "ϟ": "t_nl_metal_floor_overgrown",
       "ß": "t_nl_metal_floor_overgrown",
       "]": "t_nl_metal_floor_overgrown",
+      "?": "t_nl_metal_floor_overgrown",
       "-": "t_nl_sewage_pipe",
       "I": "t_nl_gates_mech_control"
     },
@@ -186,14 +189,18 @@
       "W": "f_workbench",
       "]": "f_chair_folding",
       "X": [ [ "f_metal_crate_r", 1 ], [ "f_metal_crate_c", 3 ] ],
+      "?": [ [ "f_metal_crate_c", 3 ] ],
       " ": [ [ "f_null", 98 ], [ "f_nl_climbing_vine", 2 ] ],
       ".": [ [ "f_null", 98 ], [ "f_nl_climbing_vine", 2 ] ]
     },
     "nested": { "1": { "chunks": [ [ "null", 1 ], [ "ls_2x2_furniture", 3 ] ] } },
-    "items": { "X": { "item": "LS_SUS_crate_tier1_loot", "chance": 70, "repeat": [ 1, 2 ] } },
+    "items": {
+      "X": { "item": "LS_SUS_crate_tier1_loot", "chance": 70, "repeat": [ 1, 2 ] },
+      "?": { "item": "LS_SUS_crate_tier1_finale_loot", "chance": 100 }
+    },
     "monsters": {
-      " ": { "monster": "GROUP_Labyrinth_Hallmonitors", "density": 0.0003 },
-      "t": { "monster": "GROUP_Labyrinth_Turret", "density": 0.01 }
+      " ": { "monster": "GROUP_Overgrown_Labyrinth_Hallmonitors", "density": 0.0003 },
+      "t": { "monster": "GROUP_Overgrown_Labyrinth_Turret", "density": 0.01 }
     }
   },
   {
@@ -319,7 +326,8 @@
         [ "t_marloss", 1 ]
       ]
     },
-    "furniture": { ",": [ [ "f_swamp_gas", 1 ], [ "f_nl_climbing_vine", 4 ], [ "f_nl_pipe_plant", 6 ], [ "f_null", 199 ] ] }
+    "furniture": { ",": [ [ "f_swamp_gas", 1 ], [ "f_nl_climbing_vine", 4 ], [ "f_nl_pipe_plant", 6 ], [ "f_null", 199 ] ] },
+    "monsters": { ",": { "monster": "GROUP_Overgrown_Labyrinth_Turret", "density": 0.00015 } }
   },
   {
     "type": "palette",

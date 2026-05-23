@@ -148,6 +148,18 @@
   },
   {
     "type": "item_group",
+    "id": "LS_SUS_crate_tier1_finale_loot",
+    "subtype": "collection",
+    "entries": [
+      { "group": "LS_SUS_tier0_kipple", "prob": 80 },
+      { "item": "nl_chem_thrower_mag", "prob": 10, "charges": 57 },
+      { "item": "plut_cell", "prob": 10 },
+      { "item": "exodii_wire_kit", "prob": 10 },
+      { "group": "LS_bionics", "prob": 50 }
+    ]
+  },
+  {
+    "type": "item_group",
     "id": "LS_SUS_crate_tier0_machineparts",
     "//": "Filler.  Pieces to repair stuff within the dungeon.",
     "subtype": "collection",
@@ -157,12 +169,12 @@
       { "item": "bone", "prob": 40, "count": [ 5, 40 ] },
       {
         "distribution": [
-          { "item": "welding_rod_steel", "prob": 30, "charges": [ 300, 900 ] },
-          { "item": "welding_rod_alloy", "prob": 20, "charges": [ 300, 900 ] },
-          { "item": "welding_wire_steel", "prob": 10, "charges": [ 300, 900 ] },
-          { "item": "welding_wire_alloy", "prob": 40, "charges": [ 300, 900 ] },
-          { "item": "brazing_rod_bronze", "prob": 80, "charges": [ 300, 900 ] },
-          { "item": "brazing_rod_alloy", "prob": 30, "charges": [ 300, 900 ] }
+          { "item": "welding_rod_steel", "prob": 30, "count": [ 300, 900 ] },
+          { "item": "welding_rod_alloy", "prob": 20, "count": [ 300, 900 ] },
+          { "item": "welding_wire_steel", "prob": 10, "count": [ 300, 900 ] },
+          { "item": "welding_wire_alloy", "prob": 40, "count": [ 300, 900 ] },
+          { "item": "brazing_rod_bronze", "prob": 80, "count": [ 300, 900 ] },
+          { "item": "brazing_rod_alloy", "prob": 30, "count": [ 300, 900 ] }
         ]
       }
     ]

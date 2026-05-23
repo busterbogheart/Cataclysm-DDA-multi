@@ -1120,10 +1120,11 @@ void crafting_ui_impl::draw_recipe_info_panel()
                 if( total_yield > 1 ) {
                     //~ %1$s: success chance, %2$s: yield count, %3$s: time, %4$s: activity level
                     const std::string fmt = _( "%1$s chance to yield %2$s in %3$s of %4$s" );
-                    plain = string_format( fmt, chance_str, std::to_string( total_yield ), time_str, activity_str );
+                    const std::string yield_as_string = recp.result()->count_or_volume_or_weight_prefix( total_yield );
+                    plain = string_format( fmt, chance_str, yield_as_string, time_str, activity_str );
                     colored = string_format( fmt,
                                              colorize( chance_str, success_col ),
-                                             colorize( std::to_string( total_yield ), c_light_blue ),
+                                             colorize( yield_as_string, c_light_blue ),
                                              colorize( time_str, c_cyan ),
                                              colorize( activity_str, activity_col ) );
                 } else {
@@ -1291,6 +1292,14 @@ void crafting_ui_impl::draw_recipe_info_panel()
             const inventory &crafting_inv = avail.inv_override
                                             ? *avail.inv_override : crafter->crafting_inventory();
 
+            // Single step recipes
+            if( recp.has_steps() && ( recp.steps().size() <= 1 ) ) {
+                const recipe_step &step = recp.steps().front();
+                ImGui::TextColored( cataimgui::imvec4_from_color( c_white ),
+                                    "%s", step.name.translated().c_str() );
+                ImGui::NewLine();
+            }
+
             // Components (always recipe-level)
             draw_components( recp.simple_requirements(), crafting_inv,
                              recp.get_component_filter(), batch_size );
@@ -1310,7 +1319,8 @@ void crafting_ui_impl::draw_recipe_info_panel()
                 }
             }
 
-            if( recp.has_steps() ) {
+            // Multi step details
+            if( recp.has_steps() && ( recp.steps().size() > 1 ) ) {
                 // Step details are collapsible; collapsed shows flat merged view
                 {
                     const char *steps_label = uistate.crafting_expand_steps
@@ -2578,11 +2588,16 @@ void crafting_ui_impl::process_action( const std::string &action_in,
             nested_toggle( current[line]->ident(), recalc, keepline );
         } else {
             const int bs = get_batch_size();
+            const recipe crafting_rec = *current[line];
             craft_confirm_result confirm = can_start_craft(
-                                               *current[line], available[line], *crafter );
+                                               crafting_rec, available[line], *crafter, bs );
             switch( confirm ) {
                 case craft_confirm_result::cannot_craft:
                     popup( _( "Crafter can't craft that!" ) );
+                    break;
+                case craft_confirm_result::too_many_results:
+                    popup( string_format( _( "Batch would create too many items (%1$d).  The limit is %2$d." ),
+                                          crafting_rec.makes_amount() * bs, MAX_ITEM_IN_SQUARE ) );
                     break;
                 case craft_confirm_result::too_dark:
                     popup( _( "Crafter can't see!" ) );

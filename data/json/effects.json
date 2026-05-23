@@ -698,6 +698,17 @@
   },
   {
     "type": "effect_type",
+    "id": "overburdened",
+    "name": [ "Overburdened" ],
+    "desc": [ "You strain to move with all you're carrying." ],
+    "//COMMENT": "This has no apply message because there's an existing application message in Pickup::do_pickup().",
+    "//COMMENT2": "You're carrying too much and are overburdened!",
+    "rating": "bad",
+    "show_in_info": true,
+    "flags": [ "DISABLE_FLIGHT" ]
+  },
+  {
+    "type": "effect_type",
     "id": "assisted",
     "name": [ "Assisted" ],
     "max_intensity": 1000,
@@ -813,7 +824,7 @@
     "type": "effect_type",
     "id": "no_power_arm",
     "name": [ "Low Power" ],
-    "desc": [ "You're low on power.  Your leg is operating in emergency mode and has limited function." ],
+    "desc": [ "You're low on power.  Your arm is operating in emergency mode and has limited function." ],
     "rating": "bad",
     "max_duration": "10 s",
     "base_mods": { "dex_mod": [ -1 ], "str_mod": [ -1 ], "speed_mod": [ -5 ] },
@@ -823,6 +834,36 @@
       { "limb_score": "swim", "modifier": 0.5 },
       { "limb_score": "manip", "modifier": 0.5 },
       { "limb_score": "grip", "modifier": 0.5 }
+    ],
+    "flags": [ "EFFECT_LIMB_SCORE_MOD" ]
+  },
+  {
+    "type": "effect_type",
+    "id": "no_power_eyes",
+    "name": [ "Low Power" ],
+    "desc": [ "You're low on power.  Your eyes are operating in emergency mode and have limited function." ],
+    "rating": "bad",
+    "max_duration": "10 s",
+    "base_mods": { "per_mod": [ -2 ] },
+    "limb_score_mods": [
+      { "limb_score": "vision", "modifier": 0.5 },
+      { "limb_score": "night_vis", "modifier": 0.5 },
+      { "limb_score": "reaction", "modifier": 0.5 }
+    ],
+    "flags": [ "EFFECT_LIMB_SCORE_MOD" ]
+  },
+  {
+    "type": "effect_type",
+    "id": "no_power_tank_treads",
+    "name": [ "Low Power (Bionic Treads)" ],
+    "desc": [ "You're low on power.  Your bionic treads are operating in emergency mode and have limited function." ],
+    "rating": "bad",
+    "max_duration": "30 s",
+    "base_mods": { "speed_mod": [ -10 ] },
+    "limb_score_mods": [
+      { "limb_score": "block", "modifier": 0.0 },
+      { "limb_score": "swim", "modifier": 0.01 },
+      { "limb_score": "move_speed", "modifier": 0.1 }
     ],
     "flags": [ "EFFECT_LIMB_SCORE_MOD" ]
   },
@@ -4516,6 +4557,7 @@
     "id": "mending",
     "name": [ "Started Recovery", "Recovering", "Mostly Recovered" ],
     "desc": [ "This damaged limb is slowly regaining its functions." ],
+    "immune_bp_flags": [ "BIONIC_LIMB" ],
     "//": "Duration is 10 days, but the actual time taken is probabilistic.",
     "max_duration": "10 d",
     "int_dur_factor": "60 h",
@@ -4526,7 +4568,7 @@
     "type": "effect_type",
     "id": "disabled",
     "name": [ { "ctxt": "physically", "str": "Disabled" } ],
-    "desc": [ "This limb is damaged beyond use and may require a splint to recover." ],
+    "desc": [ "This limb is damaged beyond use and may require a splint or some other intervention to recover." ],
     "//": "This sounds weird. We need <bp_affected> tag or something",
     "apply_message": "Your limb breaks!",
     "remove_message": "The broken limb has mended.",
@@ -5391,6 +5433,12 @@
     "id": "a_winner_is_u",
     "name": [ "Winning!" ],
     "//": "Used to display the winning screen upon winning like a winner."
+  },
+  {
+    "type": "effect_type",
+    "id": "a_turncoat_to_the_end",
+    "name": [ "Turncoat or fool?" ],
+    "//": "Used to display the special end screen if you died on the Hub 01 surgical table."
   },
   {
     "type": "effect_type",

@@ -1020,6 +1020,18 @@ const weather_generator &weather_manager::get_cur_weather_gen() const
     return om.get_settings().get_settings_weather();
 }
 
+void weather_manager::on_game_start()
+{
+    if( get_option<std::string>( "ETERNAL_WEATHER" ) != "normal" ) {
+        weather_override = static_cast<weather_type_id>
+                           ( get_option<std::string>( "ETERNAL_WEATHER" ) );
+        set_nextweather( calendar::turn );
+    } else {
+        weather_override = WEATHER_NULL;
+        set_nextweather( calendar::turn );
+    }
+}
+
 void weather_manager::update_weather()
 {
     Character &player_character = get_player_character();

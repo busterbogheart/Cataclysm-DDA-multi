@@ -193,12 +193,22 @@ class game
         friend timed_event_manager &get_timed_events();
         friend item_wakeup_manager &get_item_wakeups();
         friend memorial_logger &get_memorial();
-        friend bool do_turn();
         friend bool turn_handler::cleanup_at_end();
         friend global_variables &get_globals();
     public:
         game();
         ~game();
+
+        /*
+        * MAIN GAME LOOP
+        *
+        * Process a `turn`, equal to one in-game second, by doing two things:
+        * 1. spend and replenish Creature::moves -- for `avatar`, `npc`, `monster`
+        * 2. handle game systems (weather, missions, fields, see below)
+        *
+        * @return true if game is over (death, saved, quit, etc)
+        */
+        bool do_turn();
 
         /** Loads static data that does not depend on mods or similar. */
         void load_static_data();
@@ -798,6 +808,7 @@ class game
         int get_zoom() const;
         int get_moves_since_last_save() const;
         int get_user_action_counter() const;
+        void handle_progress_ui();
 
         /** Saves a screenshot of the current viewport, as a PNG file, to the given location.
         * @param file_path: A full path to the file where the screenshot should be saved.

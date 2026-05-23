@@ -886,8 +886,10 @@ stacking_info item::stacks_with( const item &rhs, bool check_components, bool co
               damage_level( precise ) == rhs.damage_level( precise ) && degradation_ == rhs.degradation_ );
     bits.set( tname::segments::BURN, burnt == rhs.burnt );
     bits.set( tname::segments::ACTIVE, active == rhs.active );
-    bits.set( tname::segments::ACTIVITY_OCCUPANCY, get_var( "activity_var",
-              "" ) == rhs.get_var( "activity_var", "" ) );
+    const bool both_empty_vars = item_vars.empty() && rhs.item_vars.empty();
+    bits.set( tname::segments::ACTIVITY_OCCUPANCY,
+              both_empty_vars ||
+              get_var( "activity_var", "" ) == rhs.get_var( "activity_var", "" ) );
     bits.set( tname::segments::FILTHY, is_filthy() == rhs.is_filthy() );
     bits.set( tname::segments::WETNESS, _stacks_wetness( *this, rhs, precise ) );
     bits.set( tname::segments::WEAPON_MODS, _stacks_weapon_mods( *this, rhs ) );
@@ -909,7 +911,8 @@ stacking_info item::stacks_with( const item &rhs, bool check_components, bool co
     bits.set( tname::segments::FAULTS_SUFFIX, faults == rhs.faults );
     bits.set( tname::segments::TECHNIQUES, techniques == rhs.techniques );
     bits.set( tname::segments::OVERHEAT, overheat_symbol() == rhs.overheat_symbol() );
-    bits.set( tname::segments::DIRT, get_var( "dirt", 0 ) == rhs.get_var( "dirt", 0 ) );
+    bits.set( tname::segments::DIRT,
+              both_empty_vars || get_var( "dirt", 0 ) == rhs.get_var( "dirt", 0 ) );
     bits.set( tname::segments::SEALED, all_pockets_sealed() == rhs.all_pockets_sealed() );
     bits.set( tname::segments::CBM_STATUS, _stacks_cbm_status( *this, rhs ) );
     bits.set( tname::segments::BROKEN, is_broken() == rhs.is_broken() );
@@ -919,7 +922,9 @@ stacking_info item::stacks_with( const item &rhs, bool check_components, bool co
     // CAMERA_*_PHOTOS_count and EIPC_RECIPES_count are derived caches; not part of identity.
     static const std::set<std::string> ignore_keys = { "dirt", "shot_counter", "spawn_location", "ethereal", "last_act_by_char_id", "activity_var", "CAMERA_EXTENDED_PHOTOS_count", "CAMERA_MONSTER_PHOTOS_count", "EIPC_RECIPES_count" };
     bits.set( tname::segments::TRAITS, template_traits == rhs.template_traits );
-    bits.set( tname::segments::VARS, map_equal_ignoring_keys( item_vars, rhs.item_vars, ignore_keys ) );
+    bits.set( tname::segments::VARS,
+              both_empty_vars ||
+              map_equal_ignoring_keys( item_vars, rhs.item_vars, ignore_keys ) );
     bits.set( tname::segments::ETHEREAL, _stacks_ethereal( *this, rhs ) );
     bits.set( tname::segments::LOCATION_HINT, _stacks_location_hint( *this, rhs ) );
     bits.set( tname::segments::LOCATION_PRECISE_CLOSEST_CITY,
@@ -1003,8 +1008,11 @@ void item::set_var( const std::string &key, diag_value value )
     item_vars[ key ] = std::move( value );
 }
 
-double item::get_var( const std::string &key, double default_value ) const
+double item::get_var( std::string_view key, double default_value ) const
 {
+    if( item_vars.empty() ) {
+        return default_value;
+    }
     if( diag_value const *ret = maybe_get_value( key ); ret ) {
         return ret->dbl();
     }
@@ -1012,8 +1020,11 @@ double item::get_var( const std::string &key, double default_value ) const
     return default_value;
 }
 
-std::string item::get_var( const std::string &key, std::string default_value ) const
+std::string item::get_var( std::string_view key, std::string default_value ) const
 {
+    if( item_vars.empty() ) {
+        return default_value;
+    }
     if( diag_value const *ret = maybe_get_value( key ); ret ) {
         return ret->str();
     }
@@ -1021,8 +1032,11 @@ std::string item::get_var( const std::string &key, std::string default_value ) c
     return default_value;
 }
 
-tripoint_abs_ms item::get_var( const std::string &key, tripoint_abs_ms default_value ) const
+tripoint_abs_ms item::get_var( std::string_view key, tripoint_abs_ms default_value ) const
 {
+    if( item_vars.empty() ) {
+        return default_value;
+    }
     if( diag_value const *ret = maybe_get_value( key ); ret ) {
         return ret->tripoint();
     }
@@ -1035,20 +1049,27 @@ void item::remove_var( const std::string &key )
     item_vars.erase( key );
 }
 
-diag_value const &item::get_value( const std::string &name ) const
+diag_value const &item::get_value( std::string_view name ) const
 {
-    return global_variables::_common_get_value( name, item_vars );
+    static diag_value const null_val;
+    if( item_vars.empty() ) {
+        return null_val;
+    }
+    return global_variables::_common_get_value( std::string( name ), item_vars );
 
 }
 
-diag_value const *item::maybe_get_value( const std::string &name ) const
+diag_value const *item::maybe_get_value( std::string_view name ) const
 {
-    return global_variables::_common_maybe_get_value( name, item_vars );
+    if( item_vars.empty() ) {
+        return nullptr;
+    }
+    return global_variables::_common_maybe_get_value( std::string( name ), item_vars );
 }
 
-bool item::has_var( const std::string &name ) const
+bool item::has_var( std::string_view name ) const
 {
-    return item_vars.count( name ) > 0;
+    return !item_vars.empty() && item_vars.count( std::string( name ) ) > 0;
 }
 
 void item::erase_var( const std::string &name )
@@ -1608,10 +1629,14 @@ std::string item::display_name( unsigned int quantity ) const
                     if( mag != nullptr ) {
                         well_amount = mag->ammo_remaining();
                         const itype *adata = mag->ammo_data();
-                        well_max = adata
-                                   ? mag->ammo_capacity( adata->ammo->type )
-                                   : mag->ammo_capacity( item_controller->find_template(
-                                                             mag->ammo_default() )->ammo->type );
+                        if( adata ) {
+                            well_max = mag->ammo_capacity( adata->ammo->type );
+                        } else if( !mag->ammo_default().is_null() ) {
+                            const itype *tmpl = item_controller->find_template( mag->ammo_default() );
+                            if( tmpl && tmpl->ammo ) {
+                                well_max = mag->ammo_capacity( tmpl->ammo->type );
+                            }
+                        }
                         ammo_for_name = adata;
                         ammo_id_for_name = mag->ammo_current();
                         if( ammo_id_for_name.is_null() ) {
@@ -1710,9 +1735,11 @@ std::string item::display_name( unsigned int quantity ) const
             const itype *adata = mag->ammo_data();
             if( adata ) {
                 max_amount = mag->ammo_capacity( adata->ammo->type );
-            } else {
-                max_amount = mag->ammo_capacity( item_controller->find_template(
-                                                     mag->ammo_default() )->ammo->type );
+            } else if( !mag->ammo_default().is_null() ) {
+                const itype *tmpl = item_controller->find_template( mag->ammo_default() );
+                if( tmpl && tmpl->ammo ) {
+                    max_amount = mag->ammo_capacity( tmpl->ammo->type );
+                }
             }
         }
     } else if( is_tool() && has_flag( flag_USES_NEARBY_AMMO ) ) {
@@ -1725,8 +1752,13 @@ std::string item::display_name( unsigned int quantity ) const
         const itype *adata = ammo_data();
         if( adata ) {
             max_amount = ammo_capacity( adata->ammo->type );
-        } else {
-            max_amount = ammo_capacity( item_controller->find_template( ammo_default() )->ammo->type );
+        } else if( !ammo_default().is_null() ) {
+            // Barrel-swappable guns ("ammo": [ "NULL" ]) resolve to a
+            // template with a null ammo slot.
+            const itype *tmpl = item_controller->find_template( ammo_default() );
+            if( tmpl && tmpl->ammo ) {
+                max_amount = ammo_capacity( tmpl->ammo->type );
+            }
         }
         show_amt = !has_flag( flag_RELOAD_AND_SHOOT );
     } else if( count_by_charges() && !has_infinite_charges() ) {
@@ -1735,8 +1767,8 @@ std::string item::display_name( unsigned int quantity ) const
         const itype *adata = ammo_data();
         if( adata ) {
             max_amount = ammo_capacity( adata->ammo->type );
-        } else if( !ammo_default().is_null() ) {
-            max_amount = ammo_capacity( item_controller->find_template( ammo_default() )->ammo->type );
+        } else if( const std::optional<ammotype> at = ammotype_of( ammo_default() ) ) {
+            max_amount = ammo_capacity( *at );
         }
     } else if( is_vehicle_battery() ) {
         show_amt = true;
@@ -1786,11 +1818,14 @@ std::string item::display_name( unsigned int quantity ) const
                     } else {
                         charges_color = c_light_green;
                     }
-                    amt = string_format( " (%s%s)", colorize( string_format( "%i/%i", amount, max_amount ),
-                                         charges_color ),
+                    amt = string_format( " (%s%s)",
+                                         colorize( string_format( "%s/%s",
+                                                   type->count_or_volume_or_weight_prefix( amount ),
+                                                   type->count_or_volume_or_weight_prefix( max_amount ) ),
+                                                   charges_color ),
                                          ammotext );
-                } else if( !type->dont_display_count_or_charges() )  {
-                    amt = string_format( " (%i%s)", amount, ammotext );
+                } else  {
+                    amt = string_format( " (%s%s)", type->count_or_volume_or_weight_prefix( amount ), ammotext );
                 }
             }
         } else if( !ammotext.empty() ) {
@@ -1918,8 +1953,10 @@ units::mass item::weight( bool include_contents, bool integral ) const
         return 0_gram;
     }
 
+    const uint64_t hot = combined_hot_flags();
+
     // Items that don't drop aren't really there, they're items just for ease of implementation
-    if( has_flag( flag_NO_DROP ) ) {
+    if( hot & static_cast<uint64_t>( hot_flag_bit::NO_DROP ) ) {
         return 0_gram;
     }
 
@@ -1945,7 +1982,7 @@ units::mass item::weight( bool include_contents, bool integral ) const
         ret = units::from_milligram( local_mass.dbl() );
     }
 
-    if( has_flag( flag_REDUCED_WEIGHT ) ) {
+    if( hot & static_cast<uint64_t>( hot_flag_bit::REDUCED_WEIGHT ) ) {
         ret_mul *= 0.75;
     }
 
@@ -1959,20 +1996,21 @@ units::mass item::weight( bool include_contents, bool integral ) const
     if( count_by_charges() ) {
         ret_mul *= charges;
 
-    } else if( is_corpse() ) {
-        cata_assert( corpse ); // To appease static analysis
+    } else if( ( hot & static_cast<uint64_t>( hot_flag_bit::CORPSE ) ) && corpse != nullptr ) {
         ret = corpse->weight;
         ret_mul = 1.0;
-        if( has_flag( flag_FIELD_DRESS ) || has_flag( flag_FIELD_DRESS_FAILED ) ) {
+        constexpr uint64_t field_dress_any = static_cast<uint64_t>( hot_flag_bit::FIELD_DRESS ) |
+                                             static_cast<uint64_t>( hot_flag_bit::FIELD_DRESS_FAILED );
+        if( hot & field_dress_any ) {
             ret_mul *= 0.75;
         }
-        if( has_flag( flag_GIBBED ) ) {
+        if( hot & static_cast<uint64_t>( hot_flag_bit::GIBBED ) ) {
             ret_mul *= 0.85;
         }
-        if( has_flag( flag_SKINNED ) ) {
+        if( hot & static_cast<uint64_t>( hot_flag_bit::SKINNED ) ) {
             ret_mul *= 0.85;
         }
-        if( has_flag( flag_QUARTERED ) ) {
+        if( hot & static_cast<uint64_t>( hot_flag_bit::QUARTERED ) ) {
             ret_mul *= 0.25;
         }
 
@@ -3115,7 +3153,8 @@ bool item::has_temperature() const
 
 bool item::is_corpse() const
 {
-    return corpse != nullptr && has_flag( flag_CORPSE );
+    return corpse != nullptr &&
+           ( combined_hot_flags() & static_cast<uint64_t>( hot_flag_bit::CORPSE ) ) != 0;
 }
 
 const mtype *item::get_mtype() const
@@ -5035,6 +5074,18 @@ const itype *item::find_type( const itype_id &type )
     return item_controller->find_template( type );
 }
 
+std::optional<ammotype> item::ammotype_of( const itype_id &id )
+{
+    if( id.is_null() ) {
+        return std::nullopt;
+    }
+    const itype *t = find_type( id );
+    if( t == nullptr || !t->ammo ) {
+        return std::nullopt;
+    }
+    return t->ammo->type;
+}
+
 bool item::has_label() const
 {
     return has_var( "item_label" );
@@ -5167,16 +5218,16 @@ bool item::has_tools_to_continue() const
     return craft_data_->tools_to_continue;
 }
 
-void item::set_cached_tool_selections( const std::vector<comp_selection<tool_comp>> &selections )
+void item::set_step_tool_allocs( const std::vector<std::vector<step_tool_alloc>> &allocs )
 {
     cata_assert( craft_data_ );
-    craft_data_->cached_tool_selections = selections;
+    craft_data_->step_tool_allocs = allocs;
 }
 
-const std::vector<comp_selection<tool_comp>> &item::get_cached_tool_selections() const
+const std::vector<std::vector<step_tool_alloc>> &item::get_step_tool_allocs() const
 {
     cata_assert( craft_data_ );
-    return craft_data_->cached_tool_selections;
+    return craft_data_->step_tool_allocs;
 }
 
 int item::get_current_step() const
@@ -5319,6 +5370,18 @@ void item::set_saved_fail_at( time_point t )
 {
     cata_assert( craft_data_ );
     craft_data_->saved_fail_at = t;
+}
+
+time_point item::get_env_check_at() const
+{
+    cata_assert( craft_data_ );
+    return craft_data_->env_check_at;
+}
+
+void item::set_env_check_at( time_point t )
+{
+    cata_assert( craft_data_ );
+    craft_data_->env_check_at = t;
 }
 
 character_id item::get_crafter_id() const

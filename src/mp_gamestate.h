@@ -117,6 +117,14 @@ bool is_hosting();
 // freeze while the host fast-forwards, giving the client time to act freely.
 bool host_is_in_wait_activity();
 
+// True when do_turn() should run `calendar::turn += 1_turns;` this iteration.
+// In SP and host mode, always true.  In client mode, true only when moves > 0
+// (i.e. the host just granted a turn) — otherwise the calendar races forward
+// at ~10 turns/sec while the client sits in its locked input poll.  Named
+// callout so the SP file in do_turn.cpp holds a single boolean check instead
+// of an inline MP block — keeps merge-conflict surface minimal.
+bool should_advance_calendar();
+
 // Client only: returns true when the client host-NPC proxy occupies the given
 // absolute map position.  Used by handle_action to block walk-through-host.
 bool is_client_host_at( const tripoint_abs_ms &abs );

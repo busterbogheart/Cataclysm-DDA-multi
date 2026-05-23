@@ -453,6 +453,7 @@ void game::print_items_info( const tripoint_bub_ms &lp, const catacurses::window
         return;
     } else {
         std::map<std::string, std::pair<int, nc_color>> item_names;
+        // This should probably use a map_entity_stack!
         for( const item &it : here.i_at( lp ) ) {
             add_visible_items_recursive( item_names, it );
         }

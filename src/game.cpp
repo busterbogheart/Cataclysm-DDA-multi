@@ -1095,7 +1095,7 @@ vehicle *game::place_vehicle_nearby(
                 }
             };
             vehicle *veh = target_map.add_vehicle( id, tinymap_center, random_entry( angles ),
-                                                   rng( 50, 80 ), 0, false );
+                                                   rng( 50, 80 ), veh_spawn_status::UNDAMAGED, false );
             if( veh ) {
                 const tripoint_abs_ms abs_local = target_map.get_abs( tinymap_center );
                 tripoint_abs_sm quotient;
@@ -3608,7 +3608,7 @@ float game::natural_light_level( const int zlev ) const
         return LIGHT_AMBIENT_MINIMAL;
     }
 
-    if( latest_lightlevels[zlev] > -std::numeric_limits<float>::max() ) {
+    if( latest_lightlevels[zlev] > std::numeric_limits<float>::lowest() ) {
         // Already found the light level for now?
         return latest_lightlevels[zlev];
     }
@@ -3667,7 +3667,7 @@ unsigned char game::light_level( const int zlev ) const
 void game::reset_light_level()
 {
     for( float &lev : latest_lightlevels ) {
-        lev = -std::numeric_limits<float>::max();
+        lev = std::numeric_limits<float>::lowest();
     }
 }
 
@@ -9289,7 +9289,7 @@ bool game::fling_creature( Creature *c, const units::angle &dir, float flvel, bo
     }
 
     // Fall down to the ground - always on the last reached tile
-    if( !here.has_flag( ter_furn_flag::TFLAG_SWIMMABLE, pos ) ) {
+    if( !here.has_flag( ter_furn_flag::TFLAG_DEEP_WATER, pos ) ) {
         // Didn't smash into a wall or a floor so only take the fall damage
         if( thru && here.is_open_air( pos ) ) {
             here.creature_on_trap( *c, false );

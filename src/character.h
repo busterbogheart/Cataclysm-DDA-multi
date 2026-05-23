@@ -1283,6 +1283,9 @@ class Character : public Creature, public visitable
         /** Actually hurt the player, hurts a body_part directly, no armor reduction */
         void apply_damage( Creature *source, bodypart_id hurt, int dam,
                            bool bypass_med = false ) override;
+        // checks if amount of specific wounds on bodypart is not higher than `limit`
+        // return false if more than limit
+        bool is_within_wound_limit_for_bp( bodypart_id bp, wound_type_id wound_id ) const;
         void apply_random_wound( bodypart_id bp, const damage_instance &d );
         /** Calls Creature::deal_damage and handles damaged effects (waking up, etc.) */
         dealt_damage_instance deal_damage( Creature *source, bodypart_id bp,
@@ -2343,7 +2346,7 @@ class Character : public Creature, public visitable
                                                 &locations ) const;
         units::mass weight_capacity() const override;
 
-        /* maximum you should ever be able to pick up ( i.e. with DANGEROUS_PICKUPS enabled) */
+        /* maximum you should ever be able to pick up */
         units::mass max_pickup_capacity() const;
         // total capacity of pockets in the player's top level of inventory.
         // bags-of-holding aside, this is the max volume the character can carry without changing what they're wearing/wielding.
@@ -3841,6 +3844,9 @@ class Character : public Creature, public visitable
         } );
         /** Consume tools for the next multiplier * 5% progress of the craft */
         bool craft_consume_tools( item &craft, int multiplier, bool start_craft );
+        /** Advance per-step tool consumption so each step's allocations match its
+         *  current progress.  Returns false (consuming nothing) if charges are short. */
+        bool craft_consume_step_tools( item &craft );
         void consume_tools( const comp_selection<tool_comp> &tool, int batch );
         void consume_tools( map &m, const comp_selection<tool_comp> &tool, int batch,
                             const tripoint_bub_ms &origin = tripoint_bub_ms::zero, int radius = PICKUP_RANGE,

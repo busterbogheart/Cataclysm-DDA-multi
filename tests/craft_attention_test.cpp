@@ -1,14 +1,17 @@
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "calendar.h"
 #include "cata_catch.h"
 #include "character_id.h"
 #include "coordinates.h"
+#include "craft_command.h"
 #include "crafting.h"
 #include "crafting_enums.h"
 #include "flexbuffer_json.h"
@@ -22,21 +25,34 @@
 #include "map.h"
 #include "map_helpers.h"
 #include "map_selector.h"
+#include "player_activity.h"
+#include "player_helpers.h"
 #include "point.h"
 #include "recipe.h"
 #include "requirements.h"
 #include "type_id.h"
 
 static const itype_id itype_2x4( "2x4" );
+static const itype_id itype_hammer( "hammer" );
+static const itype_id itype_microwave( "microwave" );
+static const itype_id itype_soldering_iron_portable( "soldering_iron_portable" );
 
+static const recipe_id recipe_cudgel_test_charged_fast_stepless(
+    "cudgel_test_charged_fast_stepless" );
 static const recipe_id recipe_cudgel_test_consecutive_unattended(
     "cudgel_test_consecutive_unattended" );
 static const recipe_id recipe_cudgel_test_first_step_unattended(
     "cudgel_test_first_step_unattended" );
 static const recipe_id recipe_cudgel_test_only_unattended(
     "cudgel_test_only_unattended" );
+static const recipe_id recipe_cudgel_test_root_unattended(
+    "cudgel_test_root_unattended" );
 static const recipe_id recipe_cudgel_test_steps_basic(
     "cudgel_test_steps_basic" );
+static const recipe_id recipe_cudgel_test_steps_charged(
+    "cudgel_test_steps_charged" );
+static const recipe_id recipe_cudgel_test_steps_two_tools(
+    "cudgel_test_steps_two_tools" );
 static const recipe_id recipe_cudgel_test_timeout_recipe(
     "cudgel_test_timeout_recipe" );
 static const recipe_id recipe_cudgel_test_unattended_simple(
@@ -310,6 +326,387 @@ TEST_CASE( "craft_data_persists_attention_runtime_fields",
     CHECK( restored.get_saved_alarm_at() == calendar::turn + 8_minutes );
     CHECK( restored.get_saved_fail_at() == calendar::turn + 26_minutes );
     CHECK( restored.get_crafter_id() == character_id( 42 ) );
+}
+
+TEST_CASE( "craft_data_persists_step_tool_allocs", "[craft][attention][persist]" )
+{
+    // Round-trip a single allocation directly, so this covers serialization
+    // independent of the load-time recipe-shape validation (exercised by the
+    // craft_data_validates_* cases).
+    step_tool_alloc alloc;
+    alloc.sel.use_from = usage_from::player;
+    alloc.sel.comp.type = itype_soldering_iron_portable;
+    alloc.sel.comp.count = 8;
+    alloc.step_count_units = 8;
+    alloc.consumed_buckets = 5;
+    alloc.root_derived = true;
+
+    std::ostringstream ss;
+    JsonOut jsout( ss );
+    alloc.serialize( jsout );
+
+    step_tool_alloc restored;
+    restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+
+    CHECK( restored.sel.use_from == usage_from::player );
+    CHECK( restored.sel.comp.type == itype_soldering_iron_portable );
+    CHECK( restored.sel.comp.count == 8 );
+    CHECK( restored.step_count_units == 8 );
+    CHECK( restored.consumed_buckets == 5 );
+    CHECK( restored.root_derived );
+}
+
+TEST_CASE( "craft_data_resets_stale_step_tool_allocs_on_size_mismatch",
+           "[craft][attention][persist][migration]" )
+{
+    item ingredient( itype_2x4, calendar::turn );
+    item_components comps;
+    comps.add( ingredient );
+    item built( &recipe_cudgel_test_unattended_simple.obj(), 1, comps,
+                std::vector<item_comp> {} );
+    REQUIRE( built.is_craft() );
+    REQUIRE( built.get_making().steps().size() == 2 );
+
+    // A save whose allocation rows do not match the recipe's step count (a
+    // legacy flat save deserializes to zero rows the same way).
+    step_tool_alloc alloc;
+    alloc.sel.use_from = usage_from::player;
+    alloc.sel.comp.type = itype_soldering_iron_portable;
+    alloc.sel.comp.count = 8;
+    alloc.step_count_units = 8;
+    alloc.consumed_buckets = 3;
+    built.set_step_tool_allocs( { { alloc } } );
+    built.set_tools_to_continue( true );
+
+    std::ostringstream ss;
+    JsonOut jsout( ss );
+    built.serialize( jsout );
+
+    item restored;
+    restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+
+    REQUIRE( restored.is_craft() );
+    REQUIRE( restored.get_making().steps().size() == 2 );
+    CHECK( restored.get_step_tool_allocs().empty() );
+    CHECK_FALSE( restored.has_tools_to_continue() );
+}
+
+TEST_CASE( "craft_data_resets_step_tool_allocs_on_tool_shape_change",
+           "[craft][attention][persist][migration]" )
+{
+    item ingredient( itype_2x4, calendar::turn );
+    item_components comps;
+    comps.add( ingredient );
+    item built( &recipe_cudgel_test_unattended_simple.obj(), 1, comps,
+                std::vector<item_comp> {} );
+    REQUIRE( built.is_craft() );
+    REQUIRE( built.get_making().steps().size() == 2 );
+
+    // Right row count, but the allocation references a tool the recipe's steps
+    // no longer list (a tool-group edit that preserved the step count).
+    step_tool_alloc alloc;
+    alloc.sel.use_from = usage_from::player;
+    alloc.sel.comp.type = itype_soldering_iron_portable;
+    alloc.sel.comp.count = 8;
+    alloc.step_count_units = 8;
+    built.set_step_tool_allocs( { {}, { alloc } } );
+    built.set_tools_to_continue( true );
+
+    std::ostringstream ss;
+    JsonOut jsout( ss );
+    built.serialize( jsout );
+
+    item restored;
+    restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+
+    REQUIRE( restored.is_craft() );
+    REQUIRE( restored.get_making().steps().size() == 2 );
+    CHECK( restored.get_step_tool_allocs().empty() );
+    CHECK_FALSE( restored.has_tools_to_continue() );
+}
+
+TEST_CASE( "craft_data_validates_step_tool_alloc_shape_on_load",
+           "[craft][attention][persist][migration]" )
+{
+    REQUIRE( recipe_cudgel_test_steps_charged.obj().steps().size() == 3 );
+
+    const auto round_trip = []( const std::vector<std::vector<step_tool_alloc>> &allocs ) -> item {
+        item ingredient( itype_2x4, calendar::turn );
+        item_components comps;
+        comps.add( ingredient );
+        item built( &recipe_cudgel_test_steps_charged.obj(), 1, comps,
+        std::vector<item_comp> {} );
+        built.set_step_tool_allocs( allocs );
+        built.set_tools_to_continue( true );
+        std::ostringstream ss;
+        JsonOut jsout( ss );
+        built.serialize( jsout );
+        item restored;
+        restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+        return restored;
+    };
+
+    step_tool_alloc good;
+    good.sel.use_from = usage_from::both;
+    good.sel.comp.type = itype_soldering_iron_portable;
+    good.sel.comp.count = 40;
+    good.step_count_units = 40;
+    good.consumed_buckets = 4;
+
+    GIVEN( "allocations matching the recipe's tool groups" ) {
+        item restored = round_trip( { {}, { good }, {} } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "they are preserved on load" ) {
+            REQUIRE( restored.get_step_tool_allocs().size() == 3 );
+            REQUIRE_FALSE( restored.get_step_tool_allocs()[1].empty() );
+            CHECK( restored.get_step_tool_allocs()[1][0].consumed_buckets == 4 );
+            CHECK( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "an allocation whose count no longer matches the tool group" ) {
+        step_tool_alloc stale = good;
+        stale.sel.comp.count = 99;
+        item restored = round_trip( { {}, { stale }, {} } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "the allocations are dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "an allocation with an out-of-range consumed bucket count" ) {
+        step_tool_alloc corrupt = good;
+        corrupt.consumed_buckets = 99;
+        item restored = round_trip( { {}, { corrupt }, {} } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "the allocations are dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "an allocation whose units disagree with its selected count" ) {
+        step_tool_alloc inconsistent = good;
+        inconsistent.step_count_units = 7;
+        item restored = round_trip( { {}, { inconsistent }, {} } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "the allocations are dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "a charged allocation with no usable source" ) {
+        step_tool_alloc sourceless = good;
+        sourceless.sel.use_from = usage_from::none;
+        item restored = round_trip( { {}, { sourceless }, {} } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "the allocations are dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+}
+
+TEST_CASE( "craft_data_validates_stepless_step_tool_allocs_on_load",
+           "[craft][attention][persist][migration]" )
+{
+    const recipe &rec = recipe_cudgel_test_charged_fast_stepless.obj();
+    REQUIRE_FALSE( rec.has_steps() );
+    REQUIRE( rec.simple_requirements().get_tools().size() == 1 );
+    const tool_comp tool = rec.simple_requirements().get_tools()[0].front();
+
+    const auto round_trip = [&rec]( const std::vector<std::vector<step_tool_alloc>> &allocs ) -> item {
+        item ingredient( itype_2x4, calendar::turn );
+        item_components comps;
+        comps.add( ingredient );
+        item built( &rec, 1, comps, std::vector<item_comp> {} );
+        built.set_step_tool_allocs( allocs );
+        built.set_tools_to_continue( true );
+        std::ostringstream ss;
+        JsonOut jsout( ss );
+        built.serialize( jsout );
+        item restored;
+        restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+        return restored;
+    };
+
+    const auto alloc_for = [&tool]( int count, int consumed ) -> step_tool_alloc {
+        step_tool_alloc a;
+        a.sel.use_from = usage_from::both;
+        a.sel.comp.type = tool.type;
+        a.sel.comp.count = count;
+        a.step_count_units = std::max( 0, count );
+        a.consumed_buckets = consumed;
+        return a;
+    };
+
+    GIVEN( "a stepless allocation matching the recipe tool" ) {
+        item restored = round_trip( { { alloc_for( tool.count, 4 ) } } );
+        REQUIRE( restored.is_craft() );
+        THEN( "it is preserved" ) {
+            REQUIRE( restored.get_step_tool_allocs().size() == 1 );
+            REQUIRE( restored.get_step_tool_allocs()[0].size() == 1 );
+            CHECK( restored.get_step_tool_allocs()[0][0].consumed_buckets == 4 );
+            CHECK( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "a stepless charged allocation with no usable source" ) {
+        step_tool_alloc sourceless = alloc_for( tool.count, 4 );
+        sourceless.sel.use_from = usage_from::none;
+        item restored = round_trip( { { sourceless } } );
+        REQUIRE( restored.is_craft() );
+        THEN( "the unsourced allocation is dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "a stepless allocation whose count the recipe no longer offers" ) {
+        item restored = round_trip( { { alloc_for( tool.count + 1, 4 ) } } );
+        REQUIRE( restored.is_craft() );
+        THEN( "the stale allocation is dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "more allocations than the recipe has tool groups" ) {
+        item restored = round_trip( { { alloc_for( tool.count, 4 ), alloc_for( tool.count, 4 ) } } );
+        REQUIRE( restored.is_craft() );
+        THEN( "the mismatched shape is dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "no allocations when the recipe needs a tool" ) {
+        item restored = round_trip( {} );
+        REQUIRE( restored.is_craft() );
+        THEN( "the unmetered shape is dropped for a rebuild" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+}
+
+TEST_CASE( "craft_data_resets_step_tool_allocs_on_group_reorder",
+           "[craft][attention][persist][migration]" )
+{
+    REQUIRE( recipe_cudgel_test_steps_two_tools.obj().steps().size() == 1 );
+
+    const auto round_trip = []( const std::vector<std::vector<step_tool_alloc>> &allocs ) -> item {
+        item ingredient( itype_2x4, calendar::turn );
+        item_components comps;
+        comps.add( ingredient );
+        item built( &recipe_cudgel_test_steps_two_tools.obj(), 1, comps,
+        std::vector<item_comp> {} );
+        built.set_step_tool_allocs( allocs );
+        built.set_tools_to_continue( true );
+        std::ostringstream ss;
+        JsonOut jsout( ss );
+        built.serialize( jsout );
+        item restored;
+        restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+        return restored;
+    };
+
+    const auto presence = []( const itype_id & type ) -> step_tool_alloc {
+        step_tool_alloc a;
+        a.sel.use_from = usage_from::map;
+        a.sel.comp.type = type;
+        a.sel.comp.count = -1;
+        return a;
+    };
+
+    GIVEN( "allocations lined up with the step's tool groups in order" ) {
+        item restored = round_trip( { { presence( itype_soldering_iron_portable ), presence( itype_hammer ) } } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "they are preserved" ) {
+            REQUIRE( restored.get_step_tool_allocs().size() == 1 );
+            CHECK( restored.get_step_tool_allocs()[0].size() == 2 );
+            CHECK( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "a duplicate that no longer fits the second group positionally" ) {
+        item restored = round_trip( { { presence( itype_soldering_iron_portable ), presence( itype_soldering_iron_portable ) } } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "the stale shape is dropped" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
+}
+
+TEST_CASE( "craft_data_root_alloc_shape_follows_active_steps",
+           "[craft][attention][persist][migration]" )
+{
+    const recipe &rec = recipe_cudgel_test_root_unattended.obj();
+    REQUIRE( rec.steps().size() == 2 );
+    REQUIRE( rec.steps()[0].attention != step_attention::unattended );
+    REQUIRE( rec.steps()[1].attention == step_attention::unattended );
+    const std::vector<std::vector<tool_comp>> &root_groups =
+            rec.root_requirements().get_tools();
+    REQUIRE( root_groups.size() == 1 );
+    REQUIRE_FALSE( root_groups[0].empty() );
+    const tool_comp root_tool = root_groups[0].front();
+
+    const auto round_trip = [&rec]( const std::vector<std::vector<step_tool_alloc>> &allocs ) -> item {
+        item ingredient( itype_2x4, calendar::turn );
+        item_components comps;
+        comps.add( ingredient );
+        item built( &rec, 1, comps, std::vector<item_comp> {} );
+        built.set_step_tool_allocs( allocs );
+        built.set_tools_to_continue( true );
+        std::ostringstream ss;
+        JsonOut jsout( ss );
+        built.serialize( jsout );
+        item restored;
+        restored.deserialize( json_loader::from_string( ss.str() ).get_object() );
+        return restored;
+    };
+
+    const auto root_alloc = [&root_tool]() -> step_tool_alloc {
+        step_tool_alloc a;
+        a.sel.use_from = usage_from::both;
+        a.sel.comp.type = root_tool.type;
+        a.sel.comp.count = root_tool.count;
+        a.step_count_units = std::max( root_tool.count, 1 );
+        a.root_derived = true;
+        return a;
+    };
+
+    GIVEN( "a root allocation on the active step and none on the unattended step" ) {
+        item restored = round_trip( { { root_alloc() }, {} } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "it is preserved" ) {
+            REQUIRE( restored.get_step_tool_allocs().size() == 2 );
+            CHECK( restored.get_step_tool_allocs()[0].size() == 1 );
+            CHECK( restored.get_step_tool_allocs()[1].empty() );
+            CHECK( restored.has_tools_to_continue() );
+        }
+    }
+
+    GIVEN( "a root allocation on the unattended step" ) {
+        item restored = round_trip( { { root_alloc() }, { root_alloc() } } );
+        REQUIRE( restored.is_craft() );
+
+        THEN( "the stale shape is dropped" ) {
+            CHECK( restored.get_step_tool_allocs().empty() );
+            CHECK_FALSE( restored.has_tools_to_continue() );
+        }
+    }
 }
 
 TEST_CASE( "craft_data_default_step_plan_serializes_minimally",
@@ -685,3 +1082,365 @@ TEST_CASE( "craft_env_unpause_alarm_clears_when_already_due",
     CHECK( on_map.get_pause_started_at() == calendar::before_time_starts );
 }
 
+TEST_CASE( "craft_stamp_arms_env_check_when_step_has_env_requirements",
+           "[craft][attention][env_check]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+    u.i_add( item( itype_microwave, calendar::turn ) );
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    on_map.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+    craft_stamp_passive_entry( on_map, u, calendar::turn, loc );
+
+    // Step has OVEN quality requirement -> env_check_at armed at now+1min,
+    // clamped under ready_at.
+    REQUIRE( on_map.get_passive_started_at() == calendar::turn );
+    CHECK( on_map.get_env_check_at() != calendar::before_time_starts );
+    CHECK( on_map.get_env_check_at() <= on_map.get_ready_at() );
+    CHECK( get_item_wakeups().is_scheduled( on_map.uid().get_value(),
+                                            item_wakeup_kind::env_check ) );
+}
+
+TEST_CASE( "craft_stamp_skips_env_check_when_step_has_no_env_requirements",
+           "[craft][attention][env_check]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_simple.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    on_map.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+    craft_stamp_passive_entry( on_map, u, calendar::turn, loc );
+
+    REQUIRE( on_map.get_passive_started_at() == calendar::turn );
+    CHECK( on_map.get_env_check_at() == calendar::before_time_starts );
+    CHECK_FALSE( get_item_wakeups().is_scheduled( on_map.uid().get_value(),
+                 item_wakeup_kind::env_check ) );
+}
+
+TEST_CASE( "craft_env_check_dispatch_pauses_when_quality_missing",
+           "[craft][attention][env_check]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+    // No OVEN tool: env_satisfied_for_step returns false.
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    on_map.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    const time_point t0 = calendar::turn;
+    on_map.set_passive_started_at( t0 );
+    on_map.set_ready_at( t0 + 10_minutes );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+
+    const time_point fire_time = t0 + 1_minutes;
+    craft_actualize_scheduled( on_map, item_wakeup_kind::env_check,
+                               fire_time, loc );
+
+    CHECK( on_map.get_pause_started_at() == fire_time );
+    CHECK( on_map.get_saved_ready_at() == t0 + 10_minutes );
+    CHECK( on_map.get_ready_at() == fire_time + 1_minutes );
+    CHECK( on_map.get_env_check_at() == calendar::before_time_starts );
+}
+
+TEST_CASE( "craft_env_check_dispatch_restores_when_quality_returns",
+           "[craft][attention][env_check]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    on_map.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    // Manually install a pause state, then satisfy env and dispatch env_check.
+    const time_point t0 = calendar::turn;
+    on_map.set_passive_started_at( t0 - 2_minutes );
+    on_map.set_ready_at( t0 + 1_minutes ); // pause polling cursor
+    on_map.set_saved_ready_at( t0 + 8_minutes );
+    on_map.set_pause_started_at( t0 - 1_minutes );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+
+    // Restore environment.
+    u.i_add( item( itype_microwave, calendar::turn ) );
+    craft_actualize_scheduled( on_map, item_wakeup_kind::env_check, t0, loc );
+
+    CHECK( on_map.get_pause_started_at() == calendar::before_time_starts );
+    CHECK( on_map.get_ready_at() == t0 + 8_minutes + 1_minutes );
+    CHECK( on_map.get_saved_ready_at() == calendar::before_time_starts );
+    CHECK( on_map.get_env_check_at() != calendar::before_time_starts );
+    CHECK( on_map.get_env_check_at() <= on_map.get_ready_at() );
+}
+
+TEST_CASE( "craft_env_check_dispatch_clamps_cursor_under_ready_at",
+           "[craft][attention][env_check]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+    u.i_add( item( itype_microwave, calendar::turn ) );
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    on_map.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    // Short remaining: ready_at is 30s away.  Cursor must clamp to ready_at,
+    // not now+1min which would poll past completion.
+    const time_point t0 = calendar::turn;
+    on_map.set_passive_started_at( t0 - 9_minutes - 30_seconds );
+    on_map.set_ready_at( t0 + 30_seconds );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+    craft_actualize_scheduled( on_map, item_wakeup_kind::env_check, t0, loc );
+
+    CHECK( on_map.get_env_check_at() == t0 + 30_seconds );
+}
+
+TEST_CASE( "craft_actualize_ready_via_helper_still_pauses_on_env_loss",
+           "[craft][attention][env_check][regression]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    on_map.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    const time_point t0 = calendar::turn;
+    on_map.set_passive_started_at( t0 );
+    on_map.set_ready_at( t0 + 10_minutes );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+
+    // ready_check at ready_at with no OVEN tool must pause the craft.
+    craft_actualize_scheduled( on_map, item_wakeup_kind::ready_check,
+                               t0 + 10_minutes, loc );
+
+    CHECK( on_map.get_pause_started_at() == t0 + 10_minutes );
+    CHECK( on_map.get_saved_ready_at() == t0 + 10_minutes );
+    CHECK( on_map.get_ready_at() == t0 + 11_minutes );
+    CHECK( on_map.get_env_check_at() == calendar::before_time_starts );
+}
+
+TEST_CASE( "craft_activity_do_wait_env_check_fires_per_turn",
+           "[craft][attention][env_check][actor]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms origin( 60, 60, 0 );
+    u.setpos( here, origin );
+    // No OVEN: per-turn env_check inside do_wait branch must trip pause.
+
+    item ingredient( itype_2x4, calendar::turn );
+    item placed( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    item &on_map = here.add_item( origin, placed );
+    REQUIRE( on_map.is_craft() );
+    on_map.set_current_step( 1 );
+    on_map.set_crafter_id( u.getID() );
+    std::vector<attention_plan> plans( 2 );
+    plans[1].choice = step_choice::do_wait;
+    on_map.set_step_plans( plans );
+
+    const time_point t0 = calendar::turn;
+    on_map.set_passive_started_at( t0 );
+    on_map.set_ready_at( t0 + 10_minutes );
+
+    item_location loc( map_cursor( here.get_abs( origin ) ), &on_map );
+    REQUIRE( on_map.get_pause_started_at() == calendar::before_time_starts );
+
+    craft_activity_actor craft_actor( loc, /*is_long=*/false );
+    u.activity = player_activity( craft_actor );
+    u.activity.targets.push_back( loc );
+
+    u.activity.do_turn( u );
+
+    CHECK( on_map.get_pause_started_at() != calendar::before_time_starts );
+    CHECK( on_map.get_saved_ready_at() == t0 + 10_minutes );
+}
+
+TEST_CASE( "reconcile_walks_avatar_inventory_for_env_check",
+           "[craft][attention][env_check][reconcile]" )
+{
+    clear_avatar();
+    clear_map();
+    avatar &u = get_avatar();
+    u.setpos( get_map(), tripoint_bub_ms( 60, 60, 0 ) );
+
+    item ingredient( itype_2x4, calendar::turn );
+    item carried( &recipe_cudgel_test_unattended_with_qual.obj(), 1, ingredient );
+    carried.set_current_step( 1 );
+    carried.set_crafter_id( u.getID() );
+    carried.set_step_plans( std::vector<attention_plan>( 2 ) );
+
+    const time_point t0 = calendar::turn;
+    carried.set_passive_started_at( t0 );
+    carried.set_ready_at( t0 + 10_minutes );
+    carried.set_env_check_at( t0 + 1_minutes );
+
+    item_location placed = u.i_add( carried );
+    REQUIRE( placed );
+    REQUIRE( placed->is_craft() );
+    const int64_t uid = placed->uid().get_value();
+
+    // Clear any schedule that i_add may have triggered, then exercise the
+    // same iteration map::reconcile_item_wakeups uses for character inventory
+    // (Character::all_items_loc() + rebuild_for_item per location).
+    get_item_wakeups().cancel_all( uid );
+    REQUIRE_FALSE( get_item_wakeups().is_scheduled( uid, item_wakeup_kind::env_check ) );
+
+    for( item_location &loc : u.all_items_loc() ) {
+        if( loc && loc.get_item() != nullptr ) {
+            get_item_wakeups().rebuild_for_item( loc );
+        }
+    }
+
+    CHECK( get_item_wakeups().is_scheduled( uid, item_wakeup_kind::env_check ) );
+    CHECK( get_item_wakeups().is_scheduled( uid, item_wakeup_kind::ready_check ) );
+}
+
+TEST_CASE( "compute_inflight_alarm_choices_for_resume_timer_modal",
+           "[craft][attention][modal]" )
+{
+    const time_point started = calendar::turn_zero;
+
+    GIVEN( "a 10-minute step with ready_at at started+10min" ) {
+        const time_point ready = started + 10_minutes;
+
+        WHEN( "8 minutes have passed (2 minutes remaining)" ) {
+            const inflight_alarm_choices c = compute_inflight_alarm_choices(
+                                                 started, ready, started + 8_minutes );
+            THEN( "finish is offered but five-before is disabled" ) {
+                CHECK( c.remaining == 2_minutes );
+                CHECK( c.finish_enabled );
+                CHECK_FALSE( c.five_before_enabled );
+            }
+            THEN( "finish offset resolves to ready_at when added to step start" ) {
+                REQUIRE( c.finish_offset.has_value() );
+                CHECK( started + *c.finish_offset == ready );
+                CHECK_FALSE( c.five_before_offset.has_value() );
+            }
+        }
+
+        WHEN( "3 minutes have passed (7 minutes remaining)" ) {
+            const inflight_alarm_choices c = compute_inflight_alarm_choices(
+                                                 started, ready, started + 3_minutes );
+            THEN( "both finish and five-before choices are enabled" ) {
+                CHECK( c.remaining == 7_minutes );
+                CHECK( c.finish_enabled );
+                CHECK( c.five_before_enabled );
+            }
+            THEN( "both offsets are step-start-anchored and resolve to ready_at and ready_at - 5min" ) {
+                REQUIRE( c.finish_offset.has_value() );
+                REQUIRE( c.five_before_offset.has_value() );
+                CHECK( started + *c.finish_offset == ready );
+                CHECK( started + *c.five_before_offset == ready - 5_minutes );
+            }
+        }
+
+        WHEN( "12 minutes have passed (step is overdue)" ) {
+            const inflight_alarm_choices c = compute_inflight_alarm_choices(
+                                                 started, ready, started + 12_minutes );
+            THEN( "no timer choices are offered" ) {
+                CHECK( c.remaining == -2_minutes );
+                CHECK_FALSE( c.finish_enabled );
+                CHECK_FALSE( c.five_before_enabled );
+                CHECK_FALSE( c.finish_offset.has_value() );
+                CHECK_FALSE( c.five_before_offset.has_value() );
+            }
+        }
+    }
+
+    GIVEN( "a paused step whose live_ready_at has been slid forward" ) {
+        // live_ready_at = passive_started_at + slid duration via env pause.
+        const time_point ready = started + 15_minutes;
+
+        WHEN( "evaluated 6 minutes after step start" ) {
+            const inflight_alarm_choices c = compute_inflight_alarm_choices(
+                                                 started, ready, started + 6_minutes );
+            THEN( "finish offset stays step-start-anchored, not slid-ready-anchored" ) {
+                REQUIRE( c.finish_offset.has_value() );
+                CHECK( *c.finish_offset == 15_minutes );
+                CHECK( started + *c.finish_offset == ready );
+            }
+        }
+    }
+
+    GIVEN( "a step env-paused at minute 4 of an originally 10-minute deadline" ) {
+        const time_point saved_ready_at = started + 10_minutes;
+        const time_point pause_started = started + 4_minutes;
+
+        WHEN( "helper is called with eval_now = pause_started" ) {
+            const inflight_alarm_choices c = compute_inflight_alarm_choices(
+                                                 started, saved_ready_at, pause_started );
+            THEN( "remaining reflects the time left at the moment of pause" ) {
+                CHECK( c.remaining == 6_minutes );
+                CHECK( c.finish_enabled );
+                CHECK( c.five_before_enabled );
+            }
+            THEN( "offsets stay step-start-anchored against saved_ready_at" ) {
+                REQUIRE( c.finish_offset.has_value() );
+                REQUIRE( c.five_before_offset.has_value() );
+                CHECK( started + *c.finish_offset == saved_ready_at );
+                CHECK( started + *c.five_before_offset == saved_ready_at - 5_minutes );
+            }
+        }
+    }
+}
