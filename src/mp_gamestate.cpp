@@ -2182,6 +2182,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     + ",\"smash_z\":" + std::to_string( smash_target_abs.z() ) + "}";
             srv->post_broadcast( state + "\n" );
         }
+        // See NPC-MOVE invalidate for rationale.
+        g->invalidate_main_ui_adaptor();
         return;
     }
 
@@ -2373,6 +2375,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             }
             srv->post_broadcast( state + "\n" );
         }
+        // See NPC-MOVE invalidate for rationale.
+        g->invalidate_main_ui_adaptor();
         return;
     }
 
@@ -2399,6 +2403,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         if( srv ) {
             srv->post_broadcast( serialize_remote_player_state() + "\n" );
         }
+        // See NPC-MOVE invalidate for rationale.
+        g->invalidate_main_ui_adaptor();
         return;
     }
 
@@ -2673,6 +2679,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
         srv->post_broadcast( state + "\n" );
     }
+
+    // Mirror srv_emit_ack's UI invalidation — the move handler inlines its own
+    // broadcast (above) so it doesn't go through srv_emit_ack, but the
+    // authoritative position just changed and the host may be sitting in a
+    // blocking wait_for_client_action poll with no normal turn boundary to
+    // trigger a redraw.  Without this, the proxy NPC's new tile only appears
+    // after an unrelated event (alt-tab, host keypress, monmove) forces the
+    // window to repaint.
+    g->invalidate_main_ui_adaptor();
 }
 
 // ---------------------------------------------------------------------------
