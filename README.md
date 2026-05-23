@@ -2,7 +2,6 @@
 
 Why die alone when you can die together?
 
-
 ## Contents
 
 - [Multiplayer (This co-op fork)](#multiplayer-co-op-fork)
@@ -11,8 +10,8 @@ Why die alone when you can die together?
   - [start-mp.sh modes](#start-mpsh-modes)
   - [Flag reference](#flag-reference)
   - [What works / Current limitations](#what-works)
-- [Contribute](#contribute)
 - [FAQ](#frequently-asked-questions)
+- [Contribute](#contribute)
 
 ## Multiplayer (This co-op fork)
 
@@ -112,7 +111,15 @@ Both scripts prompt you to pick a world and character from the local save. The c
 
 - Only two players supported
 - The sleep issue
-  
+
+---
+
+## Frequently Asked Questions
+
+
+
+---
+
 
 ## Contribute
 
@@ -128,9 +135,4 @@ Special thanks to the contributors, including but not limited to, people below:
 
 Made with [contrib.rocks](https://contrib.rocks).
 
-## Frequently Asked Questions
-
-
-
 ---
-
