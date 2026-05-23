@@ -2699,7 +2699,18 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // exactly: dx > 0 → RIGHT, dx < 0 → LEFT, dx == 0 unchanged.
             // TODO: iso-tileset branch (mirror avatar_action.cpp:318-329) if
             // anyone uses an isometric tileset in MP.
-            if( offset_it != dir_to_offset.end() && !g->is_tileset_isometric() ) {
+            //
+            // Gate on !mp_locked: when the client has 0 moves the action will
+            // queue rather than send.  Updating av.facing locally there would
+            // flip the sprite immediately (visual "turn-in-place"), which SP
+            // doesn't do — SP always has moves > 0 at input time, so a
+            // direction press always results in an actual move attempt.
+            // Trade-off: queued moves carry a stale client_facing on the wire,
+            // so the host's proxy will lag one turn on pure-horizontal queued
+            // moves.  Acceptable for now; fix separately by deriving facing
+            // from `dir` on the host side.
+            if( !mp_locked && offset_it != dir_to_offset.end() &&
+                !g->is_tileset_isometric() ) {
                 if( offset_it->second.x > 0 ) {
                     player_character.facing = FacingDirection::RIGHT;
                 } else if( offset_it->second.x < 0 ) {

@@ -87,6 +87,9 @@ runs:
         # SOUND=1 still wants the sound/ tree for menu sounds; the
         # CC-Sounds pack proper is downloaded by the user later.
         [ -d data/sound ] && cp -r data/sound Cddacoop/data/ || true
+        # Launcher .bat: drives the Host/Join/Single-player picker and the
+        # first-run CC-Sounds download, parallel to the macOS launcher.
+        cp build-data/windows/cddacoop.bat Cddacoop/
 
         # Walk transitive DLL deps from the .exe and copy each one in.
         # ntldd output line format:
