@@ -112,14 +112,14 @@ Both scripts prompt you to pick a world and character from the local save. The c
 - Vehicle construction — install and remove parts, including parts spawned via debug
 - Drop-into-vehicle (drop items into the storage of a vehicle you're standing on)
 - **Co-op HUD** — bottom-left panel showing partner name, movement mode, worst-body-part HP bar, current activity + progress, and calendar drift
-- **Partner menu** — bump into your partner to open a menu with "Tap on shoulder" and "Help with task" (helping engages SP's crafting helper math against the partner's synced stats)
+- **Partner menu** — bump into your partner to open a menu with 2 new options: "Tap on shoulder" which interrupts their 'wait several turns' command and "Help with task" which is similar to single player NPC help
 
 ### Current limitations
 
 - Two players only — no third or fourth slot
 - **One reality bubble**, centered on the host. A client more than ~66 tiles from the host falls outside the simulated area; entities there don't tick.
 - **Sleep** is functional but two-player sleep dynamics are not yet validated — if one player sleeps and the other keeps acting, the world's lockstep is fine but expect rough edges around partner-status messages.
-- **Long crafts (multi-hour)** work in same-machine testing; not yet validated across machines with real network latency.
+- **Long crafts (multi-hour)** not yet validated across machines with real network latency.
 - **No reconnect** — if the TCP connection drops, both players need to quit and re-launch.
 - **Save format** is shared with upstream CDDA but the MP fork adds a few fields; saves between the fork and upstream are not interchangeable.
 
@@ -127,23 +127,7 @@ Both scripts prompt you to pick a world and character from the local save. The c
 
 ## Frequently Asked Questions
 
-**Why a fork instead of a PR to upstream?**
-The upstream project's lead developer has stated that multiplayer "simply can not be added" without overhauling most of the core game code. This fork is an experiment in doing exactly that without disrupting the upstream codebase. Where possible, MP-specific logic lives in `mp_*.cpp`/`mp_*.h` files so future upstream merges stay manageable.
 
-**Does it run on Linux or Windows?**
-Probably — the upstream build supports both — but only macOS has been tested against the multiplayer source. PRs welcome.
-
-**Can I play with more than one friend?**
-Not yet. The networking is hard-wired to one host + one client. A future change could allow more, but the reality-bubble limit (one simulated zone, host-centered) keeps everyone within ~66 tiles of the host regardless of slot count.
-
-**Are saves between this fork and upstream CDDA interchangeable?**
-No. The fork adds fields to the save format. Loading a fork save in upstream (or vice-versa) is not supported.
-
-**My client disconnects mid-session — what now?**
-For now: both quit, relaunch, and re-join. Automatic reconnection is on the roadmap.
-
-**Is there a public test server?**
-No. The architecture is peer-to-peer: one of the two players hosts directly. See [cddacoop.com](https://cddacoop.com) for how to expose the host to the other player.
 
 ---
 
