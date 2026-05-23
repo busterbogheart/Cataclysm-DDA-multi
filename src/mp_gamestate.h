@@ -168,6 +168,20 @@ bool host_is_in_wait_activity();
 // of an inline MP block — keeps merge-conflict surface minimal.
 bool should_advance_calendar();
 
+// True when the given activity id (e.g. "ACT_CRAFT", "ACT_READ") is one where
+// the avatar is committed to ticking turns without per-turn user input — i.e.
+// safe to fast-forward through.  Excludes interactive activities (firstaid
+// where the player picks a target each tick, aim, etc.).
+bool is_passive_activity( const std::string &activity_id_str );
+
+// True when both the local avatar and the partner are in passive activities
+// (per is_passive_activity).  Used to drop strict lockstep when both sides are
+// idle in a long task (both crafting, both reading, host crafting + client
+// helping, etc.) so wall-clock progress matches SP fast-forward speed.
+// Re-evaluated every turn — naturally exits when SP's activity cancellation
+// fires on either side (hostile in sight, low HP, player input, etc.).
+bool should_fast_forward();
+
 // Client only: returns true when the client host-NPC proxy occupies the given
 // absolute map position.  Used by handle_action to block walk-through-host.
 bool is_client_host_at( const tripoint_abs_ms &abs );

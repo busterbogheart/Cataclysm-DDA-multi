@@ -2757,6 +2757,31 @@ void wait_for_client_action()
         }
     }
 
+    // Both-passive fast-forward: when both sides are in passive activities
+    // (both crafting, both eating, host crafting + client helping, etc.),
+    // drop strict lockstep so wall-clock progress matches SP's machine-speed
+    // activity ticks.  20-min in-game craft → ~5-10s real-time instead of
+    // ~6.5min under 1:1 lockstep.  SP's per-turn activity cancellation
+    // (hostile-in-sight, low HP, sound, etc.) fires on the host as turns
+    // advance and naturally exits FF: cancel ends av_act, next call returns
+    // false, the following turn re-enters strict lockstep.
+    static bool ff_was_active = false;
+    const bool ff_now = should_fast_forward();
+    if( ff_now != ff_was_active ) {
+        if( ff_now ) {
+            mp_log( std::string( "[cdda-mp] lockstep-skip: FAST-FORWARD enter host_act=" )
+                    + ( get_avatar().activity ? get_avatar().activity.id().str() : "?" )
+                    + " partner_act=" + g_partner_activity );
+        } else {
+            mp_log( "[cdda-mp] lockstep-resume: FAST-FORWARD exit" );
+        }
+        ff_was_active = ff_now;
+    }
+    if( ff_now ) {
+        process_mp_events();
+        return;
+    }
+
     // No partner-activity bypass: every activity (drop, wear, take_off, read,
     // craft, eat, wait, …) now dispatches a "wait" ack per tick via the
     // do_turn post-loop dispatch path, so strict lockstep works for them all.
@@ -2943,6 +2968,58 @@ bool should_advance_calendar()
     // every main-loop iteration (~10/sec) regardless of whether the client
     // had been granted a turn, racing past the host's authoritative time.
     return !is_client_mode() || get_avatar().get_moves() > 0;
+}
+
+bool is_passive_activity( const std::string &activity_id_str )
+{
+    // Activities where the avatar is committed turn-after-turn without
+    // per-turn user input.  Once entered, SP's activity_actor::do_turn ticks
+    // the activity on every game turn at machine speed.  Excludes:
+    //  - ACT_FIRSTAID, ACT_AIM, ACT_AUTOATTACK, ACT_AUTODRIVE — interactive
+    //  - ACT_NULL / empty — not in an activity
+    static const std::set<std::string> passive = {
+        "ACT_CRAFT", "ACT_LONGCRAFT", "ACT_DISASSEMBLE", "ACT_DISMEMBER",
+        "ACT_READ",
+        "ACT_EAT", "ACT_DRINK", "ACT_CONSUME", "ACT_CONSUME_DRINK_MENU",
+        "ACT_CONSUME_FOOD_MENU", "ACT_CONSUME_MEDS_MENU",
+        "ACT_BUTCHER", "ACT_BUTCHER_FULL", "ACT_FIELD_DRESS",
+        "ACT_SKIN", "ACT_DISSECT", "ACT_QUARTER",
+        "ACT_CONSTRUCTION", "ACT_BUILD",
+        "ACT_VEHICLE",
+        "ACT_WORKOUT_LIGHT", "ACT_WORKOUT_MODERATE", "ACT_WORKOUT_ACTIVE",
+        "ACT_WORKOUT_HARD", "ACT_WORKOUT",
+        "ACT_FORAGE", "ACT_FISH",
+        "ACT_FILL_LIQUID", "ACT_PICKUP", "ACT_MOVE_ITEMS",
+        "ACT_WAIT", "ACT_WAIT_STAMINA", "ACT_WAIT_WEATHER", "ACT_WAIT_NPC",
+        "ACT_SLEEP",
+        "ACT_HELP_PARTNER",
+    };
+    return passive.count( activity_id_str ) > 0;
+}
+
+bool should_fast_forward()
+{
+    // Need to be in an MP session.  SP never fast-forwards — SP runs activities
+    // at machine speed already.
+    if( !is_hosting() && !is_client_mode() ) {
+        return false;
+    }
+    // Local avatar must be in a passive activity.
+    const player_activity &av_act = get_avatar().activity;
+    if( !av_act || !is_passive_activity( av_act.id().str() ) ) {
+        return false;
+    }
+    // Partner's reported activity must also be passive.  g_partner_activity is
+    // set by the heartbeat / per-action enrich on the other side — empty when
+    // partner is idle (input loop) which means strict lockstep applies.
+    if( g_partner_activity.empty() || !is_passive_activity( g_partner_activity ) ) {
+        return false;
+    }
+    // No explicit combat-mode gate here: SP's activity_actor::do_turn already
+    // cancels the activity on hostile-in-sight (and on low HP, hunger, sound,
+    // etc.).  When that fires, av_act becomes null, this returns false on the
+    // next call, and the next do_turn returns to strict lockstep naturally.
+    return true;
 }
 
 void set_last_monmove_ms( int ms )
@@ -4689,6 +4766,16 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_id
     const activity_id &id = pact ? pact.id() : pre_id;
     if( !id && !force_idle ) {
         mp_log( "[cdda-mp] dispatch_wait: no activity, skip" );
+        return;
+    }
+    // Fast-forward mode: when both sides are in passive activities, host has
+    // dropped its strict-lockstep wait (see wait_for_client_action).  We
+    // skip the wait dispatch too — sending one would just queue against the
+    // host's already-bypassed wait and waste a TCP round-trip.  The host's
+    // next grant arrives at near-SP-tick speed and ticks our activity locally.
+    if( should_fast_forward() ) {
+        mp_log( "[cdda-mp] dispatch_wait: FAST-FORWARD, skip wait for act=" +
+                ( id ? id.str() : "idle" ) );
         return;
     }
     mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) );
