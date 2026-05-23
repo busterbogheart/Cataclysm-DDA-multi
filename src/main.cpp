@@ -1032,7 +1032,7 @@ int main( int argc, const char *argv[] )
         using clock = std::chrono::steady_clock;
         constexpr auto TICK_INTERVAL = std::chrono::seconds( 1 );
         constexpr auto POLL_INTERVAL = std::chrono::milliseconds( 100 );
-        while( !do_turn() ) {
+        while( !g->do_turn() ) {
             auto next_tick = clock::now() + TICK_INTERVAL;
             while( clock::now() < next_tick ) {
                 std::this_thread::sleep_for( POLL_INTERVAL );
