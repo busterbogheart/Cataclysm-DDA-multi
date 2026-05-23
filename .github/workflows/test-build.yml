@@ -1,10 +1,9 @@
 name: Test build
 
 # Private test builds: trigger via the Actions tab (workflow_dispatch) or by
-# pushing a tag matching test-*. Builds both archs, then opens a DRAFT
-# GitHub Release with the DMGs attached. Draft releases are only visible to
-# repo collaborators — the maintainer manually shares the assets with
-# testers as needed, or promotes the draft to a real release.
+# pushing a tag matching test-*. Builds macOS always; Windows is opt-in
+# (slow) via the include_windows checkbox. Publishes a DRAFT GitHub Release
+# with the artifacts attached — visible only to repo collaborators.
 
 on:
   workflow_dispatch:
@@ -13,6 +12,10 @@ on:
         description: 'Short label for this build (shown in the release body, no spaces)'
         required: false
         default: ''
+      include_windows:
+        description: 'Also build Windows (slow — adds ~25 min)'
+        type: boolean
+        default: false
   push:
     tags:
       - 'test-*'
@@ -46,7 +49,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
 
-  build:
+  build-mac:
     name: Build macOS (${{ matrix.arch }})
     needs: compute-version
     strategy:
@@ -61,32 +64,60 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build + package
-        uses: ./.github/actions/build-mac
+      - uses: ./.github/actions/build-mac
         with:
           arch: ${{ matrix.arch }}
           version: ${{ needs.compute-version.outputs.version }}
 
+  build-windows:
+    name: Build Windows (x64)
+    needs: compute-version
+    # Always build on a test-* tag push; otherwise gate on the dispatch input.
+    if: |
+      startsWith(github.ref, 'refs/tags/test-') ||
+      inputs.include_windows == true
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/build-windows
+        with:
+          version: ${{ needs.compute-version.outputs.version }}
+
   draft-release:
     name: Create draft release
-    needs: [compute-version, build]
+    needs: [compute-version, build-mac, build-windows]
+    # Run as long as Mac succeeded; Windows may be skipped when opt-in.
+    if: |
+      always() &&
+      needs.build-mac.result == 'success' &&
+      (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download arm64 artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: cddacoop-macos-arm64
           path: dist/
 
-      - name: Download x64 artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: cddacoop-macos-x64
           path: dist/
+
+      - uses: actions/download-artifact@v4
+        if: needs.build-windows.result == 'success'
+        with:
+          name: cddacoop-windows-x64
+          path: dist/
+
+      - name: Stage CC-Sounds pack from repo
+        run: cp data/sound/CC-Sounds.zip dist/cc-sounds.zip
 
       - name: Build commit list since last v*
         id: changelog
@@ -109,8 +140,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create draft release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           name: ${{ needs.compute-version.outputs.tag }}
           tag_name: ${{ needs.compute-version.outputs.tag }}
@@ -120,6 +150,7 @@ jobs:
             ## Test build ${{ needs.compute-version.outputs.version }}
 
             Internal verification build — not for general release.
+            Windows build: ${{ needs.build-windows.result }}
 
             ${{ steps.changelog.outputs.header }}
 
@@ -127,3 +158,5 @@ jobs:
           files: |
             dist/cddacoop-*-macos-arm64.dmg
             dist/cddacoop-*-macos-x64.dmg
+            dist/cddacoop-*-windows-x64.zip
+            dist/cc-sounds.zip

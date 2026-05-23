@@ -58,6 +58,13 @@ runs:
           EXTRA_CXXFLAGS='-DCDDACOOP_VERSION=\"'"$VERSION"'\"' \
           cataclysm-tiles
 
+    - name: Strip CC-Sounds for slim DMG
+      shell: bash
+      run: |
+        # The launcher prompts to download the sound pack from the release
+        # on first launch. Keeps the DMG ~25-50 MB instead of ~155 MB.
+        rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
+
     - name: Package .app bundle
       shell: bash
       run: |
@@ -72,6 +79,15 @@ runs:
         # Rename post-hoc so the user-visible app inside the DMG matches the
         # site / DMG filename without patching the Makefile.
         mv Cataclysm.app Cddacoop.app
+
+    - name: Install Cddacoop launcher
+      shell: bash
+      run: |
+        # Overwrite the bundle launcher with our Host/Join/SP menu script.
+        # Info.plist's CFBundleExecutable still references "Cataclysm.sh",
+        # so we keep the filename and just replace its contents.
+        cp build-data/osx/cddacoop-launcher.sh Cddacoop.app/Contents/MacOS/Cataclysm.sh
+        chmod +x Cddacoop.app/Contents/MacOS/Cataclysm.sh
 
     - name: Build DMG
       id: package

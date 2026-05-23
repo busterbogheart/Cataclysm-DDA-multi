@@ -1,0 +1,86 @@
+name: Build Windows binary
+description: >
+  Build cataclysm-tiles.exe via MSYS2/MinGW-w64, walk DLL deps with ntldd,
+  package into Cddacoop/ folder, zip, and upload as
+  cddacoop-windows-x64.
+
+inputs:
+  version:
+    description: 'Version string baked into the binary (e.g. v0.1.0 or test-20260523-a1b2c3d).'
+    required: true
+
+outputs:
+  zip-path:
+    description: 'Filesystem path of the produced ZIP, relative to the repo root.'
+    value: ${{ steps.package.outputs.zip-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up MSYS2 / MinGW-w64
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: false
+        install: >-
+          base-devel
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-SDL2
+          mingw-w64-x86_64-SDL2_image
+          mingw-w64-x86_64-SDL2_mixer
+          mingw-w64-x86_64-SDL2_ttf
+          mingw-w64-x86_64-gettext
+          mingw-w64-x86_64-ntldd
+          zip
+
+    - name: Strip CC-Sounds for slim ZIP
+      shell: msys2 {0}
+      run: rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
+
+    - name: Build cataclysm-tiles.exe
+      shell: msys2 {0}
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        make -j$(nproc) \
+          MSYS2=1 \
+          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          RELEASE=1 \
+          EXTRA_CXXFLAGS='-DCDDACOOP_VERSION=\"'"$VERSION"'\"' \
+          cataclysm-tiles
+
+    - name: Package ZIP
+      id: package
+      shell: msys2 {0}
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        mkdir -p Cddacoop
+        cp cataclysm-tiles.exe Cddacoop/
+        cp -r data gfx Cddacoop/
+        # SOUND=1 still wants the sound/ tree for menu sounds; the
+        # CC-Sounds pack proper is downloaded by the user later.
+        [ -d data/sound ] && cp -r data/sound Cddacoop/data/ || true
+
+        # Walk transitive DLL deps from the .exe and copy each one in.
+        # ntldd output line format:
+        #   <name>.dll => <path> (0x...)
+        # grep for mingw64 to drop system DLLs we shouldn't bundle.
+        ntldd -R Cddacoop/cataclysm-tiles.exe \
+          | grep -i mingw64 \
+          | awk '{print $3}' \
+          | sed 's|\\|/|g' \
+          | sort -u \
+          | xargs -I{} cp {} Cddacoop/
+
+        ZIP="cddacoop-${VERSION}-windows-x64.zip"
+        zip -r "$ZIP" Cddacoop
+        echo "zip-path=${ZIP}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload ZIP artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cddacoop-windows-x64
+        path: ${{ steps.package.outputs.zip-path }}
+        retention-days: 30
+        if-no-files-found: error

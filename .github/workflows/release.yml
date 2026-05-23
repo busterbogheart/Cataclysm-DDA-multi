@@ -1,8 +1,8 @@
 name: Release
 
-# Triggered by pushing a semver tag (e.g. v0.1.0). Builds Apple Silicon and
-# Intel binaries in parallel, then publishes a public GitHub Release with the
-# two DMGs attached and auto-generated notes.
+# Triggered by pushing a semver tag (e.g. v0.1.0). Builds macOS Apple Silicon,
+# macOS Intel, and Windows x64 in parallel, then publishes a public GitHub
+# Release with all artifacts plus the CC-Sounds pack attached.
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write  # create releases, upload assets
 
 jobs:
-  build:
+  build-mac:
     name: Build macOS (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -25,51 +25,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # tag annotations + git describe
+          fetch-depth: 0
 
-      - name: Build + package
-        uses: ./.github/actions/build-mac
+      - uses: ./.github/actions/build-mac
         with:
           arch: ${{ matrix.arch }}
           version: ${{ github.ref_name }}
 
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/build-windows
+        with:
+          version: ${{ github.ref_name }}
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build-mac, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download arm64 artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: cddacoop-macos-arm64
           path: dist/
 
-      - name: Download x64 artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: cddacoop-macos-x64
           path: dist/
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: cddacoop-windows-x64
+          path: dist/
+
+      - name: Stage CC-Sounds pack from repo
+        run: cp data/sound/CC-Sounds.zip dist/cc-sounds.zip
+
+      - uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false
-          generate_release_notes: true  # uses repo's release-notes config
+          generate_release_notes: true
           body: |
             ## Downloads
 
             - **macOS Apple Silicon** — `cddacoop-${{ github.ref_name }}-macos-arm64.dmg`
             - **macOS Intel** — `cddacoop-${{ github.ref_name }}-macos-x64.dmg`
+            - **Windows x64** — `cddacoop-${{ github.ref_name }}-windows-x64.zip`
+            - **CC-Sounds pack** — `cc-sounds.zip` (the .app prompts on first launch to download this)
 
-            Unsigned — first launch needs **right-click → Open** to bypass
-            Gatekeeper. After that, the app launches normally.
+            Unsigned — first launch on macOS needs **right-click → Open**;
+            Windows SmartScreen needs **More info → Run anyway**.
 
             ## What's new
 
@@ -78,3 +96,5 @@ jobs:
           files: |
             dist/cddacoop-*-macos-arm64.dmg
             dist/cddacoop-*-macos-x64.dmg
+            dist/cddacoop-*-windows-x64.zip
+            dist/cc-sounds.zip
