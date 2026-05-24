@@ -951,7 +951,11 @@ bool main_menu::opening_screen()
                     break;
                 case main_menu_opts::LOADCHAR:
                     if( static_cast<std::size_t>( sel2 ) < world_generator->get_all_worlds().size() ) {
-                        start = load_character_tab( world_generator->get_world_name( sel2 ) );
+                        const std::string wn = world_generator->get_world_name( sel2 );
+                        if( !cata_mp::mp_load_promote_prompt( wn ) ) {
+                            break;
+                        }
+                        start = load_character_tab( wn );
                         if( start ) {
                             load_game = true;
                         }

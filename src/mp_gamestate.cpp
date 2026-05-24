@@ -3622,6 +3622,34 @@ std::string mp_world_marker_badge( const std::string &worldname )
     return "  " + colorize( "(" + body + ")", c_light_green );
 }
 
+bool mp_load_promote_prompt( const std::string &worldname )
+{
+    if( !mp_world_has_history( worldname ) ) {
+        return true;
+    }
+    // If already armed/connected from a previous menu interaction, no point
+    // re-prompting — just continue.
+    if( is_host_mode() || is_client_mode() ) {
+        return true;
+    }
+    uilist menu;
+    menu.title = _( "This world has co-op history" );
+    menu.text = _( "Load as solo, or arm Host so your partner can Join?" );
+    menu.entries.emplace_back( 0, true, 's', _( "Load <s|S>olo" ) );
+    menu.entries.emplace_back( 1, true, 'h', _( "Arm <H|h>ost (co-op)" ) );
+    menu.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+    menu.query();
+    switch( menu.ret ) {
+        case 0:
+            return true;
+        case 1:
+            mp_menu_start_host_session();
+            return true;
+        default:
+            return false;
+    }
+}
+
 void mp_world_marker_update()
 {
     if( !is_host_mode() && !is_client_mode() ) {
