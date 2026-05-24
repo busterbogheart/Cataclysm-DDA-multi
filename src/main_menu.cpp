@@ -71,8 +71,8 @@ namespace
 enum class main_menu_opts : int {
     MOTD = 0,
     NEWCHAR,
-    LOADCHAR,
     COOP,         // MP fork: chooser (Host / Join), then proceed with normal New/Load.
+    LOADCHAR,
     WORLD,
     TUTORIAL,
     SETTINGS,
@@ -141,7 +141,9 @@ std::vector<int> main_menu::print_menu_items( const catacurses::window &w_in,
         ret.push_back( utf8_width_notags( text.c_str() ) );
 
         std::string temp = shortcut_text( iSel == i ? hilite( c_yellow ) : c_yellow, vItems[i] );
-        text += string_format( "[%s]", colorize( temp, iSel == i ? hilite( c_white ) : c_white ) );
+        const bool is_coop = main && i == static_cast<size_t>( getopt( main_menu_opts::COOP ) );
+        const nc_color base = is_coop ? c_light_green : c_white;
+        text += string_format( "[%s]", colorize( temp, iSel == i ? hilite( base ) : base ) );
     }
 
     int text_width = utf8_width_notags( text.c_str() );
@@ -207,6 +209,16 @@ void main_menu::display_sub_menu( int sel, const point &bottom_left, int sel_lin
                 nc_color clr = i == sel2 ? hilite( c_yellow ) : c_yellow;
                 sub_opts.push_back( shortcut_text( clr, vNewGameSubItems[i] ) );
                 int len = utf8_width( shortcut_text( clr, vNewGameSubItems[i] ), true );
+                if( len > xlen ) {
+                    xlen = len;
+                }
+            }
+            break;
+        case main_menu_opts::COOP:
+            for( int i = 0; static_cast<size_t>( i ) < vCoopSubItems.size(); i++ ) {
+                nc_color clr = i == sel2 ? hilite( c_light_green ) : c_light_green;
+                sub_opts.push_back( shortcut_text( clr, vCoopSubItems[i] ) );
+                int len = utf8_width( shortcut_text( clr, vCoopSubItems[i] ), true );
                 if( len > xlen ) {
                     xlen = len;
                 }
@@ -469,8 +481,8 @@ void main_menu::init_strings()
     vMenuItems.clear();
     vMenuItems.emplace_back( pgettext( "Main Menu", "<M|m>OTD" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<N|n>ew Game" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "C<O|o>-OP" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "Lo<a|A>d" ) );
-    vMenuItems.emplace_back( pgettext( "Main Menu", "Co-<o|O>p" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<W|w>orld" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "T<u|U>torial" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "Se<t|T>tings" ) );
@@ -504,6 +516,16 @@ void main_menu::init_strings()
     vNewGameHotkeys.reserve( vNewGameSubItems.size() );
     for( const std::string &item : vNewGameSubItems ) {
         vNewGameHotkeys.push_back( get_hotkeys( item ) );
+    }
+
+    // MP fork: Co-op sub-menu
+    vCoopSubItems.clear();
+    vCoopSubItems.emplace_back( pgettext( "Main Menu|Co-op", "<H|h>ost a session" ) );
+    vCoopSubItems.emplace_back( pgettext( "Main Menu|Co-op", "<J|j>oin a session" ) );
+    vCoopHotkeys.clear();
+    vCoopHotkeys.reserve( vCoopSubItems.size() );
+    for( const std::string &item : vCoopSubItems ) {
+        vCoopHotkeys.push_back( get_hotkeys( item ) );
     }
 
     // determine hotkeys from translated menu item text
@@ -732,6 +754,18 @@ bool main_menu::opening_screen()
                 }
             }
         }
+        if( sel1 == getopt( main_menu_opts::COOP ) ) {
+            for( int i = 0; !match && static_cast<size_t>( i ) < vCoopSubItems.size(); ++i ) {
+                for( const std::string &hotkey : vCoopHotkeys[i] ) {
+                    if( sInput.text == hotkey ) {
+                        sel2 = i;
+                        action = "CONFIRM";
+                        match = true;
+                        break;
+                    }
+                }
+            }
+        }
 
         // handle mouse click
         if( action == "SELECT" || action == "MOUSE_MOVE" ) {
@@ -815,6 +849,9 @@ bool main_menu::opening_screen()
                     break;
                 case main_menu_opts::NEWCHAR:
                     max_item_count = vNewGameSubItems.size();
+                    break;
+                case main_menu_opts::COOP:
+                    max_item_count = vCoopSubItems.size();
                     break;
                 case main_menu_opts::SETTINGS:
                     max_item_count = vSettingsSubItems.size();
@@ -921,9 +958,77 @@ bool main_menu::opening_screen()
                 case main_menu_opts::NEWCHAR:
                     start = new_character_tab();
                     break;
-                case main_menu_opts::COOP:
-                    cata_mp::mp_menu_coop_prompt();
+                case main_menu_opts::COOP: {
+                    // Self-contained co-op flow: arm/connect silently, then drive
+                    // a CO-OP-owned chooser through to a started game.  SP "New
+                    // Game" / "Load" stay pure single-player.
+                    auto pick_char_type = []() -> int {
+                        uilist cpick;
+                        cpick.title = _( "Co-op: choose character" );
+                        cpick.entries.emplace_back( 0, true, 'c', _( "Custom Character" ) );
+                        cpick.entries.emplace_back( 1, true, 'p', _( "Preset Character" ) );
+                        cpick.entries.emplace_back( 2, true, 'r', _( "Random Character" ) );
+                        cpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                        cpick.query();
+                        return cpick.ret;
+                    };
+                    if( sel2 == 0 ) {
+                        // Host
+                        if( !cata_mp::mp_menu_start_host_session() ) {
+                            break;
+                        }
+                        uilist hflow;
+                        hflow.title = _( "Co-op: host a session" );
+                        hflow.entries.emplace_back( 0, true, 'n', _( "New character" ) );
+                        hflow.entries.emplace_back( 1, true, 'l', _( "Load saved world" ) );
+                        hflow.entries.emplace_back( -1, true, 'q', _( "Cancel co-op" ) );
+                        hflow.query();
+                        if( hflow.ret == 0 ) {
+                            const int ct = pick_char_type();
+                            if( ct < 0 ) {
+                                break;  // armed; user can re-enter Host
+                            }
+                            sel2 = ct;
+                            start = new_character_tab();
+                        } else if( hflow.ret == 1 ) {
+                            std::vector<std::string> wnames;
+                            uilist wpick;
+                            wpick.title = _( "Co-op: load saved world" );
+                            int idx = 0;
+                            for( const auto &kv : world_generator->get_all_worlds() ) {
+                                wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, kv.first );
+                                wnames.push_back( kv.first );
+                            }
+                            if( wnames.empty() ) {
+                                popup( _( "No worlds to load.  Use New character to create one." ) );
+                                break;
+                            }
+                            wpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                            wpick.query();
+                            if( wpick.ret < 0 || static_cast<size_t>( wpick.ret ) >= wnames.size() ) {
+                                break;  // armed; user can re-enter Host
+                            }
+                            start = load_character_tab( wnames[wpick.ret] );
+                            if( start ) {
+                                load_game = true;
+                            }
+                        } else {
+                            cata_mp::mp_menu_cancel_host();
+                        }
+                    } else if( sel2 == 1 ) {
+                        // Join
+                        if( !cata_mp::mp_menu_join_session() ) {
+                            break;
+                        }
+                        const int ct = pick_char_type();
+                        if( ct < 0 ) {
+                            break;  // connected; user can re-enter Join
+                        }
+                        sel2 = ct;
+                        start = new_character_tab();
+                    }
                     break;
+                }
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:
                 default:

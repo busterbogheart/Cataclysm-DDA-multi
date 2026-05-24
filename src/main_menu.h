@@ -40,6 +40,9 @@ class main_menu
         std::vector< std::vector<std::string> > vSettingsHotkeys;
         std::vector< std::vector<std::string> > vMenuHotkeys; // hotkeys for the vMenuItems
         std::vector< std::vector<std::string> > vNewGameHotkeys;
+        // MP fork: Co-op sub-menu (Host / Join), mirrors vNewGameSubItems pattern.
+        std::vector<std::string> vCoopSubItems;
+        std::vector< std::vector<std::string> > vCoopHotkeys;
         std::string vdaytip; //tip of the day
 
         /**

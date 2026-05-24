@@ -208,20 +208,20 @@ void mp_notify_session_ending();
 // received one always win (no overwrite).
 void mp_templates_sync_on_join();
 
-// Main-menu integration: called from the combined "Co-op" menu item.  Pops
-// a small chooser (Host / Join / Cancel) and dispatches to the appropriate
-// helper below.  Returns true if a session was started.
-bool mp_menu_coop_prompt();
-
-// Main-menu integration: starts an MP listen server on port 8080.  Returns
-// true on success (or no-op when already hosting).  Pops a confirmation
-// dialog explaining what to do next.
+// Main-menu integration: arms host mode (server thread is spawned later, on
+// the first do_turn after world load — see mp_start_pending_host_thread).
+// Silent on success (caller drives the next UI step); pops only on error.
+// Returns true if host mode is armed (including the no-op "already armed").
 bool mp_menu_start_host_session();
 
 // Main-menu integration: prompts for a host address (with optional :port),
-// connects, sets client mode.  Returns true on success; pops an error and
-// returns false on cancel or connection failure.
+// probes, connects, sets client mode.  Silent on success; pops an error
+// and returns false on cancel or connection failure.
 bool mp_menu_join_session();
+
+// Main-menu integration: disarm a previously armed (but not-yet-started)
+// host session.  No-op if host mode isn't armed.
+void mp_menu_cancel_host();
 
 // Banner text shown above the main menu when an MP session has been started
 // from the menu (or via --host / --client flags).  Empty when neither host

@@ -3500,44 +3500,6 @@ static void mp_handle_template_data( const std::string &msg )
 static bool g_pending_host_start = false;
 static bool g_host_thread_actually_started = false;
 
-bool mp_menu_coop_prompt()
-{
-    // If the user already armed host mode but hasn't loaded a world yet, the
-    // chooser offers a way out instead of re-arming.
-    const bool armed_but_idle = g_pending_host_start && !g_host_thread_actually_started;
-    uilist menu;
-    menu.title = _( "Co-op session" );
-    if( armed_but_idle ) {
-        menu.entries.emplace_back( 2, true, 'h',
-                                   _( "Continue setup (pick New Game or Load)" ) );
-        menu.entries.emplace_back( 3, true, 'x',
-                                   _( "Cancel co-op — return to single-player" ) );
-        menu.entries.emplace_back( 4, true, 'q', _( "Close menu" ) );
-    } else {
-        menu.entries.emplace_back( 0, true, 'h', _( "Host a session" ) );
-        menu.entries.emplace_back( 1, true, 'j', _( "Join a session" ) );
-        menu.entries.emplace_back( 4, true, 'q', _( "Cancel" ) );
-    }
-    menu.query();
-    switch( menu.ret ) {
-        case 0:
-            return mp_menu_start_host_session();
-        case 1:
-            return mp_menu_join_session();
-        case 2:
-            popup( _( "Hosting is ready.  Pick New Game or Load to start the world." ) );
-            return true;
-        case 3:
-            g_pending_host_start = false;
-            set_host_mode( false );
-            mp_log( "[cdda-mp] MENU: host-mode armed-but-idle cancelled" );
-            popup( _( "Co-op cancelled.  Single-player mode restored." ) );
-            return false;
-        default:
-            return false;
-    }
-}
-
 // Called from process_mp_events() on the host's first turn after the world
 // has loaded.  Spawns the listen-server thread iff the menu armed it and we
 // haven't already started it.  No-op when the server was started via the
@@ -3557,7 +3519,8 @@ void mp_start_pending_host_thread()
 bool mp_menu_start_host_session()
 {
     if( is_host_mode() ) {
-        popup( _( "Co-op is already armed.  Pick New Game or Load to start the world." ) );
+        // Already armed (or thread already running) — treat as success so the
+        // caller can re-enter the world / char-creation flow.
         return true;
     }
     set_host_mode( true );
@@ -3567,14 +3530,24 @@ bool mp_menu_start_host_session()
     g_pending_host_start = true;
     g_host_thread_actually_started = false;
     mp_log( "[cdda-mp] MENU: host armed on port 8080 (thread deferred to do_turn)" );
-    popup( _( "Co-op armed for port 8080.\n\nPick New Game or Load to start the world.  Your partner can join once you're in-game." ) );
     return true;
+}
+
+void mp_menu_cancel_host()
+{
+    if( !g_pending_host_start && !is_host_mode() ) {
+        return;
+    }
+    g_pending_host_start = false;
+    set_host_mode( false );
+    mp_log( "[cdda-mp] MENU: host-mode cancelled from co-op chooser" );
 }
 
 bool mp_menu_join_session()
 {
     if( is_client_mode() ) {
-        popup( _( "Already connected.  Pick New Game or Load to enter the session." ) );
+        // Already connected — treat as success so caller can drive the
+        // next UI step (char-creation flow).
         return true;
     }
     std::string entered = string_input_popup()
@@ -3611,8 +3584,6 @@ bool mp_menu_join_session()
         return false;
     }
     mp_log( "[cdda-mp] MENU: client connected to " + host + ":" + std::to_string( port ) );
-    popup( _( "Connected to %s:%d.\n\nPick New Game or Load to enter the session." ),
-           host.c_str(), static_cast<int>( port ) );
     return true;
 }
 
@@ -3620,13 +3591,12 @@ std::string mp_menu_coop_status_text()
 {
     if( is_host_mode() ) {
         if( g_pending_host_start && !g_host_thread_actually_started ) {
-            return std::string(
-                _( "Co-op: armed — pick New Game or Load to start hosting on port 8080" ) );
+            return std::string( _( "Co-op: armed — re-enter Host to pick world / character" ) );
         }
         return std::string( _( "Co-op: hosting on port 8080 — waiting for partner" ) );
     }
     if( is_client_mode() ) {
-        return std::string( _( "Co-op: connected to host — pick New Game or Load to enter" ) );
+        return std::string( _( "Co-op: connected to host — re-enter Join to pick character" ) );
     }
     return std::string();
 }
