@@ -3635,19 +3635,27 @@ bool mp_load_promote_prompt( const std::string &worldname )
     uilist menu;
     menu.title = _( "This world has co-op history" );
     menu.text = _( "Load as solo, or arm Host so your partner can Join?" );
-    menu.entries.emplace_back( 0, true, 's', _( "Load <s|S>olo" ) );
-    menu.entries.emplace_back( 1, true, 'h', _( "Arm <H|h>ost (co-op)" ) );
-    menu.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+    // Distinct positive retvals + an explicit cancel sentinel.  Avoids any
+    // ambiguity with uilist's own UILIST_CANCEL (-1027) on ESC.
+    constexpr int RET_SOLO = 1;
+    constexpr int RET_HOST = 2;
+    constexpr int RET_CANCEL = 3;
+    menu.entries.emplace_back( RET_SOLO,   true, 's', _( "Load solo" ) );
+    menu.entries.emplace_back( RET_HOST,   true, 'h', _( "Arm Host (co-op)" ) );
+    menu.entries.emplace_back( RET_CANCEL, true, 'q', _( "Cancel" ) );
     menu.query();
-    switch( menu.ret ) {
-        case 0:
-            return true;
-        case 1:
-            mp_menu_start_host_session();
-            return true;
-        default:
-            return false;
+    if( menu.ret == RET_SOLO ) {
+        mp_log( "[cdda-mp] promote-prompt: solo for " + worldname );
+        return true;
     }
+    if( menu.ret == RET_HOST ) {
+        mp_log( "[cdda-mp] promote-prompt: arm host for " + worldname );
+        mp_menu_start_host_session();
+        return true;
+    }
+    mp_log( "[cdda-mp] promote-prompt: cancel for " + worldname + " (ret=" + std::to_string(
+                menu.ret ) + ")" );
+    return false;
 }
 
 void mp_world_marker_update()

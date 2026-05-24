@@ -997,8 +997,8 @@ bool main_menu::opening_screen()
                             // World > Create World.
                             uilist wflow;
                             wflow.title = _( "Co-op: world for new character" );
-                            wflow.entries.emplace_back( 0, true, 'e', _( "Use <e|E>xisting world" ) );
-                            wflow.entries.emplace_back( 1, true, 'n', _( "Create <n|N>ew world" ) );
+                            wflow.entries.emplace_back( 0, true, 'e', _( "Use existing world" ) );
+                            wflow.entries.emplace_back( 1, true, 'n', _( "Create new world" ) );
                             wflow.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
                             wflow.query();
                             if( wflow.ret < 0 ) {
