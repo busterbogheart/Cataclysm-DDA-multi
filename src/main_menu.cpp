@@ -142,8 +142,11 @@ std::vector<int> main_menu::print_menu_items( const catacurses::window &w_in,
 
         std::string temp = shortcut_text( iSel == i ? hilite( c_yellow ) : c_yellow, vItems[i] );
         const bool is_coop = main && i == static_cast<size_t>( getopt( main_menu_opts::COOP ) );
-        const nc_color base = is_coop ? c_light_green : c_white;
-        text += string_format( "[%s]", colorize( temp, iSel == i ? hilite( base ) : base ) );
+        // CO-OP: green when idle so it stands out; standard hilite when selected
+        // (hilite(c_light_green) washes out into low-contrast blue).
+        const nc_color color = iSel == i ? hilite( c_white )
+                               : ( is_coop ? c_light_green : c_white );
+        text += string_format( "[%s]", colorize( temp, color ) );
     }
 
     int text_width = utf8_width_notags( text.c_str() );
