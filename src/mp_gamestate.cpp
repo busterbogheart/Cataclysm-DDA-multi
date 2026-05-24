@@ -3492,39 +3492,82 @@ static void mp_handle_template_data( const std::string &msg )
     }
 }
 
+// Set when the user picks "Host a session" from the main-menu chooser.
+// The server thread isn't actually spawned yet — that's deferred to the
+// first process_mp_events() call (which only runs once a world is loaded),
+// so a client connecting before there's an avatar to spawn into can't crash
+// us.  Lets us also offer a "Cancel co-op" path while still in the menu.
+static bool g_pending_host_start = false;
+static bool g_host_thread_actually_started = false;
+
 bool mp_menu_coop_prompt()
 {
+    // If the user already armed host mode but hasn't loaded a world yet, the
+    // chooser offers a way out instead of re-arming.
+    const bool armed_but_idle = g_pending_host_start && !g_host_thread_actually_started;
     uilist menu;
     menu.title = _( "Co-op session" );
-    menu.entries.emplace_back( 0, true, 'h', _( "Host a session" ) );
-    menu.entries.emplace_back( 1, true, 'j', _( "Join a session" ) );
-    menu.entries.emplace_back( 2, true, 'q', _( "Cancel" ) );
+    if( armed_but_idle ) {
+        menu.entries.emplace_back( 2, true, 'h',
+                                   _( "Continue setup (pick New Game or Load)" ) );
+        menu.entries.emplace_back( 3, true, 'x',
+                                   _( "Cancel co-op — return to single-player" ) );
+        menu.entries.emplace_back( 4, true, 'q', _( "Close menu" ) );
+    } else {
+        menu.entries.emplace_back( 0, true, 'h', _( "Host a session" ) );
+        menu.entries.emplace_back( 1, true, 'j', _( "Join a session" ) );
+        menu.entries.emplace_back( 4, true, 'q', _( "Cancel" ) );
+    }
     menu.query();
     switch( menu.ret ) {
         case 0:
             return mp_menu_start_host_session();
         case 1:
             return mp_menu_join_session();
+        case 2:
+            popup( _( "Hosting is ready.  Pick New Game or Load to start the world." ) );
+            return true;
+        case 3:
+            g_pending_host_start = false;
+            set_host_mode( false );
+            mp_log( "[cdda-mp] MENU: host-mode armed-but-idle cancelled" );
+            popup( _( "Co-op cancelled.  Single-player mode restored." ) );
+            return false;
         default:
             return false;
     }
 }
 
-bool mp_menu_start_host_session()
+// Called from process_mp_events() on the host's first turn after the world
+// has loaded.  Spawns the listen-server thread iff the menu armed it and we
+// haven't already started it.  No-op when the server was started via the
+// --host CLI flag (main.cpp spawns its own thread in that path).
+void mp_start_pending_host_thread()
 {
-    if( is_host_mode() ) {
-        popup( _( "Already hosting on port 8080.  Pick New Game or Load to start a world." ) );
-        return true;
+    if( !g_pending_host_start || g_host_thread_actually_started ) {
+        return;
     }
-    set_host_mode( true );
-    // Port hardcoded to 8080 (matches the CLI default and the launcher).
-    // Inlined inside the lambda so clang's -Wunused-lambda-capture doesn't
-    // flag a captured const literal as unnecessary.
     std::thread( []() {
         run_server( 8080, std::string() );
     } ).detach();
-    mp_log( "[cdda-mp] MENU: host session started on port 8080" );
-    popup( _( "Hosting on port 8080.\n\nPick New Game or Load to start the world.  Your partner can join once you're in-game." ) );
+    g_host_thread_actually_started = true;
+    mp_log( "[cdda-mp] MENU: host thread started (post-world-load)" );
+}
+
+bool mp_menu_start_host_session()
+{
+    if( is_host_mode() ) {
+        popup( _( "Co-op is already armed.  Pick New Game or Load to start the world." ) );
+        return true;
+    }
+    set_host_mode( true );
+    // Server thread starts on the host's first do_turn (see
+    // mp_start_pending_host_thread) so we don't end up listening before
+    // there's a world for incoming clients to spawn into.
+    g_pending_host_start = true;
+    g_host_thread_actually_started = false;
+    mp_log( "[cdda-mp] MENU: host armed on port 8080 (thread deferred to do_turn)" );
+    popup( _( "Co-op armed for port 8080.\n\nPick New Game or Load to start the world.  Your partner can join once you're in-game." ) );
     return true;
 }
 
@@ -3553,6 +3596,14 @@ bool mp_menu_join_session()
             return false;
         }
     }
+    // Pre-flight TCP probe so a typo'd IP returns in ~3 s instead of hanging
+    // on macOS's 75 s default SYN retry.  Only on success do we commit to
+    // setting client_mode and running the real connect handshake.
+    if( !tcp_probe( host, port, 3000 ) ) {
+        popup( _( "Could not reach %s:%d.\n\nCheck the address, the host is running, and the port (default 8080) isn't blocked." ),
+               host.c_str(), static_cast<int>( port ) );
+        return false;
+    }
     set_client_mode( true );
     if( !client_connect( host, port, "player2", std::string() ) ) {
         popup( _( "Could not connect to %s:%d." ), host.c_str(), static_cast<int>( port ) );
@@ -3568,6 +3619,10 @@ bool mp_menu_join_session()
 std::string mp_menu_coop_status_text()
 {
     if( is_host_mode() ) {
+        if( g_pending_host_start && !g_host_thread_actually_started ) {
+            return std::string(
+                _( "Co-op: armed — pick New Game or Load to start hosting on port 8080" ) );
+        }
         return std::string( _( "Co-op: hosting on port 8080 — waiting for partner" ) );
     }
     if( is_client_mode() ) {
@@ -3617,6 +3672,12 @@ static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_a
 
 void process_mp_events()
 {
+    // If the menu armed host mode but the world wasn't loaded yet, the
+    // listen-server thread was deferred until now.  Starts on the first
+    // do_turn() after the avatar exists so a client connecting can actually
+    // be spawned into a world.  No-op for --host CLI launches.
+    mp_start_pending_host_thread();
+
     // On the very first tick, purge any MP NPCs that leaked into the world save
     // from a previous session (server and client share the same world directory).
     mp_cleanup_stale_npcs();

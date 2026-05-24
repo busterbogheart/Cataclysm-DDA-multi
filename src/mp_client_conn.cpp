@@ -3,6 +3,7 @@
 #include "mp_client_conn.h"
 #include "mp_queue.h"
 
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -111,6 +112,41 @@ static bool g_join_sent = false;
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms )
+{
+    try {
+        asio::io_context io;
+        tcp::resolver resolver( io );
+        asio::error_code resolve_ec;
+        auto endpoints = resolver.resolve( host, std::to_string( port ), resolve_ec );
+        if( resolve_ec ) {
+            return false;
+        }
+        tcp::socket sock( io );
+        bool connected = false;
+        bool finished = false;
+        asio::async_connect( sock, endpoints,
+        [&]( const asio::error_code & ec, const tcp::endpoint & ) {
+            finished = true;
+            connected = !ec;
+        } );
+        asio::steady_timer deadline( io );
+        deadline.expires_after( std::chrono::milliseconds( timeout_ms ) );
+        deadline.async_wait( [&]( const asio::error_code & ) {
+            if( !finished ) {
+                // Cancels the pending async_connect, which then fires its
+                // completion handler with operation_aborted.
+                asio::error_code ignore;
+                sock.close( ignore );
+            }
+        } );
+        io.run();
+        return connected;
+    } catch( const std::exception & ) {
+        return false;
+    }
+}
 
 bool client_connect( const std::string &host, uint16_t port,
                      const std::string &name, const std::string &password )
