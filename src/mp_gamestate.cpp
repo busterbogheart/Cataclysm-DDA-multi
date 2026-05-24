@@ -2823,6 +2823,17 @@ void wait_for_client_action()
         if( g_client_acted_this_turn ) {
             break;  // client acted, advance shared clock by this turn
         }
+        // Mid-wait FF check: client's activity_start may arrive *after* we
+        // entered the wait (host entered first), so the entry-time
+        // should_fast_forward() returned false.  Re-check each iter — the
+        // moment partner activity flips to passive while ours already is,
+        // bail out and let do_turn race through both crafts at SP speed.
+        // Without this, the client (also in FF) won't dispatch waits, so
+        // g_client_acted_this_turn never flips and we deadlock both ends.
+        if( should_fast_forward() ) {
+            mp_log( "[cdda-mp] SRV-WAIT: FAST-FORWARD engaged mid-wait, bailing" );
+            break;
+        }
         // Cap each iteration at ~16ms so SDL gets pumped at 60Hz.  Without this
         // the main thread blocks in TCP recv indefinitely, which trips the macOS
         // spinning-beachball watchdog.  mp_poll_input() (handle_action) is
