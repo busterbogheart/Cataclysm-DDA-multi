@@ -55,6 +55,7 @@
 #include "uilist.h"
 #include "veh_type.h"
 #include "vehicle.h"
+#include "worldfactory.h"
 #ifdef TILES
 #include "sdl_wrappers.h"
 #include "sounds.h"
@@ -3543,6 +3544,121 @@ void mp_menu_cancel_host()
     mp_log( "[cdda-mp] MENU: host-mode cancelled from co-op chooser" );
 }
 
+// Returns the path to a world's mp_world.json sidecar.  Empty when the
+// named world doesn't exist (e.g. picker is looking at a stale name).
+static cata_path mp_world_marker_path( const std::string &worldname )
+{
+    WORLD *w = world_generator->get_world( worldname );
+    if( !w ) {
+        return cata_path();
+    }
+    return w->folder_path() / "mp_world.json";
+}
+
+mp_world_marker mp_world_marker_load( const std::string &worldname )
+{
+    mp_world_marker m;
+    const cata_path path = mp_world_marker_path( worldname );
+    if( path.get_unrelative_path().empty() ) {
+        return m;
+    }
+    read_from_file_optional_json( path, [&]( const JsonValue & jv ) {
+        JsonObject jo = jv.get_object();
+        m.first_seen_iso = jo.get_string( "first_seen_iso", std::string() );
+        m.last_seen_iso  = jo.get_string( "last_seen_iso",  std::string() );
+        m.last_role      = jo.get_string( "last_role",      std::string() );
+    } );
+    return m;
+}
+
+static void mp_world_marker_save( const std::string &worldname,
+                                  const mp_world_marker &m )
+{
+    const cata_path path = mp_world_marker_path( worldname );
+    if( path.get_unrelative_path().empty() ) {
+        return;
+    }
+    write_to_file( path, [&]( std::ostream & fout ) {
+        JsonOut jo( fout );
+        jo.start_object();
+        jo.member( "first_seen_iso", m.first_seen_iso );
+        jo.member( "last_seen_iso",  m.last_seen_iso );
+        jo.member( "last_role",      m.last_role );
+        jo.end_object();
+    }, "mp world marker" );
+}
+
+bool mp_world_has_history( const std::string &worldname )
+{
+    WORLD *w = world_generator->get_world( worldname );
+    if( !w ) {
+        return false;
+    }
+    const cata_path folder = w->folder_path();
+    // Primary marker.
+    if( file_exist( folder / "mp_world.json" ) ) {
+        return true;
+    }
+    // Fallback for worlds that pre-date the marker: any mp_player_*.json
+    // or mp_npc_cleanup.json sitting in the world folder is a tell.
+    if( file_exist( folder / "mp_npc_cleanup.json" ) ) {
+        return true;
+    }
+    const std::vector<cata_path> players = get_files_from_path(
+            "mp_player_", folder, false, false );
+    return !players.empty();
+}
+
+std::string mp_world_marker_badge( const std::string &worldname )
+{
+    if( !mp_world_has_history( worldname ) ) {
+        return std::string();
+    }
+    const mp_world_marker m = mp_world_marker_load( worldname );
+    std::string body = "co-op";
+    if( !m.last_role.empty() ) {
+        body += ", " + m.last_role;
+    }
+    return "  " + colorize( "(" + body + ")", c_light_green );
+}
+
+void mp_world_marker_update()
+{
+    if( !is_host_mode() && !is_client_mode() ) {
+        return;
+    }
+    if( !world_generator || !world_generator->active_world ) {
+        return;
+    }
+    const std::string &worldname = world_generator->active_world->world_name;
+    if( worldname.empty() ) {
+        return;
+    }
+    // One write per (process, world).  Resets when the loaded world changes.
+    static std::string last_marked_world;
+    if( last_marked_world == worldname ) {
+        return;
+    }
+    last_marked_world = worldname;
+
+    // Local-time string is fine; mp_world.json is human-readable, not parsed
+    // for arithmetic.
+    const std::time_t now = std::time( nullptr );
+    char buf[32] = {0};
+    std::strftime( buf, sizeof( buf ), "%Y-%m-%d %H:%M:%S",
+                   std::localtime( &now ) );
+    const std::string now_iso( buf );
+
+    mp_world_marker m = mp_world_marker_load( worldname );
+    if( m.first_seen_iso.empty() ) {
+        m.first_seen_iso = now_iso;
+    }
+    m.last_seen_iso = now_iso;
+    m.last_role = is_host_mode() ? "host" : "client";
+    mp_world_marker_save( worldname, m );
+    mp_log( "[cdda-mp] world-marker: wrote " + worldname + " as " + m.last_role );
+}
+
 static cata_path mp_recent_hosts_path()
 {
     return PATH_INFO::config_dir_path() / "mp_recent_hosts.json";
@@ -3775,6 +3891,9 @@ void process_mp_events()
     // On the very first tick, purge any MP NPCs that leaked into the world save
     // from a previous session (server and client share the same world directory).
     mp_cleanup_stale_npcs();
+
+    // Stamp this world as MP-touched so the world pickers can badge it.
+    mp_world_marker_update();
 
     mp_event event;
     while( get_mp_queue().pop( event ) ) {

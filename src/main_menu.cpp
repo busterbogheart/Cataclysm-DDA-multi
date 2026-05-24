@@ -242,7 +242,8 @@ void main_menu::display_sub_menu( int sel, const point &bottom_left, int sel_lin
                     clr = c_light_cyan;
                 }
                 sub_opts.push_back( colorize( string_format( "%s (%d)", name, savegames_count ),
-                                              ( sel2 == i + ( extra_opt ? 1 : 0 ) ) ? hilite( clr ) : clr ) );
+                                              ( sel2 == i + ( extra_opt ? 1 : 0 ) ) ? hilite( clr ) : clr )
+                                    + cata_mp::mp_world_marker_badge( name ) );
                 int len = utf8_width( sub_opts.back(), true );
                 if( len > xlen ) {
                     xlen = len;
@@ -994,17 +995,31 @@ bool main_menu::opening_screen()
                             sel2 = ct;
                             start = new_character_tab();
                         } else if( hflow.ret == 1 ) {
+                            // Co-op worlds first, then solo, then "Cancel".
+                            std::vector<std::string> coop_w;
+                            std::vector<std::string> solo_w;
+                            for( const auto &kv : world_generator->get_all_worlds() ) {
+                                ( cata_mp::mp_world_has_history( kv.first ) ? coop_w : solo_w )
+                                .push_back( kv.first );
+                            }
+                            if( coop_w.empty() && solo_w.empty() ) {
+                                popup( _( "No worlds to load.  Use New character to create one." ) );
+                                break;
+                            }
                             std::vector<std::string> wnames;
+                            wnames.reserve( coop_w.size() + solo_w.size() );
+                            wnames.insert( wnames.end(), coop_w.begin(), coop_w.end() );
+                            wnames.insert( wnames.end(), solo_w.begin(), solo_w.end() );
+
                             uilist wpick;
                             wpick.title = _( "Co-op: load saved world" );
                             int idx = 0;
-                            for( const auto &kv : world_generator->get_all_worlds() ) {
-                                wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, kv.first );
-                                wnames.push_back( kv.first );
-                            }
-                            if( wnames.empty() ) {
-                                popup( _( "No worlds to load.  Use New character to create one." ) );
-                                break;
+                            for( const std::string &name : wnames ) {
+                                const bool has_coop = cata_mp::mp_world_has_history( name );
+                                const std::string display = name +
+                                                            ( has_coop ? cata_mp::mp_world_marker_badge( name )
+                                                              : "  " + colorize( "(solo)", c_dark_gray ) );
+                                wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
                             }
                             wpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
                             wpick.query();

@@ -223,6 +223,25 @@ bool mp_menu_join_session();
 // host session.  No-op if host mode isn't armed.
 void mp_menu_cancel_host();
 
+// Per-world MP marker (save/<world>/mp_world.json).  Written once per session
+// when the world is loaded under host or client mode.  Solo sessions never
+// touch it — so its presence (or absence) tells the picker which worlds have
+// co-op history.  The implicit fallback (mp_world_has_history) also accepts
+// older worlds that pre-date the marker by checking for mp_player_*.json or
+// mp_npc_cleanup.json files.
+struct mp_world_marker {
+    std::string first_seen_iso;
+    std::string last_seen_iso;
+    std::string last_role;          // "host" or "client"
+};
+mp_world_marker mp_world_marker_load( const std::string &worldname );
+bool mp_world_has_history( const std::string &worldname );
+// One-line badge for picker display, e.g. " (co-op, host)".  Empty when the
+// world has no co-op history.  Colorized; caller pastes it as-is.
+std::string mp_world_marker_badge( const std::string &worldname );
+// Called from process_mp_events on first turn of each session per world.
+void mp_world_marker_update();
+
 // Recent-hosts history persisted under config/mp_recent_hosts.json so the
 // Join screen can offer one-tap reconnect to known partners.
 struct mp_recent_host {
