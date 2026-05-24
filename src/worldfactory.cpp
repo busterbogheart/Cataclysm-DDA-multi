@@ -595,8 +595,13 @@ WORLD *worldfactory::pick_world( bool show_prompt, bool empty_only )
             }
 
             const std::string txt = string_format( "%s (%lu)", world_name, saves_num );
-            const int remaining = world_list_width - ( utf8_width( txt, true ) + 6 );
+            const std::string mp_badge = cata_mp::mp_world_marker_badge( world_name );
+            const int remaining = world_list_width - ( utf8_width( txt, true ) + utf8_width( mp_badge,
+                                  true ) + 6 );
             wprintz( w_worlds, sel_this ? hilite( c_white ) : c_white, txt );
+            if( !mp_badge.empty() ) {
+                wprintz( w_worlds, c_light_green, "%s", mp_badge.c_str() );
+            }
             if( sel_this && remaining > 0 ) {
                 wprintz( w_worlds, hilite( c_white ), std::string( remaining, ' ' ) );
             }

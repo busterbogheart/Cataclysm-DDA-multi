@@ -243,7 +243,7 @@ void main_menu::display_sub_menu( int sel, const point &bottom_left, int sel_lin
                 }
                 sub_opts.push_back( colorize( string_format( "%s (%d)", name, savegames_count ),
                                               ( sel2 == i + ( extra_opt ? 1 : 0 ) ) ? hilite( clr ) : clr )
-                                    + cata_mp::mp_world_marker_badge( name ) );
+                                    + colorize( cata_mp::mp_world_marker_badge( name ), c_light_green ) );
                 int len = utf8_width( sub_opts.back(), true );
                 if( len > xlen ) {
                     xlen = len;
@@ -992,9 +992,27 @@ bool main_menu::opening_screen()
                         hflow.entries.emplace_back( -1, true, 'q', _( "Cancel co-op" ) );
                         hflow.query();
                         if( hflow.ret == 0 ) {
+                            // Existing world / Create new world / Cancel — keeps the
+                            // CO-OP path self-contained instead of bouncing through SP
+                            // World > Create World.
+                            uilist wflow;
+                            wflow.title = _( "Co-op: world for new character" );
+                            wflow.entries.emplace_back( 0, true, 'e', _( "Use <e|E>xisting world" ) );
+                            wflow.entries.emplace_back( 1, true, 'n', _( "Create <n|N>ew world" ) );
+                            wflow.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                            wflow.query();
+                            if( wflow.ret < 0 ) {
+                                break;  // armed; user can re-enter Host
+                            }
+                            if( wflow.ret == 1 ) {
+                                WORLD *neww = world_generator->make_new_world();
+                                if( neww == nullptr ) {
+                                    break;  // worldgen cancelled
+                                }
+                            }
                             const int ct = pick_char_type();
                             if( ct < 0 ) {
-                                break;  // armed; user can re-enter Host
+                                break;
                             }
                             sel2 = ct;
                             start = new_character_tab();
@@ -1021,7 +1039,7 @@ bool main_menu::opening_screen()
                             for( const std::string &name : wnames ) {
                                 const bool has_coop = cata_mp::mp_world_has_history( name );
                                 const std::string display = name +
-                                                            ( has_coop ? cata_mp::mp_world_marker_badge( name )
+                                                            ( has_coop ? colorize( cata_mp::mp_world_marker_badge( name ), c_light_green )
                                                               : "  " + colorize( "(solo)", c_dark_gray ) );
                                 wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
                             }

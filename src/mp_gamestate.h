@@ -236,8 +236,8 @@ struct mp_world_marker {
 };
 mp_world_marker mp_world_marker_load( const std::string &worldname );
 bool mp_world_has_history( const std::string &worldname );
-// One-line badge for picker display, e.g. " (co-op, host)".  Empty when the
-// world has no co-op history.  Colorized; caller pastes it as-is.
+// One-line plain-text badge for picker display, e.g. "  (co-op, host)".
+// Empty when the world has no co-op history.  Caller chooses the color.
 std::string mp_world_marker_badge( const std::string &worldname );
 // SP Load -> picked a co-op world.  If the world has MP history, pops a
 // chooser (Solo / Arm Host / Cancel) and arms host mode when chosen.

@@ -3619,7 +3619,7 @@ std::string mp_world_marker_badge( const std::string &worldname )
     if( !m.last_role.empty() ) {
         body += ", " + m.last_role;
     }
-    return "  " + colorize( "(" + body + ")", c_light_green );
+    return "  (" + body + ")";
 }
 
 bool mp_load_promote_prompt( const std::string &worldname )
