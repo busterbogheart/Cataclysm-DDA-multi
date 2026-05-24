@@ -18,24 +18,27 @@ Three independent features. Run them in this order.
 ### 1a. Host from menu (no CLI flags)
 
 1. Launch `./cataclysm-tiles` on the M4 (no `--host`, no `--client`, no `start-mp.sh`).
-2. Main menu shows new items in the top row: `Host Co-op` and `Join Co-op` between `Load` and `World`.
-3. Hit `H` (or click `Host Co-op`).
-4. Expected: popup "Hosting on port 8080…", footer banner turns green: *"Co-op: hosting on port 8080 — waiting for partner"*.
-5. Dismiss the popup. Pick `New Game` → custom character → enter the world.
+2. Main menu shows a single new item `Co-op` between `Load` and `World`.
+3. Hit `O` (or click `Co-op`) → chooser pops up with `Host a session` / `Join a session` / `Cancel`.
+4. Pick `Host a session` (hotkey `h`).
+5. Expected: popup "Hosting on port 8080…", footer banner turns green: *"Co-op: hosting on port 8080 — waiting for partner"*.
+6. Dismiss the popup. Pick `New Game` → custom character → enter the world.
 
 ### 1b. Join from menu
 
 1. On the Intel client, launch `./cataclysm-tiles` (no flags).
-2. Hit `J` for `Join Co-op`.
-3. Enter `192.168.1.<host-lan-ip>` (or `100.x.y.z` over Tailscale). No port = 8080.
-4. Expected: "Connected to …" popup, banner becomes *"Co-op: connected to host — pick New Game or Load to enter"*.
-5. Pick `Load` or `New Game` to enter the session.
+2. Hit `O` for `Co-op` → chooser pops up.
+3. Pick `Join a session` (hotkey `j`).
+4. Enter `192.168.1.<host-lan-ip>` (or `100.x.y.z` over Tailscale). No port = 8080.
+5. Expected: "Connected to …" popup, banner becomes *"Co-op: connected to host — pick New Game or Load to enter"*.
+6. Pick `Load` or `New Game` to enter the session.
 
 ### 1c. Connection failure path
 
-1. Pick `Join Co-op`. Enter a bogus IP (e.g. `1.2.3.4`).
+1. Pick `Co-op` → `Join a session`. Enter a bogus IP (e.g. `1.2.3.4`).
 2. Expected: ~5 s wait, then "Could not connect to 1.2.3.4:8080." popup. Banner stays empty (client mode reverts).
 3. Cancel button on the IP prompt also exits cleanly.
+4. Picking `Cancel` from the Co-op chooser dismisses it with no side effects.
 
 ### 1d. Pre-existing CLI flags still work
 

@@ -72,8 +72,7 @@ enum class main_menu_opts : int {
     MOTD = 0,
     NEWCHAR,
     LOADCHAR,
-    HOST_COOP,    // MP fork: start MP listen server, then proceed with normal New/Load.
-    JOIN_COOP,    // MP fork: connect to a host, then proceed with normal New/Load.
+    COOP,         // MP fork: chooser (Host / Join), then proceed with normal New/Load.
     WORLD,
     TUTORIAL,
     SETTINGS,
@@ -471,10 +470,9 @@ void main_menu::init_strings()
     vMenuItems.emplace_back( pgettext( "Main Menu", "<M|m>OTD" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<N|n>ew Game" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "Lo<a|A>d" ) );
-    vMenuItems.emplace_back( pgettext( "Main Menu", "<H|h>ost Co-op" ) );
-    vMenuItems.emplace_back( pgettext( "Main Menu", "<J|j>oin Co-op" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "Co-<o|O>p" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<W|w>orld" ) );
-    vMenuItems.emplace_back( pgettext( "Main Menu", "T<u|U>torial Game" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "T<u|U>torial" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "Se<t|T>tings" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "H<e|E|?>lp" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<C|c>redits" ) );
@@ -923,11 +921,8 @@ bool main_menu::opening_screen()
                 case main_menu_opts::NEWCHAR:
                     start = new_character_tab();
                     break;
-                case main_menu_opts::HOST_COOP:
-                    cata_mp::mp_menu_start_host_session();
-                    break;
-                case main_menu_opts::JOIN_COOP:
-                    cata_mp::mp_menu_join_session();
+                case main_menu_opts::COOP:
+                    cata_mp::mp_menu_coop_prompt();
                     break;
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:

@@ -208,16 +208,19 @@ void mp_notify_session_ending();
 // received one always win (no overwrite).
 void mp_templates_sync_on_join();
 
-// Main-menu integration: called from the "Host a co-op session" menu item.
-// Sets host mode and spawns the listen-server thread on port 8080.  Returns
+// Main-menu integration: called from the combined "Co-op" menu item.  Pops
+// a small chooser (Host / Join / Cancel) and dispatches to the appropriate
+// helper below.  Returns true if a session was started.
+bool mp_menu_coop_prompt();
+
+// Main-menu integration: starts an MP listen server on port 8080.  Returns
 // true on success (or no-op when already hosting).  Pops a confirmation
 // dialog explaining what to do next.
 bool mp_menu_start_host_session();
 
-// Main-menu integration: called from the "Join a co-op session" menu item.
-// Prompts for a host address (with optional :port), connects, sets client
-// mode.  Returns true on success; pops an error and returns false on
-// cancel or connection failure.
+// Main-menu integration: prompts for a host address (with optional :port),
+// connects, sets client mode.  Returns true on success; pops an error and
+// returns false on cancel or connection failure.
 bool mp_menu_join_session();
 
 // Banner text shown above the main menu when an MP session has been started

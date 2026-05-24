@@ -52,6 +52,7 @@
 #include "skill.h"
 #include "popup.h"
 #include "string_input_popup.h"
+#include "uilist.h"
 #include "veh_type.h"
 #include "vehicle.h"
 #ifdef TILES
@@ -3488,6 +3489,24 @@ static void mp_handle_template_data( const std::string &msg )
         }
     } catch( const JsonError &e ) {
         mp_log( "[cdda-mp] TEMPLATES data parse error: " + std::string( e.what() ) );
+    }
+}
+
+bool mp_menu_coop_prompt()
+{
+    uilist menu;
+    menu.title = _( "Co-op session" );
+    menu.entries.emplace_back( 0, true, 'h', _( "Host a session" ) );
+    menu.entries.emplace_back( 1, true, 'j', _( "Join a session" ) );
+    menu.entries.emplace_back( 2, true, 'q', _( "Cancel" ) );
+    menu.query();
+    switch( menu.ret ) {
+        case 0:
+            return mp_menu_start_host_session();
+        case 1:
+            return mp_menu_join_session();
+        default:
+            return false;
     }
 }
 
