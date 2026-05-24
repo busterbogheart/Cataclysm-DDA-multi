@@ -41,6 +41,7 @@
 #include "mapbuffer.h"
 #include "mapsharing.h"
 #include "messages.h"
+#include "mp_gamestate.h"
 #include "music.h"
 #include "options.h"
 #include "output.h"
@@ -71,6 +72,8 @@ enum class main_menu_opts : int {
     MOTD = 0,
     NEWCHAR,
     LOADCHAR,
+    HOST_COOP,    // MP fork: start MP listen server, then proceed with normal New/Load.
+    JOIN_COOP,    // MP fork: connect to a host, then proceed with normal New/Load.
     WORLD,
     TUTORIAL,
     SETTINGS,
@@ -307,7 +310,13 @@ void main_menu::print_menu( const catacurses::window &w_open, int iSel, const po
     // Draw horizontal line
     mvwhline( w_open, point( 1, window_height - 4 ), c_white, LINE_OXOX, window_width - 2 );
 
-    if( iSel == getopt( main_menu_opts::NEWCHAR ) ) {
+    // MP fork: when a co-op session has been started (via menu or --host /
+    // --client flags), surface its state as the footer instead of the default
+    // hint copy.  Empty string falls through to the original behavior.
+    const std::string mp_status = cata_mp::mp_menu_coop_status_text();
+    if( !mp_status.empty() ) {
+        center_print( w_open, window_height - 2, c_light_green, mp_status );
+    } else if( iSel == getopt( main_menu_opts::NEWCHAR ) ) {
         center_print( w_open, window_height - 2, c_yellow, vNewGameHints[sel2] );
     } else {
         center_print( w_open, window_height - 2, c_red,
@@ -462,6 +471,8 @@ void main_menu::init_strings()
     vMenuItems.emplace_back( pgettext( "Main Menu", "<M|m>OTD" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<N|n>ew Game" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "Lo<a|A>d" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "<H|h>ost Co-op" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "<J|j>oin Co-op" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<W|w>orld" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "T<u|U>torial Game" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "Se<t|T>tings" ) );
@@ -911,6 +922,12 @@ bool main_menu::opening_screen()
                     break;
                 case main_menu_opts::NEWCHAR:
                     start = new_character_tab();
+                    break;
+                case main_menu_opts::HOST_COOP:
+                    cata_mp::mp_menu_start_host_session();
+                    break;
+                case main_menu_opts::JOIN_COOP:
+                    cata_mp::mp_menu_join_session();
                     break;
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:

@@ -50,6 +50,8 @@
 #include "units.h"
 #include "units_utility.h"
 #include "skill.h"
+#include "popup.h"
+#include "string_input_popup.h"
 #include "veh_type.h"
 #include "vehicle.h"
 #ifdef TILES
@@ -363,6 +365,14 @@ static std::string mp_activity_verb_phrase( const std::string &act_id )
 
 // Forward decl — defined further down with the other co-op helper functions.
 static void mp_cancel_help_if_partner_done();
+
+// Templates wire-sync helpers (definitions below alongside notify_session_ending).
+// Forward-declared so the host- and client-side message dispatchers can call
+// them; both dispatchers live above the definitions.
+static void mp_handle_templates_list( const std::string &msg );
+static void mp_handle_template_request( const std::string &msg );
+static void mp_handle_template_data( const std::string &msg );
+static void mp_send_payload( const std::string &payload );
 
 // Fire "<partner> begins <verb>." / "<partner> has finished." on the
 // transition edges.  Caller is responsible for setting g_partner_activity to
@@ -993,6 +1003,11 @@ static void spawn_remote_player( const std::string &name )
         srv->post_broadcast( serialize_remote_player_state() + "\n" );
         srv->post_broadcast( "{\"type\":\"resync_request\"}\n" );
     }
+
+    // Templates wire-sync: send host's local template list so the client can
+    // request any it doesn't already have.  Cheap one-shot exchange — the
+    // client sends its own list independently on its side.
+    mp_templates_sync_on_join();
 }
 
 static void remove_remote_player()
@@ -1454,6 +1469,31 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         mp_partner_activity_transition_check();
         mp_log( "[cdda-mp] ACT-END RECV: id=" + id
                 + " g_partner_activity prev=" + prev + " now=" + g_partner_activity );
+        return;
+    }
+
+    // Graceful session-end notification from the client (v1 save handshake).
+    // Snapshot the host's world before the TCP socket goes down so any
+    // shared state the client touched is captured.  Client owns its own
+    // .sav, so nothing to do for their character on this side.
+    if( msg.find( "\"action\":\"session_ending\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] SESSION-END RECV: client is leaving — auto-saving host" );
+        add_msg( m_warning, _( "Your partner is leaving.  The game has been saved." ) );
+        g->quicksave();
+        return;
+    }
+
+    // Templates wire-sync handlers (symmetric — same shape on host and client).
+    if( msg.find( "\"type\":\"templates_list\"" ) != std::string::npos ) {
+        mp_handle_templates_list( msg );
+        return;
+    }
+    if( msg.find( "\"type\":\"template_request\"" ) != std::string::npos ) {
+        mp_handle_template_request( msg );
+        return;
+    }
+    if( msg.find( "\"type\":\"template_data\"" ) != std::string::npos ) {
+        mp_handle_template_data( msg );
         return;
     }
 
@@ -3285,6 +3325,238 @@ void notify_client_host_died()
     std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 }
 
+void mp_notify_session_ending()
+{
+    if( is_host_mode() ) {
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( "{\"type\":\"session_ending\",\"from\":\"host\"}\n" );
+            mp_log( "[cdda-mp] SESSION-END: host notified client" );
+        }
+    } else if( is_client_mode() ) {
+        // Wrapped as an action so handle_remote_action()'s dispatcher sees it.
+        client_send( "{\"type\":\"action\",\"action\":\"session_ending\",\"from\":\"client\"}" );
+        mp_log( "[cdda-mp] SESSION-END: client notified host" );
+    } else {
+        return;
+    }
+    // Brief pause so the TCP write completes before the socket goes down.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+}
+
+// Enumerate `*.template` basenames in the user templates dir.
+static std::vector<std::string> mp_local_template_names()
+{
+    std::vector<std::string> out;
+    for( std::string p : get_files_from_path( ".template", PATH_INFO::templatedir(),
+            false, true ) ) {
+        p.erase( p.find( ".template" ), std::string::npos );
+        p.erase( 0, p.find_last_of( "\\/" ) + 1 );
+        out.push_back( p );
+    }
+    return out;
+}
+
+// Pick the right transport for outgoing MP messages from this side.  Both
+// templates messages and the join-time list go through here so we don't keep
+// branching on host/client at every send site.
+static void mp_send_payload( const std::string &payload )
+{
+    if( is_host_mode() ) {
+        server *srv = get_active_server();
+        if( srv ) {
+            srv->post_broadcast( payload + "\n" );
+        }
+    } else if( is_client_mode() ) {
+        client_send( payload );
+    }
+}
+
+void mp_templates_sync_on_join()
+{
+    const std::vector<std::string> names = mp_local_template_names();
+    std::ostringstream oss;
+    {
+        JsonOut jo( oss );
+        jo.start_object();
+        jo.member( "type", "templates_list" );
+        jo.member( "names", names );
+        jo.end_object();
+    }
+    mp_send_payload( oss.str() );
+    mp_log( "[cdda-mp] TEMPLATES: sent list, n=" + std::to_string( names.size() ) );
+}
+
+static void mp_handle_templates_list( const std::string &msg )
+{
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        if( !jo.has_array( "names" ) ) {
+            return;
+        }
+        std::set<std::string> local;
+        for( const std::string &n : mp_local_template_names() ) {
+            local.insert( n );
+        }
+        std::vector<std::string> missing;
+        for( const JsonValue &v : jo.get_array( "names" ) ) {
+            const std::string n = v.get_string();
+            if( local.find( n ) == local.end() ) {
+                missing.push_back( n );
+            }
+        }
+        if( missing.empty() ) {
+            mp_log( "[cdda-mp] TEMPLATES: nothing to request from partner" );
+            return;
+        }
+        std::ostringstream oss;
+        {
+            JsonOut out( oss );
+            out.start_object();
+            out.member( "type", "template_request" );
+            out.member( "names", missing );
+            out.end_object();
+        }
+        mp_send_payload( oss.str() );
+        mp_log( "[cdda-mp] TEMPLATES: requested " + std::to_string( missing.size() ) );
+    } catch( const JsonError &e ) {
+        mp_log( "[cdda-mp] TEMPLATES list parse error: " + std::string( e.what() ) );
+    }
+}
+
+static void mp_handle_template_request( const std::string &msg )
+{
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        if( !jo.has_array( "names" ) ) {
+            return;
+        }
+        int sent = 0;
+        for( const JsonValue &v : jo.get_array( "names" ) ) {
+            const std::string name = v.get_string();
+            const std::string path = PATH_INFO::templatedir() + name + ".template";
+            std::optional<std::string> content = read_whole_file( path );
+            if( !content ) {
+                mp_log( "[cdda-mp] TEMPLATES: requested template missing locally: " + name );
+                continue;
+            }
+            std::ostringstream oss;
+            {
+                JsonOut out( oss );
+                out.start_object();
+                out.member( "type", "template_data" );
+                out.member( "name", name );
+                out.member( "content", *content );
+                out.end_object();
+            }
+            mp_send_payload( oss.str() );
+            ++sent;
+        }
+        mp_log( "[cdda-mp] TEMPLATES: sent " + std::to_string( sent ) + " requested" );
+    } catch( const JsonError &e ) {
+        mp_log( "[cdda-mp] TEMPLATES request parse error: " + std::string( e.what() ) );
+    }
+}
+
+static void mp_handle_template_data( const std::string &msg )
+{
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        const std::string name = jo.get_string( "name", "" );
+        const std::string content = jo.get_string( "content", "" );
+        if( name.empty() || content.empty() ) {
+            return;
+        }
+        const std::string path = PATH_INFO::templatedir() + name + ".template";
+        // Local-wins on name collision so a player can't have their custom
+        // template silently replaced by a partner's same-named one.
+        if( file_exist( path ) ) {
+            mp_log( "[cdda-mp] TEMPLATES: skip overwrite of existing: " + name );
+            return;
+        }
+        const bool ok = write_to_file( path, [&]( std::ostream & out ) {
+            out << content;
+        }, _( "received template" ) );
+        if( ok ) {
+            mp_log( "[cdda-mp] TEMPLATES: wrote received '" + name + "'" );
+        }
+    } catch( const JsonError &e ) {
+        mp_log( "[cdda-mp] TEMPLATES data parse error: " + std::string( e.what() ) );
+    }
+}
+
+bool mp_menu_start_host_session()
+{
+    if( is_host_mode() ) {
+        popup( _( "Already hosting on port 8080.  Pick New Game or Load to start a world." ) );
+        return true;
+    }
+    set_host_mode( true );
+    // Port hardcoded to 8080 (matches the CLI default and the launcher).
+    // Inlined inside the lambda so clang's -Wunused-lambda-capture doesn't
+    // flag a captured const literal as unnecessary.
+    std::thread( []() {
+        run_server( 8080, std::string() );
+    } ).detach();
+    mp_log( "[cdda-mp] MENU: host session started on port 8080" );
+    popup( _( "Hosting on port 8080.\n\nPick New Game or Load to start the world.  Your partner can join once you're in-game." ) );
+    return true;
+}
+
+bool mp_menu_join_session()
+{
+    if( is_client_mode() ) {
+        popup( _( "Already connected.  Pick New Game or Load to enter the session." ) );
+        return true;
+    }
+    std::string entered = string_input_popup()
+                          .title( _( "Host address  (e.g. 192.168.1.5  or  100.64.0.5:8080)" ) )
+                          .width( 40 )
+                          .query_string();
+    if( entered.empty() ) {
+        return false;
+    }
+    std::string host = entered;
+    uint16_t port = 8080;
+    const size_t colon = entered.rfind( ':' );
+    if( colon != std::string::npos ) {
+        host = entered.substr( 0, colon );
+        try {
+            port = static_cast<uint16_t>( std::stoi( entered.substr( colon + 1 ) ) );
+        } catch( const std::exception & ) {
+            popup( _( "Invalid port in '%s'." ), entered.c_str() );
+            return false;
+        }
+    }
+    set_client_mode( true );
+    if( !client_connect( host, port, "player2", std::string() ) ) {
+        popup( _( "Could not connect to %s:%d." ), host.c_str(), static_cast<int>( port ) );
+        set_client_mode( false );
+        return false;
+    }
+    mp_log( "[cdda-mp] MENU: client connected to " + host + ":" + std::to_string( port ) );
+    popup( _( "Connected to %s:%d.\n\nPick New Game or Load to enter the session." ),
+           host.c_str(), static_cast<int>( port ) );
+    return true;
+}
+
+std::string mp_menu_coop_status_text()
+{
+    if( is_host_mode() ) {
+        return std::string( _( "Co-op: hosting on port 8080 — waiting for partner" ) );
+    }
+    if( is_client_mode() ) {
+        return std::string( _( "Co-op: connected to host — pick New Game or Load to enter" ) );
+    }
+    return std::string();
+}
+
 // Check separation between two absolute positions and update g_separation_tier.
 // Uses Chebyshev distance (same as rl_dist in 2D).  Tier thresholds, sized
 // for the MAPSIZE=15 bubble (~84-tile radius).  Tier 3 is the auto-pause
@@ -3538,6 +3810,31 @@ static bool apply_one_state_message( const std::string &msg )
             remove_client_host_npc();
             add_msg( m_bad, "Your partner has died.  Waiting for them to respawn..." );
         }
+        return true;
+    }
+
+    // Graceful session-end notification from the host (v1 save handshake).
+    // Host has saved their world; the client's local .sav isn't written by
+    // the current architecture, so this is messaging-only on this side.
+    // After this the server socket will close shortly — the existing
+    // disconnect handler takes over from there.
+    if( msg.find( "\"type\":\"session_ending\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] SESSION-END RECV: host is leaving" );
+        add_msg( m_warning, _( "Your partner is leaving.  The session will end shortly." ) );
+        return true;
+    }
+
+    // Templates wire-sync handlers (symmetric — same shape on host and client).
+    if( msg.find( "\"type\":\"templates_list\"" ) != std::string::npos ) {
+        mp_handle_templates_list( msg );
+        return true;
+    }
+    if( msg.find( "\"type\":\"template_request\"" ) != std::string::npos ) {
+        mp_handle_template_request( msg );
+        return true;
+    }
+    if( msg.find( "\"type\":\"template_data\"" ) != std::string::npos ) {
+        mp_handle_template_data( msg );
         return true;
     }
 
@@ -4072,6 +4369,9 @@ void client_process_incoming()
         g_client_last_grant_seq = 0;
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
+        // Templates wire-sync: send local template list so the host can request
+        // anything it's missing.  Host sends its own list independently.
+        mp_templates_sync_on_join();
     }
     std::string msg;
     int recv_count = 0;

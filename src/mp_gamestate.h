@@ -191,6 +191,40 @@ bool is_client_host_at( const tripoint_abs_ms &abs );
 // Call this before the death screen takes over.
 void notify_client_host_died();
 
+// v1 graceful session-end handshake.  Call from the SP save+quit path when an
+// MP session is active — broadcasts a session_ending packet to the partner so
+// they see a graceful "your partner is leaving — game saved" message and
+// (host only) trigger an auto-save, instead of a raw TCP disconnect.  No-op
+// outside MP modes.  Includes a brief sleep so the TCP write completes
+// before the caller's socket teardown.
+void mp_notify_session_ending();
+
+// Templates wire-sync on join: enumerate the local ~/Library/.../templates/
+// dir, send the list to the partner, then exchange any templates the other
+// side is missing.  Symmetric — both host and client send their list on
+// connect; both receive, diff, request, respond.  Result: both players see
+// the union of their template libraries the next time they open Custom
+// Character → Load Template.  Local templates with the same name as a
+// received one always win (no overwrite).
+void mp_templates_sync_on_join();
+
+// Main-menu integration: called from the "Host a co-op session" menu item.
+// Sets host mode and spawns the listen-server thread on port 8080.  Returns
+// true on success (or no-op when already hosting).  Pops a confirmation
+// dialog explaining what to do next.
+bool mp_menu_start_host_session();
+
+// Main-menu integration: called from the "Join a co-op session" menu item.
+// Prompts for a host address (with optional :port), connects, sets client
+// mode.  Returns true on success; pops an error and returns false on
+// cancel or connection failure.
+bool mp_menu_join_session();
+
+// Banner text shown above the main menu when an MP session has been started
+// from the menu (or via --host / --client flags).  Empty when neither host
+// nor client mode is active — caller falls back to its default footer copy.
+std::string mp_menu_coop_status_text();
+
 // Server only: grant the remote player one turn's worth of moves and broadcast
 // the updated state so the client knows it can act.  Call once per game turn,
 // at the top of do_turn(), before the host enters its input loop.

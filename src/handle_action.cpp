@@ -3859,15 +3859,18 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         case ACTION_SAVE:
             if( cata_mp::is_client_mode() ) {
                 if( query_yn( _( "Disconnect and quit? (Progress is saved on the host.)" ) ) ) {
+                    cata_mp::mp_notify_session_ending();
                     player_character.set_moves( 0 );
                     uquit = QUIT_NOSAVED;
                 }
             } else if( query_yn( _( "Save and quit?" ) ) ) {
                 if( save() ) {
+                    cata_mp::mp_notify_session_ending();
                     player_character.set_moves( 0 );
                     uquit = QUIT_SAVED;
                 } else if( save_is_dirty && query_yn( _( "Unable to save, quit anyway?" ) ) ) {
                     // Game refused to save because of unsupported game state. But we don't want to trap them here, so at least let give them the option.
+                    cata_mp::mp_notify_session_ending();
                     player_character.set_moves( 0 );
                     uquit = QUIT_NOSAVED;
                 }
