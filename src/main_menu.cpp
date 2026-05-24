@@ -985,10 +985,11 @@ bool main_menu::opening_screen()
                         if( !cata_mp::mp_menu_start_host_session() ) {
                             break;
                         }
+                        const bool any_worlds = !world_generator->get_all_worlds().empty();
                         uilist hflow;
                         hflow.title = _( "Co-op: host a session" );
                         hflow.entries.emplace_back( 0, true, 'n', _( "New character" ) );
-                        hflow.entries.emplace_back( 1, true, 'l', _( "Load saved world" ) );
+                        hflow.entries.emplace_back( 1, any_worlds, 'l', _( "Load saved world" ) );
                         hflow.entries.emplace_back( -1, true, 'q', _( "Cancel co-op" ) );
                         hflow.query();
                         if( hflow.ret == 0 ) {
@@ -997,7 +998,10 @@ bool main_menu::opening_screen()
                             // World > Create World.
                             uilist wflow;
                             wflow.title = _( "Co-op: world for new character" );
-                            wflow.entries.emplace_back( 0, true, 'e', _( "Use existing world" ) );
+                            if( !any_worlds ) {
+                                wflow.text = _( "No existing worlds yet — create a new one." );
+                            }
+                            wflow.entries.emplace_back( 0, any_worlds, 'e', _( "Use existing world" ) );
                             wflow.entries.emplace_back( 1, true, 'n', _( "Create new world" ) );
                             wflow.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
                             wflow.query();
@@ -1025,7 +1029,7 @@ bool main_menu::opening_screen()
                                 .push_back( kv.first );
                             }
                             if( coop_w.empty() && solo_w.empty() ) {
-                                popup( _( "No worlds to load.  Use New character to create one." ) );
+                                popup( _( "No worlds to load.\n\nCreate one from Host > New character, or from the main menu under World." ) );
                                 break;
                             }
                             std::vector<std::string> wnames;
