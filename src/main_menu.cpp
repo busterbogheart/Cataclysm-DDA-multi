@@ -1011,7 +1011,16 @@ bool main_menu::opening_screen()
                             if( wflow.ret == 1 ) {
                                 WORLD *neww = world_generator->make_new_world();
                                 if( neww == nullptr ) {
-                                    break;  // worldgen cancelled
+                                    break;  // worldgen cancelled at first tab
+                                }
+                                // Worldgen finalized the world even if the user thought
+                                // they were cancelling later tabs.  Confirmation gate +
+                                // cleanup-on-no, so bail intent matches outcome.
+                                if( !query_yn(
+                                        _( "World '%s' created.\n\nContinue to character creation?" ),
+                                        neww->world_name.c_str() ) ) {
+                                    world_generator->delete_world( neww->world_name, true );
+                                    break;
                                 }
                             }
                             const int ct = pick_char_type();
