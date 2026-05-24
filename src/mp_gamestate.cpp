@@ -2819,6 +2819,16 @@ void wait_for_client_action()
     int max_pump_ms   = 0;
     int max_redraw_ms = 0;
     int max_input_ms  = 0;
+    // Track host activity across iters so we can detect a transition (cancel
+    // mid-handle_action, or a new activity started somehow) and force-broadcast
+    // it.  Without this, the client's view of g_partner_activity goes stale —
+    // it FF-decides based on what we LAST told it, not what we're doing now.
+    // If host's activity ended after the iteration's grant_client_turn
+    // broadcast but before reaching the wait, the client still thinks FF
+    // applies, suppresses its wait dispatch, and we deadlock waiting for an
+    // ack that won't come.  Cheap to do — only broadcasts on actual edge.
+    std::string prev_wait_host_act = get_avatar().activity
+                                     ? get_avatar().activity.id().str() : "";
     while( remote_player_connected ) {
         if( g_client_acted_this_turn ) {
             break;  // client acted, advance shared clock by this turn
@@ -2833,6 +2843,22 @@ void wait_for_client_action()
         if( should_fast_forward() ) {
             mp_log( "[cdda-mp] SRV-WAIT: FAST-FORWARD engaged mid-wait, bailing" );
             break;
+        }
+        // Host-activity transition broadcast: if our activity changed since
+        // entering the wait (typically: just cancelled mid-handle_action),
+        // push fresh state to the client right away.  Otherwise the client
+        // keeps thinking we're still crafting and stays in FF — meaning it
+        // never dispatches a wait — meaning this wait never unblocks.
+        const std::string cur_host_act = get_avatar().activity
+                                         ? get_avatar().activity.id().str() : "";
+        if( cur_host_act != prev_wait_host_act ) {
+            mp_log( std::string( "[cdda-mp] SRV-WAIT: host activity transition " ) +
+                    prev_wait_host_act + " -> " + cur_host_act +
+                    ", broadcasting state" );
+            if( server *srv = get_active_server() ) {
+                srv->post_broadcast( serialize_remote_player_state() + "\n" );
+            }
+            prev_wait_host_act = cur_host_act;
         }
         // Cap each iteration at ~16ms so SDL gets pumped at 60Hz.  Without this
         // the main thread blocks in TCP recv indefinitely, which trips the macOS
