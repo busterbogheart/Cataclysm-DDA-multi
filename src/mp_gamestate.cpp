@@ -3544,6 +3544,22 @@ void mp_menu_cancel_host()
     mp_log( "[cdda-mp] MENU: host-mode cancelled from co-op chooser" );
 }
 
+WORLD *mp_ensure_client_scratch_world()
+{
+    static const std::string SCRATCH_NAME = "_coop_client_scratch";
+    if( WORLD *w = world_generator->get_world( SCRATCH_NAME ) ) {
+        return w;
+    }
+    const std::vector<mod_id> default_mods = { mod_id( "dda" ) };
+    WORLD *neww = world_generator->make_new_world( SCRATCH_NAME, default_mods );
+    if( neww ) {
+        mp_log( "[cdda-mp] MENU: created client scratch world '" + SCRATCH_NAME + "'" );
+    } else {
+        mp_log( "[cdda-mp] MENU: failed to create client scratch world" );
+    }
+    return neww;
+}
+
 // Returns the path to a world's mp_world.json sidecar.  Empty when the
 // named world doesn't exist (e.g. picker is looking at a stale name).
 static cata_path mp_world_marker_path( const std::string &worldname )

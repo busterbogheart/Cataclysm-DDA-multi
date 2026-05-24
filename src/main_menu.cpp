@@ -1077,6 +1077,14 @@ bool main_menu::opening_screen()
                         if( ct < 0 ) {
                             break;  // connected; user can re-enter Join
                         }
+                        // Client side: ensure a scratch world exists so the SP
+                        // char-creation flow's pick_world doesn't force the user
+                        // into worldgen when they have no local worlds.  The
+                        // avatar gets teleported to the host's world after spawn.
+                        if( !cata_mp::mp_ensure_client_scratch_world() ) {
+                            popup( _( "Couldn't prepare a client scratch world." ) );
+                            break;
+                        }
                         sel2 = ct;
                         start = new_character_tab();
                     }

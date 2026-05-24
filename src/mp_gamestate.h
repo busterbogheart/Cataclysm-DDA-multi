@@ -8,6 +8,7 @@
 #include <string>
 
 class npc;
+struct WORLD;
 
 namespace cata_mp {
 
@@ -222,6 +223,14 @@ bool mp_menu_join_session();
 // Main-menu integration: disarm a previously armed (but not-yet-started)
 // host session.  No-op if host mode isn't armed.
 void mp_menu_cancel_host();
+
+// Client-only: ensure a minimal scratch world exists so the client's
+// character-creation flow doesn't force the user into worldgen when they
+// have no local worlds.  The client will be teleported to the host's world
+// after spawn — the local world is just scaffolding for the avatar object.
+// Returns the scratch WORLD* (creates it on first call), or nullptr on
+// failure.  Idempotent: subsequent calls reuse the existing scratch world.
+::WORLD *mp_ensure_client_scratch_world();
 
 // Per-world MP marker (save/<world>/mp_world.json).  Written once per session
 // when the world is loaded under host or client mode.  Solo sessions never
