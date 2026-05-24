@@ -223,6 +223,20 @@ bool mp_menu_join_session();
 // host session.  No-op if host mode isn't armed.
 void mp_menu_cancel_host();
 
+// Recent-hosts history persisted under config/mp_recent_hosts.json so the
+// Join screen can offer one-tap reconnect to known partners.
+struct mp_recent_host {
+    std::string host;
+    uint16_t port;
+    std::string label;          // optional user-typed identifier
+};
+std::vector<mp_recent_host> mp_recent_hosts_load();
+void mp_recent_hosts_save( const std::vector<mp_recent_host> &hosts );
+// Insert/promote an entry to the front; dedup on host+port; cap at 8.
+// If label is empty, preserves any existing label for the same address.
+void mp_recent_hosts_remember( const std::string &host, uint16_t port,
+                               const std::string &label );
+
 // Banner text shown above the main menu when an MP session has been started
 // from the menu (or via --host / --client flags).  Empty when neither host
 // nor client mode is active — caller falls back to its default footer copy.

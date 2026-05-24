@@ -3543,22 +3543,81 @@ void mp_menu_cancel_host()
     mp_log( "[cdda-mp] MENU: host-mode cancelled from co-op chooser" );
 }
 
-bool mp_menu_join_session()
+static cata_path mp_recent_hosts_path()
 {
-    if( is_client_mode() ) {
-        // Already connected — treat as success so caller can drive the
-        // next UI step (char-creation flow).
-        return true;
+    return PATH_INFO::config_dir_path() / "mp_recent_hosts.json";
+}
+
+std::vector<mp_recent_host> mp_recent_hosts_load()
+{
+    std::vector<mp_recent_host> out;
+    read_from_file_optional_json( mp_recent_hosts_path(), [&]( const JsonValue & jv ) {
+        JsonObject jo = jv.get_object();
+        if( !jo.has_array( "hosts" ) ) {
+            return;
+        }
+        for( JsonObject e : jo.get_array( "hosts" ) ) {
+            mp_recent_host rh;
+            rh.host = e.get_string( "host", std::string() );
+            rh.port = static_cast<uint16_t>( e.get_int( "port", 8080 ) );
+            rh.label = e.get_string( "label", std::string() );
+            if( !rh.host.empty() ) {
+                out.push_back( std::move( rh ) );
+            }
+        }
+    } );
+    return out;
+}
+
+void mp_recent_hosts_save( const std::vector<mp_recent_host> &hosts )
+{
+    write_to_file( mp_recent_hosts_path(), [&]( std::ostream & fout ) {
+        JsonOut jo( fout );
+        jo.start_object();
+        jo.member( "hosts" );
+        jo.start_array();
+        for( const mp_recent_host &h : hosts ) {
+            jo.start_object();
+            jo.member( "host", h.host );
+            jo.member( "port", static_cast<int>( h.port ) );
+            jo.member( "label", h.label );
+            jo.end_object();
+        }
+        jo.end_array();
+        jo.end_object();
+    }, "mp recent hosts" );
+}
+
+void mp_recent_hosts_remember( const std::string &host, uint16_t port,
+                               const std::string &label )
+{
+    constexpr size_t MP_RECENT_HOSTS_CAP = 8;
+    std::vector<mp_recent_host> list = mp_recent_hosts_load();
+    std::string preserved_label = label;
+    auto same = [&]( const mp_recent_host & h ) {
+        return h.host == host && h.port == port;
+    };
+    auto it = std::find_if( list.begin(), list.end(), same );
+    if( it != list.end() ) {
+        if( preserved_label.empty() ) {
+            preserved_label = it->label;
+        }
+        list.erase( it );
     }
-    std::string entered = string_input_popup()
-                          .title( _( "Host address  (e.g. 192.168.1.5  or  100.64.0.5:8080)" ) )
-                          .width( 40 )
-                          .query_string();
-    if( entered.empty() ) {
-        return false;
+    list.insert( list.begin(), mp_recent_host{ host, port, preserved_label } );
+    if( list.size() > MP_RECENT_HOSTS_CAP ) {
+        list.resize( MP_RECENT_HOSTS_CAP );
     }
-    std::string host = entered;
-    uint16_t port = 8080;
+    mp_recent_hosts_save( list );
+}
+
+// Parse "host[:port]" into separate host + port.  Returns false (and pops an
+// error) on a malformed port; default port is 8080.
+static bool mp_parse_address( const std::string &entered, std::string &host,
+                              uint16_t &port )
+{
+    host = entered;
+    port = 8080;
     const size_t colon = entered.rfind( ':' );
     if( colon != std::string::npos ) {
         host = entered.substr( 0, colon );
@@ -3568,6 +3627,60 @@ bool mp_menu_join_session()
             popup( _( "Invalid port in '%s'." ), entered.c_str() );
             return false;
         }
+    }
+    return true;
+}
+
+bool mp_menu_join_session()
+{
+    if( is_client_mode() ) {
+        // Already connected — treat as success so caller can drive the
+        // next UI step (char-creation flow).
+        return true;
+    }
+
+    std::vector<mp_recent_host> recent = mp_recent_hosts_load();
+    std::string entered;
+    std::string label_in;       // existing label if user picked from history
+    if( !recent.empty() ) {
+        uilist menu;
+        menu.title = _( "Co-op: join a session" );
+        int idx = 0;
+        for( const mp_recent_host &rh : recent ) {
+            std::string display = rh.host + ":" + std::to_string( rh.port );
+            if( !rh.label.empty() ) {
+                display = rh.label + "  —  " + display;
+            }
+            menu.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
+        }
+        const int new_addr_idx = idx;
+        menu.entries.emplace_back( new_addr_idx, true, 'n', _( "Enter new address…" ) );
+        menu.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+        menu.query();
+        if( menu.ret < 0 ) {
+            return false;
+        }
+        if( menu.ret < static_cast<int>( recent.size() ) ) {
+            const mp_recent_host &rh = recent[menu.ret];
+            entered = rh.host + ":" + std::to_string( rh.port );
+            label_in = rh.label;
+        }
+        // else: "Enter new address" — fall through to the input popup
+    }
+    if( entered.empty() ) {
+        entered = string_input_popup()
+                  .title( _( "Host address  (e.g. 192.168.1.5  or  100.64.0.5:8080)" ) )
+                  .width( 40 )
+                  .query_string();
+        if( entered.empty() ) {
+            return false;
+        }
+    }
+
+    std::string host;
+    uint16_t port = 8080;
+    if( !mp_parse_address( entered, host, port ) ) {
+        return false;
     }
     // Pre-flight TCP probe so a typo'd IP returns in ~3 s instead of hanging
     // on macOS's 75 s default SYN retry.  Only on success do we commit to
@@ -3584,6 +3697,17 @@ bool mp_menu_join_session()
         return false;
     }
     mp_log( "[cdda-mp] MENU: client connected to " + host + ":" + std::to_string( port ) );
+
+    // Only ask for a label the first time we see this address.  Skipping is
+    // fine — the address alone is also a useful identifier.
+    std::string label_out = label_in;
+    if( label_in.empty() ) {
+        label_out = string_input_popup()
+                    .title( _( "Save as (optional label, e.g. 'Intel Mac' — blank to skip)" ) )
+                    .width( 30 )
+                    .query_string();
+    }
+    mp_recent_hosts_remember( host, port, label_out );
     return true;
 }
 
