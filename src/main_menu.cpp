@@ -1102,20 +1102,73 @@ bool main_menu::opening_screen()
                         if( !cata_mp::mp_menu_join_session() ) {
                             break;
                         }
-                        const int ct = pick_char_type();
-                        if( ct < 0 ) {
+                        // New character / Load existing / Cancel.  Load lets the
+                        // client resume an existing save (same-machine flow can
+                        // see all worlds; remote clients see only their local
+                        // scratch + any worlds they've previously joined into).
+                        const bool any_worlds_with_saves = [] {
+                            for( const auto &kv : world_generator->get_all_worlds() ) {
+                                if( !kv.second->world_saves.empty() ) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }();
+                        uilist jflow;
+                        jflow.title = _( "Co-op: join a session" );
+                        jflow.entries.emplace_back( 0, true, 'n', _( "New character" ) );
+                        jflow.entries.emplace_back( 1, any_worlds_with_saves, 'l',
+                                                    _( "Load existing character" ) );
+                        jflow.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                        jflow.query();
+                        if( jflow.ret < 0 ) {
                             break;  // connected; user can re-enter Join
                         }
-                        // Client side: ensure a scratch world exists so the SP
-                        // char-creation flow's pick_world doesn't force the user
-                        // into worldgen when they have no local worlds.  The
-                        // avatar gets teleported to the host's world after spawn.
-                        if( !cata_mp::mp_ensure_client_scratch_world() ) {
-                            popup( _( "Couldn't prepare a client scratch world." ) );
-                            break;
+                        if( jflow.ret == 1 ) {
+                            // World picker (only worlds that have saves)
+                            std::vector<std::string> wnames;
+                            for( const auto &kv : world_generator->get_all_worlds() ) {
+                                if( !kv.second->world_saves.empty() ) {
+                                    wnames.push_back( kv.first );
+                                }
+                            }
+                            uilist wpick;
+                            wpick.title = _( "Co-op: load existing character" );
+                            int idx = 0;
+                            for( const std::string &name : wnames ) {
+                                const bool has_coop = cata_mp::mp_world_has_history( name );
+                                const std::string display = name +
+                                                            ( has_coop ? colorize( cata_mp::mp_world_marker_badge( name ),
+                                                                    c_light_green )
+                                                              : "  " + colorize( "(solo)", c_dark_gray ) );
+                                wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
+                            }
+                            wpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                            wpick.query();
+                            if( wpick.ret < 0 || static_cast<size_t>( wpick.ret ) >= wnames.size() ) {
+                                break;
+                            }
+                            start = load_character_tab( wnames[wpick.ret] );
+                            if( start ) {
+                                load_game = true;
+                            }
+                        } else {
+                            // New character
+                            const int ct = pick_char_type();
+                            if( ct < 0 ) {
+                                break;  // connected; user can re-enter Join
+                            }
+                            // Client side: ensure a scratch world exists so the SP
+                            // char-creation flow's pick_world doesn't force the user
+                            // into worldgen when they have no local worlds.  The
+                            // avatar gets teleported to the host's world after spawn.
+                            if( !cata_mp::mp_ensure_client_scratch_world() ) {
+                                popup( _( "Couldn't prepare a client scratch world." ) );
+                                break;
+                            }
+                            sel2 = ct;
+                            start = new_character_tab();
                         }
-                        sel2 = ct;
-                        start = new_character_tab();
                     }
                     break;
                 }
