@@ -3546,9 +3546,11 @@ void mp_menu_cancel_host()
 
 WORLD *mp_ensure_client_scratch_world()
 {
-    static const std::string SCRATCH_NAME = "_coop_client_scratch";
-    if( WORLD *w = world_generator->get_world( SCRATCH_NAME ) ) {
-        return w;
+    // Leading underscore is rejected by worldfactory's lexical validity
+    // check, so use a friendly name we'd also be happy showing to the user.
+    static const std::string SCRATCH_NAME = "Co-op Client";
+    if( world_generator->has_world( SCRATCH_NAME ) ) {
+        return world_generator->get_world( SCRATCH_NAME );
     }
     const std::vector<mod_id> default_mods = { mod_id( "dda" ) };
     WORLD *neww = world_generator->make_new_world( SCRATCH_NAME, default_mods );
