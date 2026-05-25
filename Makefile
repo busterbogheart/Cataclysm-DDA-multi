@@ -967,7 +967,7 @@ ifeq ($(SOUND), 1)
     endif
 
     ifeq ($(MSYS2),1)
-      LDFLAGS += -lmpg123 -lshlwapi -lvorbisfile -lvorbis -logg -lflac
+      LDFLAGS += -lmpg123 -lshlwapi -lvorbisfile -lvorbis -logg -lflac -lxmp
     endif
   endif
 
