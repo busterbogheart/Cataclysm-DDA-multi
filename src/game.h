@@ -928,6 +928,15 @@ class game
         bool can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp );
         // Regular movement. Returns false if it failed for any reason
         bool walk_move( const tripoint_bub_ms &dest, bool via_ramp = false, bool furniture_move = false );
+        // Handle pushing during move for the given character (avatar in SP,
+        // or the host-side proxy NPC for the remote MP player). Returns true
+        // if it handled the move. Hoisted into the public block so MP code
+        // can invoke the drag for the proxy NPC.
+        bool grabbed_move( Character &who, const tripoint_rel_ms &dp, bool via_ramp,
+                           bool stairs_move = false );
+        bool grabbed_veh_move_helper( Character &who, const tripoint_rel_ms &dp, bool stairs_move );
+        bool grabbed_veh_move_stairs( Character &who, const tripoint_rel_ms &dp );
+        bool grabbed_veh_move( Character &who, const tripoint_rel_ms &dp );
         void on_move_effects();
     private:
         // Game-start procedures
@@ -964,14 +973,6 @@ class game
 
         /** Check for dangerous stuff at dest_loc, return false if the player decides
         not to step there */
-        // Handle pushing during move for the given character (avatar in SP,
-        // or the host-side proxy NPC for the remote MP player). Returns true
-        // if it handled the move.
-        bool grabbed_move( Character &who, const tripoint_rel_ms &dp, bool via_ramp,
-                           bool stairs_move = false );
-        bool grabbed_veh_move_helper( Character &who, const tripoint_rel_ms &dp, bool stairs_move );
-        bool grabbed_veh_move_stairs( Character &who, const tripoint_rel_ms &dp );
-        bool grabbed_veh_move( Character &who, const tripoint_rel_ms &dp );
 
         void control_vehicle( const std::optional<tripoint_bub_ms> &p =
                                   std::nullopt ); // Use vehicle controls  '^'

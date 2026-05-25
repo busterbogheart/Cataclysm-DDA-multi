@@ -428,6 +428,10 @@ static const efftype_id effect_bleed( "bleed" );
 // Info panel (bottom-left corner)
 // ---------------------------------------------------------------------------
 
+// Forward-declared so mp_hud_t::draw() can use it for its border color;
+// definition lives further down with the mp_edge_t frame that shares it.
+static bool mp_turn_show_green();
+
 struct mp_hud_t {
     catacurses::window win;
     ui_adaptor ui;
@@ -448,7 +452,9 @@ struct mp_hud_t {
 
     void draw() const {
         werase( win );
-        draw_border( win );
+        // Border color tracks the same turn-state signal as the edge frame so
+        // panel + frame pulse together.
+        draw_border( win, mp_turn_show_green() ? c_light_green : c_red );
 
         // Partner-centric single content row.  Host sees the connected client;
         // client sees the host.  Both read from the local NPC proxy that the
@@ -578,36 +584,58 @@ struct mp_hud_t {
 };
 
 // ---------------------------------------------------------------------------
-// Full-height go/stop strip on the left edge (both host and client)
+// Turn-state signal: shared helper + thin-frame border around the game view
 // ---------------------------------------------------------------------------
 
-struct mp_strip_t {
-    catacurses::window win;
+// Smoother for the brief moves=0 gap between a sent action and the next grant.
+// Module-scope so the edge frame and the panel border pulse together.
+static std::chrono::steady_clock::time_point g_mp_last_go_time =
+    std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+
+// True when the player can act this instant — used for both the edge frame
+// color and the mp_hud panel border color. Tracks raw moves, in-flight wait
+// activities (catch-breath etc. that own the move budget), and host wait-for-
+// client lockstep. Updates the shared smoother on green so the 400ms hold
+// covers the ack-gap blip.
+static bool mp_turn_show_green()
+{
+    const player_activity &pact = get_avatar().activity;
+    static const activity_id s_act_wait( "ACT_WAIT" );
+    static const activity_id s_act_wait_stamina( "ACT_WAIT_STAMINA" );
+    static const activity_id s_act_wait_weather( "ACT_WAIT_WEATHER" );
+    static const activity_id s_act_wait_npc( "ACT_WAIT_NPC" );
+    const bool in_wait_act = pact && (
+                                 pact.id() == s_act_wait || pact.id() == s_act_wait_stamina ||
+                                 pact.id() == s_act_wait_weather || pact.id() == s_act_wait_npc );
+    const bool go = get_avatar().get_moves() > 0 && !in_wait_act
+                    && !g_host_waiting_for_client;
+    const auto now = std::chrono::steady_clock::now();
+    if( go ) {
+        g_mp_last_go_time = now;
+    }
+    const auto since_go_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 now - g_mp_last_go_time ).count();
+    return !in_wait_act && ( go || since_go_ms < 400 );
+}
+
+struct mp_edge_t {
+    // Four 1-cell-thick windows framing the game view (excluding the right
+    // sidebar). Replaces the prior wall-of-color side strips with a thin
+    // peripheral border that uses half-block glyphs so each side reads as a
+    // crisp line at the very edge of its cell, not a full filled column/row.
+    catacurses::window top_win, bot_win, lft_win, rgt_win;
     ui_adaptor ui;
-    bool right_side;
-    // Smooth the brief moves=0 gap between a sent action and the next grant —
-    // without this, the strip blips red every grant→ack cycle even when the
-    // player is fully unblocked.  Updated on each draw where go=true.
-    mutable std::chrono::steady_clock::time_point last_go_time =
-        std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
 
-    // Bar width in columns.  Two columns of full block chars gives a chunky
-    // solid bar that's easy to read with peripheral vision while focused on
-    // the game view.  One half-block column blended into the adjacent black
-    // space and was hard to glance-read.
-    static constexpr int strip_w = 2;
-
-    explicit mp_strip_t( bool right = false ) : right_side( right ) {
-        ui.on_screen_resize( [this]( ui_adaptor &ua ) {
+    mp_edge_t() {
+        ui.on_screen_resize( [this]( ui_adaptor & ua ) {
             const int sidebar_w = panel_manager::get_manager().get_width_right();
-            const int x = right_side
-                          ? TERMX - sidebar_w - strip_w
-                          : 0;
-            mp_log( "[cdda-mp] mp_strip resize: right=" + std::to_string( right_side ) +
-                    " TERMX=" + std::to_string( TERMX ) + " sidebar_w=" + std::to_string( sidebar_w ) +
-                    " x=" + std::to_string( x ) );
-            win = catacurses::newwin( TERMY, strip_w, point( x, 0 ) );
-            ua.position_from_window( win );
+            const int view_w = std::max( 1, TERMX - sidebar_w );
+            top_win = catacurses::newwin( 1, view_w, point( 0, 0 ) );
+            bot_win = catacurses::newwin( 1, view_w, point( 0, TERMY - 1 ) );
+            const int side_h = std::max( 0, TERMY - 2 );
+            lft_win = catacurses::newwin( side_h, 1, point( 0, 1 ) );
+            rgt_win = catacurses::newwin( side_h, 1, point( view_w - 1, 1 ) );
+            ua.position_from_window( top_win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
             draw();
@@ -616,57 +644,48 @@ struct mp_strip_t {
     }
 
     void draw() const {
-        werase( win );
-        // Show locked (red) when moves ≤ 0 OR when a wait activity owns the move
-        // budget (e.g. catching breath after sprinting).  Raw moves > 0 while a wait
-        // activity is running is misleading — the player can't actually take actions.
-        const player_activity &pact = get_avatar().activity;
-        static const activity_id s_act_wait( "ACT_WAIT" );
-        static const activity_id s_act_wait_stamina( "ACT_WAIT_STAMINA" );
-        static const activity_id s_act_wait_weather( "ACT_WAIT_WEATHER" );
-        static const activity_id s_act_wait_npc( "ACT_WAIT_NPC" );
-        const bool in_wait_act = pact && (
-            pact.id() == s_act_wait || pact.id() == s_act_wait_stamina ||
-            pact.id() == s_act_wait_weather || pact.id() == s_act_wait_npc );
-        const bool go = get_avatar().get_moves() > 0 && !in_wait_act
-                        && !g_host_waiting_for_client;
-        // Smooth the lockstep ack-gap flicker.  Own wait activities bypass the
-        // smoother — those are sticky states, not transient gaps.
-        const auto now = std::chrono::steady_clock::now();
-        if( go ) {
-            last_go_time = now;
+        const nc_color c = mp_turn_show_green() ? c_light_green : c_red;
+        const int sidebar_w = panel_manager::get_manager().get_width_right();
+        const int view_w = std::max( 1, TERMX - sidebar_w );
+        const int side_h = std::max( 0, TERMY - 2 );
+
+        // ▀ upper half block — sits at top of its cell so the line hugs the
+        // top edge of the game view.
+        werase( top_win );
+        for( int x = 0; x < view_w; x++ ) {
+            mvwprintz( top_win, point( x, 0 ), c, "\xe2\x96\x80" );
         }
-        const auto since_go_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                     now - last_go_time ).count();
-        const bool show_green = !in_wait_act && ( go || since_go_ms < 400 );
-        const nc_color c = show_green ? c_light_green : c_red;
-        // █ full block — fills the whole cell vs the previous left/right half
-        // block which left half the column black against the game view.
-        static constexpr const char *ch = "\xe2\x96\x88";
-        for( int y = 0; y < TERMY; y++ ) {
-            for( int x = 0; x < strip_w; x++ ) {
-                mvwprintz( win, point( x, y ), c, ch );
-            }
+        wnoutrefresh( top_win );
+
+        // ▄ lower half block — bottom edge of game view.
+        werase( bot_win );
+        for( int x = 0; x < view_w; x++ ) {
+            mvwprintz( bot_win, point( x, 0 ), c, "\xe2\x96\x84" );
         }
-        wnoutrefresh( win );
+        wnoutrefresh( bot_win );
+
+        // ▌ left half block on the left column, ▐ right half block on right.
+        werase( lft_win );
+        werase( rgt_win );
+        for( int y = 0; y < side_h; y++ ) {
+            mvwprintz( lft_win, point( 0, y ), c, "\xe2\x96\x8c" );
+            mvwprintz( rgt_win, point( 0, y ), c, "\xe2\x96\x90" );
+        }
+        wnoutrefresh( lft_win );
+        wnoutrefresh( rgt_win );
     }
 };
 
-static std::unique_ptr<mp_strip_t> g_mp_strip;
-static std::unique_ptr<mp_strip_t> g_mp_strip_right;
+static std::unique_ptr<mp_edge_t> g_mp_edge;
 static std::unique_ptr<mp_hud_t> g_mp_hud;
 
 void ensure_mp_hud()
 {
-    // Strips rendered first so panel draws on top in the overlap zone.
-    if( !g_mp_strip ) {
-        g_mp_strip = std::make_unique<mp_strip_t>( false );
+    // Edge frame rendered first so the panel draws on top in the overlap zone.
+    if( !g_mp_edge ) {
+        g_mp_edge = std::make_unique<mp_edge_t>();
     }
-    g_mp_strip->ui.invalidate_ui();
-    if( !g_mp_strip_right ) {
-        g_mp_strip_right = std::make_unique<mp_strip_t>( true );
-    }
-    g_mp_strip_right->ui.invalidate_ui();
+    g_mp_edge->ui.invalidate_ui();
     if( !g_mp_hud ) {
         g_mp_hud = std::make_unique<mp_hud_t>();
     }
@@ -2586,6 +2605,47 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Client → host grab state sync.  Client runs its own SP grab() locally to
+    // do the UI prompts, target validation, and add_msg calls; the resulting
+    // grab_type + grab_point delta is forwarded here so the host's proxy NPC
+    // mirrors it.  The host's move handler (below) consults this state and
+    // invokes the parameterized grabbed_move() to actually drag furniture or
+    // vehicles when the proxy moves.
+    //
+    //   { "type":"action", "action":"grab", "grab_type":<int>,
+    //     "dx":<int>, "dy":<int>, "dz":<int> }
+    if( msg.find( "\"action\":\"grab\"" ) != std::string::npos ) {
+        try {
+            const int gt = jo.get_int( "grab_type", 0 );
+            const int dx = jo.get_int( "dx", 0 );
+            const int dy = jo.get_int( "dy", 0 );
+            const int dz = jo.get_int( "dz", 0 );
+            remote->grab( static_cast<object_type>( gt ),
+                          tripoint_rel_ms( dx, dy, dz ) );
+            mp_log( "[cdda-mp] HOST-GRAB: proxy '" + remote->name + "' grab_type=" +
+                    std::to_string( gt ) + " offset=(" + std::to_string( dx ) + "," +
+                    std::to_string( dy ) + "," + std::to_string( dz ) + ")" );
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] grab parse error: " + std::string( e.what() ) );
+        }
+        srv_emit_ack( "grab" );
+        return;
+    }
+
+    // Client → host hauling toggle.  Character::toggle_hauling is already a
+    // base-class method, so it works directly on the NPC proxy.  Items are
+    // tracked on the host side via the NPC's haul_list; the client's local
+    // is_hauling state is what affects the client's move dispatch UI.  Sync
+    // both sides via remote_player_state.
+    if( msg.find( "\"action\":\"toggle_haul\"" ) != std::string::npos ) {
+        remote->toggle_hauling();
+        mp_log( "[cdda-mp] HOST-HAUL: proxy '" + remote->name + "' hauling=" +
+                std::to_string( remote->is_hauling() ) );
+        flush_action_msgs( pre_action_msg, remote->name );
+        srv_emit_ack( "toggle_haul" );
+        return;
+    }
+
     tripoint_bub_ms cur = remote->pos_bub();
     tripoint_bub_ms next = cur;
 
@@ -2656,6 +2716,33 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             g_remote_moves = remote->get_moves();
             acted = true;
         } else if( !m.impassable( next ) ) {
+            // If the proxy is grabbing something, run the host-side drag for
+            // the matching grab type BEFORE the step. Mirrors SP walk_move()
+            // calling grabbed_move() before the actual move.  For FURNITURE
+            // we invoke grabbed_furn_move synchronously (the SP path assigns
+            // an activity that finishes by calling the same function plus
+            // walk_move; for the NPC we just call the move portion directly
+            // and let the existing setpos path below handle the step).  For
+            // VEHICLE we invoke grabbed_veh_move_helper which handles the
+            // vehicle displacement and may release the grab on failure.
+            if( remote->get_grab_type() != object_type::NONE ) {
+                const tripoint_rel_ms drag_dp( offset.x, offset.y, offset.z );
+                if( remote->get_grab_type() == object_type::VEHICLE ) {
+                    g->grabbed_veh_move_helper( *remote, drag_dp, false );
+                } else if( remote->get_grab_type() == object_type::FURNITURE ) {
+                    g->grabbed_furn_move( *remote, drag_dp );
+                }
+                // grabbed_furn_move may have updated grab_point or released
+                // the grab; either way, fall through to the step.  If it
+                // returned a stay-put result (shifting furniture) we still
+                // setpos to next — small UX divergence from SP but keeps the
+                // host's tile-step path simple.  Refine later if needed.
+                mp_log( "[cdda-mp] HOST-DRAG: proxy '" + remote->name +
+                        "' post-drag grab_type=" + std::to_string(
+                            static_cast<int>( remote->get_grab_type() ) ) +
+                        " grab_point=(" + std::to_string( remote->grab_point.x() ) + "," +
+                        std::to_string( remote->grab_point.y() ) + ")" );
+            }
             // Mirror avatar_action::move boarding semantics: unboard from current
             // vehicle tile before setpos, then board at the new tile if boardable.
             // Without this, board_vehicle is never called on the way in and the
