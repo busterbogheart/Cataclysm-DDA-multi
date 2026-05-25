@@ -523,7 +523,7 @@
     "volume": "1 ml",
     "stack_size": 8,
     "price": "1 USD",
-    "price_postapoc": "25 USD",
+    "price_postapoc": "250 USD",
     "material": [ "powder" ],
     "symbol": "!",
     "color": "white",
