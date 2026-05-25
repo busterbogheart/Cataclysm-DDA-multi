@@ -24,6 +24,7 @@ runs:
         update: false
         install: >-
           base-devel
+          git
           mingw-w64-x86_64-toolchain
           mingw-w64-x86_64-SDL2
           mingw-w64-x86_64-SDL2_image
@@ -69,7 +70,7 @@ runs:
           MSYS2=1 CCACHE=1 \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           RELEASE=1 \
-          cataclysm-tiles
+          cataclysm-tiles.exe
 
     - name: ccache stats
       shell: msys2 {0}
