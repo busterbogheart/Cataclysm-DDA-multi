@@ -42,6 +42,7 @@
 #include "mapsharing.h"
 #include "messages.h"
 #include "mp_gamestate.h"
+#include "mp_client_conn.h"
 #include "music.h"
 #include "options.h"
 #include "output.h"
@@ -1185,7 +1186,11 @@ bool main_menu::new_character_tab()
                 if( world == nullptr ) {
                     continue;
                 }
-                if( !world->world_saves.empty() ) {
+                // MP: multiple characters per world is expected (host avatar +
+                // proxy NPC, or client re-joining the scratch world), so skip
+                // the SP-only "many features will not work" warning.
+                if( !world->world_saves.empty() &&
+                    !cata_mp::is_host_mode() && !cata_mp::is_client_mode() ) {
                     if( !query_yn(
                             _( "Many game features will not work correctly with multiple characters in the same world.  Create a new character anyway?" ) ) ) {
                         return false;
