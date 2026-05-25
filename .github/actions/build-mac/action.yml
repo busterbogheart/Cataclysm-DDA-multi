@@ -15,6 +15,9 @@ outputs:
   dmg-path:
     description: 'Filesystem path of the produced DMG, relative to the repo root.'
     value: ${{ steps.package.outputs.dmg-path }}
+  zip-path:
+    description: 'Filesystem path of the produced .zip (Cddacoop.app + README), relative to the repo root.'
+    value: ${{ steps.package.outputs.zip-path }}
 
 runs:
   using: composite
@@ -125,7 +128,18 @@ runs:
         cp build-data/osx/cddacoop-launcher.sh Cddacoop.app/Contents/MacOS/Cataclysm.sh
         chmod +x Cddacoop.app/Contents/MacOS/Cataclysm.sh
 
-    - name: Build DMG
+    - name: Stage payload (.app + README)
+      shell: bash
+      run: |
+        # Stage in a temp dir so create-dmg gets the README inside the DMG
+        # mount and `ditto` zips the same pair.  Cddacoop.app is renamed
+        # before this step; README.md is checked in under build-data/osx/.
+        rm -rf /tmp/cddacoop-stage
+        mkdir -p /tmp/cddacoop-stage
+        cp -R Cddacoop.app /tmp/cddacoop-stage/
+        cp build-data/osx/README.md /tmp/cddacoop-stage/README.md
+
+    - name: Build DMG and .zip
       id: package
       shell: bash
       env:
@@ -133,24 +147,41 @@ runs:
         ARCH: ${{ inputs.arch }}
       run: |
         DMG="cddacoop-${VERSION}-macos-${ARCH}.dmg"
-        # `create-dmg` builds a styled .dmg with the Applications drop-link.
-        # Volume name shows in Finder when mounted.
+        ZIP="cddacoop-${VERSION}-macos-${ARCH}.zip"
+
+        # DMG — styled mount with Applications drop-link.  README is
+        # passed as an extra payload so it shows up next to the .app.
         create-dmg \
           --volname "Cddacoop ${VERSION}" \
           --window-size 540 380 \
           --icon-size 96 \
           --icon "Cddacoop.app" 140 190 \
+          --icon "README.md" 270 320 \
           --app-drop-link 400 190 \
           --hide-extension "Cddacoop.app" \
           --no-internet-enable \
           "${DMG}" \
-          Cddacoop.app
+          /tmp/cddacoop-stage
         echo "dmg-path=${DMG}" >> "$GITHUB_OUTPUT"
+
+        # Zip — preserves macOS metadata + resource forks.  No
+        # --keepParent so the zip's top level is Cddacoop.app + README.md
+        # directly, not a wrapping staging-dir.
+        ditto -c -k --sequesterRsrc /tmp/cddacoop-stage "${ZIP}"
+        echo "zip-path=${ZIP}" >> "$GITHUB_OUTPUT"
 
     - name: Upload DMG artifact
       uses: actions/upload-artifact@v4
       with:
-        name: cddacoop-macos-${{ inputs.arch }}
+        name: cddacoop-macos-${{ inputs.arch }}-dmg
         path: ${{ steps.package.outputs.dmg-path }}
+        retention-days: 30
+        if-no-files-found: error
+
+    - name: Upload .zip artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cddacoop-macos-${{ inputs.arch }}
+        path: ${{ steps.package.outputs.zip-path }}
         retention-days: 30
         if-no-files-found: error

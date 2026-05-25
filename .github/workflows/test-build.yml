@@ -156,7 +156,7 @@ jobs:
 
             ${{ steps.changelog.outputs.log }}
           files: |
-            dist/cddacoop-*-macos-arm64.dmg
-            dist/cddacoop-*-macos-x64.dmg
+            dist/cddacoop-*-macos-arm64.zip
+            dist/cddacoop-*-macos-x64.zip
             dist/cddacoop-*-windows-x64.zip
             dist/cc-sounds.zip
