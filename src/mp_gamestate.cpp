@@ -3219,7 +3219,7 @@ bool mp_in_burst_mode()
 // moves_total at 0 and track progress elsewhere.  This helper hides those
 // special cases so the wire field `*_activity_pct` reflects what the player
 // sees in their wait popup, not 0%.
-int mp_compute_activity_pct( const player_activity &act )
+static int mp_compute_activity_pct( const player_activity &act )
 {
     if( !act ) {
         return 0;
@@ -3516,7 +3516,7 @@ static bool g_host_thread_actually_started = false;
 // has loaded.  Spawns the listen-server thread iff the menu armed it and we
 // haven't already started it.  No-op when the server was started via the
 // --host CLI flag (main.cpp spawns its own thread in that path).
-void mp_start_pending_host_thread()
+static void mp_start_pending_host_thread()
 {
     if( !g_pending_host_start || g_host_thread_actually_started ) {
         return;

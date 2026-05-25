@@ -61,7 +61,7 @@ class string_queue
 
 static string_queue g_recv_queue;
 
-string_queue &get_client_recv_queue()
+static string_queue &get_client_recv_queue()
 {
     return g_recv_queue;
 }
