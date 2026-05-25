@@ -73,7 +73,7 @@ runs:
       shell: msys2 {0}
       run: |
         make -j$(nproc) \
-          MSYS2=1 CCACHE=1 \
+          MSYS2=1 CCACHE=1 STATIC=1 \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           RELEASE=1 \
           cataclysm-tiles.exe

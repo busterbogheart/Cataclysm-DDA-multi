@@ -887,7 +887,12 @@ ifeq ($(TILES), 1)
         LDFLAGS := $(filter-out -lSDL2main,$(LDFLAGS))
       else
         ifeq ($(MSYS2),1)
-          LDFLAGS += -Wl,--start-group -lharfbuzz -lfreetype -Wl,--end-group -lgraphite2 -lpng -lz -ltiff -lbz2 -lglib-2.0 -llzma -lws2_32 -lwebp -ljpeg -luuid
+          # MSYS2's modern SDL2/SDL2_image packages are static-only — no
+          # .dll.a import lib — so the link pulls in every codec dep
+          # (avif, jxl, brotli, deflate, jbig, Lerc, sharpyuv, setupapi,
+          # dwrite, …). Use --static on pkg-config to read Libs.private
+          # from the .pc files instead of hand-enumerating them.
+          LDFLAGS += $(shell $(PKG_CONFIG) --static --libs SDL2_image SDL2_ttf freetype2 harfbuzz)
         else
           LDFLAGS += -lfreetype -lpng -lz -ljpeg -lbz2
         endif
