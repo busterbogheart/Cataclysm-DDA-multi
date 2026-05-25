@@ -967,7 +967,11 @@ ifeq ($(SOUND), 1)
     endif
 
     ifeq ($(MSYS2),1)
-      LDFLAGS += -lmpg123 -lshlwapi -lvorbisfile -lvorbis -logg -lflac -lxmp
+      # SDL2_mixer's static .a embeds every codec backend it was built with,
+      # so each one's underlying lib must be linked here. MSYS2 builds with
+      # the full set: mpg123, vorbis, flac, xmp, wavpack, opusfile, fluidsynth.
+      LDFLAGS += -lmpg123 -lshlwapi -lvorbisfile -lvorbis -logg -lflac -lxmp \
+                 -lwavpack -lopusfile -lopus -lfluidsynth
     endif
   endif
 

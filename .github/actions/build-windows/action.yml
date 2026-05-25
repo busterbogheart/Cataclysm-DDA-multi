@@ -33,6 +33,10 @@ runs:
           mingw-w64-x86_64-SDL2_ttf
           mingw-w64-x86_64-gettext
           mingw-w64-x86_64-libxmp
+          mingw-w64-x86_64-wavpack
+          mingw-w64-x86_64-opusfile
+          mingw-w64-x86_64-opus
+          mingw-w64-x86_64-fluidsynth
           mingw-w64-x86_64-ntldd
           mingw-w64-x86_64-ccache
           zip
