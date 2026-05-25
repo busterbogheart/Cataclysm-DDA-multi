@@ -1,0 +1,32 @@
+name: Notify catacoop-site of release change
+
+# Fires the site's deploy workflow whenever a release on this repo is
+# published, edited, or has its notes updated.  The site's index.astro
+# fetches /releases at *build time*, so without this hook every
+# release-asset swap leaves the download buttons pointing at a stale
+# (now-deleted) URL until the next push to catacoop-site.
+#
+# `release.edited` covers the asset-swap workflow we use today: upload
+# new zip, then `gh release edit --notes-file ...` to refresh the body,
+# which fires this event.
+
+on:
+  release:
+    types: [published, edited, released]
+
+jobs:
+  dispatch:
+    name: Trigger site rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - name: Workflow-dispatch the site deploy
+        env:
+          # PAT with `repo` (or fine-grained: `Actions: write` on
+          # busterbogheart/catacoop-site).  Generate at
+          # https://github.com/settings/tokens, then add as
+          # Settings > Secrets and variables > Actions on this repo.
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          gh workflow run deploy.yml \
+            --repo busterbogheart/catacoop-site \
+            --ref main
