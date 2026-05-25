@@ -85,6 +85,7 @@ runs:
         make -j"$(sysctl -n hw.logicalcpu)" \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 CCACHE=1 \
+          USE_HOME_DIR=1 \
           RELEASE=1 \
           cataclysm-tiles
 
@@ -109,6 +110,7 @@ runs:
         make app \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 \
+          USE_HOME_DIR=1 \
           RELEASE=1
         # Rename post-hoc so the user-visible app inside the DMG matches the
         # site / DMG filename without patching the Makefile.
