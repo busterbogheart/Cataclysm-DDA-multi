@@ -17,6 +17,7 @@ Status as of 2026-05-18.
   - [Vehicles (full sync)](#vehicles-full-sync)
   - [Co-op partner assistance & time curve](#co-op-partner-assistance--time-curve)
   - [NPC proxy fidelity](#npc-proxy-fidelity)
+  - [Client-side NPC visibility & interaction (Phase 2/3)](#client-side-npc-visibility--interaction-phase-23)
   - [MP-only scenarios](#mp-only-scenarios)
   - [Headless dedicated server](#headless-dedicated-server)
   - [Code quality](#code-quality)
@@ -242,6 +243,30 @@ Order I'd ship:
 - EOC (Effect on Condition) not processed on proxy NPC — conditional effects, missions, morale events targeting remote player silently no-op
 - NPC healing not applied to proxy — bleed/wound sync works but natural healing ticks are skipped
 - Static NPCs from mapgen (`map::place_npc()`, `create_starting_npcs()`) still spawn despite scenario filter; need mapgen guards
+
+### Client-side NPC visibility & interaction (Phase 2/3)
+
+The blanket "no NPCs in MP" stance was reverted (2026-05-24) so host can chat/trade with static NPCs (refugee center etc.) normally. Client side still sees nothing where the NPCs are.
+
+**Phase 2 — visual overlay only**
+- Extend the per-turn monster broadcast to include static NPCs (`is_static_npc(npc)` predicate: has `unique_id`, has named faction, or has bound mission ownership; excludes random spawns and the proxy itself)
+- Client renders received NPCs as read-only sprites with name + HP, same model as the existing monster overlay
+- No interaction yet — keys on adjacent NPC do nothing useful
+- Smallest piece, mostly mirrors existing monster sync code
+
+**Phase 3 — interaction proxy over TCP**
+New action types over the existing message channel, each a round-trip:
+- `npc_chat_open(npc_id)` → host opens dialog tree, streams topic text + choice list back
+- `npc_chat_choice(idx)` → host advances dialog, sends next state
+- `npc_trade_open(npc_id)` → host opens trade window, sends inventories + prices
+- `npc_trade_move(...)` / `npc_trade_accept` → mutate offer state, swap items, sync client inventory delta
+- Attacks (melee/ranged) go through the existing action path; host applies damage authoritatively
+
+**Known caveats once Phase 3 lands**
+- Dialog is exclusive — only one player at a time in dialog with a given NPC ("X is busy" for the second player)
+- Mission ownership: missions accepted by client bind to proxy's `character_id`, persist to `mp_player_*.json`; cross-crediting kill/collect goals between players is a separate design decision
+- Faction reputation is party-wide if proxy shares host's faction (likely correct for co-op; flag if not)
+- Followers belong to a faction not a player — with shared faction, hired NPCs path toward whoever's closest, may produce "wait, why is X following you" moments
 
 ### MP-only scenarios
 - Scenario picker already filters to `LONE_START` scenarios in MP mode (`newcharacter.cpp:3081`)
