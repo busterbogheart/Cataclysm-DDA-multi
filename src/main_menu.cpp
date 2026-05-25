@@ -970,15 +970,34 @@ bool main_menu::opening_screen()
                     // Self-contained co-op flow: arm/connect silently, then drive
                     // a CO-OP-owned chooser through to a started game.  SP "New
                     // Game" / "Load" stay pure single-player.
+                    // Returns one of {0,1,2} for the char-type or -1 for cancel.
+                    // Sentinels: keep entry retvals well clear of UILIST_CANCEL (-1027)
+                    // and also of uilist's default ret=0, so we can distinguish "user
+                    // picked Custom" from "uilist returned without input".
                     auto pick_char_type = []() -> int {
+                        constexpr int RET_CUSTOM = 10;
+                        constexpr int RET_PRESET = 11;
+                        constexpr int RET_RANDOM = 12;
+                        constexpr int RET_CANCEL = 19;
                         uilist cpick;
                         cpick.title = _( "Co-op: choose character" );
-                        cpick.entries.emplace_back( 0, true, 'c', _( "Custom Character" ) );
-                        cpick.entries.emplace_back( 1, true, 'p', _( "Preset Character" ) );
-                        cpick.entries.emplace_back( 2, true, 'r', _( "Random Character" ) );
-                        cpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                        cpick.entries.emplace_back( RET_CUSTOM, true, 'c', _( "Custom Character" ) );
+                        cpick.entries.emplace_back( RET_PRESET, true, 'p', _( "Preset Character" ) );
+                        cpick.entries.emplace_back( RET_RANDOM, true, 'r', _( "Random Character" ) );
+                        cpick.entries.emplace_back( RET_CANCEL, true, 'q', _( "Cancel" ) );
                         cpick.query();
-                        return cpick.ret;
+                        cata_mp::mp_log( "[cdda-mp] MENU: pick_char_type ret=" + std::to_string(
+                                             cpick.ret ) );
+                        switch( cpick.ret ) {
+                            case RET_CUSTOM:
+                                return 0;
+                            case RET_PRESET:
+                                return 1;
+                            case RET_RANDOM:
+                                return 2;
+                            default:
+                                return -1;
+                        }
                     };
                     if( sel2 == 0 ) {
                         // Host
@@ -1011,6 +1030,7 @@ bool main_menu::opening_screen()
                             if( wflow.ret == 1 ) {
                                 WORLD *neww = world_generator->make_new_world();
                                 if( neww == nullptr ) {
+                                    cata_mp::mp_log( "[cdda-mp] MENU: worldgen returned nullptr, bail" );
                                     break;  // worldgen cancelled at first tab
                                 }
                                 // Worldgen finalized the world even if the user thought
@@ -1019,16 +1039,24 @@ bool main_menu::opening_screen()
                                 if( !query_yn(
                                         _( "World '%s' created.\n\nContinue to character creation?" ),
                                         neww->world_name.c_str() ) ) {
+                                    cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=NO, deleting world + bail" );
                                     world_generator->delete_world( neww->world_name, true );
                                     break;
                                 }
+                                cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=YES, world='" +
+                                                 neww->world_name + "'" );
                             }
                             const int ct = pick_char_type();
                             if( ct < 0 ) {
+                                cata_mp::mp_log( "[cdda-mp] MENU: char-type cancelled, bail to main menu" );
                                 break;
                             }
+                            cata_mp::mp_log( "[cdda-mp] MENU: char-type=" + std::to_string(
+                                                 ct ) + ", entering new_character_tab" );
                             sel2 = ct;
                             start = new_character_tab();
+                            cata_mp::mp_log( "[cdda-mp] MENU: new_character_tab returned start=" +
+                                             std::to_string( start ) );
                         } else if( hflow.ret == 1 ) {
                             // Co-op worlds first, then solo, then "Cancel".
                             std::vector<std::string> coop_w;
