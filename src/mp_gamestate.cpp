@@ -2275,9 +2275,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         const optional_vpart_position vp_check = here.veh_at( bub );
         mp_log( "[cdda-mp] control_vehicle: veh_at=" + std::to_string( static_cast<bool>( vp_check ) ) );
         if( remote->controlling_vehicle ) {
-            // Already controlling — give up control and unboard.
+            // Already controlling — give up control and unboard.  Use the
+            // two-arg unboard form with the proxy passed explicitly; the
+            // single-arg form does vp->get_passenger() which returns null
+            // when the proxy was set in_vehicle by per-turn position sync
+            // rather than a real board_vehicle call (passenger_flag never
+            // got set), and that fires "passenger not found" debugmsg.
             remote->controlling_vehicle = false;
-            here.unboard_vehicle( bub );
+            if( const optional_vpart_position vp_at = here.veh_at( bub ) ) {
+                const std::optional<vpart_reference> board_vp =
+                    vp_at->part_with_feature( VPFLAG_BOARDABLE, false );
+                if( board_vp ) {
+                    here.unboard_vehicle( *board_vp, remote, false );
+                }
+            }
             remote->in_vehicle = false;
             mp_log( "[cdda-mp] control_vehicle: proxy released controls" );
             // Host log: NPC-form. Client: direct push (correct grammar, first-person).
