@@ -69,6 +69,7 @@
 #include "overmapbuffer.h"
 #include "path_info.h"
 #include "sdl_geometry.h"
+#include "sdl_utils.h"
 #include "sdl_wrappers.h"
 #include "sdl_font.h"
 #include "sdl_gamepad.h"
