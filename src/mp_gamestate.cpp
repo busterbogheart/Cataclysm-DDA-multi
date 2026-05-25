@@ -4761,6 +4761,35 @@ static bool apply_one_state_message( const std::string &msg )
             // The commit in handle_action already calls cancel_desired when set_movement_mode
             // fails (e.g. on stamina exhaustion), so no-op cancellation is redundant.
         }
+
+        // Mirror authoritative grab + hauling state onto the local avatar so
+        // SP code paths (rendering, move-cost gating, status indicators) read
+        // the same values the host enforces. Only re-apply when the value
+        // actually differs to avoid spamming avatar::grab's map-memory refresh.
+        if( jo.has_int( "client_grab_type" ) ) {
+            const int gt = jo.get_int( "client_grab_type" );
+            const int dx = jo.get_int( "client_grab_dx", 0 );
+            const int dy = jo.get_int( "client_grab_dy", 0 );
+            const int dz = jo.get_int( "client_grab_dz", 0 );
+            avatar &av = get_avatar();
+            const object_type new_type = static_cast<object_type>( gt );
+            const tripoint_rel_ms new_pt( dx, dy, dz );
+            if( av.get_grab_type() != new_type || av.grab_point != new_pt ) {
+                av.grab( new_type, new_pt );
+                mp_log( "[cdda-mp] CLI-GRAB-APPLY: type=" + std::to_string( gt ) +
+                        " offset=(" + std::to_string( dx ) + "," + std::to_string( dy ) +
+                        "," + std::to_string( dz ) + ")" );
+            }
+        }
+        if( jo.has_bool( "client_hauling" ) ) {
+            const bool host_hauling = jo.get_bool( "client_hauling" );
+            avatar &av = get_avatar();
+            if( av.is_hauling() != host_hauling ) {
+                av.toggle_hauling();
+                mp_log( "[cdda-mp] CLI-HAUL-APPLY: hauling=" +
+                        std::to_string( host_hauling ) );
+            }
+        }
         // Display forwarded combat messages from the host (hits, misses, kills).
         if( jo.has_array( "msgs" ) ) {
             for( const JsonValue &mv : jo.get_array( "msgs" ) ) {
@@ -7009,6 +7038,16 @@ std::string serialize_remote_player_state()
            ",\"client_stamina\":" + std::to_string( remote->get_stamina() ) +
            ",\"client_stamina_max\":" + std::to_string( remote->get_stamina_max() ) +
            ",\"client_ctrl_veh\":" + ( remote->controlling_vehicle ? "true" : "false" ) +
+           // Authoritative grab + hauling state for the client's character.
+           // Client mirrors these onto its local avatar each tick so the
+           // local SP grab/haul code (and its move-cost gating) reads the
+           // same values the host is enforcing.
+           ",\"client_grab_type\":" + std::to_string(
+               static_cast<int>( remote->get_grab_type() ) ) +
+           ",\"client_grab_dx\":" + std::to_string( remote->grab_point.x() ) +
+           ",\"client_grab_dy\":" + std::to_string( remote->grab_point.y() ) +
+           ",\"client_grab_dz\":" + std::to_string( remote->grab_point.z() ) +
+           ",\"client_hauling\":" + ( remote->is_hauling() ? "true" : "false" ) +
            [&]() -> std::string {
                if( !remote->controlling_vehicle ) { return ""; }
                map &vmap = get_map();
