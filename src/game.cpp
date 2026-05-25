@@ -7881,7 +7881,7 @@ bool game::walk_move( const tripoint_bub_ms &dest_loc, const bool via_ramp,
                       modifier,
                       via_ramp, false, !impassable_field_ids.empty() && u.is_immune_fields( impassable_field_ids ) );
 
-    if( !furniture_move && grabbed_move( dest_loc - pos, via_ramp ) ) {
+    if( !furniture_move && grabbed_move( u, dest_loc - pos, via_ramp ) ) {
         return true;
     } else if( mcost == 0 ) {
         return false;
@@ -8789,13 +8789,13 @@ bool game::can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp 
     return true;
 }
 
-int game::grabbed_furn_move_time( const tripoint_rel_ms &dp )
+int game::grabbed_furn_move_time( Character &who, const tripoint_rel_ms &dp )
 {
     map &here = get_map();
 
     // Furniture: pull, push, or standing still and nudging object around.
     // Can push furniture out of reach.
-    tripoint_bub_ms fpos = u.pos_bub() + u.grab_point;
+    tripoint_bub_ms fpos = who.pos_bub() + who.grab_point;
     // supposed position of grabbed furniture
     if( !here.has_furn( fpos ) ) {
         return 0;
@@ -8830,9 +8830,9 @@ int game::grabbed_furn_move_time( const tripoint_rel_ms &dp )
     }
     str_req += furniture_contents_weight / 4_kilogram;
     //ARM_STR affects dragging furniture
-    int str = u.get_arm_str();
+    int str = who.get_arm_str();
 
-    const float weary_mult = 1.0f / u.exertion_adjusted_move_multiplier();
+    const float weary_mult = 1.0f / who.exertion_adjusted_move_multiplier();
     if( !canmove ) { // NOLINT(bugprone-branch-clone)
         return 50 * weary_mult;
     } else if( str_req > str &&
@@ -8859,22 +8859,22 @@ int game::grabbed_furn_move_time( const tripoint_rel_ms &dp )
     return moves_total;
 }
 
-bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
+bool game::grabbed_furn_move( Character &who, const tripoint_rel_ms &dp )
 {
     map &here = get_map();
     // Furniture: pull, push, or standing still and nudging object around.
     // Can push furniture out of reach.
-    tripoint_bub_ms fpos = ( u.pos_bub() + u.grab_point );
+    tripoint_bub_ms fpos = ( who.pos_bub() + who.grab_point );
     // supposed position of grabbed furniture
     if( !here.has_furn( fpos ) ) {
         // Where did it go? We're grabbing thin air so reset.
         add_msg( m_info, _( "No furniture at grabbed point." ) );
-        u.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         return false;
     }
 
-    const bool pushing_furniture = dp.xy() ==  u.grab_point.xy();
-    const bool pulling_furniture = dp.xy() == -u.grab_point.xy();
+    const bool pushing_furniture = dp.xy() ==  who.grab_point.xy();
+    const bool pulling_furniture = dp.xy() == -who.grab_point.xy();
     const bool shifting_furniture = !pushing_furniture && !pulling_furniture;
 
     // Intended destination of furniture.
@@ -8917,21 +8917,21 @@ bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
         furniture_contents_weight += contained_item.weight();
     }
     str_req += furniture_contents_weight / 4_kilogram;
-    int str = u.get_arm_str();
+    int str = who.get_arm_str();
 
     if( !canmove ) {
         // TODO: What is something?
         add_msg( _( "The %s collides with something." ), furntype.name() );
         return true;
-    } else if( str_req > str && u.get_perceived_pain() > 40 &&
-               !u.has_trait( trait_CENOBITE ) && !u.has_trait( trait_MASOCHIST ) &&
-               !u.has_trait( trait_MASOCHIST_MED ) ) {
+    } else if( str_req > str && who.get_perceived_pain() > 40 &&
+               !who.has_trait( trait_CENOBITE ) && !who.has_trait( trait_MASOCHIST ) &&
+               !who.has_trait( trait_MASOCHIST_MED ) ) {
         add_msg( m_bad, _( "You are in too much pain to try moving the heavy %s!" ),
                  furntype.name() );
         return true;
 
-    } else if( str_req > str && u.get_perceived_pain() > 50 &&
-               ( u.has_trait( trait_MASOCHIST ) || u.has_trait( trait_MASOCHIST_MED ) ) ) {
+    } else if( str_req > str && who.get_perceived_pain() > 50 &&
+               ( who.has_trait( trait_MASOCHIST ) || who.has_trait( trait_MASOCHIST_MED ) ) ) {
         add_msg( m_bad,
                  _( "Even with your appetite for pain, you are in too much pain to try moving the heavy %s!" ),
                  furntype.name() );
@@ -8942,7 +8942,7 @@ bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
                one_in( std::max( 20 - str_req - str, 2 ) ) ) {
         add_msg( m_bad, _( "You strain yourself trying to move the heavy %s!" ),
                  furntype.name() );
-        u.mod_pain( 1 ); // Hurt ourselves.
+        who.mod_pain( 1 ); // Hurt ourselves.
         return true; // furniture and or obstacle wins.
     } else if( !src_item_ok && !only_liquid_items && dst_items > 0 ) {
         add_msg( _( "There's stuff in the way." ) );
@@ -8978,16 +8978,16 @@ bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
                    _( "a scraping noise." ), true, "misc", "scraping" );
 
     if( here.veh_at( fdest ) ) {
-        u.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         here.veh_at( fdest )->part_with_feature( "FURNITURE_TIEDOWN", true )->part().load_furniture( here,
                 fpos );
         here.furn_set( fpos, furn_str_id::NULL_ID(), true );
         here.veh_at( fdest )->vehicle().invalidate_mass();
         add_msg( _( "You load the furniture onto the vehicle." ) );
-        tripoint_rel_ms new_grab_pt( fdest - ( u.pos_bub() +
+        tripoint_rel_ms new_grab_pt( fdest - ( who.pos_bub() +
                                                ( shifting_furniture ? tripoint_rel_ms::zero : dp ) ) );
         if( std::abs( new_grab_pt.x() ) < 2 && std::abs( new_grab_pt.y() ) < 2 ) {
-            u.grab( object_type::FURNITURE_ON_VEHICLE, new_grab_pt );
+            who.grab( object_type::FURNITURE_ON_VEHICLE, new_grab_pt );
         }
         return shifting_furniture;
     } else {
@@ -9031,18 +9031,18 @@ bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
     if( !here.has_floor_or_water( fdest ) && !here.has_flag( ter_furn_flag::TFLAG_FLAT, fdest ) ) {
         std::string danger_tile = enumerate_as_string( get_dangerous_tile( fdest ) );
         add_msg( _( "You let go of the %1$s as it falls down the %2$s." ), furntype.name(), danger_tile );
-        u.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         return true;
     }
 
     if( shifting_furniture ) {
         // We didn't move
-        tripoint_rel_ms d_sum = u.grab_point + dp;
+        tripoint_rel_ms d_sum = who.grab_point + dp;
         if( std::abs( d_sum.x() ) < 2 && std::abs( d_sum.y() ) < 2 ) {
-            u.grab_point = d_sum; // furniture moved relative to us
+            who.grab_point = d_sum; // furniture moved relative to us
         } else { // we pushed furniture out of reach
             add_msg( _( "You let go of the %s." ), furntype.name() );
-            u.grab( object_type::NONE );
+            who.grab( object_type::NONE );
         }
         return true; // We moved furniture but stayed still.
     }
@@ -9051,37 +9051,38 @@ bool game::grabbed_furn_move( const tripoint_rel_ms &dp )
         // Not sure how that chair got into a wall, but don't let player follow.
         add_msg( _( "You let go of the %1$s as it slides past %2$s." ),
                  furntype.name(), here.tername( fdest ) );
-        u.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         return true;
     }
 
     return false;
 }
 
-bool game::grabbed_move( const tripoint_rel_ms &dp, const bool via_ramp, bool stairs_move )
+bool game::grabbed_move( Character &who, const tripoint_rel_ms &dp, const bool via_ramp,
+                         bool stairs_move )
 {
-    if( u.get_grab_type() == object_type::NONE ) {
+    if( who.get_grab_type() == object_type::NONE ) {
         return false;
     }
 
     // vehicle: pulling, pushing, or moving around the grabbed object.
-    if( u.get_grab_type() == object_type::VEHICLE ) {
-        return grabbed_veh_move_helper( dp, stairs_move );
+    if( who.get_grab_type() == object_type::VEHICLE ) {
+        return grabbed_veh_move_helper( who, dp, stairs_move );
     }
 
-    if( u.get_grab_type() == object_type::FURNITURE ) {
-        u.assign_activity( move_furniture_activity_actor( dp, via_ramp ) );
+    if( who.get_grab_type() == object_type::FURNITURE ) {
+        who.assign_activity( move_furniture_activity_actor( dp, via_ramp ) );
         return true;
     }
 
-    if( u.get_grab_type() == object_type::FURNITURE_ON_VEHICLE ) {
-        u.assign_activity( move_furniture_on_vehicle_activity_actor( dp, via_ramp ) );
+    if( who.get_grab_type() == object_type::FURNITURE_ON_VEHICLE ) {
+        who.assign_activity( move_furniture_on_vehicle_activity_actor( dp, via_ramp ) );
         return true;
     }
 
     add_msg( m_info, _( "Nothing at grabbed point %d,%d,%d or bad grabbed object type." ),
-             u.grab_point.x(), u.grab_point.y(), u.grab_point.z() );
-    u.grab( object_type::NONE );
+             who.grab_point.x(), who.grab_point.y(), who.grab_point.z() );
+    who.grab( object_type::NONE );
     return false;
 }
 
@@ -9757,7 +9758,7 @@ void game::vertical_move( int movez, bool force, bool peeking )
             u.grab( object_type::NONE );
         } else { // Try to vertically move whatever we're grabbing.
             const tripoint_rel_ms new_rel = pos - old_pos - u.grab_point;
-            grabbed_move( new_rel + *dir, false, true );
+            grabbed_move( u, new_rel + *dir, false, true );
         }
     }
 

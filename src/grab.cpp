@@ -21,21 +21,20 @@
 #include "vpart_position.h"
 #include "vpart_range.h"
 
-bool game::grabbed_veh_move_helper( const tripoint_rel_ms &dp, bool stairs_move )
+bool game::grabbed_veh_move_helper( Character &who, const tripoint_rel_ms &dp, bool stairs_move )
 {
     if( stairs_move ) {
-        return grabbed_veh_move_stairs( dp );
+        return grabbed_veh_move_stairs( who, dp );
     }
-    return grabbed_veh_move( dp );
+    return grabbed_veh_move( who, dp );
 }
 
-bool game::grabbed_veh_move_stairs( const tripoint_rel_ms &dp )
+bool game::grabbed_veh_move_stairs( Character &who, const tripoint_rel_ms &dp )
 {
     map &here = get_map();
-    avatar &you = get_avatar();
     tripoint_rel_ms new_dp = dp; // FIXME. We should be passed a copy not a reference.
-    const optional_vpart_position grabbed_vehicle_vp = here.veh_at( you.pos_bub(
-                here ) + you.grab_point );
+    const optional_vpart_position grabbed_vehicle_vp = here.veh_at( who.pos_bub(
+                here ) + who.grab_point );
     if( !grabbed_vehicle_vp ) {
         return false;
     }
@@ -46,10 +45,10 @@ bool game::grabbed_veh_move_stairs( const tripoint_rel_ms &dp )
 
     grabbed_vehicle->invalidate_mass();
     const int max_str_req = grabbed_vehicle->total_mass( here ) / 10_kilogram;
-    int str = you.get_arm_str();
+    int str = who.get_arm_str();
     const bool going_up_stairs = dp.z() > 0;
     if( str < max_str_req && going_up_stairs ) {
-        you.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         add_msg( _( "You fail to lift the %s up the stairs." ), grabbed_vehicle->disp_name() );
         return false;
     }
@@ -81,7 +80,7 @@ bool game::grabbed_veh_move_stairs( const tripoint_rel_ms &dp )
             length_greater_than_0 = true;
         }
         if( width_greater_than_0 && length_greater_than_0 ) {
-            you.grab( object_type::NONE );
+            who.grab( object_type::NONE );
             add_msg( _( "The %s is too wide to get through the stairs." ), grabbed_vehicle->disp_name() );
             return false;
         }
@@ -98,7 +97,7 @@ bool game::grabbed_veh_move_stairs( const tripoint_rel_ms &dp )
     // width will never touch us and never need us to move the center point.
     // In fact, we can just use the minimum value. The maximum values will stick out, but can't touch us (by definition)
     if( y_bounds.x < 0 ) {
-        point_rel_ms diff_from_player_pos = dp.xy() - you.grab_point.xy();
+        point_rel_ms diff_from_player_pos = dp.xy() - who.grab_point.xy();
         if( diff_from_player_pos.x() > 0 ) {
             diff_from_player_pos.x() = diff_from_player_pos.x() + std::abs( y_bounds.x );
         } else if( diff_from_player_pos.x() < 0 ) {
@@ -124,43 +123,47 @@ bool game::grabbed_veh_move_stairs( const tripoint_rel_ms &dp )
     here.rebuild_vehicle_level_caches();
 
     // FIXME? Update our grab position instead?
-    you.grab( object_type::NONE );
+    who.grab( object_type::NONE );
     add_msg( _( "You finish dragging the %s past the stairs." ), grabbed_vehicle->disp_name() );
 
     return true;
 }
 
-bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
+bool game::grabbed_veh_move( Character &who, const tripoint_rel_ms &dp )
 {
     map &here = get_map();
 
-    const optional_vpart_position grabbed_vehicle_vp = here.veh_at( u.pos_bub( here ) + u.grab_point );
+    const optional_vpart_position grabbed_vehicle_vp = here.veh_at( who.pos_bub( here ) +
+            who.grab_point );
     if( !grabbed_vehicle_vp ) {
         add_msg( m_info, _( "No vehicle at grabbed point." ) );
-        u.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         return false;
     }
     vehicle *grabbed_vehicle = &grabbed_vehicle_vp->vehicle();
+    // Theft prompts target the local avatar (UX-side concern). For an
+    // NPC drag (MP proxy) we skip the prompt entirely; the client has
+    // already passed its own theft gate before the drag dispatched.
     if( !grabbed_vehicle ||
-        !grabbed_vehicle->handle_potential_theft( get_avatar() ) ) {
+        ( who.is_avatar() && !grabbed_vehicle->handle_potential_theft( get_avatar() ) ) ) {
         return false;
     }
     const int grabbed_part = grabbed_vehicle_vp->part_index();
     if( monster *mon = grabbed_vehicle->get_harnessed_animal( here ) ) {
         add_msg( m_info, _( "You cannot move this vehicle whilst your %s is harnessed!" ),
                  mon->get_name() );
-        u.grab( object_type::NONE );
+        who.grab( object_type::NONE );
         return false;
     }
-    const vehicle *veh_under_player = veh_pointer_or_null( here.veh_at( u.pos_bub( here ) ) );
+    const vehicle *veh_under_player = veh_pointer_or_null( here.veh_at( who.pos_bub( here ) ) );
     if( grabbed_vehicle == veh_under_player ) {
-        u.grab_point = - dp;
+        who.grab_point = - dp;
         return false;
     }
 
-    tripoint_rel_ms dp_veh = - u.grab_point;
-    const tripoint_rel_ms prev_grab = u.grab_point;
-    tripoint_rel_ms next_grab = u.grab_point;
+    tripoint_rel_ms dp_veh = - who.grab_point;
+    const tripoint_rel_ms prev_grab = who.grab_point;
+    tripoint_rel_ms next_grab = who.grab_point;
     const tileray initial_veh_face = grabbed_vehicle->face;
 
     const bool veh_has_solid = !empty( grabbed_vehicle->get_avail_parts( VPFLAG_OBSTACLE ) );
@@ -179,7 +182,7 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
                        "grabbed_veh_move: SIDEWAYS dp=(%d,%d) grab=(%d,%d)->(%d,%d)",
                        dp.x(), dp.y(), prev_grab.x(), prev_grab.y(),
                        -( dp.x() + dp_veh.x() ), -( dp.y() + dp_veh.y() ) );
-        u.grab_point = - ( dp + dp_veh );
+        who.grab_point = - ( dp + dp_veh );
         return false;
     } else if( ( dp.x() == prev_grab.x() || dp.y() == prev_grab.y() ) &&
                next_grab.x() != 0 && next_grab.y() != 0 ) {
@@ -211,7 +214,7 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
     // actual strength required to move vehicle.
     int str_req = 0;
     // ARM_STR governs dragging heavy things
-    int str = u.get_arm_str();
+    int str = who.get_arm_str();
 
     bool bad_veh_angle = false;
     bool invalid_veh_turndir = false;
@@ -229,7 +232,7 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
             units::angle face_delta = angle_delta( grabbed_vehicle->face.dir(), my_dir.dir() );
 
             tileray my_pos_dir;
-            tripoint_rel_ms my_angle = u.pos_bub( here ) - grabbed_vehicle->pos_bub( here );
+            tripoint_rel_ms my_angle = who.pos_bub( here ) - grabbed_vehicle->pos_bub( here );
             my_pos_dir.init( my_angle.xy() );
             back_of_vehicle = ( angle_delta( grabbed_vehicle->face.dir(), my_pos_dir.dir() ) > 90_degrees );
             invalid_veh_face = ( face_delta > vehicles::steer_increment * 2 - 1_degrees &&
@@ -261,19 +264,19 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
         }
         //calculate exertion factor and movement penalty
         ///\EFFECT_STR increases speed of dragging vehicles
-        u.mod_moves( -to_moves<int>( 4_seconds )  * str_req / std::max( 1, str ) );
+        who.mod_moves( -to_moves<int>( 4_seconds )  * str_req / std::max( 1, str ) );
         ///\EFFECT_STR decreases stamina cost of dragging vehicles
-        u.burn_energy_all( -200 * str_req / std::max( 1, str ) );
+        who.burn_energy_all( -200 * str_req / std::max( 1, str ) );
         const int ex = dice( 1, 6 ) - 1 + str_req;
         if( ex > str + 1 ) {
             // Pain and movement penalty if exertion exceeds character strength
             add_msg( m_bad, _( "You strain yourself to move the %s!" ), grabbed_vehicle->name );
-            u.mod_moves( -to_moves<int>( 2_seconds ) );
-            u.mod_pain( 1 );
+            who.mod_moves( -to_moves<int>( 2_seconds ) );
+            who.mod_pain( 1 );
         } else if( ex >= str ) {
             // Movement is slow if exertion nearly equals character strength
             add_msg( _( "It takes some time to move the %s." ), grabbed_vehicle->name );
-            u.mod_moves( -to_moves<int>( 2_seconds ) );
+            who.mod_moves( -to_moves<int>( 2_seconds ) );
         }
     } else {
         if( invalid_veh_face ) {
@@ -288,7 +291,7 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
         add_msg_debug( debugmode::DF_ACTIVITY,
                        "grabbed_veh_move: STR FAIL str_req=%d str=%d angle=%d",
                        str_req, str, bad_veh_angle ? 1 : 0 );
-        u.mod_moves( -to_moves<int>( 1_seconds ) );
+        who.mod_moves( -to_moves<int>( 1_seconds ) );
         return true;
     }
 
@@ -334,12 +337,12 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
         // and in roughly the same direction.
         const tripoint_bub_ms new_part_pos = grabbed_vehicle->pos_bub( here ) +
                                              grabbed_vehicle->part( grabbed_part ).precalc[1];
-        const tripoint_bub_ms expected_pos = u.pos_bub( here ) + dp + md_next_grab;
+        const tripoint_bub_ms expected_pos = who.pos_bub( here ) + dp + md_next_grab;
         tripoint_rel_ms actual_dir = tripoint_rel_ms( ( expected_pos - new_part_pos ).xy(), 0 );
 
         bool failed = false;
         bool actual_diff = false;
-        tripoint_rel_ms skip = pushing ? u.grab_point : dp;
+        tripoint_rel_ms skip = pushing ? who.grab_point : dp;
         if( veh_has_solid ) {
             //avoid player collision from vehicle turning
             bool no_player_collision = false;
@@ -347,29 +350,29 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
                 no_player_collision = true;
                 for( const vpart_reference &vp : grabbed_vehicle->get_all_parts() ) {
                     if( grabbed_vehicle->pos_bub( here ) +
-                        vp.part().precalc[1] + actual_dir == u.pos_bub( here ) + skip ) {
+                        vp.part().precalc[1] + actual_dir == who.pos_bub( here ) + skip ) {
                         no_player_collision = false;
                         break;
                     }
                 }
                 if( !no_player_collision ) {
-                    actual_dir += u.grab_point;
+                    actual_dir += who.grab_point;
                     no_player_collision = false;
                     actual_diff = true;
                 }
             }
             if( actual_diff ) {
                 add_msg( _( "You let go of the %s as it turns." ), grabbed_vehicle->disp_name() );
-                u.grab( object_type::NONE );
-                u.grab_point = tripoint_rel_ms::zero;
+                who.grab( object_type::NONE );
+                who.grab_point = tripoint_rel_ms::zero;
             }
         }
         // Set player location to illegal value so it can't collide with vehicle.
-        const tripoint_abs_ms player_prev = u.pos_abs( );
-        u.setpos( here, tripoint_bub_ms::zero, false );
+        const tripoint_abs_ms player_prev = who.pos_abs( );
+        who.setpos( here, tripoint_bub_ms::zero, false );
         std::vector<veh_collision> colls;
         failed = grabbed_vehicle->collision( here, colls, actual_dir, true );
-        u.setpos( player_prev );
+        who.setpos( player_prev );
         if( !colls.empty() ) {
             blocker_name = colls.front().target_name;
         }
@@ -391,14 +394,14 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
         add_msg_debug( debugmode::DF_ACTIVITY,
                        "grabbed_veh_move: COLLISION with '%s' dp_veh=(%d,%d)",
                        blocker_name, dp_veh.x(), dp_veh.y() );
-        u.grab_point = prev_grab;
+        who.grab_point = prev_grab;
         grabbed_vehicle->face = initial_veh_face;
         return true;
     }
 
     //if grab was already released, do not set grab again
-    if( u.grab_point != tripoint_rel_ms::zero ) {
-        u.grab_point = next_grab;
+    if( who.grab_point != tripoint_rel_ms::zero ) {
+        who.grab_point = next_grab;
     }
 
     add_msg_debug( debugmode::DF_ACTIVITY,
@@ -413,8 +416,8 @@ bool game::grabbed_veh_move( const tripoint_rel_ms &dp )
         grabbed_vehicle->check_falling_or_floating();
         if( grabbed_vehicle->is_falling ) {
             add_msg( _( "You let go of the %1$s as it starts to fall." ), grabbed_vehicle->disp_name() );
-            u.grab( object_type::NONE );
-            u.grab_point = tripoint_rel_ms::zero;
+            who.grab( object_type::NONE );
+            who.grab_point = tripoint_rel_ms::zero;
             here.set_seen_cache_dirty( grabbed_vehicle->pos_bub( here ) );
             return true;
         }

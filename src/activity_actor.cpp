@@ -7612,16 +7612,16 @@ std::unique_ptr<activity_actor> move_furniture_on_vehicle_activity_actor::deseri
     return actor.clone();
 }
 
-void move_furniture_activity_actor::start( player_activity &act, Character & )
+void move_furniture_activity_actor::start( player_activity &act, Character &who )
 {
-    int moves = g->grabbed_furn_move_time( dp );
+    int moves = g->grabbed_furn_move_time( who, dp );
     act.moves_left = moves;
     act.moves_total = moves;
 }
 
 void move_furniture_activity_actor::finish( player_activity &act, Character &who )
 {
-    if( !g->grabbed_furn_move( dp ) ) {
+    if( !g->grabbed_furn_move( who, dp ) ) {
         g->walk_move( who.pos_bub() + dp, via_ramp, true );
     }
     act.set_to_null();

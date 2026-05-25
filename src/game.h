@@ -964,11 +964,14 @@ class game
 
         /** Check for dangerous stuff at dest_loc, return false if the player decides
         not to step there */
-        // Handle pushing during move, returns true if it handled the move
-        bool grabbed_move( const tripoint_rel_ms &dp, bool via_ramp, bool stairs_move = false );
-        bool grabbed_veh_move_helper( const tripoint_rel_ms &dp, bool stairs_move );
-        bool grabbed_veh_move_stairs( const tripoint_rel_ms &dp );
-        bool grabbed_veh_move( const tripoint_rel_ms &dp );
+        // Handle pushing during move for the given character (avatar in SP,
+        // or the host-side proxy NPC for the remote MP player). Returns true
+        // if it handled the move.
+        bool grabbed_move( Character &who, const tripoint_rel_ms &dp, bool via_ramp,
+                           bool stairs_move = false );
+        bool grabbed_veh_move_helper( Character &who, const tripoint_rel_ms &dp, bool stairs_move );
+        bool grabbed_veh_move_stairs( Character &who, const tripoint_rel_ms &dp );
+        bool grabbed_veh_move( Character &who, const tripoint_rel_ms &dp );
 
         void control_vehicle( const std::optional<tripoint_bub_ms> &p =
                                   std::nullopt ); // Use vehicle controls  '^'
@@ -998,8 +1001,8 @@ class game
         */
         bool warn_player_maybe_anger_local_faction( bool really_bad_offense = false,
                 bool asking_for_public_goods = false );
-        int grabbed_furn_move_time( const tripoint_rel_ms &dp );
-        bool grabbed_furn_move( const tripoint_rel_ms &dp );
+        int grabbed_furn_move_time( Character &who, const tripoint_rel_ms &dp );
+        bool grabbed_furn_move( Character &who, const tripoint_rel_ms &dp );
 
         void reload_item(); // Reload an item
         void reload_wielded( bool prompt = false );
