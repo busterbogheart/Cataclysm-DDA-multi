@@ -22,6 +22,7 @@ runs:
       with:
         msystem: MINGW64
         update: false
+        cache: true
         install: >-
           base-devel
           git
@@ -42,6 +43,7 @@ runs:
         key: ccache-win-x64-${{ github.sha }}
         restore-keys: |
           ccache-win-x64-
+        save-always: true
 
     - name: Configure ccache
       shell: msys2 {0}
