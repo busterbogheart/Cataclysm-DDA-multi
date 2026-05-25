@@ -3542,6 +3542,7 @@ bool mp_menu_start_host_session()
     g_pending_host_start = true;
     g_host_thread_actually_started = false;
     mp_log( "[cdda-mp] MENU: host armed on port 8080 (thread deferred to do_turn)" );
+    mp_update_window_title();
     return true;
 }
 
@@ -3553,6 +3554,14 @@ void mp_menu_cancel_host()
     g_pending_host_start = false;
     set_host_mode( false );
     mp_log( "[cdda-mp] MENU: host-mode cancelled from co-op chooser" );
+    mp_update_window_title();
+}
+
+void mp_update_window_title()
+{
+    const char *role = is_client_mode() ? "CLIENT"
+                       : ( is_host_mode() ? "HOST" : "SP" );
+    set_title( string_format( "CDDA — %s", role ) );
 }
 
 WORLD *mp_ensure_client_scratch_world()
@@ -3878,6 +3887,7 @@ bool mp_menu_join_session()
         return false;
     }
     mp_log( "[cdda-mp] MENU: client connected to " + host + ":" + std::to_string( port ) );
+    mp_update_window_title();
 
     // Only ask for a label the first time we see this address.  Skipping is
     // fine — the address alone is also a useful identifier.

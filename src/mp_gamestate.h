@@ -224,6 +224,11 @@ bool mp_menu_join_session();
 // host session.  No-op if host mode isn't armed.
 void mp_menu_cancel_host();
 
+// Refresh the SDL window title to reflect the current MP role (SP/HOST/CLIENT).
+// main.cpp sets it once at startup from CLI flags; menu-armed mode changes
+// need to call this so the title updates after Host/Join is picked from the UI.
+void mp_update_window_title();
+
 // Client-only: ensure a minimal scratch world exists so the client's
 // character-creation flow doesn't force the user into worldgen when they
 // have no local worlds.  The client will be teleported to the host's world
