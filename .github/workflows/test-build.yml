@@ -60,16 +60,13 @@ jobs:
   build-mac:
     name: Build macOS (${{ matrix.arch }})
     needs: compute-version
-    # Skip both archs when windows_only; skip arm64 when mac_x64_only.
-    if: |
-      inputs.windows_only != true &&
-      (inputs.mac_x64_only != true || matrix.arch == 'x64')
+    if: inputs.windows_only != true
     strategy:
       fail-fast: false
+      # Matrix is dynamic: mac_x64_only trims it to just the Intel entry.
+      # (Job-level if: can't read matrix.*, so we filter at the matrix.)
       matrix:
-        include:
-          - { runner: macos-14, arch: arm64 }
-          - { runner: macos-13, arch: x64 }
+        include: ${{ inputs.mac_x64_only && fromJSON('[{"runner":"macos-13","arch":"x64"}]') || fromJSON('[{"runner":"macos-14","arch":"arm64"},{"runner":"macos-13","arch":"x64"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
