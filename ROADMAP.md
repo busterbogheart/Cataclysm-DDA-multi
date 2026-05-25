@@ -285,6 +285,11 @@ New action types over the existing message channel, each a round-trip:
 ### Code quality
 - `do_turn.cpp` inline MP blocks should be refactored into named callouts (`mp_pre_monmove()`, `mp_client_auto_wait()`, `mp_post_activity()`) — reduces merge conflict surface with upstream
 
+### Site analytics
+- GA4 pageviews on cddacoop.com (gated on `PUBLIC_GA_ID` build-time var, baked into static HTML by Astro)
+- `gtag('event', 'download', ...)` on the macOS download buttons — capture click intent vs. actual download counts (already free from the GitHub releases API)
+- Optional: surface live download counts on the page itself from the same `/releases` response the site already fetches
+
 ---
 
 ## Long-term / Big ticket
