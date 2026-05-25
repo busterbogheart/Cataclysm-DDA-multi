@@ -1107,10 +1107,9 @@ int main( int argc, const char *argv[] )
         struct stat st {};
         if( argc > 0 && argv[0] && stat( argv[0], &st ) == 0 ) {
             char buf[32];
-            std::tm tm_local{};
             const time_t mtime = st.st_mtime;
-            localtime_r( &mtime, &tm_local );
-            if( std::strftime( buf, sizeof( buf ), "%b %d %H:%M:%S", &tm_local ) > 0 ) {
+            const std::tm *tm_local = std::localtime( &mtime );
+            if( tm_local && std::strftime( buf, sizeof( buf ), "%b %d %H:%M:%S", tm_local ) > 0 ) {
                 stamp = buf;
             }
         }
