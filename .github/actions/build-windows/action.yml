@@ -102,8 +102,12 @@ runs:
         # ntldd output line format:
         #   <name>.dll => <path> (0x...)
         # grep for mingw64 to drop system DLLs we shouldn't bundle.
+        # With STATIC=1 the .exe pulls everything in statically, so ntldd
+        # returns only Windows system DLLs and grep finds zero matches.
+        # The `|| true` on grep keeps msys2's pipefail from killing the
+        # script in that case; xargs with no input is a no-op.
         ntldd -R Cddacoop/cataclysm-tiles.exe \
-          | grep -i mingw64 \
+          | { grep -i mingw64 || true; } \
           | awk '{print $3}' \
           | sed 's|\\|/|g' \
           | sort -u \
