@@ -969,9 +969,12 @@ ifeq ($(SOUND), 1)
     ifeq ($(MSYS2),1)
       # SDL2_mixer's static .a embeds every codec backend it was built with,
       # so each one's underlying lib must be linked here. MSYS2 builds with
-      # the full set: mpg123, vorbis, flac, xmp, wavpack, opusfile, fluidsynth.
+      # the full set: mpg123, vorbis, flac, xmp, wavpack, opusfile. MIDI
+      # (fluidsynth) is loaded dynamically by SDL2_mixer via SDL_LoadObject,
+      # so it doesn't need to be linked here — libfluidsynth-3.dll just needs
+      # to be present at runtime if MIDI playback is desired.
       LDFLAGS += -lmpg123 -lshlwapi -lvorbisfile -lvorbis -logg -lflac -lxmp \
-                 -lwavpack -lopusfile -lopus -lfluidsynth
+                 -lwavpack -lopusfile -lopus
     endif
   endif
 
