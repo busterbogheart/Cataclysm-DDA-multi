@@ -1146,12 +1146,7 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
     uilist nmenu;
     nmenu.text = std::string( _( "What do you want to do?" ) );
 
-    // In MP mode the partner is a human player, not an NPC.  Hide talk/work-on
-    // entries (NPC-only behaviors) and all the team-order entries below (T, g,
-    // G, w, M, m, D, r, o) — these don't make sense for human teammates.
-    const bool mp_active = cata_mp::is_client_mode() || cata_mp::is_hosting();
-
-    if( !mp_active && !available.empty() ) {
+    if( !available.empty() ) {
         const Creature *guy = available.front();
         std::string title;
         if( guy->is_npc() ) {
@@ -1164,7 +1159,7 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
                         _( "Talk to…" ) );
     }
 
-    if( !mp_active && !available_for_activities.empty() ) {
+    if( !available_for_activities.empty() ) {
         const Creature *guy = available_for_activities.front();
         std::string title;
         if( guy->is_npc() ) {
@@ -1203,7 +1198,7 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
                         _( "Tell someone to follow…" )
                       );
     }
-    if( !mp_active && !followers.empty() ) {
+    if( !followers.empty() ) {
         bool enable_seminar = !player_character.has_effect( effect_asked_to_train );
         nmenu.addentry( NPC_CHAT_START_SEMINAR, enable_seminar, 'T',
                         enable_seminar ? _( "Start a training seminar" ) :
