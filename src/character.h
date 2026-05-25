@@ -564,6 +564,12 @@ class Character : public Creature, public visitable
         // Relative direction of a grab, add to posx, posy to get the coordinates of the grabbed thing.
         tripoint_rel_ms grab_point;
 
+        // What kind of object is being grabbed (vehicle, furniture, none).
+        // Hoisted from avatar so NPCs (notably the host-side proxy for the
+        // remote MP player) can also hold grab state and have grabbed_move /
+        // walk_move drag furniture/vehicles for them.
+        object_type grab_type = object_type::NONE;
+
         std::optional<city> starting_city;
         std::optional<point_abs_om> world_origin;
         bool random_start_location = true;
@@ -2960,6 +2966,11 @@ class Character : public Creature, public visitable
         int mounted_creature_id = 0;
         // for vehicle work
         int activity_vehicle_part_index = -1;
+
+        // Grab furniture / vehicle.  virtual so avatar can override to also
+        // refresh its memory-map for the grabbed object's footprint.
+        virtual void grab( object_type grab_type, const tripoint_rel_ms &grab_point = tripoint_rel_ms::zero );
+        object_type get_grab_type() const;
 
         // Hauling items on the ground
         void toggle_hauling();

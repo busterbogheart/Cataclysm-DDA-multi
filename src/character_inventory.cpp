@@ -32,6 +32,7 @@
 #include "debug.h"
 #include "effect.h"
 #include "enums.h"
+#include "pathfinding.h"  // pimpl<pathfinding_settings> deref in Character::grab
 #include "event.h"
 #include "event_bus.h"
 #include "flag.h"
@@ -1804,6 +1805,18 @@ units::volume Character::volume_carried() const
         volume += it.volume();
     }
     return volume;
+}
+
+void Character::grab( object_type grab_type_new, const tripoint_rel_ms &grab_point_new )
+{
+    grab_type = grab_type_new;
+    grab_point = grab_point_new;
+    path_settings->avoid_rough_terrain = grab_type != object_type::NONE;
+}
+
+object_type Character::get_grab_type() const
+{
+    return grab_type;
 }
 
 void Character::toggle_hauling()

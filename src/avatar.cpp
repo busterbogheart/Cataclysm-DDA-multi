@@ -141,7 +141,7 @@ avatar::avatar()
 {
     player_map_memory = std::make_unique<map_memory>();
     active_mission = nullptr;
-    grab_type = object_type::NONE;
+    // grab_type default-initialized to NONE in Character base.
     calorie_diary.emplace_front( );
     a_diary = nullptr;
     desired_move_mode = move_mode_walk;
@@ -780,19 +780,13 @@ void avatar::grab( object_type grab_type_new, const tripoint_rel_ms &grab_point_
     // Mark the area covered by the previous vehicle/furniture/etc for re-memorizing.
     update_memory( grab_type, grab_point, /* erase = */ false );
 
-    grab_type = grab_type_new;
-    grab_point = grab_point_new;
+    // Delegate the actual state mutation (grab_type/grab_point/path_settings)
+    // to the Character base impl so NPCs share the same setter shape.
+    Character::grab( grab_type_new, grab_point_new );
 
     // Clear the map memory for the area covered by the vehicle/furniture/etc to
     // eliminate ghost vehicles/furnitures/etc.
     update_memory( grab_type, grab_point, /* erase = */ true );
-
-    path_settings->avoid_rough_terrain = grab_type != object_type::NONE;
-}
-
-object_type avatar::get_grab_type() const
-{
-    return grab_type;
 }
 
 bool avatar::has_identified( const itype_id &item_id ) const

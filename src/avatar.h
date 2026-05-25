@@ -276,9 +276,9 @@ class avatar : public Character
         void longpull( const std::string &name );
 
         void wake_up() override;
-        // Grab furniture / vehicle
-        void grab( object_type grab_type, const tripoint_rel_ms &grab_point = tripoint_rel_ms::zero );
-        object_type get_grab_type() const;
+        // Grab furniture / vehicle (Character base impl + map-memory refresh).
+        void grab( object_type grab_type,
+                   const tripoint_rel_ms &grab_point = tripoint_rel_ms::zero ) override;
         /** Handles player vomiting effects */
         void vomit();
         // if avatar is affected by relax_gas this rolls chance to overcome it at cost of moves
@@ -481,8 +481,6 @@ class avatar : public Character
 
         // Snippets the player has seen
         std::set<snippet_id> snippets_read;
-
-        object_type grab_type;
 
         monster_visible_info mon_visible;
 
