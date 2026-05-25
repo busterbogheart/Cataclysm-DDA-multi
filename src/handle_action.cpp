@@ -3467,17 +3467,32 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             }
             break;
 
-        case ACTION_GRAB:
+        case ACTION_GRAB: {
+            // MP: snapshot the avatar's grab state before running SP grab()
+            // so the named MP callout can detect a real change and forward
+            // the delta to the host. SP behavior is unchanged. (non-const so
+            // clang's by-value enum-class copy doesn't trip on the forward-
+            // declared object_type in mp_gamestate.h)
+            object_type mp_pre_grab_type = player_character.get_grab_type();
+            tripoint_rel_ms mp_pre_grab_point = player_character.grab_point;
             grab( mouse_target );
+            cata_mp::mp_client_dispatch_grab_if_changed( mp_pre_grab_type, mp_pre_grab_point );
             break;
+        }
 
-        case ACTION_HAUL:
+        case ACTION_HAUL: {
+            const bool mp_pre_hauling = player_character.is_hauling();
             haul();
+            cata_mp::mp_client_dispatch_hauling_if_changed( mp_pre_hauling );
             break;
+        }
 
-        case ACTION_HAUL_TOGGLE:
+        case ACTION_HAUL_TOGGLE: {
+            const bool mp_pre_hauling = player_character.is_hauling();
             haul_toggle();
+            cata_mp::mp_client_dispatch_hauling_if_changed( mp_pre_hauling );
             break;
+        }
 
         case ACTION_BUTCHER:
             butcher( mouse_target );

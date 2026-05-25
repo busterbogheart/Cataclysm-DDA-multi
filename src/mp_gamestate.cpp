@@ -5420,6 +5420,70 @@ void client_queue_action( const std::string &json )
     mp_log( "[cdda-mp] client_queue_action: " + json.substr( 0, 80 ) );
 }
 
+// Client-side post-grab dispatcher.  Called by the handle_action.cpp wrapper
+// around the SP grab() handler.  The SP function already ran on the client,
+// mutating the local avatar's grab state — we just need to forward the delta
+// to the host so its proxy NPC mirrors it.  No-op when state didn't change
+// (user cancelled the direction prompt) or when not in client mode.
+void mp_client_dispatch_grab_if_changed( object_type pre_type,
+        const tripoint_rel_ms &pre_point )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    avatar &av = get_avatar();
+    if( av.get_grab_type() == pre_type && av.grab_point == pre_point ) {
+        return;
+    }
+    const std::string json =
+        std::string( "{\"type\":\"action\",\"action\":\"grab\"," ) +
+        "\"grab_type\":" + std::to_string( static_cast<int>( av.get_grab_type() ) ) +
+        ",\"dx\":" + std::to_string( av.grab_point.x() ) +
+        ",\"dy\":" + std::to_string( av.grab_point.y() ) +
+        ",\"dz\":" + std::to_string( av.grab_point.z() ) + "}";
+    const bool had_grant = av.get_moves() > 0;
+    mp_log( std::string( "[cdda-mp] CLI-GRAB-SEND type=" ) +
+            std::to_string( static_cast<int>( av.get_grab_type() ) ) +
+            " offset=(" + std::to_string( av.grab_point.x() ) + "," +
+            std::to_string( av.grab_point.y() ) + ") path=" +
+            ( had_grant && !is_client_waiting_for_ack() ? "SEND" : "QUEUE" ) );
+    if( had_grant && !is_client_waiting_for_ack() ) {
+        client_send( client_enrich_action( json ) );
+        av.set_moves( 0 );
+        client_mark_action_sent();
+    } else {
+        client_queue_action( json );
+        av.set_moves( 0 );
+    }
+}
+
+// Client-side post-haul dispatcher.  Parallel to the grab one — the SP
+// haul()/haul_toggle() handlers already toggled is_hauling on the local
+// avatar; we forward the toggle to the host.
+void mp_client_dispatch_hauling_if_changed( bool pre_hauling )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    avatar &av = get_avatar();
+    if( av.is_hauling() == pre_hauling ) {
+        return;
+    }
+    const std::string json = "{\"type\":\"action\",\"action\":\"toggle_haul\"}";
+    const bool had_grant = av.get_moves() > 0;
+    mp_log( std::string( "[cdda-mp] CLI-HAUL-SEND hauling=" ) +
+            std::to_string( av.is_hauling() ) + " path=" +
+            ( had_grant && !is_client_waiting_for_ack() ? "SEND" : "QUEUE" ) );
+    if( had_grant && !is_client_waiting_for_ack() ) {
+        client_send( client_enrich_action( json ) );
+        av.set_moves( 0 );
+        client_mark_action_sent();
+    } else {
+        client_queue_action( json );
+        av.set_moves( 0 );
+    }
+}
+
 void set_client_turn_activity( const std::string &activity_id_str )
 {
     g_client_turn_activity = activity_id_str;

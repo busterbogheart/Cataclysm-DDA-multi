@@ -5,6 +5,7 @@
 #include "activity_type.h"
 #include "character_id.h"
 #include "coordinates.h"
+#include "enums.h" // object_type — used by mp_client_dispatch_grab_if_changed
 #include <string>
 
 class npc;
@@ -112,6 +113,19 @@ void client_wait_for_initial_position();
 // Queue an action JSON to be sent to the server on the next tick when moves are
 // available. Replaces any previously queued action (latest keypress wins).
 void client_queue_action( const std::string &json );
+
+// Client-only: invoke from the wrapper around the SP grab() handler in
+// handle_action.cpp's ACTION_GRAB case.  Snapshot the avatar's grab state
+// before running SP grab(), then call this with the pre-snapshot; we forward
+// the delta to the host so its proxy NPC mirrors the grab.  No-op for the SP
+// case (cancelled prompt → state unchanged) and outside client mode.
+void mp_client_dispatch_grab_if_changed( object_type pre_type,
+        const tripoint_rel_ms &pre_point );
+
+// Client-only: parallel to the grab dispatcher.  Invoke from the wrappers
+// around ACTION_HAUL and ACTION_HAUL_TOGGLE after running the SP handler;
+// forwards a toggle_haul action to the host when is_hauling() actually flipped.
+void mp_client_dispatch_hauling_if_changed( bool pre_hauling );
 
 // Enrich a client action JSON with the current client_light and client_bleed fields.
 // Call before any direct client_send() to ensure the server always receives light/bleed state.
