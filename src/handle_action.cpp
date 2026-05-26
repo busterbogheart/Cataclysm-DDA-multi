@@ -2564,6 +2564,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     const object_type cur_grab = player_character.get_grab_type();
                     const tripoint_bub_ms grab_target =
                         player_character.pos_bub() + player_character.grab_point;
+                    // When pushing grabbed furniture/vehicle forward, next_pos
+                    // IS the grabbed object's tile — impassable to the avatar
+                    // right now, but the host will shift it out of the way
+                    // when grabbed_*_move runs.  Don't treat as a wall —
+                    // dispatch the move so the host can do the drag.
+                    const bool next_is_grab_target =
+                        cur_grab != object_type::NONE && grab_target == next_pos;
                     cata_mp::mp_log( "[cdda-mp] MOVE-IMPASS-CHECK: dir=" + dir +
                                      " next=(" + std::to_string( next_pos.x() ) + "," +
                                      std::to_string( next_pos.y() ) + ")" +
@@ -2572,8 +2579,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                                      std::to_string( grab_target.y() ) + ")" +
                                      " has_creature=" + std::to_string( has_creature ) +
                                      " openable=" + std::to_string( openable ) +
-                                     " next_is_grab_target=" + std::to_string( grab_target == next_pos ) );
-                    if( !has_creature && !openable ) {
+                                     " next_is_grab_target=" + std::to_string( next_is_grab_target ) );
+                    if( !has_creature && !openable && !next_is_grab_target ) {
                         cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: wall bump dir=" + dir +
                                          " moves=" + std::to_string( player_character.get_moves() ) );
                         return false; // solid wall — free, don't dispatch or consume AP
