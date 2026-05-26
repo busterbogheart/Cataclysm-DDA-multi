@@ -1821,7 +1821,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     if( to.has_string( "furn" ) ) {
                         const furn_id fid( to.get_string( "furn" ) );
                         if( fid.id().is_valid() ) {
-                            m.furn_set( bub, fid );
+                            // furn_reset=true suppresses the avatar-grab
+                            // "destroyed!" check inside map::furn_set
+                            // (map.cpp:2085).  Without this, the host's
+                            // legitimate furniture-move (clears old tile,
+                            // sets new tile) arrives as two tile_changes;
+                            // the OLD-tile clear is interpreted by the
+                            // client as a destruction of the avatar's
+                            // grabbed furniture and the grab releases with
+                            // a spurious "The X you were grabbing is
+                            // destroyed!" message.  Real destructions by
+                            // monsters etc. now skip the message too, but
+                            // that's an acceptable trade vs every grab-
+                            // move firing a false alarm.
+                            m.furn_set( bub, fid, /* furn_reset */ true );
                             touched = true;
                         }
                     }
@@ -3734,6 +3747,28 @@ void mp_menu_cancel_host()
 // Defined here; declared extern in mp_gamestate.h.  main.cpp populates this
 // at startup from the binary's mtime.
 std::string g_mp_build_stamp = "?";
+
+void mp_tick_proxy_activity( npc &guy )
+{
+    // No activity → nothing to do.  Most turns this is the no-op path.
+    if( !guy.activity ) {
+        return;
+    }
+    // Give the activity a single step's worth of move budget so per-item
+    // costs in move_items_activity_actor::do_turn (and similar) can charge
+    // and exit at moves<=0.  Save+restore around the call so subsequent
+    // move-handler logic isn't surprised by an unexpected proxy moves value.
+    const int saved = guy.get_moves();
+    guy.set_moves( 100 );
+    const std::string before = guy.activity ? guy.activity.id().str() : std::string( "none" );
+    guy.activity.do_turn( guy );
+    const std::string after = guy.activity ? guy.activity.id().str() : std::string( "none" );
+    guy.set_moves( saved );
+    mp_log( "[cdda-mp] PROXY-ACT-TICK: proxy '" + guy.name +
+            "' before=" + before + " after=" + after +
+            " hauling=" + std::to_string( guy.is_hauling() ) +
+            " haul_list_size=" + std::to_string( guy.haul_list.size() ) );
+}
 
 void mp_update_window_title()
 {
@@ -6019,7 +6054,8 @@ static void apply_tile_changes( JsonObject &jo )
             m.ter_set( bub, ter_id( ter_str ) );
         }
         if( !furn_str.empty() ) {
-            m.furn_set( bub, furn_id( furn_str ) );
+            // furn_reset=true — see comment on the other MP furn_set call.
+            m.furn_set( bub, furn_id( furn_str ), /* furn_reset */ true );
         }
 
         if( to.has_array( "items" ) ) {

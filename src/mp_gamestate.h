@@ -116,6 +116,14 @@ void client_wait_for_initial_position();
 // re-stat'ing argv[0] every time.
 extern std::string g_mp_build_stamp;
 
+// Host-only: tick any player_activity the proxy NPC holds (e.g. a
+// move_items_activity_actor assigned by the post-step hauling hook).
+// do_turn.cpp's main NPC loop continues past remote-player NPCs so they
+// don't run AI; this gives their assigned activities the do_turn()
+// they'd get on the avatar's path.
+// (class npc is already forward-declared at global scope above.)
+void mp_tick_proxy_activity( ::npc &guy );
+
 // Queue an action JSON to be sent to the server on the next tick when moves are
 // available. Replaces any previously queued action (latest keypress wins).
 void client_queue_action( const std::string &json );

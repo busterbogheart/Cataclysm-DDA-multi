@@ -400,8 +400,13 @@ void monmove()
 
     // Now, do active NPCs.
     for( npc &guy : g->all_npcs() ) {
-        // Remote player NPCs are driven by network input, not AI.
+        // Remote player NPCs are driven by network input, not AI — but they
+        // can still hold player_activity (hauling pickup, etc.) assigned by
+        // host-side MP hooks that need ticking each turn.  mp_tick_proxy_*
+        // does just that without running the AI move logic the proxy doesn't
+        // want to execute.
         if( cata_mp::is_remote_player( guy.getID() ) ) {
+            cata_mp::mp_tick_proxy_activity( guy );
             continue;
         }
         const auto npc_t0 = std::chrono::steady_clock::now();
