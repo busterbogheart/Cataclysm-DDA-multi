@@ -2554,6 +2554,25 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                                                  get_creature_tracker().find( next_abs ) );
                     const bool openable = here.open_door( player_character, next_pos,
                                                           true, true );
+                    // Diagnostic: log grab state at the bump check.  Suspected
+                    // root cause of "push straight ahead does nothing": when
+                    // pushing grabbed furniture forward, next_pos IS the
+                    // furniture's tile, which is impassable to the avatar →
+                    // bumps as a wall → action never dispatched → host never
+                    // sees the push.  If grab_type/grab_point lines up with
+                    // next_pos, that's the case.
+                    const object_type cur_grab = player_character.get_grab_type();
+                    const tripoint_bub_ms grab_target =
+                        player_character.pos_bub() + player_character.grab_point;
+                    cata_mp::mp_log( "[cdda-mp] MOVE-IMPASS-CHECK: dir=" + dir +
+                                     " next=(" + std::to_string( next_pos.x() ) + "," +
+                                     std::to_string( next_pos.y() ) + ")" +
+                                     " grab_type=" + std::to_string( static_cast<int>( cur_grab ) ) +
+                                     " grab_target=(" + std::to_string( grab_target.x() ) + "," +
+                                     std::to_string( grab_target.y() ) + ")" +
+                                     " has_creature=" + std::to_string( has_creature ) +
+                                     " openable=" + std::to_string( openable ) +
+                                     " next_is_grab_target=" + std::to_string( grab_target == next_pos ) );
                     if( !has_creature && !openable ) {
                         cata_mp::mp_log( "[cdda-mp] MOVE-EXIT: wall bump dir=" + dir +
                                          " moves=" + std::to_string( player_character.get_moves() ) );
