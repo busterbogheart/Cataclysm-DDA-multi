@@ -2860,11 +2860,27 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // assigns a move_items_activity_actor when the player is hauling.
             // Without this the haul flag syncs but no items are ever picked
             // up.  start_hauling reads the OLD tile (cur) for items.
-            if( remote->is_hauling() ) {
+            //
+            // Skip when an ACT_MOVE_ITEMS is already in progress — calling
+            // start_hauling re-scans the proxy's CURRENT tile (which is the
+            // tile they just stepped FROM, often empty/different from where
+            // they originally toggled), populates an empty target_items,
+            // overwrites the running activity and the remaining items at
+            // the original tile never get picked up.  Letting the existing
+            // activity drain naturally via PROXY-ACT-TICK is how SP would
+            // do it (the SP avatar's activity persists across moves;
+            // item_locations stay valid as the player walks away).
+            static const activity_id s_act_move_items( "ACT_MOVE_ITEMS" );
+            const bool haul_act_running = remote->activity &&
+                                          remote->activity.id() == s_act_move_items;
+            if( remote->is_hauling() && !haul_act_running ) {
                 g->start_hauling( *remote, cur );
                 mp_log( "[cdda-mp] HOST-HAUL-START: proxy '" + remote->name +
                         "' from pos=(" + std::to_string( cur.x() ) + "," +
                         std::to_string( cur.y() ) + ")" );
+            } else if( remote->is_hauling() && haul_act_running ) {
+                mp_log( "[cdda-mp] HOST-HAUL-CONTINUE: proxy '" + remote->name +
+                        "' activity already running, not re-assigning" );
             }
             // Trigger traps on the destination tile, mirroring game.cpp:8351.
             m.creature_on_trap( *remote );
