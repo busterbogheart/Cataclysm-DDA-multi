@@ -928,7 +928,12 @@ class game
         bool phasing_move( const tripoint_bub_ms &dest, bool via_ramp = false );
         // Handle shifting through terrain and walls, with distance defined by enchantment.
         bool phasing_move_enchant( const tripoint_bub_ms &dest, int phase_distance = 0 );
-        bool can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp );
+        // who is the Character attempting the move (avatar in SP, proxy NPC
+        // for the MP remote player). Used to read grab_point + pos_bub and
+        // to exclude self from the at-fdest creature check (proxy is an
+        // npc and on the pulling path fdest == proxy's current tile).
+        bool can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp,
+                                 Character &who );
         // Regular movement. Returns false if it failed for any reason
         bool walk_move( const tripoint_bub_ms &dest, bool via_ramp = false, bool furniture_move = false );
         // Handle pushing during move for the given character (avatar in SP,

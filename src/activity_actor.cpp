@@ -7491,7 +7491,7 @@ void move_furniture_on_vehicle_activity_actor::start( player_activity &act, Char
 }
 
 bool move_furniture_on_vehicle_activity_actor::can_move_furn_on_veh_to( map &here,
-        const tripoint_bub_ms &dest ) const
+        const tripoint_bub_ms &dest, Character &who ) const
 {
     if( !here.passable( dest ) ) {
         return false;
@@ -7506,7 +7506,7 @@ bool move_furniture_on_vehicle_activity_actor::can_move_furn_on_veh_to( map &her
         return false;
     }
 
-    if( !g->can_move_furniture( dest, dp ) ) {
+    if( !g->can_move_furniture( dest, dp, who ) ) {
         return false;
     }
 
@@ -7547,7 +7547,7 @@ bool move_furniture_on_vehicle_activity_actor::move_furniture( Character &who ) 
     }
 
     tripoint_bub_ms dest = pos + dp;
-    if( !can_move_furn_on_veh_to( here, dest ) ) {
+    if( !can_move_furn_on_veh_to( here, dest, who ) ) {
         add_msg( m_warning, _( "Can't drag to there." ) );
         return true;
     }

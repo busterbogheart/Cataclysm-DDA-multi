@@ -2381,7 +2381,7 @@ class move_furniture_on_vehicle_activity_actor : public activity_actor
             return ACT_FURNITURE_MOVE;
         }
 
-        bool can_move_furn_on_veh_to( map &, const tripoint_bub_ms & ) const;
+        bool can_move_furn_on_veh_to( map &, const tripoint_bub_ms &, Character & ) const;
         // false = move player, true = don't move player
         bool move_furniture( Character & ) const;
 

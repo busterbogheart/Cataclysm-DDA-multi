@@ -8753,11 +8753,12 @@ bool game::phasing_move_enchant( const tripoint_bub_ms &dest_loc, const int phas
     return false;
 }
 
-bool game::can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp )
+bool game::can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp,
+                               Character &who )
 {
     map &here = get_map();
 
-    const bool pulling_furniture = dp.xy() == -u.grab_point.xy();
+    const bool pulling_furniture = dp.xy() == -who.grab_point.xy();
     const bool has_floor = here.has_floor_or_water( fdest );
     creature_tracker &creatures = get_creature_tracker();
     bool is_ramp_or_road = here.has_flag( ter_furn_flag::TFLAG_RAMP_DOWN, fdest ) ||
@@ -8766,11 +8767,20 @@ bool game::can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp 
     if( !here.passable( fdest ) ) {
         return false;
     }
-    if( creatures.creature_at<npc>( fdest ) != nullptr ||
-        creatures.creature_at<monster>( fdest ) != nullptr ) {
+    // Exclude `who` (the dragger) from the at-fdest npc check.  On the
+    // pulling path the furniture's destination IS the dragger's current
+    // tile — the dragger steps out of the way as the furniture moves in.
+    // For the SP avatar this is invisible because the avatar isn't an
+    // npc; for the MP proxy NPC, dragging itself would otherwise block.
+    if( npc *npc_at = creatures.creature_at<npc>( fdest ) ) {
+        if( npc_at->getID() != who.getID() ) {
+            return false;
+        }
+    }
+    if( creatures.creature_at<monster>( fdest ) != nullptr ) {
         return false;
     }
-    if( !( !pulling_furniture || is_empty( u.pos_bub() + dp ) ) &&
+    if( !( !pulling_furniture || is_empty( who.pos_bub() + dp ) ) &&
         ( !has_floor || here.has_flag( ter_furn_flag::TFLAG_FLAT, fdest ) ||
           is_ramp_or_road ) ) {
         return false;
@@ -8803,7 +8813,7 @@ int game::grabbed_furn_move_time( Character &who, const tripoint_rel_ms &dp )
 
     tripoint_bub_ms fdest = fpos + tripoint_rel_ms( dp.xy(), 0 ); // intended destination of furniture.
 
-    const bool canmove = can_move_furniture( fdest, dp );
+    const bool canmove = can_move_furniture( fdest, dp, who );
     const furn_t &furntype = here.furn( fpos ).obj();
     const map_stack &ms = here.i_at( fdest );
     const int dst_items = ms.size();
@@ -8882,7 +8892,7 @@ bool game::grabbed_furn_move( Character &who, const tripoint_rel_ms &dp )
 
     // Unfortunately, game::is_empty fails for tiles we're standing on,
     // which will forbid pulling, so:
-    const bool canmove = can_move_furniture( fdest, dp );
+    const bool canmove = can_move_furniture( fdest, dp, who );
     // @TODO: it should be possible to move over invisible traps. This should probably
     // trigger the trap.
     // The current check (no move if trap) allows a player to detect invisible traps by
