@@ -2752,20 +2752,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         } else if( !m.impassable( next ) ) {
             // If the proxy is grabbing something, run the host-side drag for
             // the matching grab type BEFORE the step. Mirrors SP walk_move()
-            // calling grabbed_move() before the actual move.  For FURNITURE
-            // we invoke grabbed_furn_move synchronously (the SP path assigns
-            // an activity that finishes by calling the same function plus
-            // walk_move; for the NPC we just call the move portion directly
-            // and let the existing setpos path below handle the step).  For
-            // VEHICLE we invoke grabbed_veh_move_helper which handles the
-            // vehicle displacement and may release the grab on failure.
+            // calling grabbed_move() before the actual move.
+            //
+            // grabbed_*_move returns TRUE when the drag itself consumed the
+            // turn and the player should NOT step (collision, stuff in the
+            // way, shifting furniture, too heavy, etc.) — in SP that branch
+            // sits inside move_furniture_activity_actor::finish() and just
+            // doesn't call walk_move().  We mirror that by skipping the
+            // setpos path when drag_handled_turn is true.
+            //
+            // grabbed_*_move returns FALSE on a successful pull/push where
+            // the furniture/vehicle DID move and the player should step
+            // along with it — in that case fall through to the existing
+            // unboard / setpos / board / haul / trap / AP path.
+            bool drag_handled_turn = false;
             if( remote->get_grab_type() != object_type::NONE ) {
                 const tripoint_rel_ms drag_dp( offset.x, offset.y, offset.z );
-                // PRE-DRAG diagnostics — captures the state the SP grabbed-*
-                // helpers see when they execute.  Compare these across the
-                // host's own-avatar drag and the host's proxy-NPC drag for
-                // any divergence (different str, missing furn at grab_point,
-                // wrong proxy position, etc.).
                 const tripoint_bub_ms proxy_pos = remote->pos_bub();
                 const tripoint_bub_ms fpos = proxy_pos + remote->grab_point;
                 const bool has_furn = m.has_furn( fpos );
@@ -2784,29 +2786,39 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         " dp=(" + std::to_string( drag_dp.x() ) + "," +
                         std::to_string( drag_dp.y() ) + ")" );
                 if( remote->get_grab_type() == object_type::VEHICLE ) {
-                    g->grabbed_veh_move_helper( *remote, drag_dp, false );
+                    drag_handled_turn =
+                        g->grabbed_veh_move_helper( *remote, drag_dp, false );
                 } else if( remote->get_grab_type() == object_type::FURNITURE ) {
-                    g->grabbed_furn_move( *remote, drag_dp );
+                    drag_handled_turn = g->grabbed_furn_move( *remote, drag_dp );
                 } else if( remote->get_grab_type() == object_type::FURNITURE_ON_VEHICLE ) {
-                    // Mirrors SP grabbed_move()'s third branch.  The
-                    // move_furniture_on_vehicle_activity_actor::move_furniture
-                    // logic isn't yet exposed as a free helper, so for now
-                    // route through the same furniture path; the activity
-                    // actor in SP also calls grabbed_furn_move-like logic
-                    // and we'll refine if needed.
-                    g->grabbed_furn_move( *remote, drag_dp );
+                    // SP grabbed_move()'s third branch assigns a different
+                    // activity actor; the underlying mutation is the same
+                    // furn-move logic plus a vehicle re-tiedown, so route
+                    // here for now and refine if it diverges.
+                    drag_handled_turn = g->grabbed_furn_move( *remote, drag_dp );
                 }
-                // grabbed_furn_move may have updated grab_point or released
-                // the grab; either way, fall through to the step.  If it
-                // returned a stay-put result (shifting furniture) we still
-                // setpos to next — small UX divergence from SP but keeps the
-                // host's tile-step path simple.  Refine later if needed.
                 mp_log( "[cdda-mp] HOST-DRAG-POST: proxy '" + remote->name +
                         "' grab_type=" + std::to_string(
                             static_cast<int>( remote->get_grab_type() ) ) +
                         " grab_point=(" + std::to_string( remote->grab_point.x() ) + "," +
-                        std::to_string( remote->grab_point.y() ) + ")" );
+                        std::to_string( remote->grab_point.y() ) + ")" +
+                        " handled_turn=" + std::to_string( drag_handled_turn ) );
             }
+            if( drag_handled_turn ) {
+                // Drag fully consumed the turn (collision / stuff in way /
+                // shift / too heavy).  Don't step the proxy; pay roughly the
+                // step's AP cost so the lockstep ack still advances cleanly.
+                // Skips the setpos / board / trap / hauling hook entirely —
+                // those only fire on an actual step.
+                const int mcost = m.combined_movecost( cur, next );
+                const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
+                const int prev_moves = g_remote_moves;
+                g_remote_moves -= remote->run_cost( mcost, diag );
+                remote->burn_move_stamina( prev_moves - g_remote_moves );
+                acted = true;
+                mp_log( "[cdda-mp] HOST-DRAG-NO-STEP: proxy held in place, "
+                        "AP charged " + std::to_string( prev_moves - g_remote_moves ) );
+            } else {
             // Mirror avatar_action::move boarding semantics: unboard from current
             // vehicle tile before setpos, then board at the new tile if boardable.
             // Without this, board_vehicle is never called on the way in and the
@@ -2859,6 +2871,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 remote->move_mode = walk_id;
             }
             acted = true;
+            } // end else-branch of drag_handled_turn (regular step path)
         } else {
             // Bump-to-open: try to open a door on the target tile (follows CDDA rules —
             // respects locks, handles etc).  If it's not openable, it's a wall bump.
