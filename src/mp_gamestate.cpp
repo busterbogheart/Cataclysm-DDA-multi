@@ -61,6 +61,7 @@
 #include "sounds.h"
 #endif
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -83,9 +84,33 @@ void mp_log( const std::string &msg )
     const long long delta_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>( now - last ).count();
     last = now;
-    // stdout only — start-mp.sh tees stdout to /tmp/cdda-mp-{server,client}.log.
-    // Writing to the file from here too would double every log line.
-    std::cout << "[+" << delta_ms << "ms] " << msg << std::endl;
+    const std::string line = "[+" + std::to_string( delta_ms ) + "ms] " + msg;
+    std::cout << line << std::endl;
+
+    // Also append to /tmp/cdda-mp-{server,client}.log so log capture doesn't
+    // require launching via start-mp.sh's stdout-tee.  Opens lazily on the
+    // first call once the mode is known; truncates on first open so each
+    // session's log starts fresh.  Re-opens with truncation if the mode
+    // changes (e.g. SP→host via the in-game menu).
+    static std::ofstream log_file;
+    static std::string current_path;
+    std::string desired_path;
+    if( is_client_mode() ) {
+        desired_path = "/tmp/cdda-mp-client.log";
+    } else if( is_host_mode() || is_server_mode() ) {
+        desired_path = "/tmp/cdda-mp-server.log";
+    }
+    if( !desired_path.empty() && desired_path != current_path ) {
+        if( log_file.is_open() ) {
+            log_file.close();
+        }
+        log_file.open( desired_path, std::ios::out | std::ios::trunc );
+        current_path = desired_path;
+    }
+    if( log_file.is_open() ) {
+        log_file << line << '\n';
+        log_file.flush();
+    }
 }
 
 static bool server_mode_ = false;
