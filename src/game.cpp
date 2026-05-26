@@ -8059,7 +8059,7 @@ bool game::walk_move( const tripoint_bub_ms &dest_loc, const bool via_ramp,
     }
 
     if( u.is_hauling() ) {
-        start_hauling( oldpos );
+        start_hauling( u, oldpos );
     }
 
     if( u.will_be_cramped_in_vehicle_tile( here, dest_loc_abs ) ) {
@@ -9838,7 +9838,7 @@ void game::vertical_move( int movez, bool force, bool peeking )
     }
 
     if( u.is_hauling() ) {
-        start_hauling( old_pos );
+        start_hauling( u, old_pos );
     }
 
     here.invalidate_map_cache( here.get_abs_sub().z() );
@@ -9992,24 +9992,24 @@ bool game::travel_to_dimension( const std::string &new_prefix,
     return true;
 }
 
-void game::start_hauling( const tripoint_bub_ms &pos )
+void game::start_hauling( Character &who, const tripoint_bub_ms &pos )
 {
     map &here = get_map();
 
     std::vector<item_location> candidate_items = here.get_haulable_items( pos );
     // Find target items and quantities thereof for the new activity
-    u.trim_haul_list( candidate_items );
-    std::vector<item_location> target_items = u.haul_list;
+    who.trim_haul_list( candidate_items );
+    std::vector<item_location> target_items = who.haul_list;
 
-    if( u.is_autohauling() && !u.suppress_autohaul ) {
-        for( const item_location &item : u.haul_list ) {
+    if( who.is_autohauling() && !who.suppress_autohaul ) {
+        for( const item_location &item : who.haul_list ) {
             candidate_items.erase( std::remove( candidate_items.begin(), candidate_items.end(), item ),
                                    candidate_items.end() );
         }
-        if( u.hauling_filter.empty() ) {
+        if( who.hauling_filter.empty() ) {
             target_items.insert( target_items.end(), candidate_items.begin(), candidate_items.end() );
         } else {
-            std::function<bool( const item & )> filter = item_filter_from_string( u.hauling_filter );
+            std::function<bool( const item & )> filter = item_filter_from_string( who.hauling_filter );
             std::copy_if( candidate_items.begin(), candidate_items.end(), std::back_inserter( target_items ),
             [&filter]( const item_location & item ) {
                 return filter( *item );
@@ -10017,16 +10017,16 @@ void game::start_hauling( const tripoint_bub_ms &pos )
         }
     }
 
-    u.suppress_autohaul = false;
-    u.haul_list.clear();
+    who.suppress_autohaul = false;
+    who.haul_list.clear();
 
     // Quantity of 0 means move all
     const std::vector<int> quantities( target_items.size(), 0 );
 
     if( target_items.empty() ) {
         // Nothing to haul
-        if( !u.is_autohauling() ) {
-            u.stop_hauling();
+        if( !who.is_autohauling() ) {
+            who.stop_hauling();
         }
         return;
     }
@@ -10038,7 +10038,7 @@ void game::start_hauling( const tripoint_bub_ms &pos )
 
     const move_items_activity_actor actor( target_items, quantities, to_vehicle, relative_destination,
                                            true );
-    u.assign_activity( actor );
+    who.assign_activity( actor );
 }
 
 std::optional<tripoint_bub_ms> game::find_stairs( const map &mp, int z_after,

@@ -110,6 +110,12 @@ void client_process_incoming();
 // Times out after ~5 seconds if no position arrives.
 void client_wait_for_initial_position();
 
+// Cached at main() startup from the binary's on-disk mtime, e.g.
+// "May 25 19:26:00". Used to keep the build identifier in the window
+// title across mp_update_window_title() calls (mode changes) without
+// re-stat'ing argv[0] every time.
+extern std::string g_mp_build_stamp;
+
 // Queue an action JSON to be sent to the server on the next tick when moves are
 // available. Replaces any previously queued action (latest keypress wins).
 void client_queue_action( const std::string &json );

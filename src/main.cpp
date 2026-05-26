@@ -1113,6 +1113,10 @@ int main( int argc, const char *argv[] )
                 stamp = buf;
             }
         }
+        // Cache the stamp so later title-set calls (mp_update_window_title
+        // on mode-change) can re-include it instead of overwriting back to
+        // a stamp-less title.
+        cata_mp::g_mp_build_stamp = stamp;
         set_title( string_format( "CDDA — %s — build %s", role, stamp ) );
     }
 

@@ -2639,8 +2639,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // both sides via remote_player_state.
     if( msg.find( "\"action\":\"toggle_haul\"" ) != std::string::npos ) {
         remote->toggle_hauling();
+        // Diagnostic: confirm whether toggle on the proxy populated haul_list
+        // from the proxy's current tile (Character::toggle_hauling does this
+        // for the "starting" half of the toggle).  If haul_list is empty
+        // post-toggle even when is_hauling()=true, the on-move start_hauling
+        // hook will bail at target_items.empty() and stop the activity.
         mp_log( "[cdda-mp] HOST-HAUL: proxy '" + remote->name + "' hauling=" +
-                std::to_string( remote->is_hauling() ) );
+                std::to_string( remote->is_hauling() ) +
+                " haul_list_size=" + std::to_string( remote->haul_list.size() ) +
+                " autohaul=" + std::to_string( remote->is_autohauling() ) +
+                " pos=(" + std::to_string( remote->pos_bub().x() ) + "," +
+                std::to_string( remote->pos_bub().y() ) + ")" );
         flush_action_msgs( pre_action_msg, remote->name );
         srv_emit_ack( "toggle_haul" );
         return;
@@ -2727,9 +2736,39 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // vehicle displacement and may release the grab on failure.
             if( remote->get_grab_type() != object_type::NONE ) {
                 const tripoint_rel_ms drag_dp( offset.x, offset.y, offset.z );
+                // PRE-DRAG diagnostics — captures the state the SP grabbed-*
+                // helpers see when they execute.  Compare these across the
+                // host's own-avatar drag and the host's proxy-NPC drag for
+                // any divergence (different str, missing furn at grab_point,
+                // wrong proxy position, etc.).
+                const tripoint_bub_ms proxy_pos = remote->pos_bub();
+                const tripoint_bub_ms fpos = proxy_pos + remote->grab_point;
+                const bool has_furn = m.has_furn( fpos );
+                mp_log( "[cdda-mp] HOST-DRAG-PRE: proxy '" + remote->name +
+                        "' pos=(" + std::to_string( proxy_pos.x() ) + "," +
+                        std::to_string( proxy_pos.y() ) + "," +
+                        std::to_string( proxy_pos.z() ) + ")" +
+                        " grab_type=" + std::to_string(
+                            static_cast<int>( remote->get_grab_type() ) ) +
+                        " grab_point=(" + std::to_string( remote->grab_point.x() ) + "," +
+                        std::to_string( remote->grab_point.y() ) + ")" +
+                        " fpos=(" + std::to_string( fpos.x() ) + "," +
+                        std::to_string( fpos.y() ) + ")" +
+                        " has_furn=" + std::to_string( has_furn ) +
+                        " arm_str=" + std::to_string( remote->get_arm_str() ) +
+                        " dp=(" + std::to_string( drag_dp.x() ) + "," +
+                        std::to_string( drag_dp.y() ) + ")" );
                 if( remote->get_grab_type() == object_type::VEHICLE ) {
                     g->grabbed_veh_move_helper( *remote, drag_dp, false );
                 } else if( remote->get_grab_type() == object_type::FURNITURE ) {
+                    g->grabbed_furn_move( *remote, drag_dp );
+                } else if( remote->get_grab_type() == object_type::FURNITURE_ON_VEHICLE ) {
+                    // Mirrors SP grabbed_move()'s third branch.  The
+                    // move_furniture_on_vehicle_activity_actor::move_furniture
+                    // logic isn't yet exposed as a free helper, so for now
+                    // route through the same furniture path; the activity
+                    // actor in SP also calls grabbed_furn_move-like logic
+                    // and we'll refine if needed.
                     g->grabbed_furn_move( *remote, drag_dp );
                 }
                 // grabbed_furn_move may have updated grab_point or released
@@ -2737,8 +2776,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 // returned a stay-put result (shifting furniture) we still
                 // setpos to next — small UX divergence from SP but keeps the
                 // host's tile-step path simple.  Refine later if needed.
-                mp_log( "[cdda-mp] HOST-DRAG: proxy '" + remote->name +
-                        "' post-drag grab_type=" + std::to_string(
+                mp_log( "[cdda-mp] HOST-DRAG-POST: proxy '" + remote->name +
+                        "' grab_type=" + std::to_string(
                             static_cast<int>( remote->get_grab_type() ) ) +
                         " grab_point=(" + std::to_string( remote->grab_point.x() ) + "," +
                         std::to_string( remote->grab_point.y() ) + ")" );
@@ -2768,6 +2807,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     "," + std::to_string( remote->pos_abs().y() ) +
                     " bub=" + std::to_string( remote->pos_bub().x() ) + "," + std::to_string( remote->pos_bub().y() ) +
                     " in_vehicle=" + std::to_string( remote->in_vehicle ) );
+            // Hauling hook — mirrors SP walk_move()'s post-step check that
+            // assigns a move_items_activity_actor when the player is hauling.
+            // Without this the haul flag syncs but no items are ever picked
+            // up.  start_hauling reads the OLD tile (cur) for items.
+            if( remote->is_hauling() ) {
+                g->start_hauling( *remote, cur );
+                mp_log( "[cdda-mp] HOST-HAUL-START: proxy '" + remote->name +
+                        "' from pos=(" + std::to_string( cur.x() ) + "," +
+                        std::to_string( cur.y() ) + ")" );
+            }
             // Trigger traps on the destination tile, mirroring game.cpp:8351.
             m.creature_on_trap( *remote );
             // Use combined_movecost (same as game.cpp:7733) so the AP cost includes
@@ -3644,11 +3693,15 @@ void mp_menu_cancel_host()
     mp_update_window_title();
 }
 
+// Defined here; declared extern in mp_gamestate.h.  main.cpp populates this
+// at startup from the binary's mtime.
+std::string g_mp_build_stamp = "?";
+
 void mp_update_window_title()
 {
     const char *role = is_client_mode() ? "CLIENT"
                        : ( is_host_mode() ? "HOST" : "SP" );
-    set_title( string_format( "CDDA — %s", role ) );
+    set_title( string_format( "CDDA — %s — build %s", role, g_mp_build_stamp ) );
 }
 
 WORLD *mp_ensure_client_scratch_world()

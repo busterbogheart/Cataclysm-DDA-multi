@@ -342,7 +342,10 @@ class game
          * If peeking == true, forbids some exotic movement options
          */
         void vertical_move( int z, bool force, bool peeking = false );
-        void start_hauling( const tripoint_bub_ms &pos );
+        // pos is the tile to scan for haulable items (usually the character's
+        // pre-move position). who is the hauling Character (avatar in SP, or
+        // the host-side proxy NPC for the remote MP player).
+        void start_hauling( Character &who, const tripoint_bub_ms &pos );
 
         /**
          * Moves the player to an alternate dimension.
