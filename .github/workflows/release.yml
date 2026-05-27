@@ -8,9 +8,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write  # create releases, upload assets
+
+env:
+  BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('preview-{0}', github.sha) }}
 
 jobs:
   build-mac:
@@ -30,7 +34,7 @@ jobs:
       - uses: ./.github/actions/build-mac
         with:
           arch: ${{ matrix.arch }}
-          version: ${{ github.ref_name }}
+          version: ${{ env.BUILD_VERSION }}
 
   build-windows:
     name: Build Windows (x64)
@@ -42,7 +46,7 @@ jobs:
 
       - uses: ./.github/actions/build-windows
         with:
-          version: ${{ github.ref_name }}
+          version: ${{ env.BUILD_VERSION }}
 
   release:
     name: Publish GitHub Release
@@ -73,17 +77,17 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: ${{ env.BUILD_VERSION }}
+          tag_name: ${{ env.BUILD_VERSION }}
           draft: false
           prerelease: false
           generate_release_notes: true
           body: |
             ## Downloads
 
-            - **macOS Apple Silicon** — `cddacoop-${{ github.ref_name }}-macos-arm64.zip`
-            - **macOS Intel** — `cddacoop-${{ github.ref_name }}-macos-x64.zip`
-            - **Windows x64** — `cddacoop-${{ github.ref_name }}-windows-x64.zip`
+            - **macOS Apple Silicon** — `cddacoop-${{ env.BUILD_VERSION }}-macos-arm64.zip`
+            - **macOS Intel** — `cddacoop-${{ env.BUILD_VERSION }}-macos-x64.zip`
+            - **Windows x64** — `cddacoop-${{ env.BUILD_VERSION }}-windows-x64.zip`
             - **CC-Sounds pack** — `cc-sounds.zip` (the .app prompts on first launch to download this)
 
             macOS zips contain `Cddacoop.app` + `README.md`.
