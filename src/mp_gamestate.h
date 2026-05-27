@@ -437,6 +437,16 @@ tripoint_abs_ms client_ctrl_veh_abs();
 // client in the next grant.  Silently ignored when not hosting.
 void host_queue_sfx( const std::string &id, const std::string &variant, int vol );
 
+// Called after npc_trading::trade() completes with a remote player proxy.
+// Sends a trade_delta message so the other side's real avatar gains/loses items.
+void mp_post_trade( npc &np, const std::list<item> &items_given,
+                    const std::list<item> &items_taken );
+
+// Pass a single item to the adjacent partner.  Opens the inventory picker,
+// removes the item from the giver, adds it to the partner proxy, and sends
+// a trade_delta so the other side's real avatar gains the item.
+void mp_handle_pass_item();
+
 } // namespace cata_mp
 
 #endif // CATA_SRC_MP_GAMESTATE_H

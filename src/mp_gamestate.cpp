@@ -17,8 +17,10 @@
 #include "creature_tracker.h"
 #include "cursesdef.h"
 #include "game.h"
+#include "game_inventory.h"
 #include "gates.h"
 #include "item.h"
+#include "line.h"
 #include "itype.h"
 #include "json.h"
 #include "json_loader.h"
@@ -1456,6 +1458,49 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Trade delta from client — client traded with the host's NPC proxy on its
+    // side.  Apply item changes to the host's real avatar before anything else.
+    if( msg.find( "\"type\":\"trade_delta\"" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo2 = jv.get_object();
+            jo2.allow_omitted_members();
+            avatar &av = get_avatar();
+            if( jo2.has_array( "give" ) ) {
+                for( const JsonValue &iv : jo2.get_array( "give" ) ) {
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    item tmp;
+                    tmp.deserialize( io );
+                    av.i_add( tmp );
+                    mp_log( "[cdda-mp] trade_delta(host): gained " + tmp.typeId().str() );
+                }
+            }
+            if( jo2.has_array( "take" ) ) {
+                for( const JsonValue &iv : jo2.get_array( "take" ) ) {
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    item tmp;
+                    tmp.deserialize( io );
+                    const itype_id tid = tmp.typeId();
+                    bool found = false;
+                    av.remove_items_with( [&tid, &found]( const item &i ) {
+                        if( !found && i.typeId() == tid ) {
+                            found = true;
+                            return true;
+                        }
+                        return false;
+                    }, 1 );
+                    mp_log( "[cdda-mp] trade_delta(host): lost " + tid.str()
+                            + ( found ? " (ok)" : " (NOT FOUND)" ) );
+                }
+            }
+        } catch( const JsonError &e ) {
+            mp_log( std::string( "[cdda-mp] trade_delta(host) parse error: " ) + e.what() );
+        }
+        return;
+    }
+
     map &m = get_map();
 
     // Snapshot message count before processing so we can forward ALL messages
@@ -1643,18 +1688,32 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 for( const JsonValue &wv : jo.get_array( "worn" ) ) {
                     JsonObject wo = wv.get_object();
                     wo.allow_omitted_members();
-                    const itype_id tid( wo.get_string( "t", "" ) );
-                    if( tid.is_valid() ) {
-                        item worn_item( tid );
-                        const std::string var = wo.get_string( "v", "" );
-                        if( !var.empty() ) {
-                            worn_item.set_itype_variant( var );
+                    // Full item deserialization — preserves pocket contents (items
+                    // inside jacket, fanny pack, etc.) so trade menu and skill
+                    // checks see the client's actual carried items.
+                    item worn_item;
+                    try {
+                        worn_item.deserialize( wo );
+                    } catch( const JsonError &e ) {
+                        // Fallback for legacy {t,v} format or parse errors.
+                        const itype_id tid( wo.get_string( "t", "" ) );
+                        if( tid.is_valid() ) {
+                            worn_item = item( tid );
+                            const std::string var = wo.get_string( "v", "" );
+                            if( !var.empty() ) {
+                                worn_item.set_itype_variant( var );
+                            }
                         }
+                        mp_log( std::string( "[cdda-mp] worn_sync: worn item parse error (fallback): " )
+                                + e.what() );
+                    }
+                    if( !worn_item.typeId().is_empty() && worn_item.typeId().is_valid() ) {
                         // wear_item(who, item, interactive, do_calc_encumbrance, do_sort, quiet)
                         auto result = remote->worn.wear_item( *remote, worn_item,
                                                              false, false, true, true );
                         if( !result ) {
-                            mp_log( "[cdda-mp] worn_sync: wear_item FAILED for " + tid.str() );
+                            mp_log( "[cdda-mp] worn_sync: wear_item FAILED for "
+                                    + worn_item.typeId().str() );
                         }
                     }
                 }
@@ -1673,13 +1732,43 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 mp_log( "[cdda-mp] worn_sync overlays: [" + ov_log + "]" );
             }
             // Apply the client's wielded weapon to the remote NPC.
+            // Prefer the full item serialization (carries ammo, mods, charges,
+            // contents) when present; fall back to typeId-only for legacy.
             std::string wielded_str;
             jo.read( "wielded", wielded_str );
-            if( !wielded_str.empty() ) {
-                const itype_id wid( wielded_str );
-                if( wid.is_valid() ) {
-                    remote->set_wielded_item( item( wid ) );
-                    mp_log( "[cdda-mp] worn_sync: set wielded=" + wielded_str );
+            bool applied_full = false;
+            if( jo.has_object( "wielded_obj" ) ) {
+                try {
+                    JsonObject wo = jo.get_object( "wielded_obj" );
+                    wo.allow_omitted_members();
+                    item tmp;
+                    tmp.deserialize( wo );
+                    remote->set_wielded_item( tmp );
+                    applied_full = true;
+                    mp_log( "[cdda-mp] worn_sync: set wielded(full)=" + tmp.typeId().str()
+                            + " charges=" + std::to_string( tmp.charges )
+                            + " ammo=" + std::to_string( tmp.ammo_remaining() ) );
+                } catch( const JsonError &e ) {
+                    mp_log( std::string( "[cdda-mp] worn_sync: wielded_obj parse error: " )
+                            + e.what() );
+                }
+            }
+            if( !applied_full ) {
+                if( !wielded_str.empty() ) {
+                    const itype_id wid( wielded_str );
+                    if( wid.is_valid() ) {
+                        remote->set_wielded_item( item( wid ) );
+                        mp_log( "[cdda-mp] worn_sync: set wielded=" + wielded_str );
+                    }
+                } else {
+                    // Client is empty-handed — clear the proxy's weapon slot.
+                    // remove_weapon() zeroes weapon=item() and returns the old
+                    // item without touching the map, so no duplication.
+                    // Do NOT call unwield() here — that moves the item to a pocket
+                    // or drops to the floor, duplicating what the drop/throw/unload
+                    // handler already placed there via tile_changes.
+                    remote->remove_weapon();
+                    mp_log( "[cdda-mp] worn_sync: remove_weapon (client empty-handed)" );
                 }
             }
             // Apply all appearance mutations (skin tone, eye color, hair style/color,
@@ -1720,6 +1809,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 if( mid.is_valid() ) {
                     remote->martial_arts_data->set_style( mid, true );
                     mp_log( "[cdda-mp] worn_sync: set ma_style=" + ma_style_str );
+                }
+            }
+            // Rebuild the proxy's main (non-worn, non-wielded) inventory from the
+            // client's serialized blob.  This makes tools, books, guns-in-bag,
+            // currency, and any other carried items visible in the trade menu and
+            // available to host-side skill / activity checks.
+            if( jo.has_array( "client_inv" ) ) {
+                try {
+                    remote->inv->clear();
+                    JsonArray inv_ja = jo.get_array( "client_inv" );
+                    remote->inv->json_load_items( inv_ja );
+                    mp_log( "[cdda-mp] worn_sync: inv rebuilt items=" +
+                            std::to_string( remote->inv->size() ) );
+                } catch( const JsonError &e ) {
+                    mp_log( std::string( "[cdda-mp] worn_sync: inv rebuild error: " ) + e.what() );
                 }
             }
         } catch( const JsonError &e ) {
@@ -4445,6 +4549,51 @@ static bool apply_one_state_message( const std::string &msg )
         return true;
     }
 
+    // Trade delta: the host traded with our proxy — apply item changes to our
+    // real avatar so items don't vanish when the next worn_sync overwrites the proxy.
+    if( msg.find( "\"type\":\"trade_delta\"" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            avatar &av = get_avatar();
+            // "give" = items the host gave to our proxy → add to our avatar
+            if( jo.has_array( "give" ) ) {
+                for( const JsonValue &iv : jo.get_array( "give" ) ) {
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    item tmp;
+                    tmp.deserialize( io );
+                    av.i_add( tmp );
+                    mp_log( "[cdda-mp] trade_delta: gained " + tmp.typeId().str() );
+                }
+            }
+            // "take" = items taken from our proxy → remove from our avatar
+            if( jo.has_array( "take" ) ) {
+                for( const JsonValue &iv : jo.get_array( "take" ) ) {
+                    JsonObject io = iv.get_object();
+                    io.allow_omitted_members();
+                    item tmp;
+                    tmp.deserialize( io );
+                    const itype_id tid = tmp.typeId();
+                    bool found = false;
+                    av.remove_items_with( [&tid, &found]( const item &i ) {
+                        if( !found && i.typeId() == tid ) {
+                            found = true;
+                            return true;
+                        }
+                        return false;
+                    }, 1 );
+                    mp_log( "[cdda-mp] trade_delta: lost " + tid.str()
+                            + ( found ? " (ok)" : " (NOT FOUND)" ) );
+                }
+            }
+        } catch( const JsonError &e ) {
+            mp_log( std::string( "[cdda-mp] trade_delta parse error: " ) + e.what() );
+        }
+        return true;
+    }
+
     const bool is_state = msg.find( "\"type\":\"state\"" ) != std::string::npos ||
                           msg.find( "\"type\": \"state\"" ) != std::string::npos;
     if( !is_state ) {
@@ -4565,7 +4714,7 @@ static bool apply_one_state_message( const std::string &msg )
             for( const JsonValue &wv : jo.get_array( "host_worn" ) ) {
                 JsonObject wo = wv.get_object();
                 wo.allow_omitted_members();
-                sig += wo.get_string( "t", "" ) + ',';
+                sig += wo.get_string( "typeid", wo.get_string( "t", "" ) ) + ',';
             }
             std::string incoming_wielded;
             jo.read( "host_wielded", incoming_wielded );
@@ -4579,6 +4728,9 @@ static bool apply_one_state_message( const std::string &msg )
                 }
             }
             sig += '|' + incoming_wielded;
+            if( jo.has_int( "host_weight" ) ) {
+                sig += "|w" + std::to_string( jo.get_int( "host_weight" ) );
+            }
 
             if( sig != g_client_host_worn_sig && client_host_npc_spawned ) {
                 std::cout << "[cdda-mp] dressing host NPC..." << std::flush;
@@ -4593,16 +4745,23 @@ static bool apply_one_state_message( const std::string &msg )
                     for( const JsonValue &wv : jo.get_array( "host_worn" ) ) {
                         JsonObject wo = wv.get_object();
                         wo.allow_omitted_members();
-                        const itype_id tid( wo.get_string( "t", "" ) );
-                        if( tid.is_valid() ) {
-                            item worn_item( tid );
-                            const std::string var = wo.get_string( "v", "" );
-                            if( !var.empty() ) {
-                                worn_item.set_itype_variant( var );
-                                applied_log += tid.str() + '[' + var + "] ";
-                            } else {
-                                applied_log += tid.str() + ' ';
+                        item worn_item;
+                        try {
+                            worn_item.deserialize( wo );
+                        } catch( const JsonError &e ) {
+                            const itype_id tid( wo.get_string( "t", "" ) );
+                            if( tid.is_valid() ) {
+                                worn_item = item( tid );
+                                const std::string var = wo.get_string( "v", "" );
+                                if( !var.empty() ) {
+                                    worn_item.set_itype_variant( var );
+                                }
                             }
+                            mp_log( std::string( "[cdda-mp] host_worn: parse fallback: " )
+                                    + e.what() );
+                        }
+                        if( !worn_item.typeId().is_empty() && worn_item.typeId().is_valid() ) {
+                            applied_log += worn_item.typeId().str() + ' ';
                             host_npc->worn.wear_item( *host_npc, worn_item,
                                                       false, false, true, true );
                         }
@@ -4631,22 +4790,52 @@ static bool apply_one_state_message( const std::string &msg )
                             mp_log( "[cdda-mp] host_appearance applied: type=" + mtype
                                     + " id=" + mid );
                         }
-                        // Log the full overlay list after all mutations are applied so we
-                        // can verify the skin tone tile name is in the render chain.
                         std::string ov_log;
                         for( const auto &ov : host_npc->get_overlay_ids() ) {
                             ov_log += ov.first + ' ';
                         }
                         mp_log( "[cdda-mp] host_npc overlays after appearance: [" + ov_log + "]" );
                     }
-                    // Apply or clear the host's wielded weapon.
-                    if( incoming_wielded.empty() ) {
-                        host_npc->remove_weapon();
-                    } else {
-                        const itype_id wid( incoming_wielded );
-                        if( wid.is_valid() ) {
-                            host_npc->set_wielded_item( item( wid ) );
-                            mp_log( "[cdda-mp] host_wielded applied: " + incoming_wielded );
+                    // Apply or clear the host's wielded weapon (full object preferred).
+                    bool applied_wielded_full = false;
+                    if( jo.has_object( "host_wielded_obj" ) ) {
+                        try {
+                            JsonObject wo = jo.get_object( "host_wielded_obj" );
+                            wo.allow_omitted_members();
+                            item tmp;
+                            tmp.deserialize( wo );
+                            host_npc->set_wielded_item( tmp );
+                            applied_wielded_full = true;
+                            mp_log( "[cdda-mp] host_wielded applied(full): " + tmp.typeId().str()
+                                    + " charges=" + std::to_string( tmp.charges )
+                                    + " ammo=" + std::to_string( tmp.ammo_remaining() ) );
+                        } catch( const JsonError &e ) {
+                            mp_log( std::string( "[cdda-mp] host_wielded_obj parse error: " )
+                                    + e.what() );
+                        }
+                    }
+                    if( !applied_wielded_full ) {
+                        if( incoming_wielded.empty() ) {
+                            host_npc->remove_weapon();
+                        } else {
+                            const itype_id wid( incoming_wielded );
+                            if( wid.is_valid() ) {
+                                host_npc->set_wielded_item( item( wid ) );
+                                mp_log( "[cdda-mp] host_wielded applied: " + incoming_wielded );
+                            }
+                        }
+                    }
+                    // Rebuild the host NPC's main inventory from the serialized blob.
+                    if( jo.has_array( "host_inv" ) ) {
+                        try {
+                            host_npc->inv->clear();
+                            JsonArray inv_ja = jo.get_array( "host_inv" );
+                            host_npc->inv->json_load_items( inv_ja );
+                            mp_log( "[cdda-mp] host_inv applied: items=" +
+                                    std::to_string( host_npc->inv->size() ) );
+                        } catch( const JsonError &e ) {
+                            mp_log( std::string( "[cdda-mp] host_inv rebuild error: " )
+                                    + e.what() );
                         }
                     }
                 }
@@ -5456,7 +5645,17 @@ std::string client_enrich_action( const std::string &json )
         worn_sig += ';';
         if( wielded ) {
             worn_sig += wielded->typeId().str();
+            // Include ammo count so firing (which doesn't change typeId) still
+            // triggers a worn_sync carrying the updated full-item serialization.
+            worn_sig += ':';
+            worn_sig += std::to_string( wielded->ammo_remaining() );
         }
+        // Include carried weight so that pocket-content changes (item moved into
+        // a jacket pocket, bandage picked up into fanny pack, etc.) also trigger
+        // a worn_sync even when the worn list and wielded item are unchanged.
+        // weight_carried() is cheap (cached) and covers every carry-state change.
+        worn_sig += '|';
+        worn_sig += std::to_string( av.weight_carried().value() );
         if( worn_sig != g_client_worn_baseline ) {
             g_client_worn_baseline = worn_sig;
             client_resync_worn();
@@ -5702,23 +5901,51 @@ void client_resync_worn()
             worn_json += ',';
         }
         wfirst = false;
-        worn_json += "{\"t\":\"" + it->typeId().str() + "\"";
-        if( it->has_itype_variant() ) {
-            worn_json += ",\"v\":\"" + it->itype_variant().id + "\"";
+        // Full item serialization — carries pocket contents (bandages in jacket,
+        // camera in fanny pack, etc.) through to the host's proxy NPC so the
+        // trade menu and skill checks see the real carried items.
+        std::ostringstream woss;
+        {
+            JsonOut wout( woss );
+            it->serialize( wout );
         }
-        worn_json += "}";
+        worn_json += woss.str();
     }
     std::string wielded_type;
+    std::string wielded_obj_json = "null";
     item_location wielded = av.get_wielded_item();
     if( wielded ) {
         wielded_type = wielded->typeId().str();
+        // Full item serialization carries ammo, mods, charges, contents — so the
+        // host's proxy mirrors the actual wielded weapon, not a pristine spawn.
+        std::ostringstream oss;
+        {
+            JsonOut out( oss );
+            wielded->serialize( out );
+        }
+        wielded_obj_json = oss.str();
+    }
+    // Serialize the client's main (non-worn, non-wielded) inventory so the host's
+    // proxy NPC mirrors tools, books, guns-in-bag, etc. for trade / skill checks.
+    std::string inv_json;
+    {
+        std::ostringstream inv_oss;
+        {
+            JsonOut inv_out( inv_oss );
+            av.inv->json_save_items( inv_out );
+        }
+        inv_json = inv_oss.str();
     }
     const std::string male_str = av.male ? "true" : "false";
     const std::string ma_style_str = av.martial_arts_data->selected_style().str();
     worn_json += "],\"male\":" + male_str
                  + ",\"appearance\":" + appearance_json
                  + ",\"wielded\":\"" + wielded_type + "\""
+                 + ",\"wielded_obj\":" + wielded_obj_json
+                 + ",\"client_inv\":" + inv_json
                  + ",\"ma_style\":\"" + ma_style_str + "\"}";
+    mp_log( "[cdda-mp] worn_sync send: inv_items=" + std::to_string( av.inv->size() )
+            + " inv_bytes=" + std::to_string( inv_json.size() ) );
     client_send( worn_json );
 }
 
@@ -6813,6 +7040,110 @@ static std::string build_viewport( const tripoint_bub_ms &center )
            ",\"tiles\":\"" + tiles + "\"}";
 }
 
+void mp_post_trade( npc &np, const std::list<item> &items_given,
+                    const std::list<item> &items_taken )
+{
+    const bool host_side = is_server_mode() || is_hosting();
+    const bool client_side = is_client_mode();
+
+    if( !host_side && !client_side ) {
+        return;
+    }
+
+    if( !is_partner_npc( np.getID() ) ) {
+        return;
+    }
+
+    std::string give_json = "[";
+    bool gfirst = true;
+    for( const item &it : items_given ) {
+        if( !gfirst ) {
+            give_json += ',';
+        }
+        gfirst = false;
+        std::ostringstream oss;
+        {
+            JsonOut out( oss );
+            it.serialize( out );
+        }
+        give_json += oss.str();
+    }
+    give_json += "]";
+
+    std::string take_json = "[";
+    bool tfirst = true;
+    for( const item &it : items_taken ) {
+        if( !tfirst ) {
+            take_json += ',';
+        }
+        tfirst = false;
+        std::ostringstream oss;
+        {
+            JsonOut out( oss );
+            it.serialize( out );
+        }
+        take_json += oss.str();
+    }
+    take_json += "]";
+
+    std::string payload = "{\"type\":\"trade_delta\","
+                          "\"give\":" + give_json + ","
+                          "\"take\":" + take_json + "}";
+
+    mp_log( "[cdda-mp] trade_delta send: give=" + std::to_string( items_given.size() )
+            + " take=" + std::to_string( items_taken.size() ) );
+
+    if( host_side ) {
+        server *s = get_active_server();
+        if( s ) {
+            s->post_broadcast( payload + "\n" );
+        }
+    } else {
+        client_send( payload );
+    }
+}
+
+void mp_handle_pass_item()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+
+    npc *partner = get_partner_npc();
+    if( !partner ) {
+        add_msg( m_warning, _( "Your partner is not connected." ) );
+        return;
+    }
+
+    avatar &av = get_avatar();
+    if( rl_dist( av.pos_bub().raw(), partner->pos_bub().raw() ) > 1 ) {
+        add_msg( m_warning, _( "You need to be adjacent to your partner." ) );
+        return;
+    }
+
+    item_location loc = game_menus::inv::titled_menu( av,
+                        _( "Pass what?" ), _( "You have no items to pass." ) );
+    if( !loc ) {
+        return;
+    }
+
+    item given = *loc;
+
+    av.i_rem( loc.get_item() );
+    partner->i_add( given );
+
+    std::list<item> give_list = { given };
+    std::list<item> take_list;
+    mp_post_trade( *partner, give_list, take_list );
+
+    av.mod_moves( -100 );
+    add_msg( _( "You pass the %s to %s." ), given.tname(), partner->get_name() );
+
+    if( is_client_mode() ) {
+        mp_client_post_action();
+    }
+}
+
 std::string serialize_remote_player_state()
 {
     if( !remote_player_connected ) {
@@ -6897,11 +7228,29 @@ std::string serialize_remote_player_state()
     }
     host_appearance_json += ']';
 
-    // Host wielded weapon — sent so the client NPC proxy shows the correct item.
+    // Host wielded weapon — typeId for legacy, full object for trade/skill checks.
     std::string host_wielded_type;
+    std::string host_wielded_obj_json = "null";
     item_location host_wielded_loc = host.get_wielded_item();
     if( host_wielded_loc ) {
         host_wielded_type = host_wielded_loc->typeId().str();
+        std::ostringstream hw_oss;
+        {
+            JsonOut hw_out( hw_oss );
+            host_wielded_loc->serialize( hw_out );
+        }
+        host_wielded_obj_json = hw_oss.str();
+    }
+
+    // Host main inventory — tools, books, currency, etc. for trade menu.
+    std::string host_inv_json;
+    {
+        std::ostringstream inv_oss;
+        {
+            JsonOut inv_out( inv_oss );
+            host.inv->json_save_items( inv_out );
+        }
+        host_inv_json = inv_oss.str();
     }
 
     // Host worn items — cached; JSON only rebuilt when worn list or appearance changes.
@@ -6922,6 +7271,12 @@ std::string serialize_remote_player_state()
         host_worn_sig += ',';
     }
     host_worn_sig += '|' + host_appearance_json + '|' + host_wielded_type;
+    if( host_wielded_loc ) {
+        host_worn_sig += ':';
+        host_worn_sig += std::to_string( host_wielded_loc->ammo_remaining() );
+    }
+    host_worn_sig += '|';
+    host_worn_sig += std::to_string( host.weight_carried().value() );
 
     std::string host_worn_json;
     if( host_worn_sig == g_host_worn_sig_cache ) {
@@ -6935,11 +7290,12 @@ std::string serialize_remote_player_state()
                 host_worn_json += ',';
             }
             hwfirst = false;
-            host_worn_json += "{\"t\":\"" + it->typeId().str() + "\"";
-            if( it->has_itype_variant() ) {
-                host_worn_json += ",\"v\":\"" + it->itype_variant().id + "\"";
+            std::ostringstream woss;
+            {
+                JsonOut wout( woss );
+                it->serialize( wout );
             }
-            host_worn_json += "}";
+            host_worn_json += woss.str();
         }
         host_worn_json += "]";
         g_host_worn_json_cache = host_worn_json;
@@ -7216,6 +7572,9 @@ std::string serialize_remote_player_state()
            ",\"z\":" + std::to_string( host_pos.z() ) + "},"
            "\"host_worn\":" + host_worn_json + ","
            "\"host_wielded\":\"" + host_wielded_type + "\","
+           "\"host_wielded_obj\":" + host_wielded_obj_json + ","
+           "\"host_inv\":" + host_inv_json + ","
+           "\"host_weight\":" + std::to_string( host.weight_carried().value() ) + ","
            "\"host_male\":" + host_male_str + ","
            "\"host_appearance\":" + host_appearance_json + ","
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
