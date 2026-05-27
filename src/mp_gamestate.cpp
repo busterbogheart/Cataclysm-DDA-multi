@@ -1447,6 +1447,8 @@ static void srv_emit_ack( const char *action_name )
     g->invalidate_main_ui_adaptor();
 }
 
+static void mp_handle_note_sync( const std::string &msg );
+
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
     if( !remote_player_connected ) {
@@ -1498,6 +1500,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] trade_delta(host) parse error: " ) + e.what() );
         }
+        return;
+    }
+
+    if( msg.find( "\"type\":\"note_sync\"" ) != std::string::npos ) {
+        mp_handle_note_sync( msg );
         return;
     }
 
@@ -4549,6 +4556,11 @@ static bool apply_one_state_message( const std::string &msg )
         return true;
     }
 
+    if( msg.find( "\"type\":\"note_sync\"" ) != std::string::npos ) {
+        mp_handle_note_sync( msg );
+        return true;
+    }
+
     // Trade delta: the host traded with our proxy — apply item changes to our
     // real avatar so items don't vanish when the next worn_sync overwrites the proxy.
     if( msg.find( "\"type\":\"trade_delta\"" ) != std::string::npos ) {
@@ -7141,6 +7153,122 @@ void mp_handle_pass_item()
 
     if( is_client_mode() ) {
         mp_client_post_action();
+    }
+}
+
+static bool g_applying_remote_note = false;
+
+static void mp_send_note_msg( const std::string &payload )
+{
+    if( is_server_mode() || is_hosting() ) {
+        server *s = get_active_server();
+        if( s ) {
+            s->post_broadcast( payload + "\n" );
+        }
+    } else if( is_client_mode() ) {
+        client_send( payload );
+    }
+}
+
+void mp_sync_note_add( const tripoint_abs_omt &pos, const std::string &text )
+{
+    if( g_applying_remote_note ) {
+        return;
+    }
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    std::string escaped;
+    escaped.reserve( text.size() );
+    for( char c : text ) {
+        if( c == '\\' ) {
+            escaped += "\\\\";
+        } else if( c == '"' ) {
+            escaped += "\\\"";
+        } else {
+            escaped += c;
+        }
+    }
+    std::string payload = "{\"type\":\"note_sync\",\"op\":\"add\","
+                          "\"x\":" + std::to_string( pos.x() ) + ","
+                          "\"y\":" + std::to_string( pos.y() ) + ","
+                          "\"z\":" + std::to_string( pos.z() ) + ","
+                          "\"text\":\"" + escaped + "\"}";
+    mp_send_note_msg( payload );
+    mp_log( "[cdda-mp] note_sync send: add at " + std::to_string( pos.x() ) + ","
+            + std::to_string( pos.y() ) );
+}
+
+void mp_sync_note_delete( const tripoint_abs_omt &pos )
+{
+    if( g_applying_remote_note ) {
+        return;
+    }
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    std::string payload = "{\"type\":\"note_sync\",\"op\":\"delete\","
+                          "\"x\":" + std::to_string( pos.x() ) + ","
+                          "\"y\":" + std::to_string( pos.y() ) + ","
+                          "\"z\":" + std::to_string( pos.z() ) + "}";
+    mp_send_note_msg( payload );
+    mp_log( "[cdda-mp] note_sync send: delete at " + std::to_string( pos.x() ) + ","
+            + std::to_string( pos.y() ) );
+}
+
+void mp_sync_note_danger( const tripoint_abs_omt &pos, int radius, bool dangerous )
+{
+    if( g_applying_remote_note ) {
+        return;
+    }
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    std::string payload = "{\"type\":\"note_sync\",\"op\":\"danger\","
+                          "\"x\":" + std::to_string( pos.x() ) + ","
+                          "\"y\":" + std::to_string( pos.y() ) + ","
+                          "\"z\":" + std::to_string( pos.z() ) + ","
+                          "\"radius\":" + std::to_string( radius ) + ","
+                          "\"dangerous\":" + ( dangerous ? "true" : "false" ) + "}";
+    mp_send_note_msg( payload );
+    mp_log( "[cdda-mp] note_sync send: danger at " + std::to_string( pos.x() ) + ","
+            + std::to_string( pos.y() ) + " r=" + std::to_string( radius ) );
+}
+
+static void mp_handle_note_sync( const std::string &msg )
+{
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        const std::string op = jo.get_string( "op" );
+        const tripoint_abs_omt pos( tripoint( jo.get_int( "x" ), jo.get_int( "y" ),
+                                              jo.get_int( "z", 0 ) ) );
+        g_applying_remote_note = true;
+        if( op == "add" ) {
+            const std::string text = jo.get_string( "text" );
+            overmap_buffer.add_note( pos, text );
+            mp_log( "[cdda-mp] note_sync recv: add at " + std::to_string( pos.x() ) + ","
+                    + std::to_string( pos.y() ) + " text=" + text );
+            add_msg( m_info, _( "Your partner marked a spot on the map." ) );
+        } else if( op == "delete" ) {
+            overmap_buffer.delete_note( pos );
+            mp_log( "[cdda-mp] note_sync recv: delete at " + std::to_string( pos.x() ) + ","
+                    + std::to_string( pos.y() ) );
+        } else if( op == "danger" ) {
+            const int radius = jo.get_int( "radius", 0 );
+            const bool dangerous = jo.get_bool( "dangerous", true );
+            overmap_buffer.mark_note_dangerous( pos, radius, dangerous );
+            mp_log( "[cdda-mp] note_sync recv: danger at " + std::to_string( pos.x() ) + ","
+                    + std::to_string( pos.y() ) + " r=" + std::to_string( radius ) );
+            if( dangerous ) {
+                add_msg( m_warning, _( "Your partner marked an area as dangerous." ) );
+            }
+        }
+        g_applying_remote_note = false;
+    } catch( const JsonError &e ) {
+        g_applying_remote_note = false;
+        mp_log( std::string( "[cdda-mp] note_sync parse error: " ) + e.what() );
     }
 }
 
