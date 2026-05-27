@@ -109,9 +109,10 @@ struct server::impl {
 // server
 // ---------------------------------------------------------------------------
 
-server::server( uint16_t port, std::string password )
+server::server( uint16_t port, std::string password, std::string version )
     : port_( port )
     , password_( std::move( password ) )
+    , version_( std::move( version ) )
     , impl_( std::make_unique<impl>( port ) ) {}
 
 server::~server() = default;
@@ -218,6 +219,19 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             name = "player";
         }
 
+        // Check version compatibility — reject mismatched binaries.
+        if( !version_.empty() ) {
+            const std::string client_ver = json_get_str( msg, "version" );
+            if( client_ver != version_ ) {
+                const std::string errmsg = "Version mismatch. Host: " + version_ +
+                                           " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
+                session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
+                std::cout << "[cdda-mp] Rejected join: " << errmsg << std::endl;
+                session->disconnect();
+                return;
+            }
+        }
+
         // Check password
         if( !password_.empty() ) {
             const std::string provided = json_get_str( msg, "password" );
@@ -261,9 +275,9 @@ server *get_active_server()
     return active_server_;
 }
 
-void run_server( uint16_t port, const std::string &password ) {
+void run_server( uint16_t port, const std::string &password, const std::string &version ) {
     try {
-        server srv( port, password );
+        server srv( port, password, version );
         active_server_ = &srv;
         srv.run();
     } catch( const std::exception &e ) {

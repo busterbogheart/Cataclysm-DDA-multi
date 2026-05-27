@@ -144,7 +144,8 @@ bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms )
 }
 
 bool client_connect( const std::string &host, uint16_t port,
-                     const std::string &name, const std::string &password )
+                     const std::string &name, const std::string &password,
+                     const std::string &version )
 {
     g_client = std::make_unique<client_impl>();
 
@@ -174,6 +175,9 @@ bool client_connect( const std::string &host, uint16_t port,
     g_pending_join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
     if( !password.empty() ) {
         g_pending_join += ",\"password\":\"" + password + "\"";
+    }
+    if( !version.empty() ) {
+        g_pending_join += ",\"version\":\"" + version + "\"";
     }
     g_pending_join += "}\n";
     g_join_sent = false;

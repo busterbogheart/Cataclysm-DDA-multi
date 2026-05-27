@@ -20,7 +20,7 @@ struct client_session;
 
 class server {
     public:
-        server( uint16_t port, std::string password );
+        server( uint16_t port, std::string password, std::string version = "" );
         ~server();
 
         // Start listening. Blocks until stop() is called.
@@ -49,6 +49,7 @@ class server {
 
         uint16_t port_;
         std::string password_;
+        std::string version_;
 
         struct impl;
         std::unique_ptr<impl> impl_;
@@ -59,7 +60,8 @@ class server {
 
 // Start the server on the given port. Called from main() when --server flag is set.
 // Does not return until the server shuts down.
-void run_server( uint16_t port, const std::string &password );
+void run_server( uint16_t port, const std::string &password,
+                 const std::string &version = "" );
 
 // Returns the active server instance, or nullptr if not running.
 // Thread-safe: broadcast() on the returned pointer is mutex-protected.

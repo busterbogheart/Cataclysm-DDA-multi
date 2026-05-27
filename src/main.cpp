@@ -1017,8 +1017,9 @@ int main( int argc, const char *argv[] )
 
         const uint16_t port = cli.server_port;
         const std::string password = cli.server_password;
-        std::thread server_thread( [port, password]() {
-            cata_mp::run_server( port, password );
+        const std::string ver = getVersionString();
+        std::thread server_thread( [port, password, ver]() {
+            cata_mp::run_server( port, password, ver );
         } );
         server_thread.detach();
         printf( "[cdda-mp] Headless server running on port %d (world: %s)\n",
@@ -1078,8 +1079,9 @@ int main( int argc, const char *argv[] )
         cata_mp::set_host_mode( true );
         const uint16_t port = cli.server_port;
         const std::string password = cli.server_password;
-        host_thread = std::thread( [port, password]() {
-            cata_mp::run_server( port, password );
+        const std::string ver2 = getVersionString();
+        host_thread = std::thread( [port, password, ver2]() {
+            cata_mp::run_server( port, password, ver2 );
         } );
         host_thread.detach();
         printf( "[cdda-mp] Hosting on port %d — waiting for player 2...\n", port );

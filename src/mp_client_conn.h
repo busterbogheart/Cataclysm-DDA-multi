@@ -20,7 +20,8 @@ bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms );
 // Connect to server (TCP only). Returns true on success.
 // Does NOT send the join message — call client_send_join() after the save is loaded.
 bool client_connect( const std::string &host, uint16_t port,
-                     const std::string &name, const std::string &password = "" );
+                     const std::string &name, const std::string &password = "",
+                     const std::string &version = "" );
 
 // Send the deferred join message. No-op if already sent or not connected.
 // Called by client_process_incoming() on the first game tick.

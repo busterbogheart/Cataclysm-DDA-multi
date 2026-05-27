@@ -18,6 +18,7 @@
 #include "cursesdef.h"
 #include "game.h"
 #include "game_inventory.h"
+#include "get_version.h"
 #include "gates.h"
 #include "item.h"
 #include "line.h"
@@ -3834,7 +3835,7 @@ static void mp_start_pending_host_thread()
         return;
     }
     std::thread( []() {
-        run_server( 8080, std::string() );
+        run_server( 8080, std::string(), getVersionString() );
     } ).detach();
     g_host_thread_actually_started = true;
     mp_log( "[cdda-mp] MENU: host thread started (post-world-load)" );
@@ -4219,7 +4220,7 @@ bool mp_menu_join_session()
         return false;
     }
     set_client_mode( true );
-    if( !client_connect( host, port, "player2", std::string() ) ) {
+    if( !client_connect( host, port, "player2", std::string(), getVersionString() ) ) {
         popup( _( "Could not connect to %s:%d." ), host.c_str(), static_cast<int>( port ) );
         set_client_mode( false );
         return false;
@@ -4483,6 +4484,22 @@ static bool apply_one_state_message( const std::string &msg )
         const size_t preview_len = std::min( msg.size(), static_cast<size_t>( 120 ) );
         mp_log( "[cdda-mp] recv-packet: " + msg.substr( 0, preview_len ) );
     }
+    // Server rejected our join — show the error and flag disconnect.
+    if( msg.find( "\"type\":\"error\"" ) != std::string::npos ) {
+        const auto mpos = msg.find( "\"message\":\"" );
+        std::string errtxt = "Server rejected connection.";
+        if( mpos != std::string::npos ) {
+            const size_t start = mpos + 11;
+            const size_t end = msg.find( '"', start );
+            if( end != std::string::npos ) {
+                errtxt = msg.substr( start, end - start );
+            }
+        }
+        mp_log( "[cdda-mp] SERVER ERROR: " + errtxt );
+        popup( errtxt );
+        return true;
+    }
+
     // Server asks the client to re-send worn/hair after a respawn.
     if( msg.find( "\"type\":\"resync_request\"" ) != std::string::npos ) {
         client_resync_worn();
