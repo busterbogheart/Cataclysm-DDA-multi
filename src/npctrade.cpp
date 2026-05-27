@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "avatar.h"
+#include "mp_gamestate.h"
 #include "character.h"
 #include "character_attire.h"
 #include "debug.h"
@@ -297,6 +298,21 @@ bool npc_trading::trade( npc &np, int cost, const std::string &deal )
     if( trade_result.traded ) {
         tradeui.reset();
 
+        // MP: snapshot items leaving the NPC proxy before transfer invalidates
+        // the item_locations — we need to tell the other side what to remove.
+        std::list<item> mp_taken;
+        if( cata_mp::is_partner_npc( np.getID() ) ) {
+            for( const auto &entry : trade_result.items_trader ) {
+                if( entry.first.get_item() ) {
+                    item copy = *entry.first.get_item();
+                    if( copy.count_by_charges() ) {
+                        copy.charges = entry.second;
+                    }
+                    mp_taken.push_back( copy );
+                }
+            }
+        }
+
         std::list<item_location *> from_map;
 
         std::list<item> escrow;
@@ -339,6 +355,13 @@ bool npc_trading::trade( npc &np, int cost, const std::string &deal )
             player_character.cash -= trade_result.delta_bank;
             update_npc_owed( np, trade_result.balance, trade_result.value_you );
             player_character.practice( skill_speech, trade_result.value_you / 10000 );
+        }
+
+        // MP: send trade delta so the other side's real avatar gains/loses items.
+        if( !mp_taken.empty() || !escrow.empty() ) {
+            if( cata_mp::is_partner_npc( np.getID() ) ) {
+                cata_mp::mp_post_trade( np, escrow, mp_taken );
+            }
         }
     }
     return trade_result.traded ;
