@@ -97,31 +97,86 @@ installed.
 
 ## Known limits
 
-- **Two players only** — third connection is rejected.
-- **One reality bubble**, centered on the host. A client more than
-  ~66 tiles from the host falls outside the simulated area; entities
+- **Same reality bubble**, centered on the host. A client more than
+  about 65 tiles from the host falls outside the simulated area; entities
   there don't tick.
 - **Sleep** runs but two-player sleep dynamics aren't fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
 - **Multi-hour crafts / reading** not yet validated across real
   network latency.
-- **No reconnect** — if the TCP connection drops, both players quit
+- **No reconnect** so  if the TCP connection drops, both players quit
   and re-launch.
 - **Save format** is shared with upstream CDDA but the MP fork adds
   fields; fork saves aren't interchangeable with upstream.
 - **macOS Apple Silicon only** in this preview. Intel and Windows are
-  coming as the CI matrix stabilizes.
+  coming as the CI stuff stabilizes.
+
+---
+
+## Changelog
+
+### 2026-05-27
+
+- **Trading works** — trade menu shows correct inventory for both
+  players; items no longer vanish after a deal
+- **Pass item** — bump your partner → "Pass item" (g) to hand over
+  an item without the full trade menu.  Also bindable as a keybind
+- **Overmap note sync** — map notes and danger markers show on both
+  players' overmaps
+- **Inventory sync** — partner's carried items (pocket contents, ammo,
+  mods) now visible in trade menu, not just worn clothing
+
+### 2026-05-25
+
+- **Grab & haul** — client can grab furniture and push/pull/shift it;
+  hauling items works for both players
+- **Turn indicators** — red/green co-op panel border shows whose turn
+  it is at a glance
+- **Vehicle construction** — client can install and remove vehicle parts
+
+### 2026-05-23 — 2026-05-24
+
+- **CO-OP main menu** — self-contained Host/Join flow replaces the old
+  shell-script launcher; worlds tagged as co-op get a badge
+- **Partner help** — "Help with task" in the partner menu lets you
+  assist with crafting, construction, and vehicle work
+- **Fast-forward** — both players in passive activities (sleep, wait)
+  skip ahead together instead of blocking
+- **Host driving sync** — vehicles driven by the host broadcast
+  per-tile position updates to the client
+- **Recent hosts** — Join screen remembers the last few IPs
+
+### 2026-05-16 — 2026-05-18
+
+- **Lockstep turn system** — grant/wait cycle keeps both players
+  synchronized; host waits for client before advancing monsters
+- **Activity sync** — long actions (eating, dropping, reloading) work
+  for both players with proper lockstep integration
+- **Partner menu** — bump into your partner to swap, push, or tap on
+  shoulder; host can open menus while waiting for client
+
+### 2026-05-07 — 2026-05-12
+
+- **Initial multiplayer** — TCP server/client, NPC proxy for remote
+  player, tile/monster/field sync, movement dispatch
+- **Combat** — melee and ranged damage forwarded and applied
+  server-side with kill attribution
+- **Vehicles** — client can drive, turn, toggle engine; vehicle state
+  (part HP, fuel) synced to client
+- **Traps & graffiti** — synced in tile broadcast; client triggers
+  traps server-side
+- **Appearance sync** — skin tone, hair, clothing, wielded weapon, and
+  sprite facing all mirrored between players
 
 ---
 
 ## Getting help / reporting bugs
 
 - Discord: <https://discord.gg/MzBD4v3xAU>
-- Matrix: `#cddacoop:matrix.org`
 - GitHub issues: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
 
-Logs land in:
+Logs are:
 
 ```
 ~/Library/Application Support/Cataclysm/cata.log
@@ -130,7 +185,7 @@ Logs land in:
 
 When reporting a bug, attach both logs and mention which preview
 build you're on (the version is in the filename of the zip you
-downloaded — e.g. `preview-arm-20260524c-1ac4e15`).
+downloaded like `preview-arm-20260524c-1ac4e15`).
 
 ---
 
@@ -141,9 +196,7 @@ Forked from
 experimental. All upstream contributors retain credit — see the
 [contributors graph](https://github.com/CleverRaven/Cataclysm-DDA/graphs/contributors).
 
-Site hero art by [Delicadeath](https://reddit.com/u/Delicadeath).
+Site hero art by my guy [Delicadeath](https://reddit.com/u/Delicadeath).
 Code and content under [CC-BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
 
----
 
-Have fun. Try not to die. (Or die together — that's the point.)
