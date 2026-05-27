@@ -403,6 +403,8 @@ std::string action_ident( action_id act )
             return "open_world_mods";
         case ACTION_DISTRACTION_MANAGER:
             return "open_distraction_manager";
+        case ACTION_PASS_ITEM:
+            return "pass_item";
         case ACTION_NULL:
             return "null";
         default:

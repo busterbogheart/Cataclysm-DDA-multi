@@ -2587,6 +2587,7 @@ input_context get_default_mode_input_context()
         ctxt.register_action( "open_consume" );
         ctxt.register_action( "read" );
         ctxt.register_action( "wield" );
+        ctxt.register_action( "pass_item" );
         ctxt.register_action( "pick_style" );
         ctxt.register_action( "reload_item" );
         ctxt.register_action( "reload_weapon" );
@@ -5290,6 +5291,7 @@ bool game::npc_menu( npc &who )
         push,
         tap_shoulder,
         help_with_task,
+        pass_item,
         examine_wounds,
         examine_status,
         use_item,
@@ -5342,6 +5344,10 @@ bool game::npc_menu( npc &who )
         cata_mp::partner_activity_accepts_help() &&
         !u.activity ) {
         amenu.addentry( help_with_task, true, 'h', _( "Help with task" ) );
+    }
+    if( ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) &&
+        cata_mp::is_partner_npc( who.getID() ) ) {
+        amenu.addentry( pass_item, true, 'g', _( "Pass item" ) );
     }
     amenu.addentry( examine_wounds, true, 'w', _( "Examine wounds" ) );
     amenu.addentry( examine_status, true, 'e', _( "Examine status" ) );
@@ -5456,6 +5462,8 @@ bool game::npc_menu( npc &who )
         const int duration = partner_total > 0 ? partner_total : help_fallback_moves;
         u.assign_activity( ACT_HELP_PARTNER, duration );
         add_msg( m_info, _( "You join %s to help with their task." ), who.get_name() );
+    } else if( choice == pass_item ) {
+        cata_mp::mp_handle_pass_item();
     } else if( choice == examine_wounds ) {
         ///\EFFECT_PER slightly increases precision when examining NPCs' wounds
         ///\EFFECT_FIRSTAID increases precision when examining NPCs' wounds

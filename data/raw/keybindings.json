@@ -5574,5 +5574,12 @@
     "category": "STRING_EDITOR",
     "//": "'?' is treated as text input, so a different key is used.",
     "bindings": [ { "input_method": "keyboard_any", "key": "F1" } ]
+  },
+  {
+    "type": "keybinding",
+    "id": "pass_item",
+    "name": "Pass item to partner",
+    "category": "DEFAULTMODE",
+    "bindings": [ ]
   }
 ]

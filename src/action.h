@@ -358,6 +358,8 @@ enum action_id : int {
     ACTION_TOGGLE_HOUR_TIMER,
     /** Interact with the current or nearby tile */
     ACTION_INTERACT,
+    /** MP: pass an item to the adjacent partner */
+    ACTION_PASS_ITEM,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/

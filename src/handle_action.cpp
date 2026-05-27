@@ -2419,6 +2419,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_BIONICS, ACTION_MUTATIONS,
                 ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
                 ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
+                ACTION_PASS_ITEM,
             };
             static const std::set<action_id> blocked_while_locked = {
                 ACTION_FIRE, ACTION_FIRE_BURST, ACTION_AUTOATTACK,
@@ -3609,6 +3610,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             }
             break;
         }
+
+        case ACTION_PASS_ITEM:
+            cata_mp::mp_handle_pass_item();
+            break;
 
         case ACTION_PICK_STYLE:
             if( player_character.martial_arts_data->pick_style( player_character ) ) {
