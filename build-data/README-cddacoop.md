@@ -98,6 +98,9 @@ installed.
 - **Partner menu** — bump into your partner to open it; "Tap on
   shoulder" interrupts their wait, "Help with task" works like
   single-player NPC help
+- **Host activity & health broadcast** — the host's current activity,
+  progress, HP, and movement mode stream to the client every turn so
+  the co-op HUD always reflects what the partner is actually doing
 
 ---
 
@@ -111,12 +114,6 @@ installed.
   partner-status messages.
 - **Multi-hour crafts / reading** not yet validated across real
   network latency.
-- **No reconnect** so  if the TCP connection drops, both players quit
-  and re-launch.
-- **Save format** is shared with upstream CDDA but the MP fork adds
-  fields; fork saves aren't interchangeable with upstream.
-- **macOS Apple Silicon and Windows x64** in this preview. macOS Intel
-  is coming.
 
 ---
 
@@ -124,14 +121,11 @@ installed.
 
 ### 2026-05-27
 
-- **Trading works** — trade menu shows correct inventory for both
-  players; items no longer vanish after a deal
-- **Pass item** — bump your partner → "Pass item" (g) to hand over
-  an item without the full trade menu.  Also bindable as a keybind
-- **Overmap note sync** — map notes and danger markers show on both
-  players' overmaps
-- **Inventory sync** — partner's carried items (pocket contents, ammo,
-  mods) now visible in trade menu, not just worn clothing
+- **Trading between players** — totally works
+- **Pass item** -- new feature for co-op!  bump into your partner and see a new
+option called "Pass item" (g) to hand over one item without the full trade menu.  Like
+throwing your man a loaded Saiga.  Bindable in options menu.  
+- **Overmap note sync** — any map notes and custom markers show on both players' maps
 
 ### 2026-05-25
 
@@ -145,13 +139,17 @@ installed.
 
 - **CO-OP main menu** — self-contained Host/Join flow replaces the old
   shell-script launcher; worlds tagged as co-op get a badge
-- **Partner help** — "Help with task" in the partner menu lets you
-  assist with crafting, construction, and vehicle work
-- **Fast-forward** — both players in passive activities (sleep, wait)
-  skip ahead together instead of blocking
+- **Partner help** —  new menu item "Help with task" in the partner menu (when
+you bump into them) lets you assist with crafting, construction, and vehicle work
+- **Fast-forward** — if both players are in passive activities (sleep, wait) or
+longer activities turns skip ahead quickly
 - **Host driving sync** — vehicles driven by the host broadcast
-  per-tile position updates to the client
-- **Recent hosts** — Join screen remembers the last few IPs
+  per-tile position updates to the client; both players can drive now, 
+  even SEPARATE VEHICLES.   
+- **Recent hosts** — join screen remembers the last few IPs
+- **Partner activity and health status bar** -- see your buddy's health (calculated as worst bodypart) and
+what they're doing in the new co-op panel (also move mode so you can run when they do)
+
 
 ### 2026-05-16 — 2026-05-18
 
@@ -159,15 +157,15 @@ installed.
   synchronized; host waits for client before advancing monsters
 - **Activity sync** — long actions (eating, dropping, reloading) work
   for both players with proper lockstep integration
-- **Partner menu** — bump into your partner to swap, push, or tap on
-  shoulder; host can open menus while waiting for client
+- **Partner menu** — new partner menu item (when you bump into them)
+called 'Tap on shoulder' which interrupts their waiting ('wait for several minutes` action)
 
 ### 2026-05-07 — 2026-05-12
 
-- **Initial multiplayer** — TCP server/client, NPC proxy for remote
-  player, tile/monster/field sync, movement dispatch
-- **Combat** — melee and ranged damage forwarded and applied
-  server-side with kill attribution
+- **Initial multiplayer** — TCP server/client, NPC proxy used as framework
+for remote/client player, tile/monster/field sync, movement dispatch
+- **Combat** — both players can attack in turn against the same enemy... or 
+multiple.  melee and ranged damage forwarded and applied server-side w/ proper kill attribution
 - **Vehicles** — client can drive, turn, toggle engine; vehicle state
   (part HP, fuel) synced to client
 - **Traps & graffiti** — synced in tile broadcast; client triggers
@@ -176,7 +174,7 @@ installed.
   sprite facing all mirrored between players
 
 ---
-
+s
 ## Getting help / reporting bugs
 
 - Discord: <https://discord.gg/MzBD4v3xAU>
