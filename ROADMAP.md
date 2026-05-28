@@ -19,6 +19,7 @@ Status as of 2026-05-18.
   - [NPC proxy fidelity](#npc-proxy-fidelity)
   - [Client-side NPC visibility & interaction (Phase 2/3)](#client-side-npc-visibility--interaction-phase-23)
   - [MP-only scenarios](#mp-only-scenarios)
+  - [Co-op gameplay features](#co-op-gameplay-features)
   - [Headless dedicated server](#headless-dedicated-server)
   - [Code quality](#code-quality)
 - [Long-term / Big ticket](#long-term--big-ticket)
@@ -44,6 +45,7 @@ The current client startup is a local scaffold — full CDDA character creation 
 - Client cannot sleep — need to dispatch sleep action to host, freeze client input during sleep, sync time advance back to client
 - Mutual consent sleep design documented but not implemented
 - Accurate testing requires two-machine play (shared filesystem masks timing bugs)
+- **Shared bed ritual** — when both players sleep in adjacent beds/bedrolls, treat it as a single coordinated sleep with morale bonus and synced wake-up. Sidesteps the "one player blocks the other" problem by making co-sleep the intended path. Sleep state becomes "both asleep → fast-forward together" rather than "one sleeps, one waits or roams"
 
 ### Long actions (crafting, reading, construction)
 - activity_actor loop correctness over the grant/wait cycle is untested — deadlock and time desync are the risks
@@ -277,6 +279,37 @@ New action types over the existing message channel, each a round-trip:
 - Then add JSON scenarios with tuned starting conditions for 2 players: threat density, complementary forced traits, co-op starting missions, co-op loot balance
 - **Hard part** — client spawn location: currently client always teleports to host position regardless of scenario; a proper MP scenario needs the host to designate a client-specific spawn point in the join message (protocol change)
 - Flag descriptions array in `newcharacter.cpp` (~line 1919) needs a new entry for `MULTIPLAYER_ONLY` to show in the UI
+
+### Co-op gameplay features
+
+Mechanics that only exist because there's a partner — building trust loops and "I can't believe that worked" moments rather than pure utility.
+
+**Team reload (heavy weapons)**
+
+One player wields a heavy weapon (rocket launcher, grenade launcher, autocannon), the other carries the ammo. Adjacent + partner-has-matching-ammo unlocks a fast reload (~100 moves each, simultaneous) vs the normal solo time (500-1000+ moves). Solves the real problem that heavy weapons are nearly unusable solo because of suicide-tier reload time in combat; makes them the co-op signature weapon class.
+
+Implementation:
+- New keybind / bump-menu entry `ACTION_TEAM_RELOAD` on the wielder side
+- Partner-adjacency + ammo-search across partner's inventory (existing inventory search code)
+- Reuse `Character::reload_ammo` path, but cost both players ~100 moves instead of weapon's full reload_time
+- Wire-sync ammo transfer via existing `trade_delta` (give:[ammo], take:[])
+- Bump-menu fits the existing pattern; keybind is the snappier UX during combat
+
+Extension (v2): explicit "ammo carrier" designation — partner marks ammo in their inventory as linked to your weapon, surfaces in your HUD as "linked: 12 rounds." Same mechanic, better feedback loop.
+
+**Async shift handoff**
+
+Player A plays solo for hours, hands the world to Player B who plays solo for hours, hands back. World clock advances continuously under whoever's hosting; off-shift player is fully disengaged. Each shift is single-player CDDA on a shared save. Sidesteps the entire time-skip / bubble / lockstep problem by making it asynchronous.
+
+Most pieces work today via the disconnect-and-reload path; the feature is making it an intentional, supported workflow rather than a recovery procedure.
+
+Two implementation tiers:
+
+*Tier 1 (shippable in ~a day):* "Hand off save" menu entry. Host triggers handoff → save zips, transfers over TCP to the connected client → both sessions end → client unzips into their save dir and can now host it. No live role swap; each handoff is a clean session boundary. Player A's character continues to exist in the world as the proxy NPC under Player B's hosting (and vice versa).
+
+*Tier 2 (live mid-session swap):* "Switch host" mid-session. Save transfers, then the client promotes itself to host mode, opens its own server, original host becomes the new client. The character-pointer swap (proxy ↔ avatar) is the hard part — your avatar becomes the proxy NPC, the proxy NPC becomes your avatar. Worth deferring until Tier 1 proves the workflow.
+
+Why this is interesting beyond convenience: it generates DF-succession-style narratives. "Day 4 — I came back and there's a wall half-built in the kitchen. What were you thinking?" "Day 7 — there's a corpse in the bedroom and I don't know whose it is." Async shifts are arguably the most honest answer to "two players doing different things at different times" — better than expanding the bubble or implementing async-realtime sleep.
 
 ### Headless dedicated server
 - `--server` mode implemented (loads world without SDL) but not fully tested
