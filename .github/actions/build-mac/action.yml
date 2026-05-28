@@ -133,11 +133,10 @@ runs:
       run: |
         # Stage in a temp dir so create-dmg gets the README inside the DMG
         # mount and `ditto` zips the same pair.  Cddacoop.app is renamed
-        # before this step; README.md is checked in under build-data/osx/.
         rm -rf /tmp/cddacoop-stage
         mkdir -p /tmp/cddacoop-stage
         cp -R Cddacoop.app /tmp/cddacoop-stage/
-        cp build-data/osx/README.md /tmp/cddacoop-stage/README.md
+        cp build-data/README-cddacoop.md /tmp/cddacoop-stage/README.md
 
     - name: Build DMG and .zip
       id: package

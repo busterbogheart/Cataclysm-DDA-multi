@@ -2410,23 +2410,38 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         // otherwise the client either bypasses lockstep (free action) or
         // mutates state with negative moves.
         if( mp_locked ) {
+            // Actions that open a menu / create an activity — safe to browse
+            // while locked because the activity needs moves to actually start.
             static const std::set<action_id> menu_allowed_while_locked = {
-                ACTION_WEAR, ACTION_TAKE_OFF, ACTION_WIELD, ACTION_UNLOAD, ACTION_MEND,
-                ACTION_EAT, ACTION_OPEN_CONSUME,
-                ACTION_DROP, ACTION_DIR_DROP,
                 ACTION_PICKUP, ACTION_PICKUP_ALL,
                 ACTION_BUTCHER, ACTION_LOOT, ACTION_CHAT,
-                ACTION_BIONICS, ACTION_MUTATIONS,
                 ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
                 ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
-                ACTION_PASS_ITEM,
             };
+            // Actions that mutate state or cost AP immediately.  Block all
+            // of these while the client has no grant.
             static const std::set<action_id> blocked_while_locked = {
+                // Inventory mutations (immediate, no activity gate)
+                ACTION_WEAR, ACTION_TAKE_OFF, ACTION_WIELD,
+                ACTION_EAT, ACTION_OPEN_CONSUME,
+                ACTION_DROP, ACTION_DIR_DROP,
+                ACTION_UNLOAD, ACTION_UNLOAD_CONTAINER, ACTION_INSERT_ITEM,
+                ACTION_MEND, ACTION_SORT_ARMOR,
+                ACTION_RELOAD_ITEM, ACTION_RELOAD_WEAPON, ACTION_RELOAD_WIELDED,
+                ACTION_USE, ACTION_USE_WIELDED, ACTION_READ,
+                ACTION_PASS_ITEM,
+                // Combat
                 ACTION_FIRE, ACTION_FIRE_BURST, ACTION_AUTOATTACK,
-                ACTION_SMASH, ACTION_GRAB, ACTION_HAUL,
+                ACTION_THROW, ACTION_THROW_WIELDED,
+                ACTION_CAST_SPELL, ACTION_RECAST_SPELL,
+                ACTION_SMASH,
+                // World interaction
+                ACTION_GRAB, ACTION_HAUL, ACTION_HAUL_TOGGLE,
                 ACTION_OPEN, ACTION_CLOSE, ACTION_PEEK,
                 ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
-                ACTION_SLEEP, ACTION_WORKOUT,
+                ACTION_CONTROL_VEHICLE,
+                // Long actions
+                ACTION_SLEEP, ACTION_WORKOUT, ACTION_WAIT,
             };
             if( menu_allowed_while_locked.count( act ) ) {
                 cata_mp::mp_log( "[cdda-mp] CLI-LOCKED-ALLOW: act=" +
@@ -3095,16 +3110,21 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
     // not mutate world state or advance the simulation.
     if( cata_mp::is_hosting() && player_character.get_moves() <= 0 ) {
         static const std::set<action_id> host_ui_actions = {
+            // Pure UI (read-only)
             ACTION_ZOOM_IN, ACTION_ZOOM_OUT,
             ACTION_MAP, ACTION_LIST_ITEMS,
             ACTION_INVENTORY, ACTION_COMPARE, ACTION_ORGANIZE,
-            ACTION_LOOK, ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
+            ACTION_LOOK,
             ACTION_HELP, ACTION_MESSAGES,
             ACTION_PL_INFO, ACTION_MORALE,
             ACTION_FACTIONS, ACTION_MISSIONS, ACTION_MEDICAL,
             ACTION_MUTATIONS, ACTION_BIONICS,
             ACTION_DIARY,
-            ACTION_LOOT,
+            // Menu → activity (needs moves to execute, safe to browse)
+            ACTION_PICKUP, ACTION_PICKUP_ALL, ACTION_LOOT,
+            ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
+            ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
+            ACTION_BUTCHER, ACTION_CHAT,
             // Move-mode toggles are zero-AP and just flip flags.
             ACTION_TOGGLE_RUN, ACTION_TOGGLE_CROUCH, ACTION_TOGGLE_PRONE,
             ACTION_CYCLE_MOVE, ACTION_CYCLE_MOVE_REVERSE,
