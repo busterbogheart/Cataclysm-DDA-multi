@@ -1,8 +1,14 @@
 name: Release
 
-# Build selected platforms, then optionally upload to the preview release
-# on the site.  Triggered by tag push (all platforms) or manual dispatch
-# with platform toggles.
+# Build selected platforms, then optionally upload to a per-build release on
+# GitHub. Triggered by tag push (all platforms) or manual dispatch with
+# platform toggles.
+#
+# Each preview build → its own release `preview-<sha7>`. The releases page
+# becomes the build archive — players who need to pair with a friend on an
+# older sig can grab the matching build. The site (cddacoop.com) always
+# fetches the newest non-draft release via the GitHub API, so the homepage
+# download auto-points at the freshest build.
 
 on:
   push:
@@ -30,13 +36,31 @@ on:
 permissions:
   contents: write  # create releases, upload assets
 
-env:
-  BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('preview-{0}', github.sha) }}
-  PREVIEW_TAG: preview-arm-20260524
-
 jobs:
+  setup:
+    name: Compute build version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Compute version
+        id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            VER="$REF_NAME"
+          else
+            VER="preview-${SHA:0:7}"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Build version: $VER"
+
   build-mac-arm:
     name: Build macOS (arm64)
+    needs: setup
     if: >-
       github.ref_type == 'tag'
       || github.event.inputs.mac_arm == 'true'
@@ -49,10 +73,11 @@ jobs:
       - uses: ./.github/actions/build-mac
         with:
           arch: arm64
-          version: ${{ env.BUILD_VERSION }}
+          version: ${{ needs.setup.outputs.version }}
 
   build-mac-intel:
     name: Build macOS (x64)
+    needs: setup
     if: >-
       github.ref_type == 'tag'
       || github.event.inputs.mac_intel == 'true'
@@ -65,10 +90,11 @@ jobs:
       - uses: ./.github/actions/build-mac
         with:
           arch: x64
-          version: ${{ env.BUILD_VERSION }}
+          version: ${{ needs.setup.outputs.version }}
 
   build-windows:
     name: Build Windows (x64)
+    needs: setup
     if: >-
       github.ref_type == 'tag'
       || github.event.inputs.windows == 'true'
@@ -80,11 +106,11 @@ jobs:
 
       - uses: ./.github/actions/build-windows
         with:
-          version: ${{ env.BUILD_VERSION }}
+          version: ${{ needs.setup.outputs.version }}
 
   upload:
-    name: Upload to preview release
-    needs: [build-mac-arm, build-mac-intel, build-windows]
+    name: Publish release
+    needs: [setup, build-mac-arm, build-mac-intel, build-windows]
     # Run if upload was requested or it's a tag push. Allow skipped deps
     # (platform wasn't selected) — only fail on actual failure.
     if: >-
@@ -104,47 +130,35 @@ jobs:
       - name: List artifacts
         run: ls -lh dist/ || echo "No artifacts"
 
-      - name: Upload to preview release
-        if: github.ref_type != 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for f in dist/cddacoop-*.zip dist/cddacoop-*.dmg; do
-            [ -f "$f" ] || continue
-            BASENAME=$(basename "$f")
-            # Delete old asset with matching suffix if it exists
-            SUFFIX=$(echo "$BASENAME" | grep -o 'macos-arm64\|macos-x64\|windows-x64')
-            if [ -n "$SUFFIX" ]; then
-              OLD=$(gh release view "$PREVIEW_TAG" --json assets --jq ".assets[] | select(.name | test(\"$SUFFIX\")) | .name" 2>/dev/null || true)
-              if [ -n "$OLD" ]; then
-                echo "Replacing $OLD with $BASENAME"
-                gh release delete-asset "$PREVIEW_TAG" "$OLD" --yes || true
-              fi
-            fi
-            gh release upload "$PREVIEW_TAG" "$f" --clobber
-          done
-
-      - name: Publish tagged release
-        if: github.ref_type == 'tag'
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ env.BUILD_VERSION }}
-          tag_name: ${{ env.BUILD_VERSION }}
+          name: ${{ needs.setup.outputs.version }}
+          tag_name: ${{ needs.setup.outputs.version }}
           draft: false
-          prerelease: false
-          generate_release_notes: true
+          # Preview builds (dispatch) → prerelease. Tagged v* → stable.
+          prerelease: ${{ github.ref_type != 'tag' }}
+          # Auto-generated notes are noisy for previews; only emit them for
+          # tagged releases where they reflect a real changelog window.
+          generate_release_notes: ${{ github.ref_type == 'tag' }}
           body: |
             ## Downloads
 
-            - **macOS Apple Silicon** — `cddacoop-${{ env.BUILD_VERSION }}-macos-arm64.zip`
-            - **macOS Intel** — `cddacoop-${{ env.BUILD_VERSION }}-macos-x64.zip`
-            - **Windows x64** — `cddacoop-${{ env.BUILD_VERSION }}-windows-x64.zip`
+            - **macOS Apple Silicon** — `cddacoop-${{ needs.setup.outputs.version }}-macos-arm64.zip`
+            - **macOS Intel** — `cddacoop-${{ needs.setup.outputs.version }}-macos-x64.zip`
+            - **Windows x64** — `cddacoop-${{ needs.setup.outputs.version }}-windows-x64.zip`
             - **CC-Sounds pack** — `cc-sounds.zip` (the .app prompts on first launch to download this)
 
             macOS zips contain `Cddacoop.app` + `README.md`.
             Unsigned — first launch on macOS needs **right-click → Open**;
             Windows SmartScreen needs **More info → Run anyway**.
 
+            ---
+
+            Co-op partners must run **matching builds** — the in-game version
+            handshake rejects mismatched sigs. If your friend hasn't updated,
+            grab the matching older build from the
+            [releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases).
           files: |
             dist/cddacoop-*-macos-arm64.zip
             dist/cddacoop-*-macos-x64.zip
