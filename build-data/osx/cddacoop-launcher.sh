@@ -13,6 +13,12 @@ set -e
 RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
 cd "$RES"
 
+# Tell dyld to find the bundled SDL2*.framework and libintl.dylib next to
+# the binary, instead of in the build-time rpath (~/Library/Frameworks).
+# Mirrors what upstream Cataclysm.sh does.
+export DYLD_FRAMEWORK_PATH="$RES"
+export DYLD_LIBRARY_PATH="$RES"
+
 USER_SOUND_DIR="$HOME/Library/Application Support/Cataclysm/sound"
 BUNDLE_CC="$RES/data/sound/CC-Sounds"
 USER_CC="$USER_SOUND_DIR/CC-Sounds"

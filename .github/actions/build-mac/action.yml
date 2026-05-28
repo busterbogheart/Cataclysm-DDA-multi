@@ -25,12 +25,51 @@ runs:
     - name: Install build dependencies
       shell: bash
       run: |
+        # SDL2 itself comes from libsdl.org frameworks (next step) — those
+        # are built with macOS 10.11+ deployment target and statically embed
+        # codec deps (libjxl, libavif, libwebp, libvorbis, libflac, etc.).
+        # Going through brew here pulls in dylibs built for the runner's
+        # current macOS, which reference newer libc++ symbols (e.g.
+        # __libcpp_verbose_abort) and fail on older macOS at load time.
         brew install \
-          sdl2 sdl2_image sdl2_mixer sdl2_ttf \
           gettext \
           dylibbundler \
           create-dmg \
           ccache
+
+    - name: Install SDL2 frameworks from libsdl.org
+      shell: bash
+      env:
+        SDL2_VERSION: '2.30.11'
+        SDL2_IMAGE_VERSION: '2.8.5'
+        SDL2_MIXER_VERSION: '2.8.1'
+        SDL2_TTF_VERSION: '2.24.0'
+      run: |
+        # Use the official SDL2 frameworks (universal arm64+x86_64, deployment
+        # target macOS 10.11+) instead of brew dylibs. The Makefile already
+        # supports FRAMEWORK=1 — auto-detects ~/Library/Frameworks.
+        mkdir -p "$HOME/Library/Frameworks"
+
+        install_framework() {
+          local name="$1" ver="$2" repo="$3"
+          local dmg="${name}-${ver}.dmg"
+          local url="https://github.com/libsdl-org/${repo}/releases/download/release-${ver}/${dmg}"
+          local mnt="/tmp/${name}-mnt"
+          echo "Downloading ${url}"
+          curl -fL --retry 3 -o "/tmp/${dmg}" "${url}"
+          hdiutil attach -nobrowse -mountpoint "${mnt}" "/tmp/${dmg}"
+          # The DMG layout has the .framework at the root.
+          cp -R "${mnt}/${name}.framework" "$HOME/Library/Frameworks/"
+          hdiutil detach "${mnt}"
+          rm "/tmp/${dmg}"
+        }
+
+        install_framework SDL2        "${SDL2_VERSION}"        SDL
+        install_framework SDL2_image  "${SDL2_IMAGE_VERSION}"  SDL_image
+        install_framework SDL2_mixer  "${SDL2_MIXER_VERSION}"  SDL_mixer
+        install_framework SDL2_ttf    "${SDL2_TTF_VERSION}"    SDL_ttf
+
+        ls -la "$HOME/Library/Frameworks/"
 
     - name: Restore ccache
       uses: actions/cache@v4
@@ -78,16 +117,16 @@ runs:
     - name: Build cataclysm-tiles
       shell: bash
       run: |
-        # No FRAMEWORK var → link against brew-installed SDL2 dylibs, then
-        # let dylibbundler copy them into the .app at packaging time.
-        # (Makefile uses ifdef FRAMEWORK — even FRAMEWORK=0 triggers the
-        # framework path, so the var must not be defined at all.)
+        # FRAMEWORK=1 → link against SDL2.framework et al. installed in the
+        # previous step. The Makefile uses `ifdef FRAMEWORK` (presence, not
+        # value) and finds them under ~/Library/Frameworks.
         # RELEASE=1 strips symbols and turns on optimization.
         # CCACHE=1 wires CDDA's own ccache integration (CCACHE_SLOPPINESS,
         # CCACHE_CPP2 already set by Makefile around CCACHEBIN).
         make -j"$(sysctl -n hw.logicalcpu)" \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 CCACHE=1 \
+          FRAMEWORK=1 \
           USE_HOME_DIR=1 \
           RELEASE=1 \
           cataclysm-tiles
@@ -107,12 +146,15 @@ runs:
       shell: bash
       run: |
         # `make app` produces Cataclysm.app at the repo root (name is
-        # hardcoded in the Makefile). The trailing dylibbundler step copies
-        # the SDL2 dylibs into Contents/Resources/ and rewrites the binary's
-        # load paths to @executable_path/.
+        # hardcoded in the Makefile). With FRAMEWORK=1, the Makefile copies
+        # SDL2.framework / SDL2_image.framework / SDL2_mixer.framework /
+        # SDL2_ttf.framework into Contents/Resources/. The trailing
+        # dylibbundler still runs and bundles the few remaining brew dylibs
+        # the binary depends on (libintl from gettext).
         make app \
           TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 \
+          FRAMEWORK=1 \
           USE_HOME_DIR=1 \
           RELEASE=1
         # Rename post-hoc so the user-visible app inside the DMG matches the
@@ -127,6 +169,35 @@ runs:
         # so we keep the filename and just replace its contents.
         cp build-data/osx/cddacoop-launcher.sh Cddacoop.app/Contents/MacOS/Cataclysm.sh
         chmod +x Cddacoop.app/Contents/MacOS/Cataclysm.sh
+
+    - name: Audit bundled dylibs (compatibility check)
+      shell: bash
+      run: |
+        # Verify nothing in the bundle references __libcpp_verbose_abort (the
+        # libc++ symbol that breaks loading on macOS < 13.3 / Xcode < 14.3).
+        # If anything does, the .app will fail with "symbol not found" on
+        # older macOS — fail the build instead of shipping it.
+        RES="Cddacoop.app/Contents/Resources"
+        echo "=== Bundle contents ==="
+        ls "$RES" | grep -E '\.framework$|\.dylib$' || true
+        echo "=== Binary load commands ==="
+        otool -L "$RES/cataclysm-tiles" | head -20
+        echo "=== Symbol scan for __libcpp_verbose_abort ==="
+        # Use a temp file because pipe-into-while runs in a subshell.
+        BAD=$(mktemp)
+        find "Cddacoop.app" -type f \( -name "*.dylib" -o -name "cataclysm-tiles" -o -path "*/Versions/A/SDL2*" \) -print0 |
+          while IFS= read -r -d '' f; do
+            if nm -u "$f" 2>/dev/null | grep -q "__ZNSt3__122__libcpp_verbose_abort"; then
+              echo "  FAIL: $f references __libcpp_verbose_abort" | tee -a "$BAD"
+            fi
+          done
+        if [ -s "$BAD" ]; then
+          rm -f "$BAD"
+          echo "Aborting: at least one bundled dylib won't load on macOS < 13.3"
+          exit 1
+        fi
+        rm -f "$BAD"
+        echo "  OK: no __libcpp_verbose_abort references found"
 
     - name: Stage payload (.app + README)
       shell: bash
