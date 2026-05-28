@@ -1,31 +1,46 @@
 name: Release
 
-# Triggered by pushing a semver tag (e.g. v0.1.0). Builds macOS Apple Silicon,
-# macOS Intel, and Windows x64 in parallel, then publishes a public GitHub
-# Release with all artifacts plus the CC-Sounds pack attached.
+# Build selected platforms, then optionally upload to the preview release
+# on the site.  Triggered by tag push (all platforms) or manual dispatch
+# with platform toggles.
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      mac_arm:
+        description: 'Build macOS Apple Silicon'
+        type: boolean
+        default: true
+      mac_intel:
+        description: 'Build macOS Intel'
+        type: boolean
+        default: false
+      windows:
+        description: 'Build Windows x64'
+        type: boolean
+        default: false
+      upload:
+        description: 'Upload to preview release on site'
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # create releases, upload assets
 
 env:
   BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('preview-{0}', github.sha) }}
+  PREVIEW_TAG: preview-arm-20260524
 
 jobs:
-  build-mac:
-    name: Build macOS (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: macos-14, arch: arm64 }  # Apple Silicon
-          - { runner: macos-13, arch: x64 }    # Intel
-    runs-on: ${{ matrix.runner }}
+  build-mac-arm:
+    name: Build macOS (arm64)
+    if: >-
+      github.ref_type == 'tag'
+      || github.event.inputs.mac_arm == 'true'
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,11 +48,30 @@ jobs:
 
       - uses: ./.github/actions/build-mac
         with:
-          arch: ${{ matrix.arch }}
+          arch: arm64
+          version: ${{ env.BUILD_VERSION }}
+
+  build-mac-intel:
+    name: Build macOS (x64)
+    if: >-
+      github.ref_type == 'tag'
+      || github.event.inputs.mac_intel == 'true'
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/build-mac
+        with:
+          arch: x64
           version: ${{ env.BUILD_VERSION }}
 
   build-windows:
     name: Build Windows (x64)
+    if: >-
+      github.ref_type == 'tag'
+      || github.event.inputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,9 +82,14 @@ jobs:
         with:
           version: ${{ env.BUILD_VERSION }}
 
-  release:
-    name: Publish GitHub Release
-    needs: [build-mac, build-windows]
+  upload:
+    name: Upload to preview release
+    needs: [build-mac-arm, build-mac-intel, build-windows]
+    # Run if upload was requested or it's a tag push. Allow skipped deps
+    # (platform wasn't selected) — only fail on actual failure.
+    if: >-
+      !failure() && !cancelled()
+      && (github.event.inputs.upload == 'true' || github.ref_type == 'tag')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,23 +98,35 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: cddacoop-macos-arm64
           path: dist/
+          merge-multiple: true
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: cddacoop-macos-x64
-          path: dist/
+      - name: List artifacts
+        run: ls -lh dist/ || echo "No artifacts"
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: cddacoop-windows-x64
-          path: dist/
+      - name: Upload to preview release
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in dist/cddacoop-*.zip dist/cddacoop-*.dmg; do
+            [ -f "$f" ] || continue
+            BASENAME=$(basename "$f")
+            # Delete old asset with matching suffix if it exists
+            SUFFIX=$(echo "$BASENAME" | grep -o 'macos-arm64\|macos-x64\|windows-x64')
+            if [ -n "$SUFFIX" ]; then
+              OLD=$(gh release view "$PREVIEW_TAG" --json assets --jq ".assets[] | select(.name | test(\"$SUFFIX\")) | .name" 2>/dev/null || true)
+              if [ -n "$OLD" ]; then
+                echo "Replacing $OLD with $BASENAME"
+                gh release delete-asset "$PREVIEW_TAG" "$OLD" --yes || true
+              fi
+            fi
+            gh release upload "$PREVIEW_TAG" "$f" --clobber
+          done
 
-      - name: Stage CC-Sounds pack from repo
-        run: cp data/sound/CC-Sounds.zip dist/cc-sounds.zip
-
-      - uses: softprops/action-gh-release@v2
+      - name: Publish tagged release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
         with:
           name: ${{ env.BUILD_VERSION }}
           tag_name: ${{ env.BUILD_VERSION }}
@@ -94,12 +145,7 @@ jobs:
             Unsigned — first launch on macOS needs **right-click → Open**;
             Windows SmartScreen needs **More info → Run anyway**.
 
-            ## What's new
-
-            <!-- maintainer: edit this section before publishing -->
-
           files: |
             dist/cddacoop-*-macos-arm64.zip
             dist/cddacoop-*-macos-x64.zip
             dist/cddacoop-*-windows-x64.zip
-            dist/cc-sounds.zip
