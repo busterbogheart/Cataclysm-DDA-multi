@@ -130,6 +130,67 @@ jobs:
       - name: List artifacts
         run: ls -lh dist/ || echo "No artifacts"
 
+      - name: Build release body
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          BUILD_DATE=$(date -u '+%Y-%m-%d %H:%M UTC')
+
+          # Find the most recent prior preview release tag so we can scope
+          # "what changed" to commits since then. Falls back to last 10
+          # commits if no prior preview exists (first-ever build, or all
+          # previews pruned). Tagged v* releases get the auto-generated
+          # changelog appended below; we still list recent commits here for
+          # consistency.
+          PREV=$(gh release list -R "$REPO" --limit 30 \
+                   --json tagName,isPrerelease \
+                   --jq '.[] | select(.isPrerelease == true and (.tagName | startswith("preview-"))) | .tagName' \
+                 | grep -v "^${VERSION}\$" \
+                 | head -1 || true)
+
+          if [ -n "$PREV" ] && git rev-parse --verify "refs/tags/$PREV" >/dev/null 2>&1; then
+            CHANGES=$(git log --format="- %s" "$PREV..HEAD" | head -20)
+            COMPARE="commits since [\`$PREV\`](https://github.com/$REPO/releases/tag/$PREV)"
+          else
+            CHANGES=$(git log --format="- %s" -10 HEAD)
+            COMPARE="last 10 commits"
+          fi
+          [ -z "$CHANGES" ] && CHANGES="- (no new commits)"
+
+          # Heredoc into the body file. Don't quote 'EOF' — we want $VAR
+          # expansion. Backticks need escaping; raw URLs are fine.
+          cat > /tmp/body.md <<EOF
+          **Built:** $BUILD_DATE
+          **SHA:** \`$(git rev-parse --short HEAD)\` (matches the version line shown on the main menu and the zip filename)
+
+          ## What changed ($COMPARE)
+
+          $CHANGES
+
+          ## Downloads
+
+          - **macOS Apple Silicon** — \`cddacoop-${VERSION}-macos-arm64.zip\`
+          - **macOS Intel** — \`cddacoop-${VERSION}-macos-x64.zip\`
+          - **Windows x64** — \`cddacoop-${VERSION}-windows-x64.zip\`
+          - **CC-Sounds pack** — \`cc-sounds.zip\` (the .app prompts on first launch to download this)
+
+          macOS zips contain \`Cddacoop.app\` + \`README.md\`.
+          Unsigned — first launch on macOS needs **right-click → Open**;
+          Windows SmartScreen needs **More info → Run anyway**.
+
+          ---
+
+          Co-op partners must run **matching builds** — the in-game version
+          handshake rejects mismatched sigs. The short SHA on the main menu
+          matches the SHA in the zip filename, so your friend can pick the
+          right build from the [releases page](https://github.com/$REPO/releases).
+          EOF
+
+          echo "=== body.md ==="
+          cat /tmp/body.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -138,27 +199,11 @@ jobs:
           draft: false
           # Preview builds (dispatch) → prerelease. Tagged v* → stable.
           prerelease: ${{ github.ref_type != 'tag' }}
-          # Auto-generated notes are noisy for previews; only emit them for
-          # tagged releases where they reflect a real changelog window.
+          # Auto-generated notes are appended below body for tagged
+          # releases — they reflect a real cross-version changelog window.
+          # Previews already list "what changed" above.
           generate_release_notes: ${{ github.ref_type == 'tag' }}
-          body: |
-            ## Downloads
-
-            - **macOS Apple Silicon** — `cddacoop-${{ needs.setup.outputs.version }}-macos-arm64.zip`
-            - **macOS Intel** — `cddacoop-${{ needs.setup.outputs.version }}-macos-x64.zip`
-            - **Windows x64** — `cddacoop-${{ needs.setup.outputs.version }}-windows-x64.zip`
-            - **CC-Sounds pack** — `cc-sounds.zip` (the .app prompts on first launch to download this)
-
-            macOS zips contain `Cddacoop.app` + `README.md`.
-            Unsigned — first launch on macOS needs **right-click → Open**;
-            Windows SmartScreen needs **More info → Run anyway**.
-
-            ---
-
-            Co-op partners must run **matching builds** — the in-game version
-            handshake rejects mismatched sigs. If your friend hasn't updated,
-            grab the matching older build from the
-            [releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases).
+          body_path: /tmp/body.md
           files: |
             dist/cddacoop-*-macos-arm64.zip
             dist/cddacoop-*-macos-x64.zip
