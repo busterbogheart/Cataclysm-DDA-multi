@@ -4376,9 +4376,24 @@ void process_mp_events()
     // Stamp this world as MP-touched so the world pickers can badge it.
     mp_world_marker_update();
 
+    // Queue depth is intentionally capped at 1 action per call. Draining the
+    // whole queue in a loop caused unexpected back-to-back move execution when
+    // network timing let two packets arrive before process_mp_events() ran.
+    // connect/disconnect are rare and must not be dropped, so they drain fully;
+    // action events stop after one.
+    // TODO(roadmap): real multi-depth queue for lockstep relaxation / input
+    // buffering — see ROADMAP.md "Action queue depth"
     mp_event event;
+    bool action_processed = false;
     while( get_mp_queue().pop( event ) ) {
         if( event.evt_type == mp_event::type::action ) {
+            if( action_processed ) {
+                // Put it back? We can't — push to a local pending slot instead.
+                // For now, log and drop: lockstep should prevent this case.
+                mp_log( "[cdda-mp] process_mp_events: unexpected queued action dropped: " +
+                        event.data.substr( 0, 60 ) );
+                continue;
+            }
             mp_log( "[cdda-mp] process_mp_events: " + event.data.substr( 0, 60 ) );
         }
         switch( event.evt_type ) {
@@ -4390,6 +4405,7 @@ void process_mp_events()
                 break;
             case mp_event::type::action:
                 handle_remote_action( event.session_id, event.data );
+                action_processed = true;
                 break;
         }
     }

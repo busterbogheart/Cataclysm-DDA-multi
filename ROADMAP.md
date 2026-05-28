@@ -315,6 +315,14 @@ Why this is interesting beyond convenience: it generates DF-succession-style nar
 - `--server` mode implemented (loads world without SDL) but not fully tested
 - Periodic autosave for server mode not implemented
 
+### Action queue depth
+The `event_queue` in `mp_queue.h` is a thread-safety bridge between the Asio TCP thread and the game thread — it must stay. But currently only one action event is consumed per `process_mp_events()` call; extras are logged and dropped. This is intentional while lockstep is strict (the client shouldn't send a second action before receiving a grant). Possible future uses for real multi-depth buffering:
+- **Lockstep relaxation**: when neither player has hostiles in sight, allow the client to queue 2–3 moves ahead so it feels local even with latency
+- **Input replay / rewind**: queue lets the host rewind and re-apply client actions on prediction mismatch
+- **Async long-action overlap**: client queues a "start crafting" + subsequent moves while the host resolves the prior turn
+
+When any of these ship, the depth-1 cap and the drop-log in `process_mp_events()` should be removed and replaced with proper backpressure (either a bounded ring buffer or a per-player slot limit with an NACK to the client).
+
 ### Code quality
 - `do_turn.cpp` inline MP blocks should be refactored into named callouts (`mp_pre_monmove()`, `mp_client_auto_wait()`, `mp_post_activity()`) — reduces merge conflict surface with upstream
 
