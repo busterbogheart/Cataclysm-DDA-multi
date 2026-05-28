@@ -174,7 +174,7 @@ multiple.  melee and ranged damage forwarded and applied server-side w/ proper k
   sprite facing all mirrored between players
 
 ---
-s
+
 ## Getting help / reporting bugs
 
 - Discord: <https://discord.gg/MzBD4v3xAU>

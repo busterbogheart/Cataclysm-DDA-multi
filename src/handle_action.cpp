@@ -3924,10 +3924,16 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
         case ACTION_SAVE:
             if( cata_mp::is_client_mode() ) {
-                if( query_yn( _( "Disconnect and quit? (Progress is saved on the host.)" ) ) ) {
-                    cata_mp::mp_notify_session_ending();
-                    player_character.set_moves( 0 );
-                    uquit = QUIT_NOSAVED;
+                if( query_yn( _( "Save and disconnect? Your character will be saved locally so you can load it on rejoin." ) ) ) {
+                    if( save() ) {
+                        cata_mp::mp_notify_session_ending();
+                        player_character.set_moves( 0 );
+                        uquit = QUIT_SAVED;
+                    } else if( save_is_dirty && query_yn( _( "Unable to save, quit anyway?" ) ) ) {
+                        cata_mp::mp_notify_session_ending();
+                        player_character.set_moves( 0 );
+                        uquit = QUIT_NOSAVED;
+                    }
                 }
             } else if( query_yn( _( "Save and quit?" ) ) ) {
                 if( save() ) {
@@ -3944,9 +3950,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_QUICKSAVE:
-            if( !cata_mp::is_client_mode() ) {
-                quicksave();
-            }
+            // Client quicksave writes the local avatar so it can be re-loaded
+            // on rejoin via CO-OP > Join > Load existing character.
+            quicksave();
             return false;
 
         case ACTION_QUICKLOAD:

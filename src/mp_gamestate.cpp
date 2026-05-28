@@ -647,23 +647,21 @@ static bool mp_turn_show_green()
 }
 
 struct mp_edge_t {
-    // Four 1-cell-thick windows framing the game view (excluding the right
-    // sidebar). Replaces the prior wall-of-color side strips with a thin
-    // peripheral border that uses half-block glyphs so each side reads as a
-    // crisp line at the very edge of its cell, not a full filled column/row.
-    catacurses::window top_win, bot_win, lft_win, rgt_win;
+    // Two full-height 1-cell windows on the left and right edges of the game
+    // view (excluding the right sidebar). Half-block glyphs render as crisp
+    // vertical lines at the very edge of their cell. Top/bottom bars removed
+    // to claim back vertical screen real estate; the partner-info panel keeps
+    // its own colored border so the turn-state signal is still visible there.
+    catacurses::window lft_win, rgt_win;
     ui_adaptor ui;
 
     mp_edge_t() {
         ui.on_screen_resize( [this]( ui_adaptor & ua ) {
             const int sidebar_w = panel_manager::get_manager().get_width_right();
             const int view_w = std::max( 1, TERMX - sidebar_w );
-            top_win = catacurses::newwin( 1, view_w, point( 0, 0 ) );
-            bot_win = catacurses::newwin( 1, view_w, point( 0, TERMY - 1 ) );
-            const int side_h = std::max( 0, TERMY - 2 );
-            lft_win = catacurses::newwin( side_h, 1, point( 0, 1 ) );
-            rgt_win = catacurses::newwin( side_h, 1, point( view_w - 1, 1 ) );
-            ua.position_from_window( top_win );
+            lft_win = catacurses::newwin( TERMY, 1, point( 0, 0 ) );
+            rgt_win = catacurses::newwin( TERMY, 1, point( view_w - 1, 0 ) );
+            ua.position_from_window( lft_win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
             draw();
@@ -673,29 +671,11 @@ struct mp_edge_t {
 
     void draw() const {
         const nc_color c = mp_turn_show_green() ? c_light_green : c_red;
-        const int sidebar_w = panel_manager::get_manager().get_width_right();
-        const int view_w = std::max( 1, TERMX - sidebar_w );
-        const int side_h = std::max( 0, TERMY - 2 );
-
-        // ▀ upper half block — sits at top of its cell so the line hugs the
-        // top edge of the game view.
-        werase( top_win );
-        for( int x = 0; x < view_w; x++ ) {
-            mvwprintz( top_win, point( x, 0 ), c, "\xe2\x96\x80" );
-        }
-        wnoutrefresh( top_win );
-
-        // ▄ lower half block — bottom edge of game view.
-        werase( bot_win );
-        for( int x = 0; x < view_w; x++ ) {
-            mvwprintz( bot_win, point( x, 0 ), c, "\xe2\x96\x84" );
-        }
-        wnoutrefresh( bot_win );
 
         // ▌ left half block on the left column, ▐ right half block on right.
         werase( lft_win );
         werase( rgt_win );
-        for( int y = 0; y < side_h; y++ ) {
+        for( int y = 0; y < TERMY; y++ ) {
             mvwprintz( lft_win, point( 0, y ), c, "\xe2\x96\x8c" );
             mvwprintz( rgt_win, point( 0, y ), c, "\xe2\x96\x90" );
         }
@@ -852,6 +832,22 @@ static void mp_cleanup_stale_npcs()
     }
     mp_cleanup_done = true;
 
+    // Diagnostic: dump every NPC visible at load so we can see what's hanging
+    // around from previous sessions before cleanup runs.
+    {
+        std::string log_line = "[cdda-mp] GHOST-AUDIT pre-cleanup: ";
+        int n = 0;
+        for( npc &candidate : g->all_npcs() ) {
+            log_line += "[id=" + std::to_string( candidate.getID().get_value() )
+                      + " name='" + candidate.name + "'"
+                      + " fac=" + candidate.get_fac_id().str()
+                      + " att=" + std::to_string( static_cast<int>( candidate.get_attitude() ) )
+                      + "] ";
+            ++n;
+        }
+        mp_log( log_line + " (" + std::to_string( n ) + " total)" );
+    }
+
     const cata_path path = mp_npc_cleanup_path();
     bool found_any = false;
     read_from_file_optional_json( path, [&]( const JsonValue &jv ) {
@@ -896,6 +892,56 @@ static void mp_cleanup_stale_npcs()
         std::cout << "[cdda-mp] Cleaned up stale MP NPCs from previous session." << std::endl;
     }
     remove_file( path );
+
+    // Orphan sweep — catches proxies that survived because the cleanup file
+    // wasn't written (host saved while connected, then quit).  Any NPC tagged
+    // with mp_proxy=1 at spawn time is, by definition, a stale proxy now —
+    // the current session hasn't spawned any yet.  Active proxies will be
+    // re-created fresh when the partner reconnects.
+    //
+    // Also legacy-purge by the default proxy name "player2" — pre-tag saves
+    // have untagged ghosts that the value-based sweep can't see.  Safe to
+    // hardcode because "player2" is the client_connect default and no SP NPC
+    // ships with that name.
+    int orphans = 0;
+    std::vector<character_id> orphan_ids;
+    for( npc &candidate : g->all_npcs() ) {
+        if( candidate.maybe_get_value( "mp_proxy" )
+            || candidate.name == "player2" ) {
+            orphan_ids.push_back( candidate.getID() );
+        }
+    }
+    for( const character_id &id : orphan_ids ) {
+        if( npc *n = g->critter_by_id<npc>( id ) ) {
+            mp_log( "[cdda-mp] ORPHAN-SWEEP removing id=" + std::to_string( id.get_value() )
+                    + " name='" + n->name + "'" );
+            // Silent removal — die() emits a "X dies!" message which is
+            // misleading when the NPC is a leftover proxy, not a combat death.
+            g->remove_npc( id );
+            ++orphans;
+        }
+        if( id.is_valid() ) {
+            overmap_buffer.remove_npc( id );
+        }
+    }
+    if( orphans > 0 ) {
+        g->cleanup_dead();
+        mp_log( "[cdda-mp] ORPHAN-SWEEP removed " + std::to_string( orphans )
+                + " tagged proxy NPCs" );
+    }
+
+    // Diagnostic: dump again so we can see what survived.
+    {
+        std::string log_line = "[cdda-mp] GHOST-AUDIT post-cleanup: ";
+        int n = 0;
+        for( npc &candidate : g->all_npcs() ) {
+            log_line += "[id=" + std::to_string( candidate.getID().get_value() )
+                      + " name='" + candidate.name + "'] ";
+            ++n;
+        }
+        mp_log( log_line + " (" + std::to_string( n ) + " total) cleanup_file_found="
+                + ( found_any ? "yes" : "no" ) );
+    }
 }
 
 // Remove every NPC with the given name from both the active critter list and the
@@ -906,17 +952,27 @@ static void purge_npcs_by_name( const std::string &name )
     if( name.empty() ) {
         return;
     }
+    int active_killed = 0;
+    int overmap_removed = 0;
     // Active critters first
     for( npc *n : g->get_npcs_if( [&]( const npc &np ) { return np.name == name; } ) ) {
+        mp_log( "[cdda-mp] PURGE active: id=" + std::to_string( n->getID().get_value() )
+                + " name='" + n->name + "' pos=" + n->pos_abs().to_string() );
         n->die( &get_map(), nullptr );
+        ++active_killed;
     }
     g->cleanup_dead();
     // Overmap buffer — radius 500 sm covers the entire typical play area
     for( const auto &ptr : overmap_buffer.get_npcs_near_player( 500 ) ) {
         if( ptr && ptr->name == name && ptr->getID().is_valid() ) {
+            mp_log( "[cdda-mp] PURGE overmap: id=" + std::to_string( ptr->getID().get_value() )
+                    + " name='" + ptr->name + "'" );
+            ++overmap_removed;
             overmap_buffer.remove_npc( ptr->getID() );
         }
     }
+    mp_log( "[cdda-mp] PURGE summary name='" + name + "' active=" + std::to_string( active_killed )
+            + " overmap=" + std::to_string( overmap_removed ) );
 }
 
 static cata_path remote_player_save_path( const std::string &name )
@@ -1015,9 +1071,14 @@ static void spawn_remote_player( const std::string &name )
     g->load_npcs();
 
     remote_player_npc_id = remote->getID();
+    // Tag the proxy so a load-time sweep can find and remove orphans from
+    // sessions where the cleanup file went missing (e.g. host saved while
+    // connected, then quit — the proxy ends up in the world save).
+    remote->set_value( "mp_proxy", std::string( "1" ) );
     mp_log( "[cdda-mp] spawn: remote_player_npc_id=" +
             std::to_string( remote_player_npc_id.get_value() ) +
-            " valid=" + std::to_string( remote_player_npc_id.is_valid() ) );
+            " valid=" + std::to_string( remote_player_npc_id.is_valid() ) +
+            " tagged mp_proxy=1" );
 
     // Co-op partner: apply ally status AFTER load_npcs so the NPC pointer is
     // fully wired into the game state (faction manager, critter tracker, etc.).
@@ -1779,15 +1840,25 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     mp_log( "[cdda-mp] worn_sync: remove_weapon (client empty-handed)" );
                 }
             }
-            // Apply all appearance mutations (skin tone, eye color, hair style/color,
-            // facial hair) from the client's "appearance" array to the remote NPC proxy.
+            // Apply all mutations from the client's "appearance" array to the
+            // remote NPC proxy.  Full state sync: clear every mutation on the
+            // proxy first, then apply the client's list.  This covers chargen
+            // cosmetics AND physical mutations (Fangs, Sleek Fur, Spines, etc.)
+            // which the old per-type clearing missed.
             if( jo.has_array( "appearance" ) ) {
+                std::vector<trait_id> to_unset;
+                for( const trait_id &existing : remote->get_mutations() ) {
+                    to_unset.push_back( existing );
+                }
+                for( const trait_id &old : to_unset ) {
+                    remote->unset_mutation( old );
+                }
+                int applied = 0;
                 for( const JsonValue &av : jo.get_array( "appearance" ) ) {
                     JsonObject ao = av.get_object();
                     ao.allow_omitted_members();
-                    const std::string mtype = ao.get_string( "type", "" );
-                    const std::string mid   = ao.get_string( "id",   "" );
-                    if( mtype.empty() || mid.empty() ) {
+                    const std::string mid = ao.get_string( "id", "" );
+                    if( mid.empty() ) {
                         continue;
                     }
                     const trait_id tid( mid );
@@ -1795,20 +1866,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         mp_log( "[cdda-mp] worn_sync: appearance id INVALID: " + mid );
                         continue;
                     }
-                    // Clear any existing mutations of this type on the proxy.
-                    for( const trait_id &old : get_mutations_in_type( mtype ) ) {
-                        if( remote->has_trait( old ) ) {
-                            remote->unset_mutation( old );
-                        }
-                    }
                     const std::string var_str = ao.get_string( "var", "" );
                     const mutation_variant *var = var_str.empty()
                                                   ? nullptr
                                                   : tid.obj().variant( var_str );
                     remote->set_mutation( tid, var );
-                    mp_log( "[cdda-mp] worn_sync: appearance type=" + mtype
-                            + " id=" + mid + " var=" + ( var ? var->id : "" ) );
+                    ++applied;
                 }
+                mp_log( "[cdda-mp] worn_sync: appearance cleared "
+                        + std::to_string( to_unset.size() )
+                        + " applied " + std::to_string( applied ) );
             }
             std::string ma_style_str;
             jo.read( "ma_style", ma_style_str );
@@ -4405,6 +4472,8 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
         g->load_npcs();
         client_host_npc_id = host_npc->getID();
         client_host_npc_spawned = true;
+        // Same orphan-resistance tag as the host's remote_player proxy.
+        host_npc->set_value( "mp_proxy", std::string( "1" ) );
         mp_save_npc_ids();  // persist ID so next session can clean it up
 
         // Apply ally status AFTER load_npcs so the NPC is fully wired into the
@@ -4796,29 +4865,38 @@ static bool apply_one_state_message( const std::string &msg )
                         }
                     }
                     mp_log( "[cdda-mp] host_worn applied: [" + applied_log + "]" );
-                    // Apply all appearance mutations from the host_appearance array.
+                    // Apply all mutations from the host_appearance array.  Full
+                    // state sync: clear every mutation on the proxy first, then
+                    // apply the host's list.  Earlier per-type clearing missed
+                    // physical mutations (Fangs, Sleek Fur, Spines, etc.) since
+                    // they have different type tags than the chargen cosmetics.
                     if( jo.has_array( "host_appearance" ) ) {
+                        // Snapshot then clear — modifying the set while iterating crashes.
+                        std::vector<trait_id> to_unset;
+                        for( const trait_id &existing : host_npc->get_mutations() ) {
+                            to_unset.push_back( existing );
+                        }
+                        for( const trait_id &old : to_unset ) {
+                            host_npc->unset_mutation( old );
+                        }
+                        int applied = 0;
                         for( const JsonValue &av : jo.get_array( "host_appearance" ) ) {
                             JsonObject ao = av.get_object();
                             ao.allow_omitted_members();
-                            const std::string mtype = ao.get_string( "type", "" );
-                            const std::string mid   = ao.get_string( "id",   "" );
-                            if( mtype.empty() || mid.empty() ) { continue; }
+                            const std::string mid = ao.get_string( "id", "" );
+                            if( mid.empty() ) { continue; }
                             const trait_id tid( mid );
                             if( !tid.is_valid() ) { continue; }
-                            for( const trait_id &old : get_mutations_in_type( mtype ) ) {
-                                if( host_npc->has_trait( old ) ) {
-                                    host_npc->unset_mutation( old );
-                                }
-                            }
                             const std::string var_str = ao.get_string( "var", "" );
                             const mutation_variant *var = var_str.empty()
                                                           ? nullptr
                                                           : tid.obj().variant( var_str );
                             host_npc->set_mutation( tid, var );
-                            mp_log( "[cdda-mp] host_appearance applied: type=" + mtype
-                                    + " id=" + mid );
+                            ++applied;
                         }
+                        mp_log( "[cdda-mp] host_appearance: cleared "
+                                + std::to_string( to_unset.size() )
+                                + " applied " + std::to_string( applied ) );
                         std::string ov_log;
                         for( const auto &ov : host_npc->get_overlay_ids() ) {
                             ov_log += ov.first + ' ';
@@ -5888,38 +5966,27 @@ void client_resync_worn()
     std::vector<item *> worn_items;
     av.worn.inv_dump( worn_items );
 
-    // Collect all appearance-related mutations by type and bundle them into a
-    // JSON array so the server NPC proxy renders with the correct visual overlays.
-    // hair_style is special: it can carry a color variant; all others are plain ids.
-    static const std::vector<std::string> simple_appearance_types = {
-        "skin_tone", "eye_color", "facial_hair", "hair_color"
-    };
+    // Send ALL active mutations — chargen cosmetics (skin/hair/eye) plus
+    // physical mutations (Fangs, Sleek Fur, Spines, Feathered Arms, etc.) —
+    // so the host's NPC proxy renders with the full set of visual overlays.
+    // Receiver does a full state sync: clears its own mutations then applies
+    // this list.
     std::string appearance_json = "[";
     bool afirst = true;
-    // Simple types: just the trait id, no variant.
-    for( const std::string &mtype : simple_appearance_types ) {
-        for( const trait_id &tid : get_mutations_in_type( mtype ) ) {
-            if( av.has_trait( tid ) ) {
-                if( !afirst ) { appearance_json += ','; }
-                afirst = false;
-                appearance_json += "{\"type\":\"" + mtype
-                                 + "\",\"id\":\"" + tid.str() + "\"}";
-                break; // at most one active per type
-            }
-        }
-    }
-    // hair_style: include the color variant so the proxy gets the right color.
     for( const trait_and_var &tv : av.get_mutations_variants() ) {
-        if( tv.trait.obj().types.count( "hair_style" ) ) {
-            if( !afirst ) { appearance_json += ','; }
-            afirst = false;
-            appearance_json += "{\"type\":\"hair_style\",\"id\":\"" + tv.trait.str() + "\"";
-            if( !tv.variant.empty() ) {
-                appearance_json += ",\"var\":\"" + tv.variant + "\"";
-            }
-            appearance_json += '}';
-            break;
+        const mutation_branch &mb = tv.trait.obj();
+        std::string first_type;
+        if( !mb.types.empty() ) {
+            first_type = *mb.types.begin();
         }
+        if( !afirst ) { appearance_json += ','; }
+        afirst = false;
+        appearance_json += "{\"type\":\"" + first_type
+                         + "\",\"id\":\"" + tv.trait.str() + "\"";
+        if( !tv.variant.empty() ) {
+            appearance_json += ",\"var\":\"" + tv.variant + "\"";
+        }
+        appearance_json += '}';
     }
     appearance_json += ']';
 
@@ -7341,35 +7408,29 @@ std::string serialize_remote_player_state()
 
     const std::string host_male_str = host.male ? "true" : "false";
 
-    // Build host appearance array (skin tone, eye color, hair style/color, facial hair).
-    // Same format as "appearance" in worn_sync so the client can use one parser for both.
-    static const std::vector<std::string> s_simple_app_types = {
-        "skin_tone", "eye_color", "facial_hair", "hair_color"
-    };
+    // Build host mutation array — ALL active mutations (cosmetics like skin/hair
+    // plus physical mutations like Fangs / Sleek Fur / Spines / Feathered Arms).
+    // The earlier appearance-only list omitted physical mutations, so the proxy
+    // NPC rendered as a bare base sprite even when the host was a deeply mutated
+    // character.  Receiver clears the proxy's full mutation set and applies this
+    // list.  The "type" field is the mutation's first type tag (used only for
+    // logging now — receiver no longer clears by-type, it clears everything).
     std::string host_appearance_json = "[";
     bool happ_first = true;
-    for( const std::string &mtype : s_simple_app_types ) {
-        for( const trait_id &tid : get_mutations_in_type( mtype ) ) {
-            if( host.has_trait( tid ) ) {
-                if( !happ_first ) { host_appearance_json += ','; }
-                happ_first = false;
-                host_appearance_json += "{\"type\":\"" + mtype
-                                      + "\",\"id\":\"" + tid.str() + "\"}";
-                break;
-            }
-        }
-    }
     for( const trait_and_var &tv : host.get_mutations_variants() ) {
-        if( tv.trait.obj().types.count( "hair_style" ) ) {
-            if( !happ_first ) { host_appearance_json += ','; }
-            happ_first = false;
-            host_appearance_json += "{\"type\":\"hair_style\",\"id\":\"" + tv.trait.str() + "\"";
-            if( !tv.variant.empty() ) {
-                host_appearance_json += ",\"var\":\"" + tv.variant + "\"";
-            }
-            host_appearance_json += '}';
-            break;
+        const mutation_branch &mb = tv.trait.obj();
+        std::string first_type;
+        if( !mb.types.empty() ) {
+            first_type = *mb.types.begin();
         }
+        if( !happ_first ) { host_appearance_json += ','; }
+        happ_first = false;
+        host_appearance_json += "{\"type\":\"" + first_type
+                              + "\",\"id\":\"" + tv.trait.str() + "\"";
+        if( !tv.variant.empty() ) {
+            host_appearance_json += ",\"var\":\"" + tv.variant + "\"";
+        }
+        host_appearance_json += '}';
     }
     host_appearance_json += ']';
 
