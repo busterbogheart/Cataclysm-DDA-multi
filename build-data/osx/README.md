@@ -30,6 +30,9 @@ Pick **CO-OP** from the main menu, then:
 
 ### Host a session
 
+The host runs the full world simulation — put the faster machine on
+hosting duty if your hardware differs.
+
 `CO-OP > Host > New character` (or `Load existing character`). Pick
 or create a world; co-op worlds get a badge in the menu so you can
 tell them apart from solo/SP worlds.
