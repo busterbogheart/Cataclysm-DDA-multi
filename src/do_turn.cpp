@@ -1106,6 +1106,9 @@ bool game::do_turn()
     m.process_falling();
     if( !cata_mp::is_client_mode() ) {
         const size_t pre_veh = cata_mp::is_hosting() ? Messages::size() : 0;
+        if( cata_mp::is_hosting() ) {
+            cata_mp::mp_log( "[veh-move] vehmove start, pre_msg=" + std::to_string( pre_veh ) );
+        }
         m.vehmove();
         cata_mp::host_capture_vehmove_msgs( pre_veh );
     }

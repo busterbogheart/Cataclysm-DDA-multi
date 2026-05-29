@@ -1369,12 +1369,16 @@ void host_capture_vehmove_msgs( size_t pre_msg )
         return;
     }
     const size_t cur = Messages::size();
+    mp_log( "[veh-move] host_capture_vehmove_msgs: pre=" + std::to_string( pre_msg ) +
+            " cur=" + std::to_string( cur ) +
+            " delta=" + std::to_string( cur > pre_msg ? cur - pre_msg : 0 ) );
     if( cur <= pre_msg ) {
         return;
     }
     const auto new_msgs = Messages::recent_messages( cur - pre_msg );
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
+        mp_log( "[veh-move] capture queuing: " + text );
         g_action_msgs_pending.push_back( text );
     }
 }
@@ -4376,21 +4380,31 @@ void process_mp_events()
     // Stamp this world as MP-touched so the world pickers can badge it.
     mp_world_marker_update();
 
-    // Queue depth is intentionally capped at 1 action per call. Draining the
-    // whole queue in a loop caused unexpected back-to-back move execution when
-    // network timing let two packets arrive before process_mp_events() ran.
-    // connect/disconnect are rare and must not be dropped, so they drain fully;
-    // action events stop after one.
+    // Queue depth is intentionally capped at 1 game-turn action per call.
+    // Draining the whole queue in a loop caused unexpected back-to-back move
+    // execution when network timing let two packets arrive before
+    // process_mp_events() ran.
+    // State-sync messages (worn_sync, note_sync, trade_delta, templates_list,
+    // resync_request, tile_changes) are protocol bookkeeping, not game turns —
+    // they always drain regardless of depth. Only actions that advance the
+    // lockstep turn count toward the depth-1 limit.
     // TODO(roadmap): real multi-depth queue for lockstep relaxation / input
     // buffering — see ROADMAP.md "Action queue depth"
+    auto is_state_sync = []( const std::string & data ) {
+        return data.find( "\"action\":\"worn_sync\"" ) != std::string::npos
+               || data.find( "\"type\":\"trade_delta\"" ) != std::string::npos
+               || data.find( "\"type\":\"note_sync\"" ) != std::string::npos
+               || data.find( "\"type\":\"templates_list\"" ) != std::string::npos
+               || data.find( "\"type\":\"resync_request\"" ) != std::string::npos
+               || data.find( "\"client_tile_changes\":" ) != std::string::npos;
+    };
     mp_event event;
-    bool action_processed = false;
+    bool turn_action_processed = false;
     while( get_mp_queue().pop( event ) ) {
         if( event.evt_type == mp_event::type::action ) {
-            if( action_processed ) {
-                // Put it back? We can't — push to a local pending slot instead.
-                // For now, log and drop: lockstep should prevent this case.
-                mp_log( "[cdda-mp] process_mp_events: unexpected queued action dropped: " +
+            const bool sync = is_state_sync( event.data );
+            if( !sync && turn_action_processed ) {
+                mp_log( "[cdda-mp] process_mp_events: unexpected queued turn-action dropped: " +
                         event.data.substr( 0, 60 ) );
                 continue;
             }
@@ -4405,7 +4419,9 @@ void process_mp_events()
                 break;
             case mp_event::type::action:
                 handle_remote_action( event.session_id, event.data );
-                action_processed = true;
+                if( !is_state_sync( event.data ) ) {
+                    turn_action_processed = true;
+                }
                 break;
         }
     }

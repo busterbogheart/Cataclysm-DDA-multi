@@ -470,6 +470,11 @@ void vehicle::thrust( map &here, int thd, int z )
         stop( here );
     }
     bool pl_ctrl = player_is_driving_this_veh( &here );
+    if( cata_mp::is_hosting() ) {
+        cata_mp::mp_log( "[veh-move] pl_ctrl=" + std::to_string( pl_ctrl ) +
+                         " veh=" + name +
+                         " valid_wheels=" + std::to_string( valid_wheel_config( here ) ) );
+    }
 
     // No need to change velocity if there are no wheels
     if( ( is_watercraft() && can_float( here ) ) || ( is_rotorcraft( here ) && ( z != 0 ||
@@ -478,13 +483,17 @@ void vehicle::thrust( map &here, int thd, int z )
     } else if( in_deep_water && !can_float( here ) ) {
         stop( here );
         if( pl_ctrl ) {
+            cata_mp::mp_log( "[veh-move] LEAKY msg firing via add_msg veh=" + name );
             add_msg( _( "The %s is too leaky!" ), name );
         }
         return;
     } else if( !valid_wheel_config( here )  && z == 0 ) {
         stop( here );
         if( pl_ctrl ) {
+            cata_mp::mp_log( "[veh-move] NO-WHEELS msg firing via add_msg veh=" + name );
             add_msg( _( "The %s doesn't have enough wheels to move!" ), name );
+        } else {
+            cata_mp::mp_log( "[veh-move] NO-WHEELS pl_ctrl=false, msg suppressed veh=" + name );
         }
         return;
     }

@@ -1,6 +1,6 @@
 # Multiplayer Roadmap
 
-Status as of 2026-05-18.
+Status as of 2026-05-28.
 
 ---
 
@@ -58,7 +58,7 @@ The current client startup is a local scaffold — full CDDA character creation 
 - **Double-fire bug** — certain actions fire twice; root cause unknown, needs log investigation
 
 ### Missing action syncs
-- `ACTION_UNLOAD` — wield state changes when unloading; needs `client_resync_worn()`
+- `ACTION_UNLOAD` — wait pattern shipped (see Done); wield state after unload still needs `client_resync_worn()` to reflect the change on the proxy
 - `ACTION_PICK_STYLE` — martial arts style change is local-only
 - `ACTION_SELECT_FIRE_MODE` / `ACTION_SELECT_DEFAULT_AMMO` — weapon mode/ammo selection local-only
 - `ACTION_BIONICS` / `ACTION_MUTATIONS` — activation world effects (fields, terrain) not synced
@@ -70,10 +70,7 @@ The current client startup is a local scaffold — full CDDA character creation 
 
 ## Known bugs
 
-- **Vehicle desync** — after pivot fix, driver appears ~1 tile off in both views when client drives; enhanced logging added, root cause not resolved
-- **Client reverse driving** — not working
 - **Vehicle startup sound** — plays a "ding" instead of engine startup; regressed, root cause unknown
-- **Ack-guard deadlock** — both players can lock simultaneously; 5-second auto-recovery exists but doesn't eliminate the root cause
 - **Blood trail** — client blood is approximate (proxy position only, not intermediate tiles); full trail requires `client_fields` array per action (designed, not built)
 - **`ACT_WAIT` edge cases** — multi-turn wait (`W`) timing has known edge cases after the sleep-bypass fix
 - **Faction camp mission popups** — `MISSION_CAMP_LEADERSHIP_CHANGE` suppressed; other faction camp missions may still fire on client
@@ -343,10 +340,7 @@ When any of these ship, the depth-1 cap and the drop-log in `process_mp_events()
 - Tracked upstream: CleverRaven/Cataclysm-DDA#69634
 
 ### CI / release infrastructure
-- macOS Intel binary shipping via mp-release.yml ✓
-- ARM Mac build not yet wired up
 - Linux build not yet published as artifact (sdl3-matrix tests Linux but doesn't release)
-- Windows not yet targeted for release
 
 ---
 
@@ -422,5 +416,13 @@ When any of these ship, the depth-1 cap and the drop-log in `process_mp_events()
 **Infrastructure**
 - `mp_client_post_action()` helper collapsed 19 duplicate 7-line blocks (net −87 lines)
 - `start-mp.sh` with host/client/both modes, port-scan neighbor discovery, git sync
-- CI: x86_64 macOS build (Rosetta), dylib bundler, `launch.command`, ccache (warm ~5-10 min vs 40 min cold), `save:` commits skip CI, `cancel-in-progress` concurrency, SDL3 matrix PRs-only
+- CI: native macOS arm64 (macos-14) + Intel (macos-13) + Windows x64 via `release.yml`; SDL2 official frameworks (libsdl.org) replace brew dylibs — no `__libcpp_verbose_abort` on macOS 12/13; ccache per-arch; dylib compatibility audit step in build
+- Per-build preview releases: each dispatch publishes `preview-<sha7>` to GitHub Releases; players archive matching-sig builds; site walks back per-platform to always show newest available
+- Site auto-deploy: `notify-site.yml` + `SITE_DISPATCH_TOKEN` triggers Astro rebuild on every release publish
+- Orphan proxy NPC sweep: proxies tagged `mp_proxy=1` at spawn; load-time sweep removes stale ones from prior sessions
+- Full mutation sync: all active mutations sent in `serialize_remote_player_state` (not just chargen cosmetics)
+- Turn-signal bars: left/right half-block bars only (top/bottom removed)
+- Action queue: depth-1 cap for game-turn actions; state-sync events (`worn_sync`, `note_sync`, `trade_delta`, `templates_list`, `resync_request`, tile changes) always drain — prevents worn_sync+wait race that caused ack-guard deadlock
+- Ack-guard deadlock root cause fixed (2026-05-28): `worn_sync` was being counted as a game-turn action, dropping the client's `wait` and permanently locking both players; 5-second auto-recovery remains as safety net
+- Vehicle sync: reverse driving working; position desync acceptable for current scope
 - Upstream merged (~200 commits, 3 real conflicts)
