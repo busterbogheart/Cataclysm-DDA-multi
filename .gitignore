@@ -261,6 +261,9 @@ ROADMAP.md
 performance.md
 MP_SWAP_CHARACTER_AUDIT.md
 MP_SAVE_AND_TEMPLATES_TEST_PLAN.md
+
+# Local marketing assets — not for the repo
+/marketing/
 *.a
 
 # Generated at build time by CI (or local dev with --version):
