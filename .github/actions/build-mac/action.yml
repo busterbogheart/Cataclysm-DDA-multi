@@ -113,6 +113,12 @@ runs:
           -e 's|com\.cataclysmdda\.en\.cataclysm|com.cddacoop.app|g' \
           -e 's|<string>Cataclysm</string>|<string>Cddacoop</string>|' \
           build-data/osx/Info.plist
+        # Hide this tracked-file edit from git's dirty check so the build-time
+        # version (getVersionString) stays the clean commit hash, identical on
+        # every platform. Otherwise the Makefile appends "-dirty.<HHMMSS>" and
+        # the MP version handshake can never match across separately-built
+        # binaries (arm/win/intel all differ by build time).
+        git update-index --assume-unchanged build-data/osx/Info.plist
 
     - name: Build cataclysm-tiles
       shell: bash

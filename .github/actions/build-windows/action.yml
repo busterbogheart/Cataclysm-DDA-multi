@@ -59,7 +59,14 @@ runs:
 
     - name: Strip CC-Sounds for slim ZIP
       shell: msys2 {0}
-      run: rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
+      run: |
+        rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
+        # Hide these tracked-file deletions from git's dirty check so the
+        # build-time version (getVersionString) stays the clean commit hash,
+        # identical to the mac/intel builds. Otherwise the Makefile appends
+        # "-dirty.<HHMMSS>" and the MP version handshake never matches across
+        # separately-built binaries.
+        git ls-files -d -z | git update-index --assume-unchanged -z --stdin
 
     - name: Write version header
       shell: msys2 {0}
