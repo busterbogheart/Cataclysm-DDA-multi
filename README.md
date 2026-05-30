@@ -43,6 +43,17 @@ From the main menu, pick **CO-OP**.
 
 ---
 
+### Same network (LAN)
+
+If both players are on the same Wi-Fi or LAN, no VPN is needed — the host just shares its local IP.
+
+- **macOS host:** `ipconfig getifaddr en0` (try `en1` if that's empty)
+- **Windows host:** `ipconfig` — use the IPv4 Address (looks like `192.168.x.y`)
+
+The client pastes that IP into CO-OP > Join. Port defaults to 8080.
+
+---
+
 ### Playing across the internet
 
 [cddacoop.com](https://cddacoop.com) has step-by-step instructions for Tailscale, ZeroTier, ngrok, and router port forwarding. The host always listens on port 8080; only the route between the two machines changes.
