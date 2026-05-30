@@ -38,7 +38,7 @@ The host listens on **TCP port 8080**; allow it through your firewall when promp
 
 From the main menu, pick **CO-OP**.
 
-- **Host:** CO-OP > Host > New character (or Load existing character). Pick or create a world — co-op worlds are badged in the picker. Share your IP with your partner.
+- **Host:** CO-OP > Host > New character (or Load existing character). Pick or create a world. Share your IP with your partner.
 - **Join:** CO-OP > Join > paste the host's IP (recent hosts are remembered). New character or Load existing character.
 
 ---
