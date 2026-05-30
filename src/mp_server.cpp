@@ -12,6 +12,27 @@ using asio::ip::tcp;
 
 namespace cata_mp {
 
+// Normalize a build-version string to its commit identity for the join
+// handshake. getVersionString() is the git commit hash, but the Makefile
+// appends build noise that differs between separately-built binaries of the
+// SAME commit: "-dirty.<HHMMSS>" (a dirty tree, stamped with the build time)
+// and "+SDL3" (rendering backend). The MP wire protocol is fixed by the
+// commit, not by build time or render backend, so the handshake must compare
+// only the commit token — otherwise no two machines' builds ever match.
+static std::string mp_version_commit_id( const std::string &v )
+{
+    std::string s = v;
+    const std::string::size_type d = s.find( "-dirty" );
+    if( d != std::string::npos ) {
+        s.erase( d );
+    }
+    const std::string::size_type p = s.find( '+' );
+    if( p != std::string::npos ) {
+        s.erase( p );
+    }
+    return s;
+}
+
 // ---------------------------------------------------------------------------
 // client_session — owns one TCP connection
 // ---------------------------------------------------------------------------
@@ -219,10 +240,13 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             name = "player";
         }
 
-        // Check version compatibility — reject mismatched binaries.
+        // Check version compatibility — reject mismatched binaries. Compare
+        // commit identity only (mp_version_commit_id), so two builds of the
+        // same commit connect even if one tree was dirty / built at a
+        // different time / uses a different render backend.
         if( !version_.empty() ) {
             const std::string client_ver = json_get_str( msg, "version" );
-            if( client_ver != version_ ) {
+            if( mp_version_commit_id( client_ver ) != mp_version_commit_id( version_ ) ) {
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
                 session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
