@@ -468,5 +468,10 @@
     "id": "morale_applied_makeup",
     "type": "morale_type",
     "text": "Applied makeup"
+  },
+  {
+    "id": "morale_high_five",
+    "type": "morale_type",
+    "text": "High-fived a friend"
   }
 ]

@@ -2429,7 +2429,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_MEND, ACTION_SORT_ARMOR,
                 ACTION_RELOAD_ITEM, ACTION_RELOAD_WEAPON, ACTION_RELOAD_WIELDED,
                 ACTION_USE, ACTION_USE_WIELDED, ACTION_READ,
-                ACTION_PASS_ITEM,
+                ACTION_PASS_ITEM, ACTION_HIGH_FIVE,
                 // Combat
                 ACTION_FIRE, ACTION_FIRE_BURST, ACTION_AUTOATTACK,
                 ACTION_THROW, ACTION_THROW_WIELDED,
@@ -3633,6 +3633,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
         case ACTION_PASS_ITEM:
             cata_mp::mp_handle_pass_item();
+            break;
+
+        case ACTION_HIGH_FIVE:
+            cata_mp::mp_high_five();
             break;
 
         case ACTION_PICK_STYLE:

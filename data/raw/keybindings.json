@@ -5581,5 +5581,12 @@
     "name": "Pass item to partner",
     "category": "DEFAULTMODE",
     "bindings": [ ]
+  },
+  {
+    "type": "keybinding",
+    "id": "high_five",
+    "name": "High-five partner",
+    "category": "DEFAULTMODE",
+    "bindings": [ ]
   }
 ]

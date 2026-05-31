@@ -360,6 +360,8 @@ enum action_id : int {
     ACTION_INTERACT,
     /** MP: pass an item to the adjacent partner */
     ACTION_PASS_ITEM,
+    /** MP: high-five the adjacent partner (small mutual morale boost) */
+    ACTION_HIGH_FIVE,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/

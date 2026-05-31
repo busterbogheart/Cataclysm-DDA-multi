@@ -34,6 +34,7 @@
 #include "move_mode.h"
 #include "memory_fast.h"
 #include "messages.h"
+#include "morale_types.h"
 #include "npc.h"
 #include "output.h"
 #include "overmapbuffer.h"
@@ -849,22 +850,6 @@ static void mp_cleanup_stale_npcs()
     }
     mp_cleanup_done = true;
 
-    // Diagnostic: dump every NPC visible at load so we can see what's hanging
-    // around from previous sessions before cleanup runs.
-    {
-        std::string log_line = "[cdda-mp] GHOST-AUDIT pre-cleanup: ";
-        int n = 0;
-        for( npc &candidate : g->all_npcs() ) {
-            log_line += "[id=" + std::to_string( candidate.getID().get_value() )
-                      + " name='" + candidate.name + "'"
-                      + " fac=" + candidate.get_fac_id().str()
-                      + " att=" + std::to_string( static_cast<int>( candidate.get_attitude() ) )
-                      + "] ";
-            ++n;
-        }
-        mp_log( log_line + " (" + std::to_string( n ) + " total)" );
-    }
-
     const cata_path path = mp_npc_cleanup_path();
     bool found_any = false;
     read_from_file_optional_json( path, [&]( const JsonValue &jv ) {
@@ -929,35 +914,38 @@ static void mp_cleanup_stale_npcs()
         }
     }
     for( const character_id &id : orphan_ids ) {
-        if( npc *n = g->critter_by_id<npc>( id ) ) {
-            mp_log( "[cdda-mp] ORPHAN-SWEEP removing id=" + std::to_string( id.get_value() )
-                    + " name='" + n->name + "'" );
+        if( g->critter_by_id<npc>( id ) ) {
             // Silent removal — die() emits a "X dies!" message which is
             // misleading when the NPC is a leftover proxy, not a combat death.
+            // NB: game::remove_npc() only erases the active (loaded) copy; the
+            // overmap copy is swept separately below.
             g->remove_npc( id );
             ++orphans;
         }
-        if( id.is_valid() ) {
-            overmap_buffer.remove_npc( id );
+    }
+    // Overmap orphan sweep — the loaded sweep above only touches NPCs currently
+    // in the reality bubble; the overmap keeps its OWN copy, which
+    // g->load_npcs() re-hydrates every tick (the phantom partner that reappears
+    // next to the host with no client connected).  The old code tried to erase
+    // it inline but guarded on id.is_valid() (value > 0); proxies that lost
+    // their assigned id on save/reload land at id=-1, so the overmap copy was
+    // never removed.  Drive removal from the overmap list itself: every id is
+    // guaranteed present (no debugmsg) and the id sign is irrelevant.
+    int overmap_orphans = 0;
+    std::vector<character_id> om_orphan_ids;
+    for( const auto &ptr : overmap_buffer.get_npcs_near_player( 500 ) ) {
+        if( ptr && ( ptr->maybe_get_value( "mp_proxy" ) || ptr->name == "player2" ) ) {
+            om_orphan_ids.push_back( ptr->getID() );
         }
     }
-    if( orphans > 0 ) {
+    for( const character_id &id : om_orphan_ids ) {
+        overmap_buffer.remove_npc( id );
+        ++overmap_orphans;
+    }
+    if( orphans > 0 || overmap_orphans > 0 ) {
         g->cleanup_dead();
         mp_log( "[cdda-mp] ORPHAN-SWEEP removed " + std::to_string( orphans )
-                + " tagged proxy NPCs" );
-    }
-
-    // Diagnostic: dump again so we can see what survived.
-    {
-        std::string log_line = "[cdda-mp] GHOST-AUDIT post-cleanup: ";
-        int n = 0;
-        for( npc &candidate : g->all_npcs() ) {
-            log_line += "[id=" + std::to_string( candidate.getID().get_value() )
-                      + " name='" + candidate.name + "'] ";
-            ++n;
-        }
-        mp_log( log_line + " (" + std::to_string( n ) + " total) cleanup_file_found="
-                + ( found_any ? "yes" : "no" ) );
+                + " loaded + " + std::to_string( overmap_orphans ) + " overmap proxy NPCs" );
     }
 }
 
@@ -1119,7 +1107,10 @@ static void spawn_remote_player( const std::string &name )
     g_last_forwarded_msg_count = Messages::size();  // don't forward pre-connect history
     mp_save_npc_ids();  // persist ID so next session can clean it up
 
-    add_msg( m_good, "%s has connected and joined the game.", name );
+    // Don't announce the join here — at spawn the only name we have is the
+    // "player2" placeholder (the client's real name arrives a beat later in
+    // its first char_stats). The named announcement fires from the char_stats
+    // handler the moment the proxy is renamed from the placeholder.
     std::cout << "[cdda-mp] Spawned remote player '" << name << "' at "
               << spawn_pos.x() << "," << spawn_pos.y() << std::endl;
 
@@ -1531,6 +1522,7 @@ static void srv_emit_ack( const char *action_name )
 }
 
 static void mp_handle_note_sync( const std::string &msg );
+static void mp_handle_high_five_recv( const std::string &msg );
 
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
@@ -1588,6 +1580,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     if( msg.find( "\"type\":\"note_sync\"" ) != std::string::npos ) {
         mp_handle_note_sync( msg );
+        return;
+    }
+
+    if( msg.find( "\"type\":\"high_five\"" ) != std::string::npos ) {
+        mp_handle_high_five_recv( msg );
         return;
     }
 
@@ -1683,6 +1680,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_object( "char_stats" ) ) {
         JsonObject cs = jo.get_object( "char_stats" );
         cs.allow_omitted_members();
+        // Rename the proxy from the "player2" placeholder to the client's real
+        // character name once it arrives. Drives the on-map @ label and the
+        // sidebar nearby-creature list.
+        if( cs.has_string( "name" ) ) {
+            const std::string cname = cs.get_string( "name" );
+            if( !cname.empty() && remote->name != cname ) {
+                // First rename away from the "player2" placeholder is the real
+                // "joined" moment — announce it here with the actual name
+                // instead of the placeholder the spawn path would have used.
+                const bool was_placeholder = ( remote->name == "player2" );
+                remote->name = cname;
+                if( was_placeholder ) {
+                    add_msg( m_good, _( "%s has connected and joined the game." ), cname );
+                }
+            }
+        }
         if( cs.has_int( "str" ) ) {
             remote->set_str_base( cs.get_int( "str" ) );
         }
@@ -3687,20 +3700,26 @@ int get_separation_tier()
 
 npc *get_partner_npc()
 {
-    // Host POV: client's proxy. Client POV: host's proxy. Don't use
-    // character_id::is_valid() — it rejects values <= 0, but MP-spawned
-    // proxy NPCs end up with negative IDs. Check the raw value instead.
-    if( remote_player_npc_id.get_value() != 0 ) {
+    // Host POV: client's proxy. Client POV: host's proxy.
+    // Gate each branch on the live-session flag, mirroring is_remote_player().
+    // The id alone is not safe: the cleared/default sentinel is
+    // character_id() == -1, which collides with the id of an orphaned proxy
+    // left in a world save (proxies that lose their assigned id on reload also
+    // land at -1). Without the connection gate, a host with no client resolves
+    // that ghost and draws the off-screen partner arrow at its tile.
+    npc *result = nullptr;
+    if( ( is_hosting() || is_server_mode() ) && remote_player_connected &&
+        remote_player_npc_id.get_value() != 0 ) {
         if( npc *n = g->critter_by_id<npc>( remote_player_npc_id ) ) {
-            return n;
+            result = n;
         }
     }
-    if( client_host_npc_id.get_value() != 0 ) {
+    if( !result && is_client_mode() && client_host_npc_id.get_value() != 0 ) {
         if( npc *n = g->critter_by_id<npc>( client_host_npc_id ) ) {
-            return n;
+            result = n;
         }
     }
-    return nullptr;
+    return result;
 }
 
 bool is_partner_npc( character_id id )
@@ -4693,6 +4712,11 @@ static bool apply_one_state_message( const std::string &msg )
 
     if( msg.find( "\"type\":\"note_sync\"" ) != std::string::npos ) {
         mp_handle_note_sync( msg );
+        return true;
+    }
+
+    if( msg.find( "\"type\":\"high_five\"" ) != std::string::npos ) {
+        mp_handle_high_five_recv( msg );
         return true;
     }
 
@@ -5821,6 +5845,11 @@ std::string client_enrich_action( const std::string &json )
     // Build char_stats block: base stats, all skills, and known proficiencies.
     // Applied server-side to the NPC proxy so pldrive(), melee, etc. use real values.
     std::string char_stats = "{";
+    // Carry the client's real character name so the host can rename the proxy
+    // (spawned with the "player2" placeholder, since the client connects from
+    // the main menu before its character exists). Renames the on-map @ and the
+    // sidebar nearby-list; messages already use the real name from packets.
+    char_stats += "\"name\":\"" + av.get_name() + "\",";
     char_stats += "\"str\":" + std::to_string( av.get_str_base() );
     char_stats += ",\"dex\":" + std::to_string( av.get_dex_base() );
     char_stats += ",\"int\":" + std::to_string( av.get_int_base() );
@@ -7287,6 +7316,117 @@ void mp_handle_pass_item()
     if( is_client_mode() ) {
         mp_client_post_action();
     }
+}
+
+// --- High-five partner action -------------------------------------------
+
+static const morale_type morale_high_five( "morale_high_five" );
+
+// A quick social beat, calibrated just under morale_chat. Anti-farm: only
+// grants while no high-five morale is still active. Repeated high-fives are
+// still the gesture (and still cost the initiator a turn) but don't re-up the
+// buff, so you can't refresh +5 forever by spamming it. Returns whether morale
+// was actually granted (false == on cooldown, decaying from a recent one).
+static bool mp_apply_high_five( Character &who )
+{
+    if( who.has_morale( morale_high_five ) > 0 ) {
+        return false;
+    }
+    who.add_morale( morale_high_five, 5, 5, 30_minutes, 10_minutes );
+    return true;
+}
+
+// The gesture takes a beat regardless of whether it lands morale — a standard
+// one-second action. This is what stops the host high-fiving free and forever
+// (it charged nothing before) and caps both sides to ~one high-five per turn.
+static constexpr int high_five_moves_cost = 100;
+
+// Mirror tap-on-shoulder's interruptible set exactly (is_partner_in_wait_activity,
+// which covers all four ACT_WAIT* variants): idle or any wait == available; any
+// real activity (craft / read / sleep / butcher / build / ...) == busy, left alone.
+static bool mp_partner_is_busy()
+{
+    const std::string &a = g_partner_activity;
+    if( a.empty() ) {
+        return false;
+    }
+    return a != "ACT_WAIT" && a != "ACT_WAIT_STAMINA" &&
+           a != "ACT_WAIT_WEATHER" && a != "ACT_WAIT_NPC";
+}
+
+void mp_high_five()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    npc *partner = get_partner_npc();
+    if( !partner ) {
+        add_msg( m_warning, _( "Your partner is not connected." ) );
+        return;
+    }
+    avatar &av = get_avatar();
+    if( rl_dist( av.pos_bub().raw(), partner->pos_bub().raw() ) > 1 ) {
+        add_msg( m_warning, _( "You need to be adjacent to your partner to high-five." ) );
+        return;
+    }
+    // Availability gate — a busy partner is never interrupted; the gesture
+    // just whiffs with flavor (same restraint as tap-on-shoulder).
+    if( mp_partner_is_busy() ) {
+        const std::string verb = mp_activity_verb_phrase( g_partner_activity );
+        if( verb.empty() ) {
+            add_msg( m_info, _( "%s is busy and leaves you hanging." ), partner->get_name() );
+        } else {
+            add_msg( m_info, _( "%s is busy %s and leaves you hanging." ),
+                     partner->get_name(), verb );
+        }
+        return;
+    }
+
+    // Charge the action up front so the cost lands whether or not morale is
+    // still on cooldown — same beat every time, on both host and client.
+    const int pre_moves = av.get_moves();
+    av.mod_moves( -high_five_moves_cost );
+
+    // Local effect on the initiator; the peer applies its own on receipt.
+    mp_apply_high_five( av );
+    add_msg( m_good, _( "You high-five %s!" ), partner->get_name() );
+
+    // The name rides in the packet so the receiver renders the correct
+    // attribution itself (avoids the "You"->name substitution path that the
+    // yell feature mis-uses).
+    const std::string payload = "{\"type\":\"high_five\",\"name\":\"" +
+                                av.get_name() + "\"}";
+    if( is_hosting() || is_server_mode() ) {
+        if( server *s = get_active_server() ) {
+            s->post_broadcast( payload + "\n" );
+        }
+    } else if( is_client_mode() ) {
+        client_send( payload );
+    }
+
+    if( is_client_mode() ) {
+        mp_client_post_action( pre_moves );
+    }
+}
+
+static void mp_handle_high_five_recv( const std::string &msg )
+{
+    std::string from = mp_partner_display_name();
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        if( jo.has_string( "name" ) ) {
+            const std::string n = jo.get_string( "name" );
+            if( !n.empty() ) {
+                from = n;
+            }
+        }
+    } catch( const std::exception & ) {
+        // malformed packet — fall back to the looked-up partner name
+    }
+    mp_apply_high_five( get_avatar() );
+    add_msg( m_good, _( "%s high-fives you!" ), from );
 }
 
 static bool g_applying_remote_note = false;

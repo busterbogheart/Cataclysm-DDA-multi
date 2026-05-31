@@ -447,6 +447,11 @@ void mp_post_trade( npc &np, const std::list<item> &items_given,
 // a trade_delta so the other side's real avatar gains the item.
 void mp_handle_pass_item();
 
+// MP: high-five the adjacent partner. Small mutual morale boost (both players),
+// gated on adjacency + the partner being available (idle, not mid-activity).
+// A busy partner is never interrupted — the gesture just whiffs with flavor.
+void mp_high_five();
+
 // Overmap note sync — call after add_note / delete_note / mark_note_dangerous
 // so the partner's overmap mirrors the change.
 void mp_sync_note_add( const tripoint_abs_omt &pos, const std::string &text );
