@@ -75,6 +75,45 @@ runs:
 
         ls -la "$HOME/Library/Frameworks/"
 
+    - name: Build universal FreeType (only for the universal link)
+      if: ${{ inputs.arch == 'universal' }}
+      shell: bash
+      run: |
+        # Homebrew's freetype is single-arch (arm64 on this runner), so the
+        # x86_64 slice of a universal binary can't link against it —
+        # imgui_freetype.o needs FT_* symbols and the linker rejects the
+        # arm64-only dylib ("found architecture 'arm64', required 'x86_64'").
+        # Build a fat (x86_64 + arm64) *static* FreeType with no external deps
+        # and point pkg-config at it, so the Makefile's `pkg-config
+        # --cflags/--libs freetype2` resolves to this universal build for BOTH
+        # compile and link. Static + --without-* = nothing to bundle, no
+        # runtime dylib deps, and freetype is baked into the binary.
+        FT_VER=2.13.3
+        PREFIX="$HOME/ft-universal"
+        curl -fL --retry 3 -o /tmp/ft.tar.gz \
+          "https://download.savannah.gnu.org/releases/freetype/freetype-${FT_VER}.tar.gz"
+        mkdir -p /tmp/ft
+        tar -xzf /tmp/ft.tar.gz -C /tmp/ft --strip-components=1
+        (
+          cd /tmp/ft
+          # --without-zlib makes FreeType use its bundled gzip, so the static
+          # .a needs no external -lz at the final link (fully self-contained).
+          ./configure --prefix="$PREFIX" \
+            --enable-static --disable-shared \
+            --without-harfbuzz --without-brotli --without-png --without-bzip2 \
+            --without-zlib \
+            CC=clang \
+            CFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=10.15" \
+            LDFLAGS="-arch x86_64 -arch arm64"
+          make -j"$(sysctl -n hw.logicalcpu)"
+          make install
+        )
+        echo "=== libfreetype.a archs (must list both) ==="
+        lipo -archs "$PREFIX/lib/libfreetype.a"
+        # Prepend so later steps (build, app, audit) all resolve freetype2 to
+        # the universal build via $GITHUB_ENV persistence.
+        echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+
     - name: Restore ccache
       uses: actions/cache@v4
       with:
