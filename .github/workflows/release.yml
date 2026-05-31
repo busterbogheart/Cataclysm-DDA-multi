@@ -16,14 +16,10 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      mac_arm:
-        description: 'Build macOS Apple Silicon'
+      mac:
+        description: 'Build macOS (universal — arm64 + Intel in one binary)'
         type: boolean
         default: true
-      mac_intel:
-        description: 'Build macOS Intel'
-        type: boolean
-        default: false
       windows:
         description: 'Build Windows x64'
         type: boolean
@@ -61,12 +57,17 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Build version: $VER"
 
-  build-mac-arm:
-    name: Build macOS (arm64)
+  build-mac:
+    name: Build macOS (universal)
     needs: setup
+    # One universal (arm64 + x86_64) binary built on Apple Silicon. Replaces
+    # the old per-arch arm64 + macos-13 Intel jobs: the macOS SDK on macos-14
+    # carries both slices and the SDL2 frameworks are universal, so a single
+    # fat binary runs natively on both architectures. This removes the
+    # dependency on the deprecated macos-13 Intel runner.
     if: >-
       github.ref_type == 'tag'
-      || github.event.inputs.mac_arm == 'true'
+      || github.event.inputs.mac == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -75,24 +76,7 @@ jobs:
 
       - uses: ./.github/actions/build-mac
         with:
-          arch: arm64
-          version: ${{ needs.setup.outputs.version }}
-
-  build-mac-intel:
-    name: Build macOS (x64)
-    needs: setup
-    if: >-
-      github.ref_type == 'tag'
-      || github.event.inputs.mac_intel == 'true'
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: ./.github/actions/build-mac
-        with:
-          arch: x64
+          arch: universal
           version: ${{ needs.setup.outputs.version }}
 
   build-windows:
@@ -113,7 +97,7 @@ jobs:
 
   upload:
     name: Publish release
-    needs: [setup, build-mac-arm, build-mac-intel, build-windows]
+    needs: [setup, build-mac, build-windows]
     # Run if upload was requested or it's a tag push. Allow skipped deps
     # (platform wasn't selected) — only fail on actual failure.
     if: >-
@@ -174,11 +158,12 @@ jobs:
 
           ## Downloads
 
-          - **macOS Apple Silicon** — \`cddacoop-${VERSION}-macos-arm64.zip\`
-          - **macOS Intel** — \`cddacoop-${VERSION}-macos-x64.zip\`
+          - **macOS (Apple Silicon + Intel)** — \`cddacoop-${VERSION}-macos-universal.zip\`
           - **Windows x64** — \`cddacoop-${VERSION}-windows-x64.zip\`
           - **CC-Sounds pack** — \`cc-sounds.zip\` (the .app prompts on first launch to download this)
 
+          The macOS zip is a universal binary — one download runs natively on
+          both Apple Silicon and Intel Macs (macOS 10.15+).
           macOS zips contain \`Cddacoop.app\` + \`README.md\`.
           Unsigned — first launch on macOS needs **right-click → Open**;
           Windows SmartScreen needs **More info → Run anyway**.

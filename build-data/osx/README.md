@@ -115,8 +115,9 @@ installed.
   and re-launch.
 - **Save format** is shared with upstream CDDA but the MP fork adds
   fields; fork saves aren't interchangeable with upstream.
-- **macOS Apple Silicon and Windows x64** in this preview. macOS Intel
-  is coming.
+- **macOS (universal — Apple Silicon + Intel) and Windows x64** in this
+  preview. The macOS download is one binary that runs natively on both
+  Apple Silicon and Intel Macs.
 
 ---
 

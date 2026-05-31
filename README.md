@@ -24,7 +24,7 @@ This fork adds experimental co-op multiplayer. One player hosts; a second player
 
 ### Download a release
 
-Prebuilt binaries are on the [Releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases): **macOS Apple Silicon**, **macOS Intel**, and **Windows x64**.
+Prebuilt binaries are on the [Releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases): **macOS (universal — Apple Silicon + Intel)** and **Windows x64**.
 
 **macOS first launch:** unzip, then right-click `Cddacoop.app` → **Open**. Gatekeeper blocks unsigned apps on a normal double-click, so this dance is required once per machine.
 
