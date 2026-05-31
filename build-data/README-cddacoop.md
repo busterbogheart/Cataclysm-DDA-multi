@@ -6,7 +6,7 @@ Why die alone when you can die together?
 **Repo:** [busterbogheart/Cataclysm-DDA-multi](https://github.com/busterbogheart/Cataclysm-DDA-multi) &middot;
 **Upstream:** [CleverRaven/Cataclysm-DDA](https://github.com/CleverRaven/Cataclysm-DDA)
 
-Hey its a fan-made fork... issues belong on this fork's GitHub or in the cddacoop.com Discord.
+This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoop.com Discord.
 
 ---
 
@@ -118,6 +118,12 @@ installed.
 ---
 
 ## Changelog
+
+### 2026-05-31
+
+- **High-five your partner** — new co-op "High five" option!  Slap skin for a
+  quick mutual morale boost.  Bindable in options and added to the bump partner menu
+  alongside trade, push, pass item, etc. 
 
 ### 2026-05-27
 
