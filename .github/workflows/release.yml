@@ -193,6 +193,5 @@ jobs:
           generate_release_notes: ${{ github.ref_type == 'tag' }}
           body_path: /tmp/body.md
           files: |
-            dist/cddacoop-*-macos-arm64.zip
-            dist/cddacoop-*-macos-x64.zip
+            dist/cddacoop-*-macos-universal.zip
             dist/cddacoop-*-windows-x64.zip
