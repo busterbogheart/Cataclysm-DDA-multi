@@ -43,18 +43,27 @@ runs:
     - name: Restore ccache
       uses: actions/cache@v4
       with:
-        path: ~/.ccache
-        key: ccache-win-x64-${{ github.sha }}
+        # Cache a path under the workspace, NOT ~/.ccache: this step runs in the
+        # default Windows shell where ~ is C:\Users\runneradmin, but the build
+        # runs in the MSYS2 shell where $HOME is C:\msys64\home\... — a different
+        # dir. The mismatch meant the cache only ever saved an empty folder, so
+        # the Windows build got 0% ccache hits and full-recompiled every run.
+        path: ${{ github.workspace }}/ccache
+        key: ccache-win-x64-v2-${{ github.sha }}
         restore-keys: |
-          ccache-win-x64-
+          ccache-win-x64-v2-
         save-always: true
 
     - name: Configure ccache
       shell: msys2 {0}
       run: |
-        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        # CCACHE_DIR must point at the SAME physical dir the cache action saves.
+        # ccache is a MinGW binary (wants a Windows path); msys2 coreutils want a
+        # unix path. cygpath bridges the two.
+        CCDIR="$(cygpath -u "$GITHUB_WORKSPACE")/ccache"
+        mkdir -p "$CCDIR"
+        echo "CCACHE_DIR=$(cygpath -w "$CCDIR")" >> "$GITHUB_ENV"
         echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
-        mkdir -p "$HOME/.ccache"
         ccache -z
 
     - name: Strip CC-Sounds for slim ZIP
