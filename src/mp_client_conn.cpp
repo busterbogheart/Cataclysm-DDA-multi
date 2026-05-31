@@ -22,6 +22,10 @@ namespace cata_mp {
 // Client mode flag
 // ---------------------------------------------------------------------------
 
+// Defined in mp_gamestate.cpp. Forward-declared (mp_client_conn.cpp doesn't
+// include the gamestate header) so we can trace connection lifecycle here.
+void mp_log( const std::string &msg );
+
 static bool client_mode_ = false;
 
 bool is_client_mode()
@@ -32,6 +36,9 @@ bool is_client_mode()
 void set_client_mode( bool enabled )
 {
     client_mode_ = enabled;
+    // Trace client_mode flips: a stale "true" left over from a failed prior
+    // join makes mp_menu_join_session() skip the IP prompt entirely.
+    mp_log( "[cdda-mp] set_client_mode -> " + std::string( enabled ? "true" : "false" ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +171,16 @@ bool client_connect( const std::string &host, uint16_t port,
                   << " — " << ec.message() << std::endl;
         g_client.reset();
         return false;
+    }
+
+    // Disable Nagle's algorithm. The lockstep grant/wait/ack messages are tiny;
+    // Nagle batching plus the peer's delayed-ACK add hundreds of ms per
+    // round-trip on a high-latency link, wedging the turn cycle. Invisible on
+    // LAN, essential for internet play.
+    {
+        asio::error_code nd_ec;
+        g_client->sock.set_option( tcp::no_delay( true ), nd_ec );
+        mp_log( "[cdda-mp] client TCP_NODELAY ec=" + nd_ec.message() );
     }
 
     g_client->start_read();

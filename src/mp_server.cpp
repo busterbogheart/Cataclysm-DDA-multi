@@ -55,6 +55,11 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         : socket( std::move( sock ) ) {}
 
     void start() {
+        // Disable Nagle — see client_connect(). The host's grant packets are
+        // tiny and must not be batched on a high-latency link or the lockstep
+        // turn cycle wedges (works on LAN, hangs over the internet).
+        std::error_code nd_ec;
+        socket.set_option( tcp::no_delay( true ), nd_ec );
         send( "{\"type\":\"hello\",\"protocol\":\"cdda-mp\",\"version\":\"0.1\"}\n" );
         do_read();
     }

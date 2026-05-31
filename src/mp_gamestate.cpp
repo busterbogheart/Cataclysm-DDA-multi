@@ -97,11 +97,25 @@ void mp_log( const std::string &msg )
     // changes (e.g. SP→host via the in-game menu).
     static std::ofstream log_file;
     static std::string current_path;
+    // Log directory: /tmp on unix (the stable path our tooling reads). Windows
+    // has no /tmp — an ofstream open on a nonexistent C:\tmp\ silently fails, so
+    // the client never wrote a log there. Use %USERPROFILE% (always present and
+    // writable): C:\Users\<name>\cdda-mp-client.log.
+    std::string log_dir = "/tmp/";
+#if defined(_WIN32)
+    if( const char *home = std::getenv( "USERPROFILE" ) ) {
+        log_dir = std::string( home ) + "\\";
+    } else if( const char *tmp = std::getenv( "TEMP" ) ) {
+        log_dir = std::string( tmp ) + "\\";
+    } else {
+        log_dir.clear();
+    }
+#endif
     std::string desired_path;
     if( is_client_mode() ) {
-        desired_path = "/tmp/cdda-mp-client.log";
+        desired_path = log_dir + "cdda-mp-client.log";
     } else if( is_host_mode() || is_server_mode() ) {
-        desired_path = "/tmp/cdda-mp-server.log";
+        desired_path = log_dir + "cdda-mp-server.log";
     }
     if( !desired_path.empty() && desired_path != current_path ) {
         if( log_file.is_open() ) {
@@ -109,6 +123,9 @@ void mp_log( const std::string &msg )
         }
         log_file.open( desired_path, std::ios::out | std::ios::trunc );
         current_path = desired_path;
+        // Echo so the user can find it (esp. on Windows where the path varies).
+        std::cout << "[cdda-mp] log file: " << desired_path
+                  << ( log_file.is_open() ? "" : "  (OPEN FAILED)" ) << std::endl;
     }
     if( log_file.is_open() ) {
         log_file << line << '\n';
