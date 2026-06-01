@@ -129,10 +129,7 @@ runs:
       shell: bash
       run: |
         echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-        # Universal build compiles every TU twice (arm64 + x86_64), so the
-        # working set is ~2x a single-arch build — give ccache headroom so it
-        # doesn't evict its own live entries mid-build and tank the hit rate.
-        echo "CCACHE_MAXSIZE=4G" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
         # CCACHE_SLOPPINESS is set inside CDDA's Makefile (see CCACHEBIN);
         # we just need the dir + size budget.
         mkdir -p "$HOME/.ccache"

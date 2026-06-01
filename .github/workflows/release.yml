@@ -195,3 +195,19 @@ jobs:
           files: |
             dist/cddacoop-*-macos-universal.zip
             dist/cddacoop-*-windows-x64.zip
+
+      # Kick the site rebuild directly. We can't rely on notify-site.yml's
+      # `release: published` trigger here: this release is created by the
+      # default GITHUB_TOKEN, and GitHub deliberately does NOT fire workflow
+      # events for token-created releases (recursion guard). So the site would
+      # stay pinned at the previous build's (now-deleted) download URL until a
+      # manual nudge. Dispatch catacoop-site's deploy ourselves with the PAT.
+      # notify-site.yml still covers manual `gh release edit` asset swaps,
+      # which fire under a human PAT and so trigger the event normally.
+      - name: Trigger site rebuild
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          gh workflow run deploy.yml \
+            --repo busterbogheart/catacoop-site \
+            --ref main
