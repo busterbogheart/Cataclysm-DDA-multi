@@ -119,6 +119,11 @@ installed.
 
 ## Changelog
 
+### 2026-06-01
+
+- **Combat messages full synced** — Your partner's hit/kill/event messages now correctly
+show up, either host or client.  
+
 ### 2026-05-31
 
 - **One macOS download for every Mac** — the mac build is now a universal binary that runs on both Apple Silicon and Intel Macs
