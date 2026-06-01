@@ -121,7 +121,7 @@ installed.
 
 ### 2026-05-31
 
-- **One macOS download for every Mac** — the mac build is now a  universal binary that runs on both Apple Silicon and Intel Macs
+- **One macOS download for every Mac** — the mac build is now a universal binary that runs on both Apple Silicon and Intel Macs
   (macOS 10.15+)
 - **High-five your partner** — new co-op "High five" option!  Slap skin for a
   quick mutual morale boost.  Bindable in options and added to the bump partner menu

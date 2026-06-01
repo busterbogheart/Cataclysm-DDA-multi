@@ -85,5 +85,18 @@
     "additionalDirectories": [
       "/Users/ethankemp"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/ethankemp/Cataclysm-DDA-multiplayer/.claude/hooks/block-liveness-ping.py"
+          }
+        ]
+      }
+    ]
   }
 }
