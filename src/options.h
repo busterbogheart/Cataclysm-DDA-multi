@@ -141,6 +141,18 @@ class options_manager
                 bool hasPrerequisite() const;
                 bool checkPrerequisite() const;
 
+                // MP fork: options that must hold a fixed value so the host and
+                // every client compute identical simulation results. A locked
+                // option ignores menu edits (setNext/setPrev/setValue no-op) and
+                // is rendered grayed; the menu shows the lock reason on edit.
+                // See mp_force_locked_options() in this file.
+                void setLocked( bool b ) {
+                    fForceLock = b;
+                }
+                bool isLocked() const {
+                    return fForceLock;
+                }
+
                 enum COPT_VALUE_TYPE {
                     CVT_UNKNOWN = 0,
                     CVT_BOOL = 1,
@@ -164,6 +176,10 @@ class options_manager
 
                 std::string sPrerequisite;
                 std::vector<std::string> sPrerequisiteAllowedValues;
+
+                // MP fork: when true the option is pinned to its current value
+                // and cannot be changed from the menu (see setLocked).
+                bool fForceLock = false;
 
                 copt_hide_t hide;
 
@@ -208,6 +224,13 @@ class options_manager
         void add_options_debug();
         void add_options_android();
         void load();
+        // MP fork: pin a fixed set of simulation-affecting options to constant
+        // values and lock them against menu edits. These options would otherwise
+        // let the host and a client compute divergent results for the same action
+        // (distance geometry, realtime turn cadence, monster speed/HP/evolution).
+        // Called from load() AFTER deserialize so a user's previously-saved value
+        // can never win. Idempotent.
+        void mp_force_locked_options();
         bool save() const;
         std::string show( bool ingame = false, bool world_options_only = false, bool with_tabs = true );
 

@@ -963,6 +963,11 @@ int options_manager::cOpt::getMaxLength() const
 //set to next item
 void options_manager::cOpt::setNext()
 {
+    if( fForceLock ) {
+        // MP fork: pinned option — ignore menu edits. The menu also blocks
+        // earlier with an explanatory popup; this is the belt-and-suspenders.
+        return;
+    }
     if( sType == "string_select" ) {
         int iNext = getItemPos( sSet ) + 1;
         if( iNext >= static_cast<int>( vItems.size() ) ) {
@@ -1006,6 +1011,9 @@ void options_manager::cOpt::setNext()
 //set to previous item
 void options_manager::cOpt::setPrev()
 {
+    if( fForceLock ) {
+        return;  // MP fork: pinned option — see setNext().
+    }
     if( sType == "string_select" ) {
         int iPrev = static_cast<int>( getItemPos( sSet ) ) - 1;
         if( iPrev < 0 ) {
@@ -3536,13 +3544,16 @@ std::string options_manager::show( bool ingame, const bool world_options_only, b
                     const cOpt &opt = cOPTIONS.find( it.data )->second;
                     const bool hasPrerequisite = opt.hasPrerequisite();
                     const bool hasPrerequisiteFulfilled = opt.checkPrerequisite();
+                    // MP fork: a locked option reads as uneditable, same as an
+                    // unmet prerequisite — gray it out.
+                    const bool greyed = ( hasPrerequisite && !hasPrerequisiteFulfilled )
+                                        || opt.isLocked();
 
                     std::string name_prefix = it.group.empty() ? "" : IN_GROUP_PREFIX;
-                    string_col name( name_prefix + opt.getMenuText(), !hasPrerequisite ||
-                                     hasPrerequisiteFulfilled ? c_white : c_light_gray );
+                    string_col name( name_prefix + opt.getMenuText(), greyed ? c_light_gray : c_white );
 
                     nc_color cLineColor;
-                    if( hasPrerequisite && !hasPrerequisiteFulfilled ) {
+                    if( greyed ) {
                         cLineColor = c_light_gray;
                     } else if( opt.getValue() == "false" || opt.getValue() == "disabled" || opt.getValue() == "off" ) {
                         cLineColor = c_light_red;
@@ -3694,6 +3705,13 @@ std::string options_manager::show( bool ingame, const bool world_options_only, b
             if( hasPrerequisite && !hasPrerequisiteFulfilled ) {
                 popup( _( "Prerequisite for this option not met!\n(%s)" ),
                        get_options().get_option( current_opt.getPrerequisite() ).getMenuText() );
+                return;
+            }
+
+            // MP fork: locked options are pinned so the host and every client
+            // simulate identically.  Explain rather than silently swallow the edit.
+            if( current_opt.isLocked() ) {
+                popup( _( "This option is locked in the co-op fork.\n\nIt must match between all players — differing world options can break multiplayer sync and cause the game states to diverge." ) );
                 return;
             }
 
@@ -4120,12 +4138,52 @@ void options_manager::load()
         deserialize( jsin );
     } );
 
+    mp_force_locked_options();
+
     update_global_locale();
     update_options_cache();
 
 #if defined(SDL_SOUND)
     sounds::sound_enabled = ::get_option<bool>( "SOUND_ENABLED" );
 #endif
+}
+
+void options_manager::mp_force_locked_options()
+{
+    // Co-op fork: these options must be identical on the host and every client
+    // or the two instances compute divergent simulation results for the same
+    // action.  We pin them to fixed values and lock them against editing.
+    //
+    //   CIRCLEDIST                   — distance/range geometry; if host and
+    //                                  client disagree, line-of-sight, gun/throw
+    //                                  reach and trajectory tiles differ.
+    //   TURN_DURATION                — realtime turn auto-advance fights the
+    //                                  grant/wait lockstep; force off.
+    //   MONSTER_SPEED / _RESILIENCE  — monster speed and max HP; divergence
+    //                                  desyncs combat resolution and "is it
+    //                                  dead?" between the two screens.
+    //   EVOLUTION_INVERSE_MULTIPLIER — monster upgrade cadence; divergence forks
+    //                                  monster identity in shared groups.
+    //
+    // SEASON_LENGTH and the ETERNAL_* options are NOT locked here — players tune
+    // them and they need host-wins sync instead (roadmap).
+    // Values passed as strings — cOpt::setValue(const std::string&) parses the
+    // right type for bool/int/float, avoiding the typed overloads' debugmsg on
+    // mismatch.
+    const auto pin = [this]( const std::string & name, const std::string & value ) {
+        auto it = options.find( name );
+        if( it == options.end() ) {
+            return;
+        }
+        it->second.setLocked( false );   // allow the forced write
+        it->second.setValue( value );
+        it->second.setLocked( true );
+    };
+    pin( "CIRCLEDIST", "true" );
+    pin( "TURN_DURATION", "0.0" );
+    pin( "MONSTER_SPEED", "100" );
+    pin( "MONSTER_RESILIENCE", "100" );
+    pin( "EVOLUTION_INVERSE_MULTIPLIER", "100" );
 }
 
 bool options_manager::has_option( const std::string &name ) const
@@ -4181,6 +4239,23 @@ void options_manager::set_world_options( options_container *options )
         world_options.reset();
     } else {
         world_options = options;
+        // MP fork: the locked monster options live on the world_default page, so
+        // get_option() reads them from this per-world copy — not the global
+        // options map that mp_force_locked_options() pins.  Re-pin them here so
+        // an activated world (whose worldoptions.json may hold a different saved
+        // value) still simulates with the fixed co-op values on every client.
+        const auto pin_world = [options]( const std::string & name, const std::string & value ) {
+            auto it = options->find( name );
+            if( it == options->end() ) {
+                return;
+            }
+            it->second.setLocked( false );
+            it->second.setValue( value );
+            it->second.setLocked( true );
+        };
+        pin_world( "MONSTER_SPEED", "100" );
+        pin_world( "MONSTER_RESILIENCE", "100" );
+        pin_world( "EVOLUTION_INVERSE_MULTIPLIER", "100" );
     }
 }
 
