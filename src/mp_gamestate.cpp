@@ -672,19 +672,54 @@ struct mp_edge_t {
     // its own colored border so the turn-state signal is still visible there.
     catacurses::window lft_win, rgt_win;
     ui_adaptor ui;
+    // Last sidebar geometry the windows were built for. on_screen_resize only
+    // fires on terminal/font changes, NOT when the player flips sidebar side or
+    // switches layout from the options menu — so we watch these and force a
+    // re-resize when they change (see maybe_resize()).
+    int last_left = -1, last_right = -1, last_termx = -1;
 
     mp_edge_t() {
         ui.on_screen_resize( [this]( ui_adaptor & ua ) {
-            const int sidebar_w = panel_manager::get_manager().get_width_right();
-            const int view_w = std::max( 1, TERMX - sidebar_w );
-            lft_win = catacurses::newwin( TERMY, 1, point( 0, 0 ) );
-            rgt_win = catacurses::newwin( TERMY, 1, point( view_w - 1, 0 ) );
+            // Mirror the SP terrain-window math (game.cpp): the map view spans
+            // columns [get_width_left(), TERMX - get_width_right() - 1]. Both
+            // accessors already account for SIDEBAR_POSITION (left vs right) and
+            // the active layout's width, so the stripes land flush on the
+            // sidebar's inner edge no matter which side it's on or how wide it
+            // is. The ▌/▐ half-blocks then hug that boundary: when a sidebar is
+            // present the colored half faces it; when an edge is the bare screen
+            // edge the stripe frames the map there instead.
+            panel_manager &pm = panel_manager::get_manager();
+            const int left_col = pm.get_width_left();
+            const int right_col = std::max( left_col, TERMX - pm.get_width_right() - 1 );
+            mp_log( "[cdda-mp] mp_edge resize: TERMX=" + std::to_string( TERMX )
+                    + " sidebar_pos=" + get_option<std::string>( "SIDEBAR_POSITION" )
+                    + " width_left=" + std::to_string( pm.get_width_left() )
+                    + " width_right=" + std::to_string( pm.get_width_right() )
+                    + " -> left_col=" + std::to_string( left_col )
+                    + " right_col=" + std::to_string( right_col ) );
+            lft_win = catacurses::newwin( TERMY, 1, point( left_col, 0 ) );
+            rgt_win = catacurses::newwin( TERMY, 1, point( right_col, 0 ) );
+            last_left = pm.get_width_left();
+            last_right = pm.get_width_right();
+            last_termx = TERMX;
             ua.position_from_window( lft_win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
             draw();
         } );
         ui.mark_resize();
+    }
+
+    // Re-run the resize callback when the sidebar geometry changed out from
+    // under us (side flip / layout switch / width change). ui_adaptor only
+    // re-runs on_screen_resize on its own for terminal/font changes, so without
+    // this the stripes stay pinned to their startup columns.
+    void maybe_resize() {
+        panel_manager &pm = panel_manager::get_manager();
+        if( pm.get_width_left() != last_left || pm.get_width_right() != last_right
+            || TERMX != last_termx ) {
+            ui.mark_resize();
+        }
     }
 
     void draw() const {
@@ -711,6 +746,7 @@ void ensure_mp_hud()
     if( !g_mp_edge ) {
         g_mp_edge = std::make_unique<mp_edge_t>();
     }
+    g_mp_edge->maybe_resize();
     g_mp_edge->ui.invalidate_ui();
     if( !g_mp_hud ) {
         g_mp_hud = std::make_unique<mp_hud_t>();
