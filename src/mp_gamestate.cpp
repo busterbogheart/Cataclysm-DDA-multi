@@ -691,12 +691,6 @@ struct mp_edge_t {
             panel_manager &pm = panel_manager::get_manager();
             const int left_col = pm.get_width_left();
             const int right_col = std::max( left_col, TERMX - pm.get_width_right() - 1 );
-            mp_log( "[cdda-mp] mp_edge resize: TERMX=" + std::to_string( TERMX )
-                    + " sidebar_pos=" + get_option<std::string>( "SIDEBAR_POSITION" )
-                    + " width_left=" + std::to_string( pm.get_width_left() )
-                    + " width_right=" + std::to_string( pm.get_width_right() )
-                    + " -> left_col=" + std::to_string( left_col )
-                    + " right_col=" + std::to_string( right_col ) );
             lft_win = catacurses::newwin( TERMY, 1, point( left_col, 0 ) );
             rgt_win = catacurses::newwin( TERMY, 1, point( right_col, 0 ) );
             last_left = pm.get_width_left();
@@ -2566,11 +2560,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     // Control vehicle — toggle the proxy NPC's vehicle control state.
     // Mirrors game::control_vehicle() for the client's proxy.
-    {
-        const bool cv_match = msg.find( "\"action\":\"control_vehicle\"" ) != std::string::npos;
-        mp_log( "[cdda-mp] DEBUG ctrl_veh check: match=" + std::to_string( cv_match )
-                + " msg[0..60]=" + msg.substr( 0, 60 ) );
-    }
     if( msg.find( "\"action\":\"control_vehicle\"" ) != std::string::npos ) {
         mp_log( "[cdda-mp] control_vehicle: HANDLER ENTERED controlling=" +
                 std::to_string( remote->controlling_vehicle ) );
@@ -5142,12 +5131,6 @@ static bool apply_one_state_message( const std::string &msg )
         }
         if( jo.has_member( "moves" ) ) {
             const int srv_moves = jo.get_int( "moves" );
-            mp_log( "[cdda-mp] MOVES-DEBUG: srv_moves=" + std::to_string( srv_moves ) +
-                    " is_partial=" + std::to_string( is_partial_turn ) +
-                    " ack=" + std::to_string( g_client_waiting_for_ack ) +
-                    " grant_seq=" + std::to_string( grant_seq ) +
-                    " last_seq=" + std::to_string( g_client_last_grant_seq ) +
-                    " av_act=" + ( get_avatar().activity ? get_avatar().activity.id().str() : "none" ) );
             // Refresh the "last heard from host" timestamp on any moves-bearing
             // state message (grants AND ack-clears).  The wedge-breaker uses
             // this to detect "host went silent" rather than "host hasn't sent
