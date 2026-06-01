@@ -307,7 +307,7 @@ runs:
         rm -rf /tmp/cddacoop-stage
         mkdir -p /tmp/cddacoop-stage
         cp -R Cddacoop.app /tmp/cddacoop-stage/
-        cp build-data/README-cddacoop.md /tmp/cddacoop-stage/README.md
+        cp build-data/README-cddacoop.md /tmp/cddacoop-stage/README.txt
 
     - name: Build DMG and .zip
       id: package
@@ -326,7 +326,7 @@ runs:
           --window-size 540 380 \
           --icon-size 96 \
           --icon "Cddacoop.app" 140 190 \
-          --icon "README.md" 270 320 \
+          --icon "README.txt" 270 320 \
           --app-drop-link 400 190 \
           --hide-extension "Cddacoop.app" \
           --no-internet-enable \
@@ -335,7 +335,7 @@ runs:
         echo "dmg-path=${DMG}" >> "$GITHUB_OUTPUT"
 
         # Zip — preserves macOS metadata + resource forks.  No
-        # --keepParent so the zip's top level is Cddacoop.app + README.md
+        # --keepParent so the zip's top level is Cddacoop.app + README.txt
         # directly, not a wrapping staging-dir.
         ditto -c -k --sequesterRsrc /tmp/cddacoop-stage "${ZIP}"
         echo "zip-path=${ZIP}" >> "$GITHUB_OUTPUT"

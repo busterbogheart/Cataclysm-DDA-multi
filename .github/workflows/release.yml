@@ -164,7 +164,7 @@ jobs:
 
           The macOS zip is a universal binary — one download runs natively on
           both Apple Silicon and Intel Macs (macOS 10.15+).
-          macOS zips contain \`Cddacoop.app\` + \`README.md\`.
+          macOS zips contain \`Cddacoop.app\` + \`README.txt\`.
           Unsigned — first launch on macOS needs **right-click → Open**;
           Windows SmartScreen needs **More info → Run anyway**.
 
