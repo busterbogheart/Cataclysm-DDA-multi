@@ -329,10 +329,11 @@ void set_last_host_action_label( const std::string &label );
 // Server only: capture avatar-generated messages since pre_msg and queue them
 // for the client with "You" → host character name substitution.
 // Call from do_turn() after each handle_action() when a remote player is connected.
-void host_capture_avatar_msgs( size_t pre_msg );
+// pre_msg is a Messages::appended_total() snapshot (monotonic), not size().
+void host_capture_avatar_msgs( unsigned long long pre_msg );
 // Capture ALL messages from vehmove() and queue them for the remote client as
 // their own messages (vehicle collision/status messages the driver should see).
-void host_capture_vehmove_msgs( size_t pre_msg );
+void host_capture_vehmove_msgs( unsigned long long pre_msg );
 
 // Per-tile vehicle position broadcast, called from map::vehmove after each
 // successful vehproceed step.  Sends a slim "vehicle_step" packet with just

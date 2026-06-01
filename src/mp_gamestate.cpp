@@ -241,8 +241,10 @@ static bool g_host_waiting_for_client = false;
 // host→client direction of the tap-on-shoulder action.
 static bool g_pending_wake_client = false;
 
-// Server: message log index at last state broadcast — used to forward only NEW messages.
-static size_t g_last_forwarded_msg_count = 0;
+// Server: monotonic message-append watermark at last forward — used to forward
+// only NEW messages.  Uses Messages::appended_total() (never decremented) rather
+// than size(), which is capped at MESSAGE_LIMIT and stalls once the log fills.
+static unsigned long long g_last_forwarded_msg_count = 0;
 
 // Server: messages captured during a remote player action that are forwarded
 // verbatim (after NPC→"You" substitution) regardless of NPC name filter.
@@ -451,7 +453,9 @@ static void mp_partner_activity_transition_check()
 // notable "You ..." message (e.g. "Now reading X", "You start crafting Y"),
 // we capture it here and tack it onto the next outgoing action so the host
 // sees a name-substituted version ("Roy now reads X") in their own log.
-static size_t g_client_msg_watermark = 0;
+// Monotonic append watermark (Messages::appended_total()), not size() — see
+// g_last_forwarded_msg_count note.
+static unsigned long long g_client_msg_watermark = 0;
 static std::vector<std::string> g_client_msgs_pending;
 
 // Separation warning tier: 0=ok, 1=warn (≥50 tiles), 2=danger (≥57 tiles).
@@ -1134,7 +1138,7 @@ static void spawn_remote_player( const std::string &name )
     g_server_veh_parts_count.clear();
     g_server_veh_live_nids.clear();
     g_separation_tier = 0;
-    g_last_forwarded_msg_count = Messages::size();  // don't forward pre-connect history
+    g_last_forwarded_msg_count = Messages::appended_total();  // don't forward pre-connect history
     mp_save_npc_ids();  // persist ID so next session can clean it up
 
     // Don't announce the join here — at spawn the only name we have is the
@@ -1354,13 +1358,13 @@ static void fix_you_verb( std::string &s )
 // and append them to g_action_msgs_pending for inclusion in the next broadcast.
 // Messages starting with "You " that don't contain the NPC name are host-avatar
 // messages that have no meaning on the client — they are skipped.
-static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
+static void flush_action_msgs( unsigned long long pre_msg, const std::string &npc_name )
 {
-    const size_t cur = Messages::size();
+    const unsigned long long cur = Messages::appended_total();
     if( cur <= pre_msg ) {
         return;
     }
-    const size_t count = cur - pre_msg;
+    const size_t count = static_cast<size_t>( cur - pre_msg );
     g_last_forwarded_msg_count = cur;  // advance watermark to avoid double-forward
     const auto new_msgs = Messages::recent_messages( count );
     for( const auto &[time_str, text] : new_msgs ) {
@@ -1401,19 +1405,19 @@ static void flush_action_msgs( size_t pre_msg, const std::string &npc_name )
 // Called from do_turn after each avatar handle_action() when a remote player is connected.
 // Capture ALL messages generated during vehmove() and queue them for the remote
 // client as their own messages (no attribution — the driver sees these directly).
-void host_capture_vehmove_msgs( size_t pre_msg )
+void host_capture_vehmove_msgs( unsigned long long pre_msg )
 {
     if( !is_hosting() || !remote_player_connected ) {
         return;
     }
-    const size_t cur = Messages::size();
+    const unsigned long long cur = Messages::appended_total();
     mp_log( "[veh-move] host_capture_vehmove_msgs: pre=" + std::to_string( pre_msg ) +
             " cur=" + std::to_string( cur ) +
             " delta=" + std::to_string( cur > pre_msg ? cur - pre_msg : 0 ) );
     if( cur <= pre_msg ) {
         return;
     }
-    const auto new_msgs = Messages::recent_messages( cur - pre_msg );
+    const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - pre_msg ) );
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
         mp_log( "[veh-move] capture queuing: " + text );
@@ -1474,17 +1478,17 @@ void host_broadcast_vehicle_step()
     srv->post_broadcast( "{\"type\":\"vehicle_step\",\"vehicles\":" + vehicles_json + "}\n" );
 }
 
-void host_capture_avatar_msgs( size_t pre_msg )
+void host_capture_avatar_msgs( unsigned long long pre_msg )
 {
     if( !is_hosting() || !remote_player_connected ) {
         return;
     }
-    const size_t cur = Messages::size();
+    const unsigned long long cur = Messages::appended_total();
     if( cur <= pre_msg ) {
         return;
     }
     const std::string host_name = get_avatar().name;
-    const auto new_msgs = Messages::recent_messages( cur - pre_msg );
+    const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - pre_msg ) );
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
         // Only forward messages that look like avatar combat ("You " prefix).
@@ -1622,7 +1626,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     // Snapshot message count before processing so we can forward ALL messages
     // generated during this action (hits, damage, kills, sounds) to the client.
-    const size_t pre_action_msg = Messages::size();
+    const unsigned long long pre_action_msg = Messages::appended_total();
 
     // Give the NPC its current move budget before executing any action.
     // (monmove skips remote player NPCs, so we manage AP ourselves.)
@@ -1801,7 +1805,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         // up by the host's between-action forwarder (NPC-name substitution
         // path in serialize_remote_player_state) and sent back as msgs.
         // Otherwise we get an infinite ping-pong of the same notification.
-        g_last_forwarded_msg_count = Messages::size();
+        g_last_forwarded_msg_count = Messages::appended_total();
     }
 
     // Worn-item sync — client sends this once after joining (and after any
@@ -2655,7 +2659,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
         // Don't use flush_action_msgs here — messages are pushed directly above
         // to avoid grammar issues from NPC-name→"You" substitution ("takes"→"take").
-        g_last_forwarded_msg_count = Messages::size();
+        g_last_forwarded_msg_count = Messages::appended_total();
         srv_emit_ack( "control_vehicle" );
         return;
     }
@@ -2784,7 +2788,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 }
             }
         }
-        g_last_forwarded_msg_count = Messages::size();
+        g_last_forwarded_msg_count = Messages::appended_total();
         srv_emit_ack( "cruise" );
         return;
     }
@@ -2809,7 +2813,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         remote->controlling_vehicle = false;
         here.unboard_vehicle( bub );
         remote->in_vehicle = false;
-        g_last_forwarded_msg_count = Messages::size();
+        g_last_forwarded_msg_count = Messages::appended_total();
         srv_emit_ack( "stop_engine" );
         return;
     }
@@ -2830,7 +2834,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 g_action_msgs_pending.push_back( _( "You start the engine." ) );
             }
         }
-        g_last_forwarded_msg_count = Messages::size();
+        g_last_forwarded_msg_count = Messages::appended_total();
         srv_emit_ack( "toggle_engine" );
         return;
     }
@@ -5331,7 +5335,7 @@ static bool apply_one_state_message( const std::string &msg )
             // sends "Name X" back → host adds → host re-substitutes to "You X"
             // → forwards back forever.  Advancing the watermark past these
             // messages keeps them local-display-only.
-            g_client_msg_watermark = Messages::size();
+            g_client_msg_watermark = Messages::appended_total();
         }
 
         // Play sfx events forwarded from the host's turn.
@@ -5403,6 +5407,19 @@ void client_process_incoming()
                     std::to_string( post_apply_moves ) +
                     " pending=" + ( g_pending_action.empty() ? "none" : "yes" ) );
         }
+    }
+    // Repaint after applying a batch of host state.  apply_monster_sync / tile /
+    // vehicle deltas update game state correctly, but a non-acting client (idle
+    // or waiting for its grant) never enters the input loop where do_turn's
+    // redraw lives — so dead monsters, tile changes, etc. would otherwise stay
+    // on screen until the client's own next turn (the "corpse stays standing"
+    // lag).  One redraw per drained batch covers it; mirrors the vehicle_step
+    // handler's invalidate+redraw.  Gated on recv_count so an idle 60Hz spin
+    // with no packets doesn't force needless repaints.
+    if( recv_count > 0 ) {
+        g->invalidate_main_ui_adaptor();
+        ui_manager::redraw();
+        refresh_display();
     }
     // Snapshot state right before autofire check.  If a grant set moves=92 in
     // an earlier iteration of this drain loop but a later message zeroed them,
@@ -5771,12 +5788,12 @@ static void add_third_person_s( std::string &s )
 // Drains into the enriched action payload below.
 static void client_capture_avatar_msgs()
 {
-    const size_t cur = Messages::size();
+    const unsigned long long cur = Messages::appended_total();
     if( cur <= g_client_msg_watermark ) {
         g_client_msg_watermark = cur;
         return;
     }
-    const auto new_msgs = Messages::recent_messages( cur - g_client_msg_watermark );
+    const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - g_client_msg_watermark ) );
     g_client_msg_watermark = cur;
     const std::string client_name = get_avatar().name;
     for( const auto &[time_str, text] : new_msgs ) {
@@ -7766,9 +7783,9 @@ std::string serialize_remote_player_state()
             driving_veh_name = vp_pos->vehicle().name;
         }
     }
-    const size_t current_msg_count = Messages::size();
+    const unsigned long long current_msg_count = Messages::appended_total();
     if( current_msg_count > g_last_forwarded_msg_count ) {
-        const size_t new_count = current_msg_count - g_last_forwarded_msg_count;
+        const size_t new_count = static_cast<size_t>( current_msg_count - g_last_forwarded_msg_count );
         g_last_forwarded_msg_count = current_msg_count;
         const auto new_msgs = Messages::recent_messages( new_count );
         for( const auto &[time_str, text] : new_msgs ) {

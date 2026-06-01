@@ -32,6 +32,10 @@ void add_msg( const game_message_params &params, std::string msg );
 void clear_messages();
 void deactivate();
 size_t size();
+// MP: monotonic count of messages ever appended (never decremented by the ring
+// buffer's MESSAGE_LIMIT cap). Used as a forward-progress watermark for the
+// multiplayer message-forwarding capture, where size() stalls once the log fills.
+unsigned long long appended_total();
 bool has_undisplayed_messages();
 void display_messages();
 void display_messages( const catacurses::window &ipk_target, int left, int top, int right,

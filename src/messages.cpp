@@ -129,6 +129,12 @@ class messages_impl
         std::vector<game_message> cooldown_templates; // Message cooldown
         time_point curmes = calendar::turn_zero; // The last-seen message.
         bool active = true;
+        // MP: monotonic count of messages ever appended (never decremented when
+        // the ring buffer drops old entries).  size() is capped at MESSAGE_LIMIT,
+        // so it cannot be used as a forward-progress watermark once the log fills
+        // — the MP message-forwarding capture diffs this instead. NOLINT below:
+        // intentionally not serialized; it is a session-local relay watermark.
+        unsigned long long appended_total = 0; // NOLINT(cata-serialize)
 
         bool has_undisplayed_messages() const {
             return !messages.empty() && messages.back().turn() > curmes;
@@ -206,6 +212,7 @@ class messages_impl
             }
 
             messages.emplace_back( m );
+            ++appended_total;
         }
 
         /** Check if the current message needs to be prevented (hidden) or not from being displayed in the side bar.
@@ -485,6 +492,11 @@ void Messages::deactivate()
 size_t Messages::size()
 {
     return player_messages.messages.size();
+}
+
+unsigned long long Messages::appended_total()
+{
+    return player_messages.appended_total;
 }
 
 bool Messages::has_undisplayed_messages()

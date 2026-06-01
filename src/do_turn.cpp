@@ -852,7 +852,8 @@ bool game::do_turn()
                 }
 
                 {
-                    const size_t pre_msg = cata_mp::is_hosting() ? Messages::size() : 0;
+                    const unsigned long long pre_msg = cata_mp::is_hosting() ? Messages::appended_total() :
+                                                       0;
                     if( cata_mp::is_hosting() ) {
                         cata_mp::mp_log( "[cdda-mp] HOST-HANDLE-ACTION: calling, pre_moves=" +
                                          std::to_string( u.get_moves() ) );
@@ -1105,7 +1106,7 @@ bool game::do_turn()
 
     m.process_falling();
     if( !cata_mp::is_client_mode() ) {
-        const size_t pre_veh = cata_mp::is_hosting() ? Messages::size() : 0;
+        const unsigned long long pre_veh = cata_mp::is_hosting() ? Messages::appended_total() : 0;
         if( cata_mp::is_hosting() ) {
             cata_mp::mp_log( "[veh-move] vehmove start, pre_msg=" + std::to_string( pre_veh ) );
         }
