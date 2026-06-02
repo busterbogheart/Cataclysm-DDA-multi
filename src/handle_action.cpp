@@ -3957,6 +3957,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // Client quicksave writes the local avatar so it can be re-loaded
             // on rejoin via CO-OP > Join > Load existing character.
             quicksave();
+            cata_mp::mp_after_quicksave();  // co-op save handshake + messaging
             return false;
 
         case ACTION_QUICKLOAD:

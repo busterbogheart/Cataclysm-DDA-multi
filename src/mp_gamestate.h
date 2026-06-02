@@ -228,6 +228,12 @@ void notify_client_host_died();
 // before the caller's socket teardown.
 void mp_notify_session_ending();
 
+// Co-op save handshake.  Call immediately after the SP quicksave() runs: the
+// host confirms the authoritative save; the client also asks the host to save
+// the shared world (save_request -> save_done) so the two stores stay in step.
+// No-op outside MP modes.
+void mp_after_quicksave();
+
 // Templates wire-sync on join: enumerate the local ~/Library/.../templates/
 // dir, send the list to the partner, then exchange any templates the other
 // side is missing.  Symmetric — both host and client send their list on

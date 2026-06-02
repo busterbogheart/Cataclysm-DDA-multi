@@ -1034,14 +1034,16 @@ bool main_menu::opening_screen()
                                     cata_mp::mp_log( "[cdda-mp] MENU: worldgen returned nullptr, bail" );
                                     break;  // worldgen cancelled at first tab
                                 }
-                                // Worldgen finalized the world even if the user thought
-                                // they were cancelling later tabs.  Confirmation gate +
-                                // cleanup-on-no, so bail intent matches outcome.
+                                // Worldgen finalized + persisted the world.  If the
+                                // user backs out of character creation, KEEP the world
+                                // on disk so it's listable and reusable later (mirrors
+                                // Play Now, which persists its world).  Previously this
+                                // deleted it, which made created-but-unused co-op worlds
+                                // silently vanish from the world menu.
                                 if( !query_yn(
                                         _( "World '%s' created.\n\nContinue to character creation?" ),
                                         neww->world_name.c_str() ) ) {
-                                    cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=NO, deleting world + bail" );
-                                    world_generator->delete_world( neww->world_name, true );
+                                    cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=NO, world kept, bail" );
                                     break;
                                 }
                                 cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=YES, world='" +

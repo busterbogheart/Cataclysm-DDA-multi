@@ -55,6 +55,8 @@
 #include "units_utility.h"
 #include "skill.h"
 #include "popup.h"
+#include "mod_manager.h"
+#include "mp_mod_compat.h"
 #include "string_input_popup.h"
 #include "uilist.h"
 #include "veh_type.h"
@@ -65,6 +67,7 @@
 #include "sounds.h"
 #endif
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -122,6 +125,20 @@ void mp_log( const std::string &msg )
         if( log_file.is_open() ) {
             log_file.close();
         }
+        // Rotate the previous sessions instead of discarding them: a bug
+        // reported after a session ended (e.g. by a remote player) is useless
+        // if the log was already truncated.  Keep the last KEEP sessions as
+        // .1 .. .KEEP, dropping the oldest — bounded, no unbounded growth.
+        // ec-overloads so a missing file (first run) is a no-op, not a throw.
+        constexpr int KEEP = 5;
+        std::error_code ec;
+        namespace fs = std::filesystem;
+        fs::remove( fs::path( desired_path + "." + std::to_string( KEEP ) ), ec );
+        for( int i = KEEP - 1; i >= 1; --i ) {
+            fs::rename( fs::path( desired_path + "." + std::to_string( i ) ),
+                        fs::path( desired_path + "." + std::to_string( i + 1 ) ), ec );
+        }
+        fs::rename( fs::path( desired_path ), fs::path( desired_path + ".1" ), ec );
         log_file.open( desired_path, std::ios::out | std::ios::trunc );
         current_path = desired_path;
         // Echo so the user can find it (esp. on Windows where the path varies).
@@ -489,9 +506,17 @@ struct mp_hud_t {
     static constexpr int W = 56;
     static constexpr int H = 3;
 
+    // Self-heal bookkeeping (see ensure_mp_hud). is_on_top is only valid
+    // once the redraw pass has run, so we latch it from inside draw().
+    mutable bool ever_drawn = false;
+    mutable bool last_on_top = false;
+    mutable int my_draws = 0;
+
     mp_hud_t() {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
             win = catacurses::newwin( H, W, point( 0, TERMY - H ) );
+            mp_log( "[cdda-mp] HUD: panel resize H=" + std::to_string( H ) + " W=" +
+                    std::to_string( W ) + " TERMY=" + std::to_string( TERMY ) );
             ua.position_from_window( win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
@@ -501,6 +526,19 @@ struct mp_hud_t {
     }
 
     void draw() const {
+        // is_on_top is set by redraw_invalidated() just before this callback,
+        // so it is accurate here even for a buried (drawn-but-overdrawn) panel.
+        ever_drawn = true;
+        last_on_top = ui.is_on_top;
+        // Per-instance counter: log the first few draws of every panel instance
+        // (so a post-heal recreate's first draws are visible) plus every 100th.
+        my_draws++;
+        if( my_draws <= 3 || ( my_draws % 100 ) == 0 ) {
+            mp_log( "[cdda-mp] HUD: panel draw() instance#" + std::to_string( my_draws ) +
+                    " on_top=" + std::to_string( ui.is_on_top ) +
+                    " stack=" + std::to_string( ui_adaptor::ui_stack_size() ) +
+                    " TERMY=" + std::to_string( TERMY ) );
+        }
         werase( win );
         // Border color tracks the same turn-state signal as the edge frame so
         // panel + frame pulse together.
@@ -740,14 +778,31 @@ static std::unique_ptr<mp_hud_t> g_mp_hud;
 
 void ensure_mp_hud()
 {
+    // Self-heal: on a 2nd+ host session within one process, the gameplay UI
+    // (map/sidebar adaptors) is reconstructed AFTER our HUD when the world
+    // reloads, leaving the HUD below it in the ui_stack. redraw_invalidated()
+    // still calls our draw() (so the panel "works") but the gameplay UI, being
+    // higher, overdraws the same screen area every frame — no visible co-op
+    // panel or turn stripes (reproduced 2026-06-02 on re-host). Recreating the
+    // panels re-pushes them to the top of the stack. is_on_top is only valid
+    // after a redraw, hence the ever_drawn guard to avoid a recreate loop on
+    // the first frame before is_on_top has been set.
+    if( g_mp_hud && g_mp_hud->ever_drawn && !g_mp_hud->last_on_top ) {
+        g_mp_edge.reset();
+        g_mp_hud.reset();
+        mp_log( "[cdda-mp] HUD: buried (not on top) -> recreating on top" );
+    }
+
     // Edge frame rendered first so the panel draws on top in the overlap zone.
     if( !g_mp_edge ) {
         g_mp_edge = std::make_unique<mp_edge_t>();
+        mp_log( "[cdda-mp] HUD: created mp_edge (fresh)" );
     }
     g_mp_edge->maybe_resize();
     g_mp_edge->ui.invalidate_ui();
     if( !g_mp_hud ) {
         g_mp_hud = std::make_unique<mp_hud_t>();
+        mp_log( "[cdda-mp] HUD: created mp_hud (fresh)" );
     }
     g_mp_hud->ui.invalidate_ui();
 }
@@ -897,7 +952,8 @@ static void mp_cleanup_stale_npcs()
                 found_any = true;
                 npc *n = g->critter_by_id<npc>( id );
                 if( n ) {
-                    n->die( &get_map(), nullptr );
+                    // Clean despawn — a stale proxy, not a death; no corpse/loot.
+                    g->remove_npc( id );
                 }
                 if( id.is_valid() ) {
                     overmap_buffer.remove_npc( id );
@@ -910,7 +966,8 @@ static void mp_cleanup_stale_npcs()
                 found_any = true;
                 npc *n = g->critter_by_id<npc>( id );
                 if( n ) {
-                    n->die( &get_map(), nullptr );
+                    // Clean despawn — a stale proxy, not a death; no corpse/loot.
+                    g->remove_npc( id );
                 }
                 if( id.is_valid() ) {
                     overmap_buffer.remove_npc( id );
@@ -997,7 +1054,8 @@ static void purge_npcs_by_name( const std::string &name )
     for( npc *n : g->get_npcs_if( [&]( const npc &np ) { return np.name == name; } ) ) {
         mp_log( "[cdda-mp] PURGE active: id=" + std::to_string( n->getID().get_value() )
                 + " name='" + n->name + "' pos=" + n->pos_abs().to_string() );
-        n->die( &get_map(), nullptr );
+        // Clean despawn — a stale proxy, not a death; no corpse/loot dropped.
+        g->remove_npc( n->getID() );
         ++active_killed;
     }
     g->cleanup_dead();
@@ -1172,12 +1230,12 @@ static void remove_remote_player()
 
     npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
     if( remote ) {
-        remote->set_moves( 0 );
-        remote->die( &get_map(), nullptr );
-        g->cleanup_dead();
+        // Clean despawn — the partner quit/disconnected, they are NOT dead.
+        // die() drops a corpse carrying all their gear (a pickup-able loot dupe).
+        g->remove_npc( remote_player_npc_id );
     }
-    // Remove from overmap buffer so the dead NPC doesn't get written back into
-    // the world save, which would cause a stale NPC to appear on next load.
+    // Remove from overmap buffer so the NPC doesn't get written back into the
+    // world save, which would cause a stale NPC to appear on next load.
     if( remote_player_npc_id.is_valid() ) {
         overmap_buffer.remove_npc( remote_player_npc_id );
     }
@@ -1692,6 +1750,19 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         mp_log( "[cdda-mp] SESSION-END RECV: client is leaving — auto-saving host" );
         add_msg( m_warning, _( "Your partner is leaving.  The game has been saved." ) );
         g->quicksave();
+        return;
+    }
+
+    // Co-op save handshake: the client saved on their side and asked us to save
+    // the shared world too, so the host's authoritative save and the client's
+    // local save stay at the same game-time.  Reply save_done for confirmation.
+    if( msg.find( "\"action\":\"save_request\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] SAVE-REQ RECV: partner asked host to save the shared world" );
+        g->quicksave();
+        add_msg( m_info, _( "Your partner saved — the shared world was saved too." ) );
+        if( server *srv = get_active_server() ) {
+            srv->post_broadcast( "{\"type\":\"save_done\"}\n" );
+        }
         return;
     }
 
@@ -2245,6 +2316,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         }
                     }
                     if( !mon || mon->is_dead() ) {
+                        // Diagnostic for the resurrection report: the client
+                        // reported a hit/kill for a net id the host can't match,
+                        // so the host never applies it and keeps broadcasting the
+                        // monster as alive.
+                        mp_log( "[cdda-mp] HOST-HIT-MISS: nid=" + std::to_string( nid ) +
+                                " hp=" + std::to_string( new_hp ) +
+                                ( mon ? " (host monster already dead)"
+                                  : " (no host monster with this nid)" ) );
                         continue;
                     }
                     if( new_hp <= 0 ) {
@@ -3787,6 +3866,23 @@ void notify_client_host_died()
     std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 }
 
+// Co-op save handshake — called right after the SP quicksave() runs.  See the
+// "Co-op save model" section of ROADMAP.md.  Host: confirm the authoritative
+// save.  Client: the local save is already written; also ask the host to save
+// the shared world so the two stores stay at the same game-time, and surface
+// where each player's data lives.
+void mp_after_quicksave()
+{
+    if( is_host_mode() && is_hosting() ) {
+        add_msg( m_good,
+                 _( "Co-op world saved — the authoritative save of the shared world and your partner's character.  (Your partner also keeps a local copy of their own character.)" ) );
+    } else if( is_client_mode() ) {
+        add_msg( m_info,
+                 _( "Saved your character locally.  Asking the host to save the shared world so you stay in sync…" ) );
+        client_send( "{\"type\":\"action\",\"action\":\"save_request\"}" );
+    }
+}
+
 void mp_notify_session_ending()
 {
     if( is_host_mode() ) {
@@ -3804,6 +3900,40 @@ void mp_notify_session_ending()
     }
     // Brief pause so the TCP write completes before the socket goes down.
     std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+
+    // Host: tear down the listen server. run_server()'s srv.run() blocks until
+    // stop() is called; if we never stop it, the thread lingers, active_server_
+    // stays set, is_hosting() keeps returning true, and the NEXT host session in
+    // this launch short-circuits the re-arm -> no new thread, no co-op UI
+    // (reproduced 2026-06-02). stop() makes srv.run() return -> run_server sets
+    // active_server_ = nullptr. The post-stop pause lets that unwind before any
+    // re-host checks is_hosting().
+    if( is_host_mode() ) {
+        if( server *srv = get_active_server() ) {
+            srv->stop();
+            mp_log( "[cdda-mp] SESSION-END: host server stop() called" );
+        }
+        // Wait for the (detached) listen thread to FULLY exit run_server() —
+        // not just a fixed sleep. Only then has the server object destructed
+        // and freed the port-8080 socket. A fixed 200ms sleep raced this: a
+        // re-host could bind before the old socket released, the server ctor
+        // threw EADDRINUSE, active_server_ stayed null, is_hosting() read false
+        // on the 2nd host -> no co-op HUD, no live listener (2026-06-02).
+        // Bounded so a wedged thread can't hang the quit/return-to-menu.
+        for( int i = 0; i < 300 && is_server_thread_running(); ++i ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        }
+        mp_log( "[cdda-mp] SESSION-END: listen thread exited, running=" +
+                std::to_string( is_server_thread_running() ) );
+    }
+
+    // Drop the co-op HUD so the next session re-creates it fresh.  g_mp_hud /
+    // g_mp_edge are static and their ui_adaptors register against the current
+    // screen; carrying them across a return-to-main-menu leaves stale adaptors
+    // that never draw — no co-op panel / turn-stripes on a second session.
+    g_mp_edge.reset();
+    g_mp_hud.reset();
+    mp_log( "[cdda-mp] SESSION-END: co-op HUD reset" );
 }
 
 // Enumerate `*.template` basenames in the user templates dir.
@@ -3967,6 +4097,12 @@ static bool g_host_thread_actually_started = false;
 // --host CLI flag (main.cpp spawns its own thread in that path).
 static void mp_start_pending_host_thread()
 {
+    // Lifecycle trace: shows why the server thread does/doesn't start. A second
+    // host session in one launch can arrive here with stale statics.
+    mp_log( "[cdda-mp] HOST-THREAD-CHECK: pending=" +
+            std::to_string( g_pending_host_start ) + " already_started=" +
+            std::to_string( g_host_thread_actually_started ) + " host_mode=" +
+            std::to_string( is_host_mode() ) );
     if( !g_pending_host_start || g_host_thread_actually_started ) {
         return;
     }
@@ -3979,11 +4115,20 @@ static void mp_start_pending_host_thread()
 
 bool mp_menu_start_host_session()
 {
-    if( is_host_mode() ) {
-        // Already armed (or thread already running) — treat as success so the
-        // caller can re-enter the world / char-creation flow.
+    // Short-circuit ONLY when we're genuinely still hosting (a live server) — the
+    // case where the user re-enters the world/char picker mid-arming.  If
+    // host_mode is set but the server is gone (a prior session ended without
+    // clearing it), fall through and RE-ARM.  Otherwise a second host session in
+    // the same launch never restarts the listen thread:
+    // g_host_thread_actually_started stays true -> mp_start_pending_host_thread
+    // returns early -> no listener, no co-op UI (reproduced 2026-06-02).
+    if( is_host_mode() && is_hosting() ) {
+        mp_log( "[cdda-mp] HOST-ARM: already hosting (live server), short-circuit" );
         return true;
     }
+    mp_log( "[cdda-mp] HOST-ARM: arming (host_mode was " +
+            std::to_string( is_host_mode() ) + ", live_server=" +
+            std::to_string( is_hosting() ) + ") — re-arm restarts the thread" );
     set_host_mode( true );
     // Server thread starts on the host's first do_turn (see
     // mp_start_pending_host_thread) so we don't end up listening before
@@ -4043,7 +4188,10 @@ WORLD *mp_ensure_client_scratch_world()
 {
     // Leading underscore is rejected by worldfactory's lexical validity
     // check, so use a friendly name we'd also be happy showing to the user.
-    static const std::string SCRATCH_NAME = "Co-op Client";
+    // Auto-created throwaway world the client spawns into before teleporting to
+    // the host.  Named to make it obvious in the world menu that it's internal
+    // and must not be hand-selected.  (ASCII only — this becomes a directory.)
+    static const std::string SCRATCH_NAME = "Co-op (auto) - DO NOT SELECT";
     if( world_generator->has_world( SCRATCH_NAME ) ) {
         return world_generator->get_world( SCRATCH_NAME );
     }
@@ -4502,18 +4650,25 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
     avatar &u = get_avatar();
     map &m = get_map();
 
-    std::cout << "[cdda-mp] teleport: abs=" << abs_pos.x() << "," << abs_pos.y()
-              << " inbounds=" << m.inbounds( abs_pos )
-              << " initial_done=" << g_initial_teleport_done << std::flush;
+    const bool in = m.inbounds( abs_pos );
+    mp_log( "[cdda-mp] teleport: target_abs=" + std::to_string( abs_pos.x() ) + "," +
+            std::to_string( abs_pos.y() ) + " inbounds=" + std::to_string( in ) +
+            " initial_done=" + std::to_string( g_initial_teleport_done ) +
+            " avatar_abs=" + std::to_string( u.pos_abs().x() ) + "," +
+            std::to_string( u.pos_abs().y() ) );
 
-    if( !m.inbounds( abs_pos ) ) {
+    if( !in ) {
         if( !g_initial_teleport_done ) {
-            std::cout << " → place_player_overmap..." << std::flush;
+            mp_log( "[cdda-mp] teleport: -> place_player_overmap (initial)" );
             g->place_player_overmap( project_to<coords::omt>( abs_pos ), true );
             g_initial_teleport_done = true;
-            std::cout << " done" << std::flush;
         } else {
-            std::cout << " → out of bubble, skip" << std::endl;
+            // The host moved out of the client's bubble and we already did the
+            // one-time overmap placement, so we refuse to chase it.  If the
+            // *initial* placement put us at the wrong spot (e.g. our own
+            // scenario start instead of the host), this is where we get stranded
+            // far from the partner — that's the "4560 tiles away" symptom.
+            mp_log( "[cdda-mp] teleport: -> OUT OF BUBBLE, skip (avatar stays put)" );
             return;
         }
     } else {
@@ -4522,14 +4677,12 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
 
     const tripoint_bub_ms new_pos = m.get_bub( abs_pos );
     if( new_pos != u.pos_bub() ) {
-        std::cout << " → setpos+update_map..." << std::flush;
+        mp_log( "[cdda-mp] teleport: -> setpos+update_map" );
         u.setpos( m, new_pos );
         g->update_map( u );
-        std::cout << " done" << std::flush;
     } else {
-        std::cout << " → already at target" << std::flush;
+        mp_log( "[cdda-mp] teleport: -> already at target" );
     }
-    std::cout << std::endl;
 }
 
 static void remove_client_host_npc()
@@ -4537,13 +4690,14 @@ static void remove_client_host_npc()
     if( !client_host_npc_spawned ) {
         return;
     }
-    // Try to kill through the active tracker first; fall back to overmap removal.
+    // Clean despawn — the host left, they are NOT dead. die() would drop a
+    // corpse carrying all their gear (a pickup-able loot dupe). Remove the
+    // active copy and the overmap copy without a death.
     npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
     if( host_npc ) {
-        host_npc->set_moves( 0 );
-        host_npc->die( &get_map(), nullptr );
-        g->cleanup_dead();
-    } else if( client_host_npc_id.is_valid() ) {
+        g->remove_npc( client_host_npc_id );
+    }
+    if( client_host_npc_id.is_valid() ) {
         overmap_buffer.remove_npc( client_host_npc_id );
     }
     client_host_npc_spawned = false;
@@ -4710,6 +4864,13 @@ static bool apply_one_state_message( const std::string &msg )
     if( msg.find( "\"type\":\"session_ending\"" ) != std::string::npos ) {
         mp_log( "[cdda-mp] SESSION-END RECV: host is leaving" );
         add_msg( m_warning, _( "Your partner is leaving.  The session will end shortly." ) );
+        return true;
+    }
+
+    // Co-op save handshake: the host saved the shared world at our request.
+    if( msg.find( "\"type\":\"save_done\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] SAVE-DONE RECV: host saved the shared world" );
+        add_msg( m_good, _( "The host saved the shared world — your progress is in sync.  (Your inventory isn't fully mirrored to the host yet — known limitation.)" ) );
         return true;
     }
 
@@ -5096,7 +5257,16 @@ static bool apply_one_state_message( const std::string &msg )
                 const bodypart_id bp = bodypart_str_id( bp_str ).id();
                 const int new_hp = bpo.get_int( "hp" );
                 const auto prev_it = g_last_bodypart_hp.find( bp_str );
-                if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second ) {
+                // Synthesise a "you were hit" message from HP deltas — but only
+                // when the previous baseline was a *valid* HP (<= this part's
+                // current max).  A baseline above max predates a max-HP
+                // recompute: the proxy NPC spawns at NPC-default HP, then
+                // recomputes to this character's real max and clamps current
+                // down.  That clamp is not combat damage; counting it made the
+                // client cry "You are hit for 204 damage!" on join with no
+                // attacker (confirmed 2026-06-02: all parts 105->88/max95).
+                if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
+                    && prev_it->second <= av.get_part_hp_max( bp ) ) {
                     total_damage += prev_it->second - new_hp;
                 }
                 g_last_bodypart_hp[bp_str] = new_hp;
@@ -5734,6 +5904,14 @@ static std::string build_client_monster_hits()
     for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
         monster *mon = ptr.get();
         if( !mon || mon->mp_net_id == 0 ) {
+            // Diagnostic for the "killed a zed, it rose again" report: a monster
+            // the client killed in its own local world that the host never
+            // assigned a net id to is never reported — the host keeps it alive
+            // and re-broadcasts it, resurrecting the client's corpse.
+            if( mon && mon->is_dead() && mon->mp_net_id == 0 ) {
+                mp_log( "[cdda-mp] CLIENT-KILL-UNSYNCED: '" + mon->name() +
+                        "' died locally with mp_net_id==0 — not reported to host" );
+            }
             continue;
         }
         const auto it = g_last_monster_hp.find( mon->mp_net_id );
@@ -6485,6 +6663,14 @@ static void apply_tile_changes( JsonObject &jo )
     map &m = get_map();
     bool any_new_trap = false;
 
+    // Diagnostic: is the host's terrain reaching us, and does it differ from
+    // our own world-gen terrain?  ter_seen = tiles carrying a "ter"; ter_diff =
+    // tiles where the host's terrain differs from what we already had locally
+    // (i.e. our scratch-world map disagreeing with the host's).
+    int ter_seen = 0;
+    int ter_diff = 0;
+    int ter_logged = 0;
+
     for( const JsonValue &entry : jo.get_array( "tile_changes" ) ) {
         JsonObject to = entry.get_object();
         to.allow_omitted_members();
@@ -6502,6 +6688,17 @@ static void apply_tile_changes( JsonObject &jo )
         to.read( "furn", furn_str );
 
         if( !ter_str.empty() ) {
+            ter_seen++;
+            const std::string local_ter = m.ter( bub ).id().str();
+            if( local_ter != ter_str ) {
+                ter_diff++;
+                if( ter_logged < 8 ) {
+                    ter_logged++;
+                    mp_log( "[cdda-mp] apply_tile_changes: TER @ " +
+                            std::to_string( abs.x() ) + "," + std::to_string( abs.y() ) +
+                            " local=" + local_ter + " -> host=" + ter_str );
+                }
+            }
             m.ter_set( bub, ter_id( ter_str ) );
         }
         if( !furn_str.empty() ) {
@@ -6638,6 +6835,12 @@ static void apply_tile_changes( JsonObject &jo )
             g_client_graffiti_baseline[abs] =
                 m.has_graffiti_at( bub ) ? m.graffiti_at( bub ) : "";
         }
+    }
+
+    if( ter_seen > 0 ) {
+        mp_log( "[cdda-mp] apply_tile_changes: batch ter_seen=" + std::to_string( ter_seen ) +
+                " ter_diff=" + std::to_string( ter_diff ) +
+                "  (ter_diff>0 => host terrain differs from our local world-gen)" );
     }
 
     // Run detection so newly synced traps show the warning tile immediately,

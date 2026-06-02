@@ -67,6 +67,13 @@ void run_server( uint16_t port, const std::string &password,
 // Thread-safe: broadcast() on the returned pointer is mutex-protected.
 server *get_active_server();
 
+// True from the moment the (detached) listen thread enters run_server() until
+// it fully returns — i.e. until the server object has destructed and its
+// listen socket (the port) is released. Session-end waits on this going false
+// before allowing a re-host to re-bind the same port, so a second host session
+// in one launch can't race the first session's socket teardown.
+bool is_server_thread_running();
+
 } // namespace cata_mp
 
 #endif // CATA_SRC_MP_SERVER_H

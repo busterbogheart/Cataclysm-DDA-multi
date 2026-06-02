@@ -1,5 +1,6 @@
 #include "worldfactory.h"
 #include "mp_gamestate.h"
+#include "mp_mod_compat.h"
 
 #include <algorithm>
 #include <array>
@@ -867,6 +868,23 @@ std::map<int, inclusive_rectangle<point>> worldfactory::draw_mod_list( const cat
                                                          ( *conflict )->name() );
                         mod_entry_color = c_pink;
                     }
+                    // Co-op: flag incompatible mods in red and "may break"
+                    // mods in orange (c_brown), distinct from the pink
+                    // "conflicts with an enabled mod" coloring above.
+                    if( cata_mp::is_mp_mode() ) {
+                        switch( cata_mp::mod_coop_status( mod_entry_id.str() ) ) {
+                            case cata_mp::mod_coop::incompatible:
+                                mod_entry_name += _( " --- not co-op compatible" );
+                                mod_entry_color = c_red;
+                                break;
+                            case cata_mp::mod_coop::warn:
+                                mod_entry_name += _( " --- may break in co-op" );
+                                mod_entry_color = c_brown;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
                     trim_and_print( w, point( 4, iNum - start ), wwidth, mod_entry_color, mod_entry_name );
                     ent_map.emplace( static_cast<int>( std::distance( mods.begin(), iter ) ),
                                      inclusive_rectangle<point>( point( 1, iNum - start ), point( 3 + wwidth, iNum - start ) ) );
@@ -1390,8 +1408,21 @@ int worldfactory::show_worldgen_tab_modselection( const catacurses::window &win,
         } else if( action == "CONFIRM" ) {
             const std::vector<mod_id> &current_tab_mods = all_tabs[iCurrentTab].mods;
             if( active_header == 0 && !current_tab_mods.empty() ) {
-                // try-add
-                mman_ui->try_add( current_tab_mods[cursel[0]], active_mod_order );
+                const mod_id &cand = current_tab_mods[cursel[0]];
+                const cata_mp::mod_coop coop = cata_mp::is_mp_mode()
+                                               ? cata_mp::mod_coop_status( cand.str() )
+                                               : cata_mp::mod_coop::ok;
+                if( coop == cata_mp::mod_coop::incompatible ) {
+                    // Hard-incompatible mods can't be enabled in co-op — explain why.
+                    popup( "%s", cata_mp::mod_coop_note( cand.str() ) );
+                } else {
+                    // Soft-incompatible: warn with the same words, but still allow it.
+                    if( coop == cata_mp::mod_coop::warn ) {
+                        popup( "%s", cata_mp::mod_coop_note( cand.str() ) );
+                    }
+                    // try-add
+                    mman_ui->try_add( cand, active_mod_order );
+                }
             } else if( active_header == 1 && !active_mod_order.empty() ) {
                 // try-rem
                 mman_ui->try_rem( cursel[1], active_mod_order );

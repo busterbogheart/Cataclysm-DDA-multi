@@ -1,6 +1,7 @@
 #include "mp_server.h"
 #include "mp_queue.h"
 
+#include <atomic>
 #include <iostream>
 #include <algorithm>
 
@@ -11,6 +12,11 @@
 using asio::ip::tcp;
 
 namespace cata_mp {
+
+// Forward-declared (not #included) on purpose: pulling mp_gamestate.h into this
+// TU drags in CDDA's enum_traits.h, whose generic operator++ collides with
+// asio's std::atomic<long> increment in scheduler.hpp. We only need mp_log.
+void mp_log( const std::string &msg );
 
 // Normalize a build-version string to its commit identity for the join
 // handshake. getVersionString() is the git commit hash, but the Makefile
@@ -298,23 +304,39 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
 // ---------------------------------------------------------------------------
 
 static server *active_server_ = nullptr;
+static std::atomic<bool> server_thread_running_{ false };
 
 server *get_active_server()
 {
     return active_server_;
 }
 
+bool is_server_thread_running()
+{
+    return server_thread_running_.load();
+}
+
 void run_server( uint16_t port, const std::string &password, const std::string &version ) {
+    server_thread_running_.store( true );
     try {
+        // The server ctor binds the listen socket and THROWS if the port is
+        // still held (e.g. a prior session's socket not yet released). Surface
+        // it via mp_log — std::cerr alone is invisible in the in-game log and
+        // hid this failure: a thrown ctor leaves active_server_ null, so
+        // is_hosting() stays false and the whole host turn body is skipped.
         server srv( port, password, version );
         active_server_ = &srv;
         srv.run();
     } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] SERVER-ERROR: " ) + e.what() );
         std::cerr << "[cdda-mp] Server error: " << e.what() << std::endl;
         // Never call exit() from a background thread — it runs SDL atexit handlers
         // on the wrong thread, which crashes on macOS (EXC_BREAKPOINT in Cocoa).
     }
     active_server_ = nullptr;
+    // Cleared last: the server object above has now destructed and released the
+    // listen socket, so a waiter on this flag knows the port is free.
+    server_thread_running_.store( false );
 }
 
 } // namespace cata_mp

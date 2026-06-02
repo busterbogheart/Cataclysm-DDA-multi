@@ -6,6 +6,7 @@
 #include "color.h"
 #include "debug.h"
 #include "dependency_tree.h"
+#include "mp_mod_compat.h"
 #include "output.h"
 #include "string_formatter.h"
 
@@ -64,6 +65,9 @@ std::string mod_ui::get_information( const MOD_INFORMATION *mod )
     if( !note.empty() ) {
         info += colorize( note, c_red );
     }
+
+    // Co-op compatibility note (MP mode only).
+    info += cata_mp::mod_coop_info_suffix( mod->ident.str() );
 
     return info;
 }
