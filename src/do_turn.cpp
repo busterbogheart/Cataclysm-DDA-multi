@@ -654,8 +654,15 @@ bool game::do_turn()
     if( cata_mp::is_hosting() ) {
         cata_mp::grant_client_turn();
     }
-    // Keep the MP debug HUD alive whenever multiplayer is active
-    if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
+    // Keep the MP debug HUD alive whenever multiplayer is active.
+    // Gate on host *intent* (is_host_mode), not server liveness (is_hosting):
+    // the listen thread sets active_server_ asynchronously, so on a 2nd host
+    // session in one launch is_hosting() can still read false on this turn's
+    // first do_turn, the HUD gets skipped, then the host blocks in
+    // handle_action() and never re-checks — no co-op panel/stripes until an
+    // action (2026-06-02). is_host_mode() is set synchronously when hosting is
+    // chosen, so the HUD appears immediately and reliably.
+    if( cata_mp::is_client_mode() || cata_mp::is_host_mode() ) {
         cata_mp::ensure_mp_hud();
     }
 

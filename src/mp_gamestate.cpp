@@ -506,12 +506,6 @@ struct mp_hud_t {
     static constexpr int W = 56;
     static constexpr int H = 3;
 
-    // Self-heal bookkeeping (see ensure_mp_hud). is_on_top is only valid
-    // once the redraw pass has run, so we latch it from inside draw().
-    mutable bool ever_drawn = false;
-    mutable bool last_on_top = false;
-    mutable int my_draws = 0;
-
     mp_hud_t() {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
             win = catacurses::newwin( H, W, point( 0, TERMY - H ) );
@@ -526,19 +520,6 @@ struct mp_hud_t {
     }
 
     void draw() const {
-        // is_on_top is set by redraw_invalidated() just before this callback,
-        // so it is accurate here even for a buried (drawn-but-overdrawn) panel.
-        ever_drawn = true;
-        last_on_top = ui.is_on_top;
-        // Per-instance counter: log the first few draws of every panel instance
-        // (so a post-heal recreate's first draws are visible) plus every 100th.
-        my_draws++;
-        if( my_draws <= 3 || ( my_draws % 100 ) == 0 ) {
-            mp_log( "[cdda-mp] HUD: panel draw() instance#" + std::to_string( my_draws ) +
-                    " on_top=" + std::to_string( ui.is_on_top ) +
-                    " stack=" + std::to_string( ui_adaptor::ui_stack_size() ) +
-                    " TERMY=" + std::to_string( TERMY ) );
-        }
         werase( win );
         // Border color tracks the same turn-state signal as the edge frame so
         // panel + frame pulse together.
@@ -778,21 +759,6 @@ static std::unique_ptr<mp_hud_t> g_mp_hud;
 
 void ensure_mp_hud()
 {
-    // Self-heal: on a 2nd+ host session within one process, the gameplay UI
-    // (map/sidebar adaptors) is reconstructed AFTER our HUD when the world
-    // reloads, leaving the HUD below it in the ui_stack. redraw_invalidated()
-    // still calls our draw() (so the panel "works") but the gameplay UI, being
-    // higher, overdraws the same screen area every frame — no visible co-op
-    // panel or turn stripes (reproduced 2026-06-02 on re-host). Recreating the
-    // panels re-pushes them to the top of the stack. is_on_top is only valid
-    // after a redraw, hence the ever_drawn guard to avoid a recreate loop on
-    // the first frame before is_on_top has been set.
-    if( g_mp_hud && g_mp_hud->ever_drawn && !g_mp_hud->last_on_top ) {
-        g_mp_edge.reset();
-        g_mp_hud.reset();
-        mp_log( "[cdda-mp] HUD: buried (not on top) -> recreating on top" );
-    }
-
     // Edge frame rendered first so the panel draws on top in the overlap zone.
     if( !g_mp_edge ) {
         g_mp_edge = std::make_unique<mp_edge_t>();

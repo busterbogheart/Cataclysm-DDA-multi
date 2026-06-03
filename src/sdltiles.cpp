@@ -49,7 +49,6 @@
 #include "flag.h"
 #include "font_loader.h"
 #include "game.h"
-#include "mp_gamestate.h" // TEMP: render-order diagnostic for co-op HUD
 #include "game_constants.h"
 #include "game_ui.h"
 #include "hash_utils.h"
@@ -651,13 +650,6 @@ static void draw_gamepad_radial_menu();
 
 void refresh_display()
 {
-    {
-        static int dbg_frames = 60;
-        if( dbg_frames > 0 ) {
-            dbg_frames--;
-            cata_mp::mp_log( "[cdda-mp] DRAWWIN ---- present ----" );
-        }
-    }
     needupdate = false;
     lastupdate = GetTicks();
 
@@ -1512,19 +1504,6 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
                               WindowHeight / scaling_factor );
     }
     WINDOW *const win = w.get<WINDOW>();
-    // TEMP render-order diagnostic: log every window whose body reaches the
-    // bottom rows (where the co-op HUD lives) so we can see, per frame, what
-    // draws over the panel region and in what order. Bounded budget so it can't
-    // flood the log.
-    {
-        static int dbg_budget = 400;
-        if( win && dbg_budget > 0 && win->pos.y + win->height >= TERMY - 1 ) {
-            dbg_budget--;
-            cata_mp::mp_log( "[cdda-mp] DRAWWIN pos=(" + std::to_string( win->pos.x ) + "," +
-                             std::to_string( win->pos.y ) + ") size=" + std::to_string( win->width ) +
-                             "x" + std::to_string( win->height ) + " draw=" + std::to_string( win->draw ) );
-        }
-    }
     bool update = false;
     if( g && w == g->w_terrain && use_tiles ) {
         // color blocks overlay; drawn on top of tiles and on top of overlay strings (if any).
