@@ -4120,6 +4120,10 @@ static void mp_start_pending_host_thread()
 
 bool mp_menu_start_host_session()
 {
+    // Log the running binary's exact version so the log shows what's ACTUALLY
+    // executing — the on-disk binary can differ from a still-running process
+    // after a rebuild, and the handshake compares this string's commit token.
+    mp_log( std::string( "[cdda-mp] VERSION=" ) + getVersionString() + " (role=HOST)" );
     // Short-circuit ONLY when we're genuinely still hosting (a live server) — the
     // case where the user re-enters the world/char picker mid-arming.  If
     // host_mode is set but the server is gone (a prior session ended without
@@ -4515,6 +4519,10 @@ bool mp_menu_join_session()
         return false;
     }
     mp_log( "[cdda-mp] MENU: client connected to " + host + ":" + std::to_string( port ) );
+    // Log the running binary's exact version (the string the join handshake
+    // sends) so the client log shows what's actually executing — catches the
+    // host/client commit-mismatch that strands a client in its own world.
+    mp_log( std::string( "[cdda-mp] VERSION=" ) + getVersionString() + " (role=CLIENT)" );
     mp_update_window_title();
 
     // Only ask for a label the first time we see this address.  Skipping is
