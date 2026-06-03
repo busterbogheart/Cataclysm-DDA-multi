@@ -1286,11 +1286,21 @@ bool main_menu::new_character_tab()
         // loading the world.
         // Pick a world, suppressing prompts if it's "play now" mode.
         const bool is_play_now = sel2 == 3 || sel2 == 4;
-        WORLD *world = world_generator->pick_world( !is_play_now, is_play_now );
+        // Joining client: never show the world picker. The chosen world is only
+        // a throwaway spawn container — the client teleports to the host's world
+        // and adopts the host's seed right after spawn — so prompting to pick one
+        // is pointless and dangerous (picking a real solo world would spawn a
+        // character into it and corrupt it). Force the auto scratch world.
+        WORLD *world = cata_mp::is_client_mode()
+                       ? cata_mp::mp_ensure_client_scratch_world()
+                       : world_generator->pick_world( !is_play_now, is_play_now );
         if( world == nullptr ) {
             return false;
         }
-        if( !world->world_saves.empty() ) {
+        // MP: multiple characters per world is expected (host avatar + proxy NPC,
+        // or a client re-using its scratch world), so skip the SP-only warning.
+        if( !world->world_saves.empty() &&
+            !cata_mp::is_host_mode() && !cata_mp::is_client_mode() ) {
             if( !query_yn(
                     _( "Many game features will not work correctly with multiple characters in the same world.  Create a new character anyway?" ) ) ) {
                 return false;
