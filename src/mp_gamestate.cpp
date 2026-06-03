@@ -128,22 +128,17 @@ void mp_log( const std::string &msg )
         if( log_file.is_open() ) {
             log_file.close();
         }
-        // Rotate the previous sessions instead of discarding them: a bug
-        // reported after a session ended (e.g. by a remote player) is useless
-        // if the log was already truncated.  Keep the last KEEP sessions as
-        // .1 .. .KEEP, dropping the oldest — bounded, no unbounded growth.
-        // ec-overloads so a missing file (first run) is a no-op, not a throw.
-        constexpr int KEEP = 5;
-        std::error_code ec;
-        namespace fs = std::filesystem;
-        fs::remove( fs::path( desired_path + "." + std::to_string( KEEP ) ), ec );
-        for( int i = KEEP - 1; i >= 1; --i ) {
-            fs::rename( fs::path( desired_path + "." + std::to_string( i ) ),
-                        fs::path( desired_path + "." + std::to_string( i + 1 ) ), ec );
-        }
-        fs::rename( fs::path( desired_path ), fs::path( desired_path + ".1" ), ec );
-        log_file.open( desired_path, std::ios::out | std::ios::trunc );
+        // Append, never rotate/truncate: keep the FULL history in one file.
+        // The old rotate-on-mode-change behavior split a single play session
+        // across .log/.log.1 (a mode flip or session-end rotated the active
+        // session out from under us), which repeatedly hid the data being
+        // debugged in a rotated file (2026-06-03). One file is far easier to
+        // read; it grows unbounded, so clear it manually (`: > <path>`) between
+        // debugging runs when it gets large.
+        log_file.open( desired_path, std::ios::out | std::ios::app );
         current_path = desired_path;
+        log_file << "\n[cdda-mp] ===================== LOG OPENED ====================="
+                 << std::endl;
         // Echo so the user can find it (esp. on Windows where the path varies).
         std::cout << "[cdda-mp] log file: " << desired_path
                   << ( log_file.is_open() ? "" : "  (OPEN FAILED)" ) << std::endl;
@@ -3667,6 +3662,16 @@ void wait_for_client_action()
         iter_count++;
     }
     g_host_waiting_for_client = false;
+    // DIAG: per-turn wait duration. The turn-signal shows RED while
+    // g_host_waiting_for_client is true and stays red once that exceeds the
+    // 400ms green-hysteresis — so any value >400ms here is a red flicker the
+    // host sees this turn. Correlate with whether the client was idle.
+    {
+        const long wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - t_start ).count();
+        mp_log( "[cdda-mp] SRV-WAIT-DONE: turn_wait=" + std::to_string( wait_ms ) +
+                "ms" + ( wait_ms > 400 ? "  >400 (RED)" : "" ) );
+    }
     // Force a main-UI repaint each turn cycle.  During a long activity (|-wait,
     // crafting, sleep) the host's main game loop stays in a tight do_turn() loop
     // because the avatar always has moves; without this, the time/wait-% HUD
