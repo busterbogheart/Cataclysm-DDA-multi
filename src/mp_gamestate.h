@@ -184,6 +184,10 @@ void set_host_mode( bool enabled );
 // whether it is also a headless dedicated server.
 bool is_hosting();
 
+// Host: the world's overmap seed (g->get_seed()), captured on the game thread.
+// Sent to the client in the join 'welcome' so it can match the host's terrain.
+unsigned int mp_host_world_seed();
+
 // True when hosting and the host avatar has an active wait activity (ACT_WAIT,
 // ACT_WAIT_STAMINA, etc.).  Used by do_turn to skip monmove() so monsters
 // freeze while the host fast-forwards, giving the client time to act freely.

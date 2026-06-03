@@ -72,6 +72,8 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <atomic>
+#include <cstdlib>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -780,6 +782,38 @@ static tripoint_abs_ms g_mp_remote_pos{ 0, 0, 0 };
 // Client: true after the first successful long-range teleport to the host area.
 // The heavy place_player_overmap() is only needed once per session.
 static bool g_initial_teleport_done = false;
+
+// Host: the world's overmap seed (g->get_seed()), captured on the game thread
+// each host turn so the network thread can include it in the join 'welcome'
+// without touching game state. Read via mp_host_world_seed().
+static std::atomic<unsigned int> g_host_world_seed{ 0 };
+
+// Client: the host's seed as received in 'welcome', and whether we've applied
+// it to g->set_seed() yet. Applied before the initial host-area overmap is
+// generated so the client's terrain matches the host's. 0 = not yet received.
+static unsigned int g_client_host_seed = 0;
+static bool g_client_host_seed_applied = false;
+
+// Host: current world seed, for the network thread's 'welcome' message.
+unsigned int mp_host_world_seed()
+{
+    return g_host_world_seed.load();
+}
+
+// Client: adopt the host's seed (received in 'welcome') into local worldgen,
+// once, before the host-area overmap is generated. No-op if no seed has been
+// received yet or it's already applied. Idempotent + safe to call repeatedly.
+static void mp_client_apply_host_seed()
+{
+    if( g_client_host_seed_applied || g_client_host_seed == 0 ) {
+        return;
+    }
+    const unsigned int before = g->get_seed();
+    g->set_seed( g_client_host_seed );
+    g_client_host_seed_applied = true;
+    mp_log( "[cdda-mp] SEED: client adopted host seed " +
+            std::to_string( g_client_host_seed ) + " (was " + std::to_string( before ) + ")" );
+}
 
 // Server: per-tile baseline (ter + furn + item fingerprint) for dirty-tile tracking.
 struct mp_tile_state {
@@ -3237,6 +3271,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
 void grant_client_turn()
 {
+    // Capture the world seed each host turn (game-thread read of g->get_seed())
+    // so the network thread can put it in the join 'welcome' without touching
+    // game state. Runs before the connected-check so it's current the moment a
+    // client joins. Seed is constant for a session; the store is idempotent.
+    g_host_world_seed.store( g->get_seed() );
     if( !remote_player_connected ) {
         return;
     }
@@ -4625,7 +4664,11 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
 
     if( !in ) {
         if( !g_initial_teleport_done ) {
-            mp_log( "[cdda-mp] teleport: -> place_player_overmap (initial)" );
+            // Last chance to adopt the host's seed before the host-area overmap
+            // is generated — in case 'welcome' was drained in this same batch.
+            mp_client_apply_host_seed();
+            mp_log( "[cdda-mp] teleport: -> place_player_overmap (initial) seed=" +
+                    std::to_string( g->get_seed() ) );
             g->place_player_overmap( project_to<coords::omt>( abs_pos ), true );
             g_initial_teleport_done = true;
         } else {
@@ -4783,6 +4826,27 @@ static bool apply_one_state_message( const std::string &msg )
         }
         mp_log( "[cdda-mp] SERVER ERROR: " + errtxt );
         popup( errtxt );
+        return true;
+    }
+
+    // Join accepted. Carries the host's worldgen seed — adopt it before we
+    // generate the host-area overmap so our base terrain (forests/lakes/rivers/
+    // coast) matches the host's. Without this the client rolls its own random
+    // seed in start_game() and renders a different map outside the tile-synced
+    // bubble (the "different map until I got close" report, 2026-06-02).
+    if( msg.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
+        const auto spos = msg.find( "\"seed\":" );
+        if( spos != std::string::npos ) {
+            // Seed is an unsigned int serialized as a bare JSON number.
+            const unsigned long parsed = std::strtoul( msg.c_str() + spos + 7, nullptr, 10 );
+            g_client_host_seed = static_cast<unsigned int>( parsed );
+            mp_log( "[cdda-mp] SEED: welcome received host seed " +
+                    std::to_string( g_client_host_seed ) + " (local was " +
+                    std::to_string( g->get_seed() ) + ")" );
+            mp_client_apply_host_seed();
+        } else {
+            mp_log( "[cdda-mp] SEED: welcome had no seed field" );
+        }
         return true;
     }
 

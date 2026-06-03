@@ -1025,6 +1025,13 @@ class game
         static void display_om_pathfinding_progress( size_t open_set, size_t known_size );
 
         unsigned int get_seed() const;
+        // Multiplayer: the client must adopt the host's worldgen seed so its
+        // overmap noise (forests/lakes/rivers/coast) matches the host's before
+        // it generates the host-area overmap it spawns into. SP never calls this
+        // (seed is set once in start_game); it exists only for the co-op join.
+        void set_seed( unsigned int s ) {
+            seed = s;
+        }
 
         /** If invoked, NPCs will be reloaded before next turn. */
         void set_npcs_dirty();

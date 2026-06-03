@@ -15,8 +15,9 @@ namespace cata_mp {
 
 // Forward-declared (not #included) on purpose: pulling mp_gamestate.h into this
 // TU drags in CDDA's enum_traits.h, whose generic operator++ collides with
-// asio's std::atomic<long> increment in scheduler.hpp. We only need mp_log.
+// asio's std::atomic<long> increment in scheduler.hpp. We only need these two.
 void mp_log( const std::string &msg );
+unsigned int mp_host_world_seed();
 
 // Normalize a build-version string to its commit identity for the join
 // handshake. getVersionString() is the git commit hash, but the Makefile
@@ -280,8 +281,14 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         session->name = name;
         session->authenticated = true;
 
+        // Include the host's worldgen seed so the client adopts it before
+        // generating the host-area overmap — otherwise it renders its own
+        // randomly-seeded terrain outside the tile-synced bubble.
         session->send( "{\"type\":\"welcome\",\"player_id\":\"" + name +
-                       "\",\"world\":\"default\",\"current_turn\":0}\n" );
+                       "\",\"world\":\"default\",\"current_turn\":0,\"seed\":" +
+                       std::to_string( mp_host_world_seed() ) + "}\n" );
+        mp_log( "[cdda-mp] SEED: welcome sent host seed " +
+                std::to_string( mp_host_world_seed() ) + " to '" + name + "'" );
 
         broadcast( "{\"type\":\"player_joined\",\"name\":\"" + name + "\"}\n" );
         std::cout << "[cdda-mp] Player '" << name << "' joined." << std::endl;
