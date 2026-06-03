@@ -5906,9 +5906,17 @@ void client_process_incoming()
     // in process_mp_events, so throttling only affects visual freshness, not the
     // round-trip. DIAG: log slow renders so we can see the actual cost.
     if( recv_count > 0 ) {
+        // Throttle the "watching the host" repaint to ~3fps. A full render is
+        // ~236ms on the slower client (measured), so rendering per host-grant
+        // blocked the client's loop and paced the host's lockstep wait to
+        // render-speed (host sluggish + red flicker). The host is the ACTIVE
+        // player, so we keep IT smooth: most grants now skip the render and ack
+        // fast; the passive client's view of the host updates a few times/sec
+        // during the host's activity, which is acceptable. Must exceed the
+        // render time so renders don't fire back-to-back every grant.
         static auto last_render = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();
-        if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_render ).count() >= 80 ) {
+        if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_render ).count() >= 300 ) {
             const auto r0 = std::chrono::steady_clock::now();
             g->invalidate_main_ui_adaptor();
             ui_manager::redraw();
