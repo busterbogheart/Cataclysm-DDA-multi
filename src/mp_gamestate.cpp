@@ -477,6 +477,10 @@ static void mp_partner_activity_transition_check()
 static unsigned long long g_client_msg_watermark = 0;
 static std::vector<std::string> g_client_msgs_pending;
 
+// Host: reset overmap-stream state so the next client gets a fresh bulk send.
+// Defined far below with the rest of the overmap-streaming code.
+static void mp_reset_overmap_sync();
+
 // Separation warning tier: 0=ok, 1=warn (≥50 tiles), 2=danger (≥57 tiles).
 // Shared by both host and client; resets on connect/disconnect.
 // Hysteresis: step up at 50/57, step down at 44/50.
@@ -1192,6 +1196,7 @@ static void spawn_remote_player( const std::string &name )
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
     g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
+    mp_reset_overmap_sync();  // bulk-send the overmap region to the fresh client
     g_client_known_veh_nids.clear();  // re-snapshot every visible vehicle for the fresh client
     g_server_veh_parts_count.clear();
     g_server_veh_live_nids.clear();
@@ -3266,6 +3271,115 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 }
 
 // ---------------------------------------------------------------------------
+// Overmap streaming (host -> client)
+// ---------------------------------------------------------------------------
+//
+// Worldgen is NOT deterministic from g->seed alone across machines: biome
+// noise uses g->seed (synced), but cities/roads/specials are placed from the
+// clock-seeded global RNG, so a client that regenerates its overmap gets
+// different towns (verified 2026-06-03). Fix per Arch Rule 1: the host streams
+// its actual omt grid (every oter_id IS the terrain *and* the city/road/
+// building) and the client applies it, overriding its own regen.
+//
+// Perf design: only a radius around the host, z=0 for now, palette + row-major
+// RLE (oter_ids are ~95% repetitive so this compresses hard), and only
+// (re)sent when the host's omt center moves a step — never per-turn full
+// resend. Bounded by construction (radius), so no unbounded baseline.
+static int g_om_sync_radius = 30;   // OMTs around the host to stream
+static tripoint_abs_omt g_om_sync_last_center{ INT_MIN, INT_MIN, 0 };
+static bool g_om_sync_done = false;
+
+static void mp_reset_overmap_sync()
+{
+    g_om_sync_done = false;
+    g_om_sync_last_center = tripoint_abs_omt{ INT_MIN, INT_MIN, 0 };
+}
+
+static std::string build_overmap_sync()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return std::string();
+    }
+    const tripoint_abs_omt center = get_avatar().pos_abs_omt();
+    // Only (re)send on the first sync or after the host moved a meaningful
+    // distance — keeps this off the per-turn hot path.
+    const int step = 10;
+    if( g_om_sync_done &&
+        std::abs( center.x() - g_om_sync_last_center.x() ) < step &&
+        std::abs( center.y() - g_om_sync_last_center.y() ) < step ) {
+        return std::string();
+    }
+    g_om_sync_last_center = center;
+    g_om_sync_done = true;
+
+    const int R = g_om_sync_radius;
+    const int ox = center.x() - R;
+    const int oy = center.y() - R;
+    const int w = 2 * R + 1;
+    const int h = 2 * R + 1;
+    const int z = 0;   // surface overmap only for now
+
+    std::vector<std::string> palette;
+    std::unordered_map<std::string, int> pal_idx;
+    auto idx_of = [&]( const std::string & s ) -> int {
+        auto it = pal_idx.find( s );
+        if( it != pal_idx.end() ) {
+            return it->second;
+        }
+        const int i = static_cast<int>( palette.size() );
+        palette.push_back( s );
+        pal_idx.emplace( s, i );
+        return i;
+    };
+
+    // Row-major run-length encode the palette indices.
+    std::string runs;
+    runs.reserve( 8192 );
+    int run_count = 0;
+    int run_idx = -1;
+    auto flush_run = [&]() {
+        if( run_count > 0 ) {
+            if( !runs.empty() ) {
+                runs += ',';
+            }
+            runs += '[' + std::to_string( run_count ) + ',' + std::to_string( run_idx ) + ']';
+        }
+    };
+    for( int yy = 0; yy < h; ++yy ) {
+        for( int xx = 0; xx < w; ++xx ) {
+            const tripoint_abs_omt p( ox + xx, oy + yy, z );
+            const int i = idx_of( overmap_buffer.ter( p ).id().str() );
+            if( i == run_idx ) {
+                ++run_count;
+            } else {
+                flush_run();
+                run_idx = i;
+                run_count = 1;
+            }
+        }
+    }
+    flush_run();
+
+    std::string pal_json = "[";
+    for( size_t i = 0; i < palette.size(); ++i ) {
+        if( i ) {
+            pal_json += ',';
+        }
+        pal_json += '"' + json_escape_str( palette[i] ) + '"';
+    }
+    pal_json += ']';
+
+    std::string msg = "{\"type\":\"overmap_sync\",\"z\":" + std::to_string( z ) +
+                      ",\"ox\":" + std::to_string( ox ) + ",\"oy\":" + std::to_string( oy ) +
+                      ",\"w\":" + std::to_string( w ) + ",\"h\":" + std::to_string( h ) +
+                      ",\"pal\":" + pal_json + ",\"rle\":[" + runs + "]}";
+    mp_log( "[cdda-mp] OMSYNC send: center=" + std::to_string( center.x() ) + "," +
+            std::to_string( center.y() ) + " w=" + std::to_string( w ) +
+            " pal=" + std::to_string( palette.size() ) + " bytes=" + std::to_string( msg.size() ) );
+    return msg;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -3314,6 +3428,14 @@ void grant_client_turn()
     server *srv = get_active_server();
     if( srv ) {
         srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        // Stream the host's overmap region so the client's far-map (cities/
+        // roads/biomes) matches instead of its own non-deterministic regen.
+        // Returns "" unless this is the first sync or the host moved a step,
+        // so it's cheap on the steady-state path.
+        const std::string om = build_overmap_sync();
+        if( !om.empty() ) {
+            srv->post_broadcast( om + "\n" );
+        }
     }
 }
 
@@ -4880,6 +5002,55 @@ static bool apply_one_state_message( const std::string &msg )
             refresh_display();
         } catch( const JsonError &e ) {
             mp_log( "[cdda-mp] vehicle_step parse error: " + std::string( e.what() ) );
+        }
+        return true;
+    }
+
+    // Overmap region streamed from the host — apply the host's actual omt grid
+    // (cities/roads/biomes) over our own non-deterministic regen so the far-map
+    // matches. Palette + row-major RLE; see build_overmap_sync().
+    if( msg.find( "\"type\":\"overmap_sync\"" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            const int z = jo.get_int( "z" );
+            const int ox = jo.get_int( "ox" );
+            const int oy = jo.get_int( "oy" );
+            const int w = jo.get_int( "w" );
+            const int h = jo.get_int( "h" );
+            // Resolve the palette to oter_ids once; invalid ids (shouldn't
+            // happen — same commit + same mods) fall back to skip.
+            std::vector<oter_id> palette;
+            std::vector<bool> pal_ok;
+            for( const JsonValue &pv : jo.get_array( "pal" ) ) {
+                const oter_str_id sid( pv.get_string() );
+                const bool ok = sid.is_valid();
+                palette.push_back( ok ? sid.id() : oter_id() );
+                pal_ok.push_back( ok );
+            }
+            const int total = w * h;
+            int cursor = 0;
+            int applied = 0;
+            for( JsonValue rv : jo.get_array( "rle" ) ) {
+                JsonArray run = rv.get_array();
+                const int count = run.get_int( 0 );
+                const int pidx = run.get_int( 1 );
+                const bool valid = pidx >= 0 && pidx < static_cast<int>( palette.size() ) && pal_ok[pidx];
+                for( int k = 0; k < count && cursor < total; ++k, ++cursor ) {
+                    if( !valid ) {
+                        continue;
+                    }
+                    const int xx = cursor % w;
+                    const int yy = cursor / w;
+                    overmap_buffer.ter_set( tripoint_abs_omt( ox + xx, oy + yy, z ), palette[pidx] );
+                    ++applied;
+                }
+            }
+            mp_log( "[cdda-mp] OMSYNC recv: applied=" + std::to_string( applied ) + "/" +
+                    std::to_string( total ) + " pal=" + std::to_string( palette.size() ) );
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] OMSYNC parse error: " + std::string( e.what() ) );
         }
         return true;
     }
