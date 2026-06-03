@@ -37,6 +37,7 @@
 #include "morale_types.h"
 #include "npc.h"
 #include "output.h"
+#include "overmap.h"
 #include "overmapbuffer.h"
 #include "path_info.h"
 #include "point.h"
@@ -3281,11 +3282,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 // its actual omt grid (every oter_id IS the terrain *and* the city/road/
 // building) and the client applies it, overriding its own regen.
 //
-// Perf design: only a radius around the host, z=0 for now, palette + row-major
-// RLE (oter_ids are ~95% repetitive so this compresses hard), and only
-// (re)sent when the host's omt center moves a step — never per-turn full
-// resend. Bounded by construction (radius), so no unbounded baseline.
-static int g_om_sync_radius = 30;   // OMTs around the host to stream
+// Perf design: a radius around the host, z=0 for now, palette + row-major RLE
+// (oter_ids are ~95% repetitive so this compresses hard), only (re)sent on the
+// first sync or when the host's omt center moves a step — never per-turn full
+// resend. Crucially we read with get_existing_om_global (NO generation): we
+// stream only what the host has already generated, so a wide radius is free
+// (no host freeze, no growing the host's world) and naturally covers the
+// host's known region. Ungenerated OMTs are sent as an empty-string sentinel
+// the client skips (keeping its own terrain there).
+static int g_om_sync_radius = 90;   // OMTs around the host (covers the m-screen)
 static tripoint_abs_omt g_om_sync_last_center{ INT_MIN, INT_MIN, 0 };
 static bool g_om_sync_done = false;
 
@@ -3303,7 +3308,7 @@ static std::string build_overmap_sync()
     const tripoint_abs_omt center = get_avatar().pos_abs_omt();
     // Only (re)send on the first sync or after the host moved a meaningful
     // distance — keeps this off the per-turn hot path.
-    const int step = 10;
+    const int step = 20;
     if( g_om_sync_done &&
         std::abs( center.x() - g_om_sync_last_center.x() ) < step &&
         std::abs( center.y() - g_om_sync_last_center.y() ) < step ) {
@@ -3345,10 +3350,20 @@ static std::string build_overmap_sync()
             runs += '[' + std::to_string( run_count ) + ',' + std::to_string( run_idx ) + ']';
         }
     };
+    int real_omts = 0;
     for( int yy = 0; yy < h; ++yy ) {
         for( int xx = 0; xx < w; ++xx ) {
             const tripoint_abs_omt p( ox + xx, oy + yy, z );
-            const int i = idx_of( overmap_buffer.ter( p ).id().str() );
+            // No-generate read: only stream what the host already has. Empty
+            // string = "ungenerated here", which the client skips.
+            const overmap_with_local_coords omc = overmap_buffer.get_existing_om_global( p );
+            int i;
+            if( omc.om ) {
+                i = idx_of( omc.om->ter( omc.local ).id().str() );
+                ++real_omts;
+            } else {
+                i = idx_of( std::string() );
+            }
             if( i == run_idx ) {
                 ++run_count;
             } else {
@@ -3359,6 +3374,12 @@ static std::string build_overmap_sync()
         }
     }
     flush_run();
+    // Nothing generated near the host yet (e.g. first turn before the bubble
+    // settles) — don't latch g_om_sync_done so we retry next turn.
+    if( real_omts == 0 ) {
+        g_om_sync_done = false;
+        return std::string();
+    }
 
     std::string pal_json = "[";
     for( size_t i = 0; i < palette.size(); ++i ) {
@@ -3375,6 +3396,7 @@ static std::string build_overmap_sync()
                       ",\"pal\":" + pal_json + ",\"rle\":[" + runs + "]}";
     mp_log( "[cdda-mp] OMSYNC send: center=" + std::to_string( center.x() ) + "," +
             std::to_string( center.y() ) + " w=" + std::to_string( w ) +
+            " real=" + std::to_string( real_omts ) + "/" + std::to_string( w * h ) +
             " pal=" + std::to_string( palette.size() ) + " bytes=" + std::to_string( msg.size() ) );
     return msg;
 }
@@ -5049,6 +5071,9 @@ static bool apply_one_state_message( const std::string &msg )
             }
             mp_log( "[cdda-mp] OMSYNC recv: applied=" + std::to_string( applied ) + "/" +
                     std::to_string( total ) + " pal=" + std::to_string( palette.size() ) );
+            // Repaint so an already-open overmap / minimap reflects the synced
+            // terrain instead of the stale (self-generated) render.
+            g->invalidate_main_ui_adaptor();
         } catch( const JsonError &e ) {
             mp_log( "[cdda-mp] OMSYNC parse error: " + std::string( e.what() ) );
         }
