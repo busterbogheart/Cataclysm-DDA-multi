@@ -1,0 +1,31 @@
+name: README sync check
+
+# build-data/README-cddacoop.md is the single source of truth for the shared
+# player-facing sections (What works, Known limits). The GitHub README.md pulls
+# them via SYNC markers — see scripts/sync-readme.mjs. This fails the build if
+# README.md has drifted, so the canonical file and README.md can't diverge.
+# To fix a failure: run `node scripts/sync-readme.mjs` and commit README.md.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - build-data/README-cddacoop.md
+      - README.md
+      - scripts/sync-readme.mjs
+  pull_request:
+    paths:
+      - build-data/README-cddacoop.md
+      - README.md
+      - scripts/sync-readme.mjs
+
+jobs:
+  check:
+    name: Check README is in sync with canonical
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/sync-readme.mjs --check

@@ -62,31 +62,47 @@ The client pastes that IP into CO-OP > Join. Port defaults to 8080.
 
 ### What works
 
+<!-- SYNC:what-works section="What works" -->
 - Movement, melee combat, smashing terrain and furniture
-- Item pickup (single tile `g`, all nearby tiles `Q`), drop, wear, wield
-- Item use and wielded-item use forwarded to server
-- Eating, drinking, and similar short consumption activities (both players can run them simultaneously)
-- Host and client appear as NPC proxies in each other's world with correct clothing and skin tone
+- Item pickup, drop, wear, wield, use (single-tile `g` and area `Q`)
+- Eating, drinking, short consumption activities (both players
+  simultaneously)
+- Host and client appear as NPC proxies in each other's world with
+  correct clothing and skin tone
 - Monster sync with damage messages
-- Client ranged/thrown/spell damage forwarded to and applied on the server
+- Client ranged / thrown / spell damage forwarded and applied
+  server-side
 - Field sync (blood, fire, acid)
 - Tile sync (terrain, furniture, items, graffiti)
-- Trap sync — client triggers traps on the server
-- Vehicle driving by client (turning deducts AP; cruise speed is free)
-- Vehicle state sync (part HP, fuel, name messages)
-- Vehicle construction — install and remove parts, including parts spawned via debug
-- Drop-into-vehicle (drop items into the storage of a vehicle you're standing on)
-- **Co-op HUD** — bottom-left panel showing partner name, movement mode, worst-body-part HP bar, current activity + progress, and calendar drift
-- **Partner menu** — bump into your partner to open a menu with 2 new options: "Tap on shoulder" which interrupts their 'wait several turns' command and "Help with task" which is similar to single player NPC help
+- Trap sync — client triggers traps server-side
+- Vehicle driving by client; turning deducts AP, cruise speed is free
+- Vehicle state sync — part HP, fuel, name messages
+- Vehicle construction — install and remove parts
+- Drop-into-vehicle (drop items into the storage of a vehicle you're
+  standing on)
+- **Co-op HUD** — bottom-left panel showing partner name, movement
+  mode, worst-body-part HP bar, current activity + progress, and
+  calendar drift
+- **Partner menu** — bump into your partner to open it; "Tap on
+  shoulder" interrupts their wait, "Help with task" works like
+  single-player NPC help
+- **Host activity & health broadcast** — the host's current activity,
+  progress, HP, and movement mode stream to the client every turn so
+  the co-op HUD always reflects what the partner is actually doing
+<!-- /SYNC:what-works -->
 
 ### Current limitations
 
-- Two players only — no third or fourth slot
-- **One reality bubble**, centered on the host. A client more than ~66 tiles from the host falls outside the simulated area; entities there don't tick.
-- **Sleep** is functional but two-player sleep dynamics are not yet validated — if one player sleeps and the other keeps acting, the world's lockstep is fine but expect rough edges around partner-status messages.
-- **Long crafts (multi-hour)** not yet validated across machines with real network latency.
-- **No reconnect** — if the TCP connection drops, both players need to quit and re-launch.
-- **Save format** is shared with upstream CDDA but the MP fork adds a few fields; saves between the fork and upstream are not interchangeable.
+<!-- SYNC:known-limits section="Known limits" -->
+- **Same reality bubble**, centered on the host. A client more than
+  about 65 tiles from the host falls outside the simulated area; entities
+  there don't tick.
+- **Sleep** runs but two-player sleep dynamics aren't fully validated.
+  Coordinate with your partner or expect rough edges around
+  partner-status messages.
+- **Multi-hour crafts / reading** not yet validated across real
+  network latency.
+<!-- /SYNC:known-limits -->
 
 ---
 
