@@ -5817,19 +5817,11 @@ void client_process_incoming()
                     " pending=" + ( g_pending_action.empty() ? "none" : "yes" ) );
         }
     }
-    // Repaint after applying a batch of host state.  apply_monster_sync / tile /
-    // vehicle deltas update game state correctly, but a non-acting client (idle
-    // or waiting for its grant) never enters the input loop where do_turn's
-    // redraw lives — so dead monsters, tile changes, etc. would otherwise stay
-    // on screen until the client's own next turn (the "corpse stays standing"
-    // lag).  One redraw per drained batch covers it; mirrors the vehicle_step
-    // handler's invalidate+redraw.  Gated on recv_count so an idle 60Hz spin
-    // with no packets doesn't force needless repaints.
-    if( recv_count > 0 ) {
-        g->invalidate_main_ui_adaptor();
-        ui_manager::redraw();
-        refresh_display();
-    }
+    // (Repaint consolidated into the single throttled redraw at the END of this
+    // function. There used to be a second full refresh_display() here too — two
+    // per drain — which on the slower client doubled the per-grant render and,
+    // because divergent two-machine worlds make recv_count>0 every grant, paced
+    // the host's per-turn lockstep wait to ~2x render-speed. 2026-06-03.)
     // Snapshot state right before autofire check.  If a grant set moves=92 in
     // an earlier iteration of this drain loop but a later message zeroed them,
     // we should see it here.  Deduped against the previous emission so an
@@ -5905,15 +5897,29 @@ void client_process_incoming()
             check_separation_warning( get_avatar().pos_abs(), hnpc->pos_abs() );
         }
     }
-    // Force a main-UI repaint whenever we processed any incoming messages.  The
-    // client's main game loop stays in tight do_turn() iterations during long
-    // activities — without an explicit redraw here, calendar/time/messages/tiles
-    // updated by apply_one_state_message() never reach the screen until the user
-    // happens to press a key.
+    // Repaint when we processed incoming messages so calendar/time/messages/
+    // tiles reach the screen during long activities (the client stays in tight
+    // do_turn iterations otherwise). THROTTLED to ~12fps: a full refresh_display
+    // is ~100ms on the slower client, and with divergent worlds recv_count>0
+    // every grant, so rendering per grant paced the client's do_turn (and thus
+    // the host's lockstep wait) to render-speed. The grant ack is already sent
+    // in process_mp_events, so throttling only affects visual freshness, not the
+    // round-trip. DIAG: log slow renders so we can see the actual cost.
     if( recv_count > 0 ) {
-        g->invalidate_main_ui_adaptor();
-        ui_manager::redraw();
-        refresh_display();
+        static auto last_render = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_render ).count() >= 80 ) {
+            const auto r0 = std::chrono::steady_clock::now();
+            g->invalidate_main_ui_adaptor();
+            ui_manager::redraw();
+            refresh_display();
+            last_render = now;
+            const long rdur = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - r0 ).count();
+            if( rdur > 25 ) {
+                mp_log( "[cdda-mp] CLI-RENDER: " + std::to_string( rdur ) + "ms" );
+            }
+        }
     }
 }
 
