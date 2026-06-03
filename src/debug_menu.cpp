@@ -79,6 +79,7 @@
 #include "input_popup.h"
 #include "inventory.h"
 #include "item.h"
+#include "item_factory.h"
 #include "item_location.h"
 #include "itype.h"
 #include "json.h"
@@ -201,6 +202,7 @@ std::string enum_to_string<debug_menu::debug_menu_index>( debug_menu::debug_menu
         // *INDENT-OFF*
         case debug_menu::debug_menu_index::WISH: return "WISH";
         case debug_menu::debug_menu_index::SPAWN_ITEM_GROUP: return "SPAWN_ITEM_GROUP";
+        case debug_menu::debug_menu_index::SPAWN_RANDOM_ITEM: return "SPAWN_RANDOM_ITEM";
         case debug_menu::debug_menu_index::SHORT_TELEPORT: return "SHORT_TELEPORT";
         case debug_menu::debug_menu_index::LONG_TELEPORT: return "LONG_TELEPORT";
         case debug_menu::debug_menu_index::SPAWN_NPC: return "SPAWN_NPC";
@@ -1056,6 +1058,7 @@ static int spawning_uilist()
     const std::vector<uilist_entry> uilist_initializer = {
         { uilist_entry( debug_menu_index::WISH, true, 'w', _( "Spawn an item" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_ITEM_GROUP, true, 'W', _( "Spawn an item group" ) ) },
+        { uilist_entry( debug_menu_index::SPAWN_RANDOM_ITEM, true, 'r', _( "Spawn a random item" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_NPC, true, 'n', _( "Spawn NPC" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_NPC_FOLLOWER, true, 'f', _( "Spawn NPC follower" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_NAMED_NPC, true, 'p', _( "Spawn named NPC" ) ) },
@@ -4262,6 +4265,31 @@ const std::vector<debug_action_entry> &all_actions()
             debug_menu_index::SPAWN_ITEM_GROUP, translate_marker( "Spawn item group" ), "item group spawn", "Spawn", []()
             {
                 wishitemgroup( false );
+            }
+        },
+        {
+            debug_menu_index::SPAWN_RANDOM_ITEM, translate_marker( "Spawn random item" ), "item random spawn create", "Spawn", []()
+            {
+                // Pick a random concrete item type and give it to the avatar (or
+                // drop it if it can't be carried). Skips the null placeholder.
+                const std::vector<const itype *> &all = item_controller->all();
+                if( all.empty() ) {
+                    return;
+                }
+                const itype *t = nullptr;
+                for( int tries = 0; tries < 20; ++tries ) {
+                    const itype *cand = random_entry( all );
+                    if( cand && !cand->get_id().is_null() ) {
+                        t = cand;
+                        break;
+                    }
+                }
+                if( !t ) {
+                    return;
+                }
+                item granted( t->get_id(), calendar::turn );
+                add_msg( m_good, _( "Spawned random item: %s" ), granted.tname() );
+                get_avatar().i_add_or_drop( granted );
             }
         },
         {

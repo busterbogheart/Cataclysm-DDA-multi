@@ -13,6 +13,7 @@ namespace debug_menu
 enum class debug_menu_index : int {
     WISH,
     SPAWN_ITEM_GROUP,
+    SPAWN_RANDOM_ITEM,
     SHORT_TELEPORT,
     LONG_TELEPORT,
     SPAWN_NPC,
