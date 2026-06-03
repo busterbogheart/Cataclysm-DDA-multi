@@ -330,13 +330,15 @@ input_context game::get_player_input( std::string &action )
         wPrint.wtype = weather.weather_id;
         wPrint.vdrops.clear();
 
-        // MP: the client polls for host grants only on input TIMEOUT, so this
-        // interval caps how fast it acks each lockstep turn. At 125ms the host
-        // waited ~125-220ms+ per turn (red turn-signal flicker past the 400ms
-        // hysteresis, and host activities paced to the client's slow poll). 30ms
-        // keeps grant->ack well under 400ms. Host keeps 125ms; animations are
-        // time-based (ANIMATION_DELAY) so faster polling doesn't speed them up.
-        ctxt.set_timeout( cata_mp::is_client_mode() ? 30 : 125 );
+        // MP: BOTH sides poll on input TIMEOUT — the client to process the
+        // host's grant and ack, the host (via wait_for_client_action's
+        // mp_poll_input) to DETECT that ack. At 125ms each lockstep turn waited
+        // up to ~125ms on BOTH legs (~195ms median measured) -> red turn-signal
+        // flicker past the 400ms hysteresis and host activities paced to the
+        // round-trip. 30ms for either MP role keeps the per-turn wait well under
+        // 400ms. SP stays 125ms; animations are time-based (ANIMATION_DELAY) so
+        // faster polling doesn't speed them up.
+        ctxt.set_timeout( ( cata_mp::is_client_mode() || cata_mp::is_host_mode() ) ? 30 : 125 );
 
         shared_ptr_fast<game::draw_callback_t> animation_cb =
         make_shared_fast<game::draw_callback_t>( [&]() {
@@ -496,13 +498,15 @@ input_context game::get_player_input( std::string &action )
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
     } else {
-        // MP: the client polls for host grants only on input TIMEOUT, so this
-        // interval caps how fast it acks each lockstep turn. At 125ms the host
-        // waited ~125-220ms+ per turn (red turn-signal flicker past the 400ms
-        // hysteresis, and host activities paced to the client's slow poll). 30ms
-        // keeps grant->ack well under 400ms. Host keeps 125ms; animations are
-        // time-based (ANIMATION_DELAY) so faster polling doesn't speed them up.
-        ctxt.set_timeout( cata_mp::is_client_mode() ? 30 : 125 );
+        // MP: BOTH sides poll on input TIMEOUT — the client to process the
+        // host's grant and ack, the host (via wait_for_client_action's
+        // mp_poll_input) to DETECT that ack. At 125ms each lockstep turn waited
+        // up to ~125ms on BOTH legs (~195ms median measured) -> red turn-signal
+        // flicker past the 400ms hysteresis and host activities paced to the
+        // round-trip. 30ms for either MP role keeps the per-turn wait well under
+        // 400ms. SP stays 125ms; animations are time-based (ANIMATION_DELAY) so
+        // faster polling doesn't speed them up.
+        ctxt.set_timeout( ( cata_mp::is_client_mode() || cata_mp::is_host_mode() ) ? 30 : 125 );
         while( handle_mouseview( ctxt, action ) ) {
             if( action == "TIMEOUT" ) {
                 if( current_turn.has_timeout_elapsed() ) {
