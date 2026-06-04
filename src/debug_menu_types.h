@@ -21,6 +21,7 @@ enum class debug_menu_index : int {
     SPAWN_NAMED_NPC,
     SPAWN_OM_NPC,
     SPAWN_MON,
+    SPAWN_RANDOM_MON,
     GAME_STATE,
     KILL_AREA,
     KILL_NPCS,

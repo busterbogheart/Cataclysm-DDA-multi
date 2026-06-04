@@ -127,6 +127,7 @@
 #include "tgz_archiver.h"
 #include "timed_event.h"
 #include "trait_group.h"
+#include "monstergenerator.h"
 #include "translation.h"
 #include "translations.h"
 #include "type_id.h"
@@ -210,6 +211,7 @@ std::string enum_to_string<debug_menu::debug_menu_index>( debug_menu::debug_menu
         case debug_menu::debug_menu_index::SPAWN_NAMED_NPC: return "SPAWN_NAMED_NPC";
         case debug_menu::debug_menu_index::SPAWN_OM_NPC: return "SPAWN_OM_NPC";
         case debug_menu::debug_menu_index::SPAWN_MON: return "SPAWN_MON";
+        case debug_menu::debug_menu_index::SPAWN_RANDOM_MON: return "SPAWN_RANDOM_MON";
         case debug_menu::debug_menu_index::GAME_STATE: return "GAME_STATE";
         case debug_menu::debug_menu_index::KILL_AREA: return "KILL_AREA";
         case debug_menu::debug_menu_index::KILL_NPCS: return "KILL_NPCS";
@@ -1064,6 +1066,7 @@ static int spawning_uilist()
         { uilist_entry( debug_menu_index::SPAWN_NAMED_NPC, true, 'p', _( "Spawn named NPC" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_OM_NPC, true, 'N', _( "Spawn random NPC on overmap" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_MON, true, 'm', _( "Spawn monster" ) ) },
+        { uilist_entry( debug_menu_index::SPAWN_RANDOM_MON, true, 'R', _( "Spawn random monster" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_VEHICLE, true, 'v', _( "Spawn a vehicle" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_ARTIFACT, true, 'a', _( "Spawn artifact" ) ) },
         { uilist_entry( debug_menu_index::SPAWN_CLAIRVOYANCE, true, 'c', _( "Spawn clairvoyance artifact" ) ) },
@@ -4308,6 +4311,33 @@ const std::vector<debug_action_entry> &all_actions()
             debug_menu_index::SPAWN_MON, translate_marker( "Spawn monster" ), "monster spawn mon", "Spawn", []()
             {
                 wishmonster( std::nullopt );
+            }
+        },
+        {
+            debug_menu_index::SPAWN_RANDOM_MON, translate_marker( "Spawn random monster" ), "monster random spawn", "Spawn", []()
+            {
+                const std::vector<mtype> &all = MonsterGenerator::generator().get_all_mtypes();
+                if( all.empty() ) {
+                    return;
+                }
+                const mtype *t = nullptr;
+                for( int tries = 0; tries < 20; ++tries ) {
+                    const mtype &cand = random_entry( all );
+                    if( !cand.id.is_null() ) {
+                        t = &cand;
+                        break;
+                    }
+                }
+                if( !t ) {
+                    return;
+                }
+                if( const std::optional<tripoint_bub_ms> pos = g->look_around() ) {
+                    if( g->place_critter_at( t->id, *pos ) ) {
+                        add_msg( m_good, _( "Spawned random monster: %s" ), t->nname() );
+                    } else {
+                        add_msg( m_bad, _( "Could not spawn %s here." ), t->nname() );
+                    }
+                }
             }
         },
         {
