@@ -41,7 +41,15 @@ runs:
           create-dmg \
           ccache
 
+    - name: Cache SDL2 frameworks
+      id: sdl-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/Library/Frameworks
+        key: sdl2-frameworks-2.30.11-2.8.5-2.8.1-2.24.0-v1
+
     - name: Install SDL2 frameworks from libsdl.org
+      if: steps.sdl-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         SDL2_VERSION: '2.30.11'
@@ -73,10 +81,21 @@ runs:
         install_framework SDL2_mixer  "${SDL2_MIXER_VERSION}"  SDL_mixer
         install_framework SDL2_ttf    "${SDL2_TTF_VERSION}"    SDL_ttf
 
-        ls -la "$HOME/Library/Frameworks/"
+    - name: Verify SDL2 frameworks
+      shell: bash
+      run: ls -la "$HOME/Library/Frameworks/"
+
+    - name: Cache universal FreeType
+      if: ${{ inputs.arch == 'universal' }}
+      id: ft-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/ft-universal
+        # Key on FT version + compiler flags — if either changes we rebuild.
+        key: freetype-universal-2.13.3-macos10.15-v1
 
     - name: Build universal FreeType (only for the universal link)
-      if: ${{ inputs.arch == 'universal' }}
+      if: ${{ inputs.arch == 'universal' && steps.ft-cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
         # Homebrew's freetype is single-arch (arm64 on this runner), so the
@@ -108,11 +127,16 @@ runs:
           make -j"$(sysctl -n hw.logicalcpu)"
           make install
         )
+
+    - name: Verify universal FreeType
+      if: ${{ inputs.arch == 'universal' }}
+      shell: bash
+      run: |
         echo "=== libfreetype.a archs (must list both) ==="
-        lipo -archs "$PREFIX/lib/libfreetype.a"
+        lipo -archs "$HOME/ft-universal/lib/libfreetype.a"
         # Prepend so later steps (build, app, audit) all resolve freetype2 to
         # the universal build via $GITHUB_ENV persistence.
-        echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$HOME/ft-universal/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
 
     - name: Restore ccache
       uses: actions/cache@v4
