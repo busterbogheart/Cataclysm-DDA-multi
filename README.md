@@ -64,7 +64,8 @@ The client pastes that IP into CO-OP > Join. Port defaults to 8080.
 
 <!-- SYNC:what-works section="What works" -->
 - Movement, melee combat, smashing terrain and furniture
-- Item pickup, drop, wear, wield, use (single-tile `g` and area `Q`)
+- Vehicle driving by client and host (including being a passenger)
+- Item pickup, drop, wear, wield, use (single-tile and adjacent)
 - Eating, drinking, short consumption activities (both players
   simultaneously)
 - Host and client appear as NPC proxies in each other's world with
@@ -75,7 +76,6 @@ The client pastes that IP into CO-OP > Join. Port defaults to 8080.
 - Field sync (blood, fire, acid)
 - Tile sync (terrain, furniture, items, graffiti)
 - Trap sync — client triggers traps server-side
-- Vehicle driving by client; turning deducts AP, cruise speed is free
 - Vehicle state sync — part HP, fuel, name messages
 - Vehicle construction — install and remove parts
 - Drop-into-vehicle (drop items into the storage of a vehicle you're
@@ -83,12 +83,9 @@ The client pastes that IP into CO-OP > Join. Port defaults to 8080.
 - **Co-op HUD** — bottom-left panel showing partner name, movement
   mode, worst-body-part HP bar, current activity + progress, and
   calendar drift
-- **Partner menu** — bump into your partner to open it; "Tap on
-  shoulder" interrupts their wait, "Help with task" works like
-  single-player NPC help
-- **Host activity & health broadcast** — the host's current activity,
-  progress, HP, and movement mode stream to the client every turn so
-  the co-op HUD always reflects what the partner is actually doing
+- **Partner menu co-op special actions** — bump into your partner to open it; "*Tap on shoulder*"
+ interrupts their wait, "*Help with task*" works like single-player NPC help, 
+ "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus!
 <!-- /SYNC:what-works -->
 
 ### Current limitations
@@ -100,8 +97,6 @@ The client pastes that IP into CO-OP > Join. Port defaults to 8080.
 - **Sleep** runs but two-player sleep dynamics aren't fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
-- **Multi-hour crafts / reading** not yet validated across real
-  network latency.
 <!-- /SYNC:known-limits -->
 
 ---
