@@ -76,7 +76,8 @@ installed.
 ## What works
 
 - Movement, melee combat, smashing terrain and furniture
-- Item pickup, drop, wear, wield, use (single-tile `g` and area `Q`)
+- Vehicle driving by client and host (including being a passenger)
+- Item pickup, drop, wear, wield, use (single-tile and adjacent)
 - Eating, drinking, short consumption activities (both players
   simultaneously)
 - Host and client appear as NPC proxies in each other's world with
@@ -87,7 +88,6 @@ installed.
 - Field sync (blood, fire, acid)
 - Tile sync (terrain, furniture, items, graffiti)
 - Trap sync — client triggers traps server-side
-- Vehicle driving by client; turning deducts AP, cruise speed is free
 - Vehicle state sync — part HP, fuel, name messages
 - Vehicle construction — install and remove parts
 - Drop-into-vehicle (drop items into the storage of a vehicle you're
@@ -95,12 +95,9 @@ installed.
 - **Co-op HUD** — bottom-left panel showing partner name, movement
   mode, worst-body-part HP bar, current activity + progress, and
   calendar drift
-- **Partner menu** — bump into your partner to open it; "Tap on
-  shoulder" interrupts their wait, "Help with task" works like
-  single-player NPC help
-- **Host activity & health broadcast** — the host's current activity,
-  progress, HP, and movement mode stream to the client every turn so
-  the co-op HUD always reflects what the partner is actually doing
+- **Partner menu co-op special actions** — bump into your partner to open it; "*Tap on shoulder*"
+ interrupts their wait, "*Help with task*" works like single-player NPC help, 
+ "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus!
 
 ---
 
@@ -112,8 +109,6 @@ installed.
 - **Sleep** runs but two-player sleep dynamics aren't fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
-- **Multi-hour crafts / reading** not yet validated across real
-  network latency.
 
 ---
 
@@ -132,7 +127,7 @@ show up, either host or client.
 
 ### 2026-05-31
 
-- **One macOS download for every Mac** — the mac build is now a universal binary that runs on both Apple Silicon and Intel Macs
+- **One macOS download for every Mac** — the mac build is now a universal binary that runs on both Silicon and Intel Macs
   (macOS 10.15+)
 - **High-five your partner** — new co-op "High five" option!  Slap skin for a
   quick mutual morale boost.  Bindable in options and added to the bump partner menu
@@ -216,7 +211,7 @@ Forked from
 experimental. All upstream contributors retain credit — see the
 [contributors graph](https://github.com/CleverRaven/Cataclysm-DDA/graphs/contributors).
 
-Site hero art by my guy [Delicadeath](https://reddit.com/u/Delicadeath).
+Site hero art by my hero [Delicadeath](https://reddit.com/u/Delicadeath).
 Code and content under [CC-BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
 
 
