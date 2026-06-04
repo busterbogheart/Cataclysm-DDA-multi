@@ -1028,7 +1028,24 @@ bool game::do_turn()
                 const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() );
                 if( ( now - start ).count() > 100 ) {
+                    // Client: a move/interrupt pressed during a passive wait
+                    // (ACT_WAIT) is handled here, cancelling the activity. The
+                    // moves>0 post-loop activity-end report never runs for a
+                    // locked (moves=0) client, so without this the client keeps
+                    // sending the stale ACT_WAIT heartbeat -> the host stays in
+                    // FAST-FORWARD and never grants us a turn (frozen client,
+                    // 2026-06-03). Report the end immediately so the host exits
+                    // fast-forward and re-enters strict lockstep.
+                    const bool had_act_pre = cata_mp::is_client_mode() &&
+                                             static_cast<bool>( u.activity );
                     handle_key_blocking_activity();
+                    if( had_act_pre && !u.activity ) {
+                        const std::string ended = cata_mp::get_client_turn_activity();
+                        cata_mp::mp_log( "[cdda-mp] LOCKED-ACT-END: activity cancelled in locked branch, ended=" +
+                                         ended + " -> sending activity_end" );
+                        cata_mp::set_client_turn_activity( std::string() );
+                        cata_mp::client_send_activity_end( ended );
+                    }
                     start = now;
                 }
             }
