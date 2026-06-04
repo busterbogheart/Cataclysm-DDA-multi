@@ -788,6 +788,15 @@ static bool g_initial_teleport_done = false;
 // without touching game state. Read via mp_host_world_seed().
 static std::atomic<unsigned int> g_host_world_seed{ 0 };
 
+// Host: world name captured on the game thread for the network thread's welcome.
+// Protected by a simple mutex (set once at world load, read in server thread).
+static std::string g_host_world_name;
+static std::mutex g_host_world_name_mtx;
+
+// Client: world name received from host in 'welcome'.  Empty until the first
+// welcome is processed.  Exposed via mp_client_host_world_name().
+static std::string g_client_host_world_name;
+
 // Client: the host's seed as received in 'welcome', and whether we've applied
 // it to g->set_seed() yet. Applied before the initial host-area overmap is
 // generated so the client's terrain matches the host's. 0 = not yet received.
@@ -798,6 +807,23 @@ static bool g_client_host_seed_applied = false;
 unsigned int mp_host_world_seed()
 {
     return g_host_world_seed.load();
+}
+
+void mp_set_host_world_name( const std::string &name )
+{
+    std::lock_guard<std::mutex> lk( g_host_world_name_mtx );
+    g_host_world_name = name;
+}
+
+std::string mp_get_host_world_name()
+{
+    std::lock_guard<std::mutex> lk( g_host_world_name_mtx );
+    return g_host_world_name;
+}
+
+std::string mp_client_host_world_name()
+{
+    return g_client_host_world_name;
 }
 
 // Client: adopt the host's seed (received in 'welcome') into local worldgen,
@@ -996,11 +1022,19 @@ static void mp_cleanup_stale_npcs()
     // have untagged ghosts that the value-based sweep can't see.  Safe to
     // hardcode because "player2" is the client_connect default and no SP NPC
     // ships with that name.
+    // In client mode the host creates a proxy NPC named after the client's own
+    // character.  If that NPC leaked into the shared save directory it appears
+    // as a walkable ghost of the client's own character on the next session.
+    // Purge any NPC whose name matches the local avatar — safe because no SP
+    // NPC is ever named after the currently-loaded player character.
+    const std::string own_name = get_avatar().name;
+
     int orphans = 0;
     std::vector<character_id> orphan_ids;
     for( npc &candidate : g->all_npcs() ) {
         if( candidate.maybe_get_value( "mp_proxy" )
-            || candidate.name == "player2" ) {
+            || candidate.name == "player2"
+            || ( !own_name.empty() && candidate.name == own_name ) ) {
             orphan_ids.push_back( candidate.getID() );
         }
     }
@@ -1025,7 +1059,8 @@ static void mp_cleanup_stale_npcs()
     int overmap_orphans = 0;
     std::vector<character_id> om_orphan_ids;
     for( const auto &ptr : overmap_buffer.get_npcs_near_player( 500 ) ) {
-        if( ptr && ( ptr->maybe_get_value( "mp_proxy" ) || ptr->name == "player2" ) ) {
+        if( ptr && ( ptr->maybe_get_value( "mp_proxy" ) || ptr->name == "player2"
+                     || ( !own_name.empty() && ptr->name == own_name ) ) ) {
             om_orphan_ids.push_back( ptr->getID() );
         }
     }
@@ -3419,6 +3454,9 @@ void grant_client_turn()
     // game state. Runs before the connected-check so it's current the moment a
     // client joins. Seed is constant for a session; the store is idempotent.
     g_host_world_seed.store( g->get_seed() );
+    if( world_generator && world_generator->active_world ) {
+        mp_set_host_world_name( world_generator->active_world->world_name );
+    }
     if( !remote_player_connected ) {
         return;
     }
@@ -3783,14 +3821,14 @@ bool is_passive_activity( const std::string &activity_id_str )
     //  - ACT_FIRSTAID, ACT_AIM, ACT_AUTOATTACK, ACT_AUTODRIVE — interactive
     //  - ACT_NULL / empty — not in an activity
     static const std::set<std::string> passive = {
-        "ACT_CRAFT", "ACT_LONGCRAFT", "ACT_DISASSEMBLE", "ACT_DISMEMBER",
+        "ACT_CRAFT", "ACT_LONG_CRAFT", "ACT_DISASSEMBLE", "ACT_DISMEMBER",
         "ACT_READ",
         "ACT_EAT", "ACT_DRINK", "ACT_CONSUME", "ACT_CONSUME_DRINK_MENU",
         "ACT_CONSUME_FOOD_MENU", "ACT_CONSUME_MEDS_MENU",
         "ACT_BUTCHER", "ACT_BUTCHER_FULL", "ACT_FIELD_DRESS",
         "ACT_SKIN", "ACT_DISSECT", "ACT_QUARTER",
         "ACT_CONSTRUCTION", "ACT_BUILD",
-        "ACT_VEHICLE",
+        "ACT_VEHICLE", "ACT_VEHICLE_REPAIR",
         "ACT_WORKOUT_LIGHT", "ACT_WORKOUT_MODERATE", "ACT_WORKOUT_ACTIVE",
         "ACT_WORKOUT_HARD", "ACT_WORKOUT",
         "ACT_FORAGE", "ACT_FISH",
@@ -5031,6 +5069,18 @@ static bool apply_one_state_message( const std::string &msg )
     // seed in start_game() and renders a different map outside the tile-synced
     // bubble (the "different map until I got close" report, 2026-06-02).
     if( msg.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
+        // Parse world name — shown in the join UI so the client knows which
+        // world they're joining before character selection.
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            const std::string wn = jo.get_string( "world", "" );
+            if( !wn.empty() && wn != "default" ) {
+                g_client_host_world_name = wn;
+                mp_log( "[cdda-mp] welcome: host world='" + wn + "'" );
+            }
+        } catch( const JsonError & ) {}
         const auto spos = msg.find( "\"seed\":" );
         if( spos != std::string::npos ) {
             // Seed is an unsigned int serialized as a bare JSON number.
@@ -5545,12 +5595,19 @@ static bool apply_one_state_message( const std::string &msg )
                 // attacker (confirmed 2026-06-02: all parts 105->88/max95).
                 if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
                     && prev_it->second <= av.get_part_hp_max( bp ) ) {
-                    total_damage += prev_it->second - new_hp;
+                    const int delta = prev_it->second - new_hp;
+                    mp_log( "[cdda-mp] BP-DELTA: " + bp_str
+                            + " prev=" + std::to_string( prev_it->second )
+                            + " new=" + std::to_string( new_hp )
+                            + " max=" + std::to_string( av.get_part_hp_max( bp ) )
+                            + " delta=" + std::to_string( delta ) );
+                    total_damage += delta;
                 }
                 g_last_bodypart_hp[bp_str] = new_hp;
                 av.set_part_hp_cur( bp, new_hp );
             }
             if( total_damage > 0 ) {
+                mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: total=" + std::to_string( total_damage ) );
                 add_msg( m_bad, "You are hit for %d damage!", total_damage );
             }
         }
@@ -8107,16 +8164,22 @@ std::string serialize_remote_player_state()
     // Per-bodypart HP for accurate client sidebar display.
     std::string bparts_json = "[";
     bool bfirst = true;
+    std::string bp_log;
     for( const bodypart_id &bp : remote->get_all_body_parts() ) {
         if( !bfirst ) {
             bparts_json += ',';
+            bp_log += ' ';
         }
         bfirst = false;
+        const int hp_cur = remote->get_hp( bp );
+        const int hp_max = remote->get_hp_max( bp );
         bparts_json += "{\"id\":\"" + bp.id().str() +
-                       "\",\"hp\":" + std::to_string( remote->get_hp( bp ) ) +
-                       ",\"hp_max\":" + std::to_string( remote->get_hp_max( bp ) ) + "}";
+                       "\",\"hp\":" + std::to_string( hp_cur ) +
+                       ",\"hp_max\":" + std::to_string( hp_max ) + "}";
+        bp_log += bp.id().str() + "=" + std::to_string( hp_cur ) + "/" + std::to_string( hp_max );
     }
     bparts_json += "]";
+    mp_log( "[cdda-mp] SRP-BP: " + bp_log );
 
     const std::string host_male_str = host.male ? "true" : "false";
 

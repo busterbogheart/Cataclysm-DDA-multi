@@ -261,7 +261,17 @@ void handle_key_blocking_activity()
         bool refresh = true;
         if( action == "pause" ) {
             if( u.activity.is_interruptible_with_kb() ) {
-                g->cancel_activity_query( _( "Confirm:" ) );
+                // In client mode a blocking dialog stalls the grant loop — the host
+                // keeps running in FF while the dialog is open, desyncing the calendar
+                // by minutes.  Skip the confirm and cancel immediately; pressing the
+                // pause key is confirmation enough, and the activity can be re-entered.
+                if( cata_mp::is_client_mode() ) {
+                    u.cancel_activity();
+                    u.abort_automove();
+                    u.resume_backlog_activity();
+                } else {
+                    g->cancel_activity_query( _( "Confirm:" ) );
+                }
             }
         } else if( action == "zoom_in" ) {
             g->zoom_in();
@@ -552,18 +562,43 @@ void game::handle_progress_ui()
         } else {
             wait_refresh_rate = 5_minutes;
         }
-        // In MP, 1 grant = 1 game turn ≈ 1s real-time, so a 5_minute (or
-        // 1_minute outer cap) refresh fires at most once during a sub-minute
-        // activity like eating an apple — the progress bar jumps from 10% to
-        // done.  Cap to 1_turns so the popup updates every grant cycle.
+        // In lockstep MP (no FF), 1 grant ≈ 1s real-time, so cap to 1_turns
+        // so the progress bar updates every grant cycle.  In FF mode turns
+        // race at CPU speed — calendar::once_every(1_turns) fires every turn
+        // and the SDL redraw becomes the bottleneck (10-30ms/turn caps FF at
+        // ~33-100 turns/sec).  Use a wall-clock cap instead: redraw at ~10 Hz
+        // so the popup stays live without throttling the simulation.
         if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
-            wait_refresh_rate = 1_turns;
+            if( !cata_mp::should_fast_forward() ) {
+                wait_refresh_rate = 1_turns;
+            }
+            // FF path handled by wall-clock gate below; leave wait_refresh_rate
+            // at SP default (5_minutes) so the calendar gate never fires.
         }
     }
     if( wait_redraw ) {
-        if( first_redraw_since_waiting_started ||
-            calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) {
-            if( first_redraw_since_waiting_started || calendar::once_every( wait_refresh_rate ) ) {
+        // FF mode: bypass the calendar gate entirely and use a wall-clock cap
+        // (~100ms = ~10 Hz).  This lets thousands of game turns race through
+        // per second while the progress popup still updates smoothly.
+        static auto s_last_ff_redraw = std::chrono::steady_clock::time_point {};
+        const bool ff_active = cata_mp::should_fast_forward();
+        const bool ff_redraw_due = [&] {
+            if( !ff_active ) {
+                return false;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if( first_redraw_since_waiting_started ||
+                std::chrono::duration_cast<std::chrono::milliseconds>( now - s_last_ff_redraw ).count() >= 100 ) {
+                s_last_ff_redraw = now;
+                return true;
+            }
+            return false;
+        }();
+        if( ff_redraw_due ||
+            ( !ff_active && ( first_redraw_since_waiting_started ||
+                              calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) ) ) {
+            if( ff_redraw_due || first_redraw_since_waiting_started ||
+                calendar::once_every( wait_refresh_rate ) ) {
                 ui_manager::redraw();
             }
 

@@ -1116,8 +1116,13 @@ bool main_menu::opening_screen()
                             }
                             return false;
                         }();
+                        const std::string host_world = cata_mp::mp_client_host_world_name();
+                        const std::string join_title = host_world.empty()
+                                                       ? _( "Co-op: join a session" )
+                                                       : string_format( _( "Joining \"%s\"" ),
+                                                               host_world );
                         uilist jflow;
-                        jflow.title = _( "Co-op: join a session" );
+                        jflow.title = join_title;
                         jflow.entries.emplace_back( 0, true, 'n', _( "New character" ) );
                         jflow.entries.emplace_back( 1, any_worlds_with_saves, 'l',
                                                     _( "Load existing character" ) );
@@ -1127,30 +1132,39 @@ bool main_menu::opening_screen()
                             break;  // connected; user can re-enter Join
                         }
                         if( jflow.ret == 1 ) {
-                            // World picker (only worlds that have saves)
+                            // World picker (only worlds that have saves).
+                            // Skip the picker entirely when only one world has
+                            // saves — common for remote clients who only have
+                            // the scratch world.
                             std::vector<std::string> wnames;
                             for( const auto &kv : world_generator->get_all_worlds() ) {
                                 if( !kv.second->world_saves.empty() ) {
                                     wnames.push_back( kv.first );
                                 }
                             }
-                            uilist wpick;
-                            wpick.title = _( "Co-op: load existing character" );
-                            int idx = 0;
-                            for( const std::string &name : wnames ) {
-                                const bool has_coop = cata_mp::mp_world_has_history( name );
-                                const std::string display = name +
-                                                            ( has_coop ? colorize( cata_mp::mp_world_marker_badge( name ),
-                                                                    c_light_green )
-                                                              : "  " + colorize( "(solo)", c_dark_gray ) );
-                                wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
+                            std::string chosen_world;
+                            if( wnames.size() == 1 ) {
+                                chosen_world = wnames[0];
+                            } else {
+                                uilist wpick;
+                                wpick.title = join_title;
+                                int idx = 0;
+                                for( const std::string &name : wnames ) {
+                                    const bool has_coop = cata_mp::mp_world_has_history( name );
+                                    const std::string display = name +
+                                                                ( has_coop ? colorize( cata_mp::mp_world_marker_badge( name ),
+                                                                        c_light_green )
+                                                                  : "  " + colorize( "(solo)", c_dark_gray ) );
+                                    wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
+                                }
+                                wpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
+                                wpick.query();
+                                if( wpick.ret < 0 || static_cast<size_t>( wpick.ret ) >= wnames.size() ) {
+                                    break;
+                                }
+                                chosen_world = wnames[wpick.ret];
                             }
-                            wpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
-                            wpick.query();
-                            if( wpick.ret < 0 || static_cast<size_t>( wpick.ret ) >= wnames.size() ) {
-                                break;
-                            }
-                            start = load_character_tab( wnames[wpick.ret] );
+                            start = load_character_tab( chosen_world );
                             if( start ) {
                                 load_game = true;
                             }

@@ -194,6 +194,11 @@ void mp_on_world_exit();
 // Host: the world's overmap seed (g->get_seed()), captured on the game thread.
 // Sent to the client in the join 'welcome' so it can match the host's terrain.
 unsigned int mp_host_world_seed();
+void mp_set_host_world_name( const std::string &name );
+std::string mp_get_host_world_name();
+// Client: world name received from the host's 'welcome' message.  Empty until
+// after mp_menu_join_session() returns successfully.
+std::string mp_client_host_world_name();
 
 // True when hosting and the host avatar has an active wait activity (ACT_WAIT,
 // ACT_WAIT_STAMINA, etc.).  Used by do_turn to skip monmove() so monsters

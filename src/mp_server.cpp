@@ -18,6 +18,7 @@ namespace cata_mp {
 // asio's std::atomic<long> increment in scheduler.hpp. We only need these two.
 void mp_log( const std::string &msg );
 unsigned int mp_host_world_seed();
+std::string mp_get_host_world_name();
 
 // Normalize a build-version string to its commit identity for the join
 // handshake. getVersionString() is the git commit hash, but the Makefile
@@ -284,8 +285,9 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // Include the host's worldgen seed so the client adopts it before
         // generating the host-area overmap — otherwise it renders its own
         // randomly-seeded terrain outside the tile-synced bubble.
+        const std::string wname = mp_get_host_world_name();
         session->send( "{\"type\":\"welcome\",\"player_id\":\"" + name +
-                       "\",\"world\":\"default\",\"current_turn\":0,\"seed\":" +
+                       "\",\"world\":\"" + wname + "\",\"current_turn\":0,\"seed\":" +
                        std::to_string( mp_host_world_seed() ) + "}\n" );
         mp_log( "[cdda-mp] SEED: welcome sent host seed " +
                 std::to_string( mp_host_world_seed() ) + " to '" + name + "'" );
