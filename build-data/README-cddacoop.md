@@ -119,6 +119,12 @@ installed.
 
 ## Changelog
 
+### 2026-06-04
+
+- **Maps now match** — the host's overmap is streamed to the client on join so both players reliably see the 
+same towns, roads, and regions on the minimap and overmap.
+- **Debug: new random item spawn** — debug spawn menu drops a random item, for fun
+
 ### 2026-06-01
 
 - **Combat messages full synced** — Your partner's hit/kill/event messages now correctly
