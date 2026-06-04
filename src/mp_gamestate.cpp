@@ -3635,13 +3635,28 @@ void wait_for_client_action()
         // client_just_acted TIMEOUT escape in get_player_input breaks out of
         // the input poll the moment the client acts.  Net result: host gets
         // full SP-style input access AND the wait still exits on client ack.
-        if( !get_avatar().activity ) {
-            g->mp_poll_input();
-        } else {
-            // In-activity (|-wait, craft, etc.): keep the legacy 5-to-cancel
-            // poll path; handle_action would dispatch its own actions which
-            // is not what we want during a long activity.
-            handle_key_blocking_activity();
+        // Only run the (blocking) host input poll once we've genuinely been
+        // waiting a while. For a normal move the client acks in tens of ms and
+        // the drain-break above exits the loop long before this threshold — so
+        // mp_poll_input never runs and can't pace the host or flicker the turn
+        // signal red (root cause of the residual movement flicker, 2026-06-03:
+        // max_input=76-442ms on host_act=none waits even after the drain-break,
+        // because handle_action's internal client-acted escape is unreliable
+        // and blocks up to ~440ms). Past the threshold it's a real long wait
+        // (client crafting/sleeping) where the host wants menu access, so
+        // engage the full poll then. SDL still gets pumped every iter via
+        // inp_mngr.pump_events() above, so no beachball during the tight phase.
+        const long wait_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - t_start ).count();
+        if( wait_elapsed_ms > 100 ) {
+            if( !get_avatar().activity ) {
+                g->mp_poll_input();
+            } else {
+                // In-activity (|-wait, craft, etc.): keep the legacy 5-to-cancel
+                // poll path; handle_action would dispatch its own actions which
+                // is not what we want during a long activity.
+                handle_key_blocking_activity();
+            }
         }
         const auto t_after_input = std::chrono::steady_clock::now();
         const int waitev_ms = static_cast<int>(
