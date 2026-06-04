@@ -1043,6 +1043,18 @@ static void mp_cleanup_stale_npcs()
 // Remove every NPC with the given name from both the active critter list and the
 // overmap buffer. Eliminates artifacts left by previous sessions before the
 // ID-tracking cleanup mechanism existed.
+// Reset per-world MP state when a world is unloaded (quit-to-menu). The
+// stale-NPC sweep is one-shot per world load via mp_cleanup_done; without this
+// reset, re-entering a world in the same process skips the sweep and leaves
+// phantom proxy NPCs from a prior load-in (a session that quit while connected,
+// so its proxy was saved into the world and never cleanly removed). Reproduced
+// 2026-06-03 ("Alicia Donald" phantom). NOT a same-machine artifact — any host
+// that enters a world twice per launch hits it.
+void mp_on_world_exit()
+{
+    mp_cleanup_done = false;
+}
+
 static void purge_npcs_by_name( const std::string &name )
 {
     if( name.empty() ) {

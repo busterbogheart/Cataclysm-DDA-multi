@@ -184,6 +184,13 @@ void set_host_mode( bool enabled );
 // whether it is also a headless dedicated server.
 bool is_hosting();
 
+// Called from the main loop when a world is unloaded (quit-to-menu). Resets
+// per-world MP state — currently the stale-NPC sweep guard — so re-entering any
+// world in the same process re-runs the orphan-proxy cleanup instead of
+// skipping it (the one-shot guard otherwise leaves phantom proxies from a prior
+// load-in; reproduced 2026-06-03).
+void mp_on_world_exit();
+
 // Host: the world's overmap seed (g->get_seed()), captured on the game thread.
 // Sent to the client in the join 'welcome' so it can match the host's terrain.
 unsigned int mp_host_world_seed();

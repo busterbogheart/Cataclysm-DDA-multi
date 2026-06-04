@@ -1138,6 +1138,9 @@ int main( int argc, const char *argv[] )
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
         get_event_bus().send<event_type::game_begin>( getVersionString() );
         while( !g->do_turn() ) {}
+        // World unloaded (quit-to-menu). Reset per-world MP state so re-entering
+        // a world re-runs the stale-proxy sweep instead of skipping it.
+        cata_mp::mp_on_world_exit();
     }
 
     exit_handler( -999 );
