@@ -3598,6 +3598,18 @@ void wait_for_client_action()
         const auto t_after_wait = std::chrono::steady_clock::now();
         process_mp_events();
         const auto t_after_drain = std::chrono::steady_clock::now();
+        // The drain above may have just set g_client_acted_this_turn (the
+        // client's "wait" ack arrived). Break NOW, before the blocking
+        // mp_poll_input() below — otherwise the host sits in handle_action for
+        // 135-327ms even though the client already acked at ~+16ms, pacing
+        // every host move to that input poll and flickering the turn signal
+        // red. Root cause of the host sluggishness/flicker (2026-06-03 logs:
+        // input=150-327ms dominated SRV-WAIT while drain/pump/redraw were
+        // <20ms and the client acked in 16ms). The top-of-loop check only
+        // catches it a full input-poll too late.
+        if( g_client_acted_this_turn ) {
+            break;
+        }
         ensure_mp_hud();
         inp_mngr.pump_events();
         const auto t_after_pump = std::chrono::steady_clock::now();
