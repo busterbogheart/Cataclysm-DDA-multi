@@ -36,6 +36,7 @@
 #include "talker.h"
 #include "vehicle.h"
 #include "vpart_position.h"
+#include "mp_client_conn.h"
 
 #define dbg(x) DebugLog((x),D_GAME) << __FILE__ << ":" << __LINE__ << ": "
 
@@ -92,7 +93,7 @@ mission *mission::find( int id, bool ok_missing )
     if( iter != world_missions.end() ) {
         return &iter->second;
     }
-    if( !ok_missing ) {
+    if( !ok_missing && !cata_mp::is_client_mode() ) {
         dbg( D_ERROR ) << "requested mission with uid " << id << " does not exist";
         debugmsg( "requested mission with uid %d does not exist", id );
     }
