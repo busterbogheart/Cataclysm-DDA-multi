@@ -109,11 +109,13 @@ runs:
         # runtime dylib deps, and freetype is baked into the binary.
         FT_VER=2.13.3
         PREFIX="$HOME/ft-universal"
-        # Use GitHub mirror — Savannah FTP is unreliable from CI runners.
-        # GitHub tag format uses dashes: VER-2-13-3.
-        FT_TAG="VER-$(echo ${FT_VER} | tr '.' '-')"
-        curl -fL --retry 3 -o /tmp/ft.tar.gz \
-          "https://github.com/freetype/freetype/archive/refs/tags/${FT_TAG}.tar.gz"
+        # Use the SourceForge release tarball — it vendors all submodules (dlg)
+        # so the build doesn't try `git submodule update` (which fails in a
+        # non-git tarball). The GitHub source archive (archive/refs/tags) omits
+        # submodules; Savannah's release tarball is self-contained but returns
+        # 502 intermittently from CI runners. SourceForge is both.
+        curl -fL --retry 5 --retry-all-errors -o /tmp/ft.tar.gz \
+          "https://downloads.sourceforge.net/project/freetype/freetype2/${FT_VER}/freetype-${FT_VER}.tar.gz"
         mkdir -p /tmp/ft
         tar -xzf /tmp/ft.tar.gz -C /tmp/ft --strip-components=1
         (

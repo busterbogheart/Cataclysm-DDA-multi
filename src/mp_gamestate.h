@@ -199,6 +199,7 @@ std::string mp_get_host_world_name();
 // Client: world name received from the host's 'welcome' message.  Empty until
 // after mp_menu_join_session() returns successfully.
 std::string mp_client_host_world_name();
+void mp_set_client_host_world_name( const std::string &name );
 
 // True when hosting and the host avatar has an active wait activity (ACT_WAIT,
 // ACT_WAIT_STAMINA, etc.).  Used by do_turn to skip monmove() so monsters

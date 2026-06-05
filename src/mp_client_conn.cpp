@@ -25,6 +25,7 @@ namespace cata_mp {
 // Defined in mp_gamestate.cpp. Forward-declared (mp_client_conn.cpp doesn't
 // include the gamestate header) so we can trace connection lifecycle here.
 void mp_log( const std::string &msg );
+void mp_set_client_host_world_name( const std::string &name );
 
 static bool client_mode_ = false;
 
@@ -230,9 +231,21 @@ bool client_connect( const std::string &host, uint16_t port,
                 return false;
             }
             if( msg.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
-                // Probe accepted — version + password OK.  Store the welcome
-                // so the game-loop handler can adopt the seed and world name.
-                // Build the real join message (deferred until char creation).
+                // Probe accepted — version + password OK.  Extract the world
+                // name immediately so the join dialog can show "Joining <World>"
+                // before the game loop gets to process the welcome packet.
+                const auto wpos = msg.find( "\"world\":\"" );
+                if( wpos != std::string::npos ) {
+                    const size_t ws = wpos + 9;
+                    const size_t we = msg.find( '"', ws );
+                    if( we != std::string::npos ) {
+                        const std::string wn = msg.substr( ws, we - ws );
+                        if( !wn.empty() && wn != "default" ) {
+                            mp_set_client_host_world_name( wn );
+                        }
+                    }
+                }
+                // Store the welcome so the game-loop handler can adopt the seed.
                 g_pending_join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
                 if( !password.empty() ) {
                     g_pending_join += ",\"password\":\"" + password + "\"";

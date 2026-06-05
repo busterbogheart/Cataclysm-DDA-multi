@@ -1026,24 +1026,21 @@ bool main_menu::opening_screen()
                             wflow.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
                             wflow.query();
                             if( wflow.ret < 0 ) {
-                                break;  // armed; user can re-enter Host
+                                cata_mp::mp_menu_cancel_host();
+                                break;
                             }
                             if( wflow.ret == 1 ) {
                                 WORLD *neww = world_generator->make_new_world();
                                 if( neww == nullptr ) {
                                     cata_mp::mp_log( "[cdda-mp] MENU: worldgen returned nullptr, bail" );
-                                    break;  // worldgen cancelled at first tab
+                                    cata_mp::mp_menu_cancel_host();
+                                    break;
                                 }
-                                // Worldgen finalized + persisted the world.  If the
-                                // user backs out of character creation, KEEP the world
-                                // on disk so it's listable and reusable later (mirrors
-                                // Play Now, which persists its world).  Previously this
-                                // deleted it, which made created-but-unused co-op worlds
-                                // silently vanish from the world menu.
                                 if( !query_yn(
                                         _( "World '%s' created.\n\nContinue to character creation?" ),
                                         neww->world_name.c_str() ) ) {
                                     cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=NO, world kept, bail" );
+                                    cata_mp::mp_menu_cancel_host();
                                     break;
                                 }
                                 cata_mp::mp_log( "[cdda-mp] MENU: post-worldgen confirm=YES, world='" +
@@ -1052,6 +1049,7 @@ bool main_menu::opening_screen()
                             const int ct = pick_char_type();
                             if( ct < 0 ) {
                                 cata_mp::mp_log( "[cdda-mp] MENU: char-type cancelled, bail to main menu" );
+                                cata_mp::mp_menu_cancel_host();
                                 break;
                             }
                             cata_mp::mp_log( "[cdda-mp] MENU: char-type=" + std::to_string(
@@ -1060,11 +1058,8 @@ bool main_menu::opening_screen()
                             start = new_character_tab();
                             cata_mp::mp_log( "[cdda-mp] MENU: new_character_tab returned start=" +
                                              std::to_string( start ) );
-                            // Reset sel2 to 0 (Host) if cancelled — without this,
-                            // sel2 stays as the char-type number (e.g. 1 = template),
-                            // which maps to Join in the COOP submenu and triggers the
-                            // wrong flow on the next CONFIRM.
                             if( !start ) {
+                                cata_mp::mp_menu_cancel_host();
                                 sel2 = 0;
                             }
                         } else if( hflow.ret == 1 ) {

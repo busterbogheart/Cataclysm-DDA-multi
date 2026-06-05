@@ -826,6 +826,11 @@ std::string mp_client_host_world_name()
     return g_client_host_world_name;
 }
 
+void mp_set_client_host_world_name( const std::string &name )
+{
+    g_client_host_world_name = name;
+}
+
 // Client: adopt the host's seed (received in 'welcome') into local worldgen,
 // once, before the host-area overmap is generated. No-op if no seed has been
 // received yet or it's already applied. Idempotent + safe to call repeatedly.
