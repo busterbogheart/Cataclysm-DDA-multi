@@ -10,7 +10,7 @@ Why die alone when you can die together?
 - [Multiplayer (This co-op fork)](#multiplayer-this-co-op-fork)
   - [Download a release](#download-a-release)
   - [Start a session](#start-a-session)
-  - [Playing across the internet](#playing-across-the-internet)
+  - [Connecting](#connecting)
   - [What works / Current limitations](#what-works)
 - [Building from source](#building-from-source)
 - [FAQ](#frequently-asked-questions)
@@ -43,27 +43,55 @@ From the main menu, pick **CO-OP**.
 
 ---
 
+### Connecting
+
+<!-- SYNC:connecting section="Connecting" -->
+The host always listens on **TCP port 8080**; only the route between the two
+machines changes. Allow it through the host's firewall when prompted.
+
 ### Same network (LAN)
 
-If both players are on the same Wi-Fi or LAN, no VPN is needed — the host just shares its local IP.
+If both players are on the same Wi-Fi/LAN, no VPN is needed — the host just
+shares its local IP:
 
 - **macOS host:** `ipconfig getifaddr en0` (try `en1` if that's empty)
 - **Windows host:** `ipconfig` — use the IPv4 Address (looks like `192.168.x.y`)
 
-The client pastes that IP into CO-OP > Join. Port defaults to 8080.
+The client pastes that into `CO-OP > Join`. Port defaults to 8080.
 
----
+### Across the internet
 
-### Playing across the internet
+You need one of these to route your partner's traffic to your machine:
 
-You need one of these to get your partner's traffic to your machine:
-
-- **[playit.gg](https://playit.gg)** *(easiest)* — free relay, no port forwarding, no account needed for the client. Install the playit agent on the host machine, add a TCP tunnel on port 8080, and share the address it gives you.
-- **[Tailscale](https://tailscale.com)** — free VPN, both players need an account. Recommended if you play regularly with the same person.
-- **Router port forwarding** — forward TCP 8080 to the host machine, share your public IP. No extra software but requires router access.
-- **ZeroTier / ngrok** — see [cddacoop.com](https://cddacoop.com) for walkthroughs.
-
-The host always listens on TCP port 8080; only the route between the two machines changes.
+- **[playit.gg](https://playit.gg)** *(easiest)* — free, no port forwarding, no
+  account needed for the client. Install the playit agent on the host machine,
+  add a TCP tunnel on port 8080, and share the address it gives you. Your partner
+  pastes it straight into the Join screen.
+- **[Tailscale](https://tailscale.com)** *(what I use)* — free VPN that makes both
+  machines appear on the same LAN. By default you
+  and your friend are on **separate networks** and won't see each other. You have
+  to put both machines on the same network first:
+    1. Both players install Tailscale and sign in (any login works, and email can be the same actually).
+    2. **Get on the same network-- pick one:**
+       - **Same account (simplest):** both sign in to the *same* Tailscale
+         account. Both machines then show up together automatically.
+       - **Share the device:** if you each have your own account, the host opens
+         the [Tailscale admin console](https://login.tailscale.com/admin/machines),
+         clicks the **⋯** next to their machine → **Share…**, and sends the invite
+         link to their friend. The friend opens the link and accepts. (Repeat the
+         other way if needed.)
+    3. **Verify before launching the game:** in the admin console / Tailscale app,
+       each player should see the *other* person's machine listed and marked
+       **Connected**. If you don't see their machine here, the game can't connect
+       either so fix this first.
+    4. The host shares their Tailscale IP (the `100.x.y.z` address next to their
+       machine name). The friend pastes it into the Join screen as `100.x.y.z:8080`. (You can save the IP in the
+       game with a name like `Joe's Tailscale`)
+- **Router port forwarding** — forward TCP 8080 to the host machine and share
+  your public IP. Works without any extra software but requires router access.
+- **ZeroTier / ngrok** — similar to Tailscale; see
+  [cddacoop.com](https://cddacoop.com) for walkthroughs.
+<!-- /SYNC:connecting -->
 
 ---
 
@@ -105,6 +133,35 @@ The host always listens on TCP port 8080; only the route between the two machine
   Coordinate with your partner or expect rough edges around
   partner-status messages.
 <!-- /SYNC:known-limits -->
+
+---
+
+### Reporting bugs
+
+<!-- SYNC:reporting-bugs section="Getting help / reporting bugs" -->
+- Discord: <https://discord.gg/MzBD4v3xAU>
+- GitHub issues: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
+
+**Co-op bugs need logs from both players.** Most sync issues (desync,
+resurrecting monsters, connection failures) only make sense when the host's and
+the client's logs are lined up side by side, one is rarely enough. 
+The co-op logs are the important ones:
+
+- **Host player:** `cdda-mp-server.log`
+- **Joining player:** `cdda-mp-client.log`
+- Locations:
+  - **macOS/Linux:** `/tmp/cdda-mp-server.log` or `/tmp/cdda-mp-client.log`
+  - **Windows:** in your user folder — `C:\Users\<you>\cdda-mp-server.log` or
+    `cdda-mp-client.log` (paste `%USERPROFILE%` into Explorer's address bar)
+
+The standard CDDA logs help too especially for crashes:
+
+- **macOS:** `~/Library/Application Support/Cataclysm/cata.log` and `debug.log`
+- **Windows:** `cata.log` and `debug.log` next to the exe
+
+When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plus
+`cata.log`/`debug.log` if a crash was involved).
+<!-- /SYNC:reporting-bugs -->
 
 ---
 

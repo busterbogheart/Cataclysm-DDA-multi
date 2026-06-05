@@ -250,12 +250,20 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
     // without spawning the proxy NPC or queuing a connect event.  Lets the
     // client surface a version mismatch before the character creation UI.
     if( type == "version_probe" ) {
+        const std::string probe_ver = json_get_str( msg, "version" );
+        mp_log( "[cdda-mp] PROBE recv: client_ver='" +
+                ( probe_ver.empty() ? std::string( "(none)" ) : probe_ver ) +
+                "' host_ver='" + version_ + "' -> client_commit=" +
+                mp_version_commit_id( probe_ver ) + " host_commit=" +
+                mp_version_commit_id( version_ ) );
         if( !version_.empty() ) {
             const std::string client_ver = json_get_str( msg, "version" );
             if( mp_version_commit_id( client_ver ) != mp_version_commit_id( version_ ) ) {
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
                 session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
+                mp_log( "[cdda-mp] PROBE REJECTED — version mismatch. " + errmsg +
+                        " (host and client are on different builds; both must run the same release)" );
                 session->disconnect();
                 return;
             }
@@ -264,12 +272,15 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             const std::string provided = json_get_str( msg, "password" );
             if( provided != password_ ) {
                 session->send( "{\"type\":\"error\",\"message\":\"Wrong password\"}\n" );
+                mp_log( "[cdda-mp] PROBE REJECTED — wrong password" );
                 session->disconnect();
                 return;
             }
         }
         // Probe accepted — send world name + seed so the client can display
         // "Joining <world>" before character creation.
+        mp_log( "[cdda-mp] PROBE accepted — version OK; sending welcome (world='" +
+                mp_get_host_world_name() + "')" );
         session->send( "{\"type\":\"welcome\",\"player_id\":\"probe\""
                        ",\"world\":\"" + mp_get_host_world_name() + "\""
                        ",\"current_turn\":0,\"seed\":" +
@@ -294,7 +305,9 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
                 session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
-                std::cout << "[cdda-mp] Rejected join: " << errmsg << std::endl;
+                mp_log( "[cdda-mp] JOIN REJECTED — version mismatch. " + errmsg +
+                        " client_commit=" + mp_version_commit_id( client_ver ) +
+                        " host_commit=" + mp_version_commit_id( version_ ) );
                 session->disconnect();
                 return;
             }
@@ -305,6 +318,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             const std::string provided = json_get_str( msg, "password" );
             if( provided != password_ ) {
                 session->send( "{\"type\":\"error\",\"message\":\"Wrong password\"}\n" );
+                mp_log( "[cdda-mp] JOIN REJECTED — wrong password (name='" + name + "')" );
                 session->disconnect();
                 return;
             }
@@ -324,7 +338,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                 std::to_string( mp_host_world_seed() ) + " to '" + name + "'" );
 
         broadcast( "{\"type\":\"player_joined\",\"name\":\"" + name + "\"}\n" );
-        std::cout << "[cdda-mp] Player '" << name << "' joined." << std::endl;
+        mp_log( "[cdda-mp] JOIN accepted — player '" + name + "' authenticated and connected" );
 
         // Notify game loop to spawn this player's character
         get_mp_queue().push( { cata_mp::mp_event::type::connect, name, "" } );
@@ -336,6 +350,16 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
     } else if( session->authenticated ) {
         // Route action to game loop
         get_mp_queue().push( { cata_mp::mp_event::type::action, session->name, msg } );
+
+    } else {
+        // Unauthenticated session sent something that isn't version_probe / join /
+        // quit. Almost always a protocol/version skew (e.g. a client on a build
+        // that predates the version_probe handshake). Log it instead of silently
+        // dropping the message, then close so the client doesn't hang.
+        mp_log( "[cdda-mp] HANDSHAKE: unexpected pre-auth message type='" +
+                ( type.empty() ? std::string( "(none)" ) : type ) +
+                "' — likely a different/old client build. Closing." );
+        session->disconnect();
     }
 }
 

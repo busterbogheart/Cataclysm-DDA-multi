@@ -6,18 +6,18 @@ Why die alone when you can die together?
 **Repo:** [busterbogheart/Cataclysm-DDA-multi](https://github.com/busterbogheart/Cataclysm-DDA-multi) &middot;
 **Upstream:** [CleverRaven/Cataclysm-DDA](https://github.com/CleverRaven/Cataclysm-DDA)
 
-This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoop.com Discord.
+This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoop.com Discord (<https://discord.gg/MzBD4v3xAU>).
 
 ---
 
 ## First launch
 
-1. Unzip wherever you like
+1. Unzip anywhere
 2. **macOS:** Open `Cddacoop.app` — first launch needs **right-click → Open**
    to bypass Gatekeeper (unsigned app). If nothing happens, run
    `xattr -cr Cddacoop.app` in Terminal first.
-3. **Windows:** Run `cddacoop.bat` (or `cataclysm-tiles.exe` directly).
-   SmartScreen may warn — click **More info → Run anyway**.
+3. **Windows:** Run `cataclysm-tiles.exe`. SmartScreen may warn — click
+   **More info → Run anyway**.
 
 The main menu is straight experimental CDDA, kept up to date, pretty much.
 The **CO-OP** menu item is new.  Otherwise this plays as single-player CDDA.
@@ -30,29 +30,15 @@ Pick **CO-OP** from the main menu, then:
 
 ### Host a session
 
-The host runs the full world simulation — put the faster machine on
+The host runs the full world simulation, so put the better machine on
 hosting duty if your hardware differs.
 
 `CO-OP > Host > New character` (or `Load existing character`). Pick
 or create a world; co-op worlds get a badge in the menu so you can
 tell them apart from solo/SP worlds.
 
-Your partner needs your IP. On the same LAN, your local IP works. Across
-networks you need one of these:
-
-- **[playit.gg](https://playit.gg)** *(easiest)* — free, no port forwarding, no
-  account needed for the client. Install the playit agent on the host machine,
-  add a TCP tunnel on port 8080, and share the address it gives you. Your partner
-  pastes it straight into the Join screen.
-- **[Tailscale](https://tailscale.com)** — free VPN that makes both machines
-  appear on the same LAN. Both players need a Tailscale account. I use this.
-- **Router port forwarding** — forward TCP 8080 to the host machine and share
-  your public IP. Works without any extra software but requires router access.
-- **ZeroTier / ngrok** — similar to Tailscale; see
-  [cddacoop.com](https://cddacoop.com) for walkthroughs.
-
-The host always listens on TCP port 8080; only the route between the two
-machines changes.
+Your partner needs your IP — see **Connecting** below for same-network (LAN)
+and across-the-internet options.
 
 ### Join a session
 
@@ -60,6 +46,56 @@ machines changes.
 between launches. Pick `New character` or `Load existing character`; 
 the client auto-creates a scratch world and teleports to the host on
 connect.
+
+---
+
+## Connecting
+
+The host always listens on **TCP port 8080**; only the route between the two
+machines changes. Allow it through the host's firewall when prompted.
+
+### Same network (LAN)
+
+If both players are on the same Wi-Fi/LAN, no VPN is needed — the host just
+shares its local IP:
+
+- **macOS host:** `ipconfig getifaddr en0` (try `en1` if that's empty)
+- **Windows host:** `ipconfig` — use the IPv4 Address (looks like `192.168.x.y`)
+
+The client pastes that into `CO-OP > Join`. Port defaults to 8080.
+
+### Across the internet
+
+You need one of these to route your partner's traffic to your machine:
+
+- **[playit.gg](https://playit.gg)** *(easiest)* — free, no port forwarding, no
+  account needed for the client. Install the playit agent on the host machine,
+  add a TCP tunnel on port 8080, and share the address it gives you. Your partner
+  pastes it straight into the Join screen.
+- **[Tailscale](https://tailscale.com)** *(what I use)* — free VPN that makes both
+  machines appear on the same LAN. By default you
+  and your friend are on **separate networks** and won't see each other. You have
+  to put both machines on the same network first:
+    1. Both players install Tailscale and sign in (any login works, and email can be the same actually).
+    2. **Get on the same network-- pick one:**
+       - **Same account (simplest):** both sign in to the *same* Tailscale
+         account. Both machines then show up together automatically.
+       - **Share the device:** if you each have your own account, the host opens
+         the [Tailscale admin console](https://login.tailscale.com/admin/machines),
+         clicks the **⋯** next to their machine → **Share…**, and sends the invite
+         link to their friend. The friend opens the link and accepts. (Repeat the
+         other way if needed.)
+    3. **Verify before launching the game:** in the admin console / Tailscale app,
+       each player should see the *other* person's machine listed and marked
+       **Connected**. If you don't see their machine here, the game can't connect
+       either so fix this first.
+    4. The host shares their Tailscale IP (the `100.x.y.z` address next to their
+       machine name). The friend pastes it into the Join screen as `100.x.y.z:8080`. (You can save the IP in the
+       game with a name like `Joe's Tailscale`)
+- **Router port forwarding** — forward TCP 8080 to the host machine and share
+  your public IP. Works without any extra software but requires router access.
+- **ZeroTier / ngrok** — similar to Tailscale; see
+  [cddacoop.com](https://cddacoop.com) for walkthroughs.
 
 ---
 
@@ -77,10 +113,13 @@ Safe to delete the whole folder for a clean slate.
 ## Sound
 
 The CC-Sounds pack (~135 MB) is **not bundled** in this zip to keep
-the download small. On first launch the app offers to download it for
-you, or you can skip and play silently. The pack lands at
-`~/Library/Application Support/Cataclysm/sound/CC-Sounds/` once
-installed.
+the download small. On **macOS** first launch the app offers to download
+it for you, or you can skip and play silently; it lands at
+`~/Library/Application Support/Cataclysm/sound/CC-Sounds/`. On **Windows**,
+download `cc-sounds.zip` from the
+[releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases/latest)
+and extract it into `%APPDATA%\Cataclysm\sound\` (so you have
+`...\sound\CC-Sounds\`).
 
 ---
 
@@ -127,7 +166,7 @@ installed.
 
 ### 2026-06-04
 
-- **Maps now match** — the host's overmap is streamed to the client on join so both players reliably see the 
+- **Maps now match, finally** — the host's overmap is streamed to the client on join so both players reliably see the 
 same towns, roads, and regions on the minimap and overmap.
 - **Debug: new random item spawn** — debug spawn menu drops a random item, for fun
 
@@ -197,6 +236,7 @@ multiple.  melee and ranged damage forwarded and applied server-side w/ proper k
   traps server-side
 - **Appearance sync** — skin tone, hair, clothing, wielded weapon, and
   sprite facing all mirrored between players
+- **The Dream Begins**
 
 ---
 
@@ -205,13 +245,25 @@ multiple.  melee and ranged damage forwarded and applied server-side w/ proper k
 - Discord: <https://discord.gg/MzBD4v3xAU>
 - GitHub issues: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
 
-Logs:
+**Co-op bugs need logs from both players.** Most sync issues (desync,
+resurrecting monsters, connection failures) only make sense when the host's and
+the client's logs are lined up side by side, one is rarely enough. 
+The co-op logs are the important ones:
+
+- **Host player:** `cdda-mp-server.log`
+- **Joining player:** `cdda-mp-client.log`
+- Locations:
+  - **macOS/Linux:** `/tmp/cdda-mp-server.log` or `/tmp/cdda-mp-client.log`
+  - **Windows:** in your user folder — `C:\Users\<you>\cdda-mp-server.log` or
+    `cdda-mp-client.log` (paste `%USERPROFILE%` into Explorer's address bar)
+
+The standard CDDA logs help too especially for crashes:
 
 - **macOS:** `~/Library/Application Support/Cataclysm/cata.log` and `debug.log`
 - **Windows:** `cata.log` and `debug.log` next to the exe
 
-When reporting a bug, attach both logs and mention which preview
-build you're on (the version is in the window title bar).
+When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plus
+`cata.log`/`debug.log` if a crash was involved). 
 
 ---
 

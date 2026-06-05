@@ -91,6 +91,10 @@ struct client_impl {
         [this]( const asio::error_code & ec, size_t /*n*/ ) {
             if( ec ) {
                 std::cerr << "[cdda-mp] Server disconnected: " << ec.message() << std::endl;
+                mp_log( "[cdda-mp] DISCONNECT: server closed connection (" + ec.message() +
+                        "). If this fired during join, the host rejected the handshake "
+                        "(version mismatch / wrong password) or is on a different build — "
+                        "check the host's cdda-mp-server.log for a PROBE/JOIN REJECTED line." );
                 // Synthetic disconnect message — game thread will clean up the host NPC.
                 g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
                 return;
@@ -202,10 +206,15 @@ bool client_connect( const std::string &host, uint16_t port,
     }
     join_msg += "}\n";
 
+    mp_log( "[cdda-mp] HANDSHAKE: sent version_probe to " + host + ":" +
+            std::to_string( port ) + " (our version='" +
+            ( version.empty() ? std::string( "(none)" ) : version ) + "'" +
+            ( password.empty() ? "" : ", password set" ) + ")" );
     asio::error_code wec;
     asio::write( g_client->sock, asio::buffer( join_msg ), wec );
     if( wec ) {
         std::cerr << "[cdda-mp] Failed to send join: " << wec.message() << std::endl;
+        mp_log( "[cdda-mp] HANDSHAKE: failed to send version_probe — " + wec.message() );
         g_client.reset();
         return false;
     }
@@ -226,6 +235,8 @@ bool client_connect( const std::string &host, uint16_t port,
                         g_connect_error = msg.substr( start, end - start );
                     }
                 }
+                mp_log( "[cdda-mp] HANDSHAKE REJECTED by host: " + g_connect_error +
+                        " (raw=" + msg + ")" );
                 g_join_sent = false;
                 g_client.reset();
                 return false;
@@ -260,6 +271,8 @@ bool client_connect( const std::string &host, uint16_t port,
                 g_recv_queue.push( msg );
                 std::cout << "[cdda-mp] Connected to " << host << ":" << port
                           << " as '" << name << "' — version accepted." << std::endl;
+                mp_log( "[cdda-mp] HANDSHAKE: host accepted our version — connected to " +
+                        host + ":" + std::to_string( port ) + " as '" + name + "'" );
                 return true;
             }
             // Any other packet (e.g. hello) — keep waiting.
@@ -269,6 +282,9 @@ bool client_connect( const std::string &host, uint16_t port,
 
     g_connect_error = "Timed out waiting for server response.";
     std::cerr << "[cdda-mp] Timed out waiting for welcome from server." << std::endl;
+    mp_log( "[cdda-mp] HANDSHAKE: TIMED OUT after 5s waiting for host welcome/error. "
+            "The host accepted the TCP connection but never answered the version_probe — "
+            "host may be on an older build (no probe support) or not yet loaded into a world." );
     g_client.reset();
     return false;
 }
