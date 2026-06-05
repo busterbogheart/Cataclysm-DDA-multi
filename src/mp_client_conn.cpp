@@ -189,12 +189,10 @@ bool client_connect( const std::string &host, uint16_t port,
         g_client->io_ctx.run();
     } );
 
-    // Send the join immediately so the server can validate version/password
-    // before the client enters character creation.  The server replies with
-    // {"type":"welcome"} or {"type":"error"} from its network thread — no
-    // host game loop needed.  Errors are surfaced here so the caller can show
-    // a clean popup before any world/char UI appears.
-    std::string join_msg = "{\"type\":\"join\",\"name\":\"" + name + "\"";
+    // Send a lightweight version_probe — validates version + password without
+    // spawning the proxy NPC on the host.  The real join (which triggers proxy
+    // spawn) is deferred until client_send_join() fires after char creation.
+    std::string join_msg = "{\"type\":\"version_probe\"";
     if( !password.empty() ) {
         join_msg += ",\"password\":\"" + password + "\"";
     }
@@ -232,9 +230,21 @@ bool client_connect( const std::string &host, uint16_t port,
                 return false;
             }
             if( msg.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
-                // Store welcome so the game-loop handler can adopt the seed.
-                g_pending_join = msg;
-                g_join_sent = true;
+                // Probe accepted — version + password OK.  Store the welcome
+                // so the game-loop handler can adopt the seed and world name.
+                // Build the real join message (deferred until char creation).
+                g_pending_join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
+                if( !password.empty() ) {
+                    g_pending_join += ",\"password\":\"" + password + "\"";
+                }
+                if( !version.empty() ) {
+                    g_pending_join += ",\"version\":\"" + version + "\"";
+                }
+                g_pending_join += "}\n";
+                g_join_sent = false;
+                // Replay the probe welcome so seed/world-name adoption fires
+                // from the normal incoming-packet path on first do_turn.
+                g_recv_queue.push( msg );
                 std::cout << "[cdda-mp] Connected to " << host << ":" << port
                           << " as '" << name << "' — version accepted." << std::endl;
                 return true;
@@ -257,20 +267,9 @@ std::string client_connect_error()
 
 void client_send_join()
 {
-    // Join was already sent during client_connect() and welcome was received.
-    // On the first do_turn call, replay the stored welcome through the normal
-    // incoming-packet handler so the game loop applies the seed and world name.
-    if( g_join_sent && !g_pending_join.empty() &&
-        g_pending_join.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
-        g_recv_queue.push( g_pending_join );
-        g_pending_join.clear();
-        std::cout << "[cdda-mp] Replayed welcome into recv queue." << std::endl;
-        return;
-    }
     if( g_join_sent || !g_client || g_pending_join.empty() ) {
         return;
     }
-    // Legacy path (should not be reached with the new eager-join flow).
     asio::error_code ec;
     asio::write( g_client->sock, asio::buffer( g_pending_join ), ec );
     if( ec ) {

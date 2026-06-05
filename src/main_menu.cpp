@@ -1060,6 +1060,13 @@ bool main_menu::opening_screen()
                             start = new_character_tab();
                             cata_mp::mp_log( "[cdda-mp] MENU: new_character_tab returned start=" +
                                              std::to_string( start ) );
+                            // Reset sel2 to 0 (Host) if cancelled — without this,
+                            // sel2 stays as the char-type number (e.g. 1 = template),
+                            // which maps to Join in the COOP submenu and triggers the
+                            // wrong flow on the next CONFIRM.
+                            if( !start ) {
+                                sel2 = 0;
+                            }
                         } else if( hflow.ret == 1 ) {
                             // Co-op worlds first, then solo, then "Cancel".
                             std::vector<std::string> coop_w;

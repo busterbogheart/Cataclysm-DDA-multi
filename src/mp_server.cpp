@@ -246,6 +246,37 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
 
     const std::string type = json_get_str( msg, "type" );
 
+    // Lightweight pre-join probe: validate version + password immediately
+    // without spawning the proxy NPC or queuing a connect event.  Lets the
+    // client surface a version mismatch before the character creation UI.
+    if( type == "version_probe" ) {
+        if( !version_.empty() ) {
+            const std::string client_ver = json_get_str( msg, "version" );
+            if( mp_version_commit_id( client_ver ) != mp_version_commit_id( version_ ) ) {
+                const std::string errmsg = "Version mismatch. Host: " + version_ +
+                                           " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
+                session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
+                session->disconnect();
+                return;
+            }
+        }
+        if( !password_.empty() ) {
+            const std::string provided = json_get_str( msg, "password" );
+            if( provided != password_ ) {
+                session->send( "{\"type\":\"error\",\"message\":\"Wrong password\"}\n" );
+                session->disconnect();
+                return;
+            }
+        }
+        // Probe accepted — send world name + seed so the client can display
+        // "Joining <world>" before character creation.
+        session->send( "{\"type\":\"welcome\",\"player_id\":\"probe\""
+                       ",\"world\":\"" + mp_get_host_world_name() + "\""
+                       ",\"current_turn\":0,\"seed\":" +
+                       std::to_string( mp_host_world_seed() ) + "}\n" );
+        return;
+    }
+
     if( type == "join" ) {
         // Extract name
         std::string name = json_get_str( msg, "name" );
