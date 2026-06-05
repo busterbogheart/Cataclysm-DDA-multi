@@ -107,9 +107,10 @@ struct client_impl {
 
 static std::unique_ptr<client_impl> g_client;
 
-// Join message built at connect time but sent only after the game is loaded.
+// Join message / welcome storage.
 static std::string g_pending_join;
 static bool g_join_sent = false;
+static std::string g_connect_error;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -188,27 +189,88 @@ bool client_connect( const std::string &host, uint16_t port,
         g_client->io_ctx.run();
     } );
 
-    // Build the join message but don't send yet — deferred until the save is loaded.
-    g_pending_join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
+    // Send the join immediately so the server can validate version/password
+    // before the client enters character creation.  The server replies with
+    // {"type":"welcome"} or {"type":"error"} from its network thread — no
+    // host game loop needed.  Errors are surfaced here so the caller can show
+    // a clean popup before any world/char UI appears.
+    std::string join_msg = "{\"type\":\"join\",\"name\":\"" + name + "\"";
     if( !password.empty() ) {
-        g_pending_join += ",\"password\":\"" + password + "\"";
+        join_msg += ",\"password\":\"" + password + "\"";
     }
     if( !version.empty() ) {
-        g_pending_join += ",\"version\":\"" + version + "\"";
+        join_msg += ",\"version\":\"" + version + "\"";
     }
-    g_pending_join += "}\n";
-    g_join_sent = false;
+    join_msg += "}\n";
 
-    std::cout << "[cdda-mp] Connected to " << host << ":" << port
-              << " as '" << name << "' (join deferred until save loaded)" << std::endl;
-    return true;
+    asio::error_code wec;
+    asio::write( g_client->sock, asio::buffer( join_msg ), wec );
+    if( wec ) {
+        std::cerr << "[cdda-mp] Failed to send join: " << wec.message() << std::endl;
+        g_client.reset();
+        return false;
+    }
+
+    // Wait up to 5 s for welcome or error.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 5 );
+    while( std::chrono::steady_clock::now() < deadline ) {
+        std::string msg;
+        if( g_recv_queue.pop( msg ) ) {
+            if( msg.find( "\"type\":\"error\"" ) != std::string::npos ) {
+                // Extract human-readable error for the caller.
+                g_connect_error = "Server rejected connection.";
+                const auto mpos = msg.find( "\"message\":\"" );
+                if( mpos != std::string::npos ) {
+                    const size_t start = mpos + 11;
+                    const size_t end = msg.find( '"', start );
+                    if( end != std::string::npos ) {
+                        g_connect_error = msg.substr( start, end - start );
+                    }
+                }
+                g_join_sent = false;
+                g_client.reset();
+                return false;
+            }
+            if( msg.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
+                // Store welcome so the game-loop handler can adopt the seed.
+                g_pending_join = msg;
+                g_join_sent = true;
+                std::cout << "[cdda-mp] Connected to " << host << ":" << port
+                          << " as '" << name << "' — version accepted." << std::endl;
+                return true;
+            }
+            // Any other packet (e.g. hello) — keep waiting.
+        }
+        std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+    }
+
+    g_connect_error = "Timed out waiting for server response.";
+    std::cerr << "[cdda-mp] Timed out waiting for welcome from server." << std::endl;
+    g_client.reset();
+    return false;
+}
+
+std::string client_connect_error()
+{
+    return g_connect_error;
 }
 
 void client_send_join()
 {
+    // Join was already sent during client_connect() and welcome was received.
+    // On the first do_turn call, replay the stored welcome through the normal
+    // incoming-packet handler so the game loop applies the seed and world name.
+    if( g_join_sent && !g_pending_join.empty() &&
+        g_pending_join.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
+        g_recv_queue.push( g_pending_join );
+        g_pending_join.clear();
+        std::cout << "[cdda-mp] Replayed welcome into recv queue." << std::endl;
+        return;
+    }
     if( g_join_sent || !g_client || g_pending_join.empty() ) {
         return;
     }
+    // Legacy path (should not be reached with the new eager-join flow).
     asio::error_code ec;
     asio::write( g_client->sock, asio::buffer( g_pending_join ), ec );
     if( ec ) {

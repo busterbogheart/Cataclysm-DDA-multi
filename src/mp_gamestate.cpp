@@ -4740,7 +4740,10 @@ bool mp_menu_join_session()
     }
     set_client_mode( true );
     if( !client_connect( host, port, "player2", std::string(), getVersionString() ) ) {
-        popup( _( "Could not connect to %s:%d." ), host.c_str(), static_cast<int>( port ) );
+        const std::string err = client_connect_error();
+        popup( "%s", err.empty()
+               ? string_format( _( "Could not connect to %s:%d." ), host, static_cast<int>( port ) ).c_str()
+               : err.c_str() );
         set_client_mode( false );
         return false;
     }
@@ -6385,12 +6388,14 @@ std::string client_enrich_action( const std::string &json )
             worn_sig += ':';
             worn_sig += std::to_string( wielded->ammo_remaining() );
         }
-        // Include carried weight so that pocket-content changes (item moved into
-        // a jacket pocket, bandage picked up into fanny pack, etc.) also trigger
-        // a worn_sync even when the worn list and wielded item are unchanged.
-        // weight_carried() is cheap (cached) and covers every carry-state change.
+        // Include carried weight and item count so that pocket-content changes
+        // trigger a worn_sync even when worn list and wielded item are unchanged.
+        // Weight alone misses weight-neutral swaps (drop X kg, pick up X kg →
+        // same weight, proxy goes stale until next weight change).
         worn_sig += '|';
         worn_sig += std::to_string( av.weight_carried().value() );
+        worn_sig += '/';
+        worn_sig += std::to_string( av.inv->size() );
         if( worn_sig != g_client_worn_baseline ) {
             g_client_worn_baseline = worn_sig;
             client_resync_worn();

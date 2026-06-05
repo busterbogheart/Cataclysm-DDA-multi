@@ -17,11 +17,14 @@ void set_client_mode( bool enabled );
 // 75 s.  Safe to call without an active MP session.
 bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms );
 
-// Connect to server (TCP only). Returns true on success.
-// Does NOT send the join message — call client_send_join() after the save is loaded.
+// Connect to server and validate version/password immediately.
+// Returns true on success (welcome received).  On false, call
+// client_connect_error() to get the human-readable rejection reason.
 bool client_connect( const std::string &host, uint16_t port,
                      const std::string &name, const std::string &password = "",
                      const std::string &version = "" );
+// Error text from the last failed client_connect() call.
+std::string client_connect_error();
 
 // Send the deferred join message. No-op if already sent or not connected.
 // Called by client_process_incoming() on the first game tick.

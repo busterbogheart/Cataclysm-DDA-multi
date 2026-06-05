@@ -742,7 +742,19 @@ bool game::do_turn()
 
     debug_hour_timer.print_time();
 
-    u.update_body();
+    // In client mode do_turn() loops repeatedly while waiting for grants without
+    // the calendar advancing — addiction cravings, suffers, and other per-turn
+    // effects ride update_body() and would fire at wall-clock rate instead of
+    // once per game-turn.  Gate on calendar::turn change so the cadence matches SP.
+    if( cata_mp::is_client_mode() ) {
+        static time_point s_last_update_body = calendar::before_time_starts;
+        if( calendar::turn != s_last_update_body ) {
+            s_last_update_body = calendar::turn;
+            u.update_body();
+        }
+    } else {
+        u.update_body();
+    }
 
     // Auto-save if autosave is enabled (suppressed in client mode — server owns saves)
     if( !cata_mp::is_client_mode() &&
