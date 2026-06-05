@@ -38,10 +38,21 @@ or create a world; co-op worlds get a badge in the menu so you can
 tell them apart from solo/SP worlds.
 
 Your partner needs your IP. On the same LAN, your local IP works. Across
-networks, [cddacoop.com](https://cddacoop.com) has step-by-step
-walkthroughs for Tailscale, ZeroTier, ngrok, and router port
-forwarding. The host always listens on TCP port 8080; only the route
-between the two machines changes.  I use Tailscale at the moment. 
+networks you need one of these:
+
+- **[playit.gg](https://playit.gg)** *(easiest)* — free, no port forwarding, no
+  account needed for the client. Install the playit agent on the host machine,
+  add a TCP tunnel on port 8080, and share the address it gives you. Your partner
+  pastes it straight into the Join screen.
+- **[Tailscale](https://tailscale.com)** — free VPN that makes both machines
+  appear on the same LAN. Both players need a Tailscale account. I use this.
+- **Router port forwarding** — forward TCP 8080 to the host machine and share
+  your public IP. Works without any extra software but requires router access.
+- **ZeroTier / ngrok** — similar to Tailscale; see
+  [cddacoop.com](https://cddacoop.com) for walkthroughs.
+
+The host always listens on TCP port 8080; only the route between the two
+machines changes.
 
 ### Join a session
 

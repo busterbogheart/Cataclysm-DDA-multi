@@ -56,7 +56,14 @@ The client pastes that IP into CO-OP > Join. Port defaults to 8080.
 
 ### Playing across the internet
 
-[cddacoop.com](https://cddacoop.com) has step-by-step instructions for Tailscale, ZeroTier, ngrok, and router port forwarding. The host always listens on port 8080; only the route between the two machines changes.
+You need one of these to get your partner's traffic to your machine:
+
+- **[playit.gg](https://playit.gg)** *(easiest)* — free relay, no port forwarding, no account needed for the client. Install the playit agent on the host machine, add a TCP tunnel on port 8080, and share the address it gives you.
+- **[Tailscale](https://tailscale.com)** — free VPN, both players need an account. Recommended if you play regularly with the same person.
+- **Router port forwarding** — forward TCP 8080 to the host machine, share your public IP. No extra software but requires router access.
+- **ZeroTier / ngrok** — see [cddacoop.com](https://cddacoop.com) for walkthroughs.
+
+The host always listens on TCP port 8080; only the route between the two machines changes.
 
 ---
 
