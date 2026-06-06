@@ -197,6 +197,22 @@ Builds via MSYS2 / MinGW-w64. See [`.github/actions/build-windows/action.yml`](.
 make -j$(nproc) MSYS2=1 STATIC=1 TILES=1 SOUND=1 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles.exe
 ```
 
+### Linux
+
+CDDA's native platform — the simplest build. On Debian/Ubuntu:
+
+```sh
+sudo apt install g++ make git pkg-config ccache \
+  libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+  libfreetype6-dev gettext libncursesw5-dev zlib1g-dev
+make -j$(nproc) TILES=1 SOUND=1 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles
+./cataclysm-tiles
+```
+
+(Fedora: `sudo dnf install gcc-c++ make git SDL2-devel SDL2_image-devel SDL2_mixer-devel SDL2_ttf-devel freetype-devel gettext ncurses-devel zlib-devel ccache`.)
+
+**For co-op, build from the same commit as your partner** — the version handshake compares commit identity, so a Linux client joins a Mac/Windows host fine as long as the commits match (`git checkout <release-sha>` before building). Prebuilt Linux x64 tarballs are also published on the [releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases) alongside the Mac/Windows builds.
+
 ---
 
 ## Frequently Asked Questions

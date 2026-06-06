@@ -1,0 +1,133 @@
+name: Build Linux binary
+description: >
+  Build cataclysm-tiles (SDL tiles) on Ubuntu, bundle non-system shared libs
+  with ldd + a launcher that sets LD_LIBRARY_PATH, package into Cddacoop/ and
+  tar.gz as cddacoop-<version>-linux-x64.tar.gz. Mirrors the Windows action.
+  Built on an older Ubuntu (see release.yml runs-on) so the glibc baseline is
+  broad enough to run on most current distros.
+
+inputs:
+  version:
+    description: 'Version string baked into the binary (e.g. v0.1.0 or test-...).'
+    required: true
+
+outputs:
+  tar-path:
+    description: 'Filesystem path of the produced tarball, relative to the repo root.'
+    value: ${{ steps.package.outputs.tar-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          g++ make git pkg-config ccache \
+          libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+          libfreetype6-dev gettext libncursesw5-dev \
+          zlib1g-dev
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ccache-linux-x64-${{ github.sha }}
+        restore-keys: |
+          ccache-linux-x64-
+        save-always: true
+
+    - name: Configure ccache
+      shell: bash
+      run: |
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+        mkdir -p "$HOME/.ccache"
+        ccache -z
+
+    - name: Strip CC-Sounds for slim tarball
+      shell: bash
+      run: |
+        rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
+        # Hide these tracked-file deletions from git's dirty check so the
+        # build-time version (getVersionString) stays the clean commit hash,
+        # identical to the mac/windows builds — otherwise the MP version
+        # handshake never matches across separately-built binaries.
+        git ls-files -d -z | git update-index --assume-unchanged -z --stdin
+
+    - name: Write version header
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        printf '#pragma once\n#define CDDACOOP_VERSION "%s"\n' "$VERSION" \
+          > src/cata_version_generated.h
+
+    - name: Build cataclysm-tiles
+      shell: bash
+      run: |
+        make -j"$(nproc)" \
+          CCACHE=1 RELEASE=1 \
+          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          cataclysm-tiles
+
+    - name: ccache stats
+      shell: bash
+      run: ccache -s
+
+    - name: Package tarball
+      id: package
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        mkdir -p Cddacoop/lib
+        cp cataclysm-tiles Cddacoop/
+        cp build-data/README-cddacoop.md Cddacoop/README.txt
+        cp -r data gfx Cddacoop/
+        # SOUND=1 still wants the sound/ tree for menu sounds; the CC-Sounds
+        # pack proper is downloaded by the user later.
+        [ -d data/sound ] && cp -r data/sound Cddacoop/data/ || true
+
+        # Bundle non-system shared libs (SDL2 + media/codec deps) next to the
+        # binary; a launcher prepends ./lib to LD_LIBRARY_PATH. We deliberately
+        # do NOT bundle glibc (libc/libm/libpthread/libdl/librt/ld-linux),
+        # libstdc++/libgcc, or the graphics/audio-server/display libs (X11,
+        # GL/EGL/GBM/DRM, Wayland, xkbcommon, dbus/systemd/udev, ALSA/Pulse) —
+        # those must come from the host system or the binary crashes / fails to
+        # talk to the local display & audio. Building on an older Ubuntu keeps
+        # the glibc requirement low.
+        ldd Cddacoop/cataclysm-tiles | awk '/=> \//{print $3}' | sort -u | while read -r lib; do
+          base="$(basename "$lib")"
+          case "$base" in
+            libc.so*|libm.so*|libpthread.so*|libdl.so*|librt.so*|libresolv.so*|ld-linux*) ;;
+            libstdc++.so*|libgcc_s.so*) ;;
+            libX*|libxcb*|libxkbcommon*|libGL*|libEGL*|libGLX*|libGLdispatch*|libOpenGL*|libgbm*|libdrm*) ;;
+            libwayland*|libdbus*|libsystemd*|libudev*|libasound*|libpulse*|libpulsecommon*) ;;
+            *) cp -Lv "$lib" Cddacoop/lib/ || true ;;
+          esac
+        done
+
+        cat > Cddacoop/cddacoop.sh <<'LAUNCH'
+        #!/usr/bin/env bash
+        # CDDA CO-OP launcher (Linux). Runs the bundled binary with the bundled
+        # libs taking precedence over system ones.
+        HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+        export LD_LIBRARY_PATH="$HERE/lib:${LD_LIBRARY_PATH:-}"
+        cd "$HERE"
+        exec "$HERE/cataclysm-tiles" "$@"
+        LAUNCH
+        chmod +x Cddacoop/cddacoop.sh Cddacoop/cataclysm-tiles
+
+        TAR="cddacoop-${VERSION}-linux-x64.tar.gz"
+        tar -czf "$TAR" Cddacoop
+        echo "tar-path=${TAR}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload tarball artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cddacoop-linux-x64
+        path: ${{ steps.package.outputs.tar-path }}
+        retention-days: 30
+        if-no-files-found: error

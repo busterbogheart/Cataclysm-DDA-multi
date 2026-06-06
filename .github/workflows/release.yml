@@ -24,6 +24,10 @@ on:
         description: 'Build Windows x64'
         type: boolean
         default: false
+      linux:
+        description: 'Build Linux x64'
+        type: boolean
+        default: false
       upload:
         description: 'Upload to preview release on site'
         type: boolean
@@ -96,9 +100,27 @@ jobs:
         with:
           version: ${{ needs.setup.outputs.version }}
 
+  build-linux:
+    name: Build Linux (x64)
+    needs: setup
+    if: >-
+      github.ref_type == 'tag'
+      || github.event.inputs.linux == 'true'
+    # Build on an older Ubuntu so the glibc baseline is broad enough to run on
+    # most current distros (newer runners raise the minimum glibc).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/build-linux
+        with:
+          version: ${{ needs.setup.outputs.version }}
+
   upload:
     name: Publish release
-    needs: [setup, build-mac, build-windows]
+    needs: [setup, build-mac, build-windows, build-linux]
     # Run if upload was requested or it's a tag push. Allow skipped deps
     # (platform wasn't selected) — only fail on actual failure.
     if: >-
@@ -161,6 +183,7 @@ jobs:
 
           - **macOS (Apple Silicon + Intel)** — \`cddacoop-${VERSION}-macos-universal.zip\`
           - **Windows x64** — \`cddacoop-${VERSION}-windows-x64.zip\`
+          - **Linux x64** — \`cddacoop-${VERSION}-linux-x64.tar.gz\` (extract, run \`./cddacoop.sh\`; built on Ubuntu 22.04 / glibc 2.35+)
           - **CC-Sounds pack** — \`cc-sounds.zip\` (the .app prompts on first launch to download this)
 
           The macOS zip is a universal binary — one download runs natively on
