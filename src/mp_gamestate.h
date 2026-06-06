@@ -9,6 +9,7 @@
 #include <string>
 
 class npc;
+class Character;
 struct WORLD;
 
 namespace cata_mp {
@@ -399,6 +400,16 @@ const std::string &get_client_turn_activity();
 // /tmp/cdda-mp-client.log (depending on mode).  Use this for any event that
 // should be readable after a session without stopping the process.
 void mp_log( const std::string &msg );
+
+// Per-turn callouts invoked from do_turn.cpp (an SP file) so the MP per-turn
+// catch-up/gating logic lives here, not inline in the SP loop (rule 4, minimize
+// upstream merge conflicts). Non-client (SP/host) path = a single plain update.
+// mp_do_turn_update_body: catches up the host-driven calendar's jumps (stamina
+//   regen, suffers, cravings). mp_do_turn_process_turn: ticks effects/needs once
+//   per elapsed game-turn (skip on locked spin, capped catch-up on jumps) and
+//   discards process_turn's move regen (client moves come from server grants).
+void mp_do_turn_update_body( Character &u );
+void mp_do_turn_process_turn( Character &u );
 
 // Client only: re-send the client's current worn-item list, skin tone, hair,
 // and wielded weapon to the server so the remote NPC proxy stays in sync.

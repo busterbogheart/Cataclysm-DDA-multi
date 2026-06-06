@@ -742,39 +742,10 @@ bool game::do_turn()
 
     debug_hour_timer.print_time();
 
-    // In client mode do_turn() loops repeatedly while waiting for grants without
-    // the calendar advancing — addiction cravings, suffers, and other per-turn
-    // effects ride update_body() and would fire at wall-clock rate instead of
-    // once per game-turn.  Gate on calendar::turn change so the cadence matches SP.
-    if( cata_mp::is_client_mode() ) {
-        static time_point s_last_update_body = calendar::before_time_starts;
-        if( calendar::turn != s_last_update_body ) {
-            const int sta_pre = u.get_stamina();
-            int dturns = 1;
-            if( s_last_update_body != calendar::before_time_starts &&
-                calendar::turn > s_last_update_body ) {
-                // Catch up the FULL elapsed span. The client's calendar advances
-                // in jumps (driven by the host's state packets), so the no-arg
-                // update_body() — which always regenerates exactly one turn —
-                // starved stamina regen and every other per-turn effect whenever
-                // the clock jumped >1 turn (confirmed: +20 stamina applied for a
-                // 12-turn jump). Mirror SP's fast-forward catch-up so N elapsed
-                // turns regenerate N turns' worth.
-                dturns = to_turns<int>( calendar::turn - s_last_update_body );
-                u.update_body( s_last_update_body, calendar::turn );
-            } else {
-                // First run or a clock rewind from a host resync — single turn.
-                u.update_body();
-            }
-            s_last_update_body = calendar::turn;
-            cata_mp::mp_log( "[cdda-mp] CLI-REGEN: dturns=" + std::to_string( dturns ) +
-                             " sta " + std::to_string( sta_pre ) + "->" +
-                             std::to_string( u.get_stamina() ) +
-                             " max=" + std::to_string( u.get_stamina_max() ) );
-        }
-    } else {
-        u.update_body();
-    }
+    // Per-turn body update. In SP this is one turn; in MP-client it must catch
+    // up the host-driven calendar's jumps. Logic lives in mp_gamestate.cpp to
+    // keep this SP file a one-line callout (minimize upstream merge conflicts).
+    cata_mp::mp_do_turn_update_body( u );
 
     // Auto-save if autosave is enabled (suppressed in client mode — server owns saves)
     if( !cata_mp::is_client_mode() &&
@@ -1254,42 +1225,11 @@ bool game::do_turn()
     // during a locked-HA input poll (between turns), moves=92 entering
     // this block.  process_turn adds ~100 → 192.  Naive zero clobbers
     // the grant, autofire never fires, both players freeze forever.
-    const int pre_process_turn_moves = u.get_moves();
-    if( cata_mp::is_client_mode() ) {
-        // process_turn() ticks effects (bleed/poison/meds) + needs exactly ONE
-        // turn per call, with no from/to catch-up. The client's do_turn spins
-        // while locked (calendar frozen) and its host-driven calendar advances
-        // in jumps, so calling it unconditionally over-ticked effects during the
-        // locked wait (confirmed: ~1200 dturns=0 calls with pain climbing while
-        // locked) and would under-tick on jumps. Tick once per ELAPSED game-turn:
-        // skip entirely when the calendar hasn't advanced, catch up (capped) when
-        // it jumps. The client's moves come from server grants, so process_turn's
-        // move regen is always discarded (snapshot/restore).
-        static time_point s_last_proc = calendar::before_time_starts;
-        int dturns;
-        if( s_last_proc == calendar::before_time_starts ) {
-            dturns = 1;                                   // first call
-        } else if( calendar::turn > s_last_proc ) {
-            dturns = to_turns<int>( calendar::turn - s_last_proc );
-        } else {
-            dturns = 0;                                   // locked spin / clock rewind
-        }
-        s_last_proc = calendar::turn;
-        constexpr int MAX_CATCHUP = 100;
-        const int ticks = std::min( dturns, MAX_CATCHUP );
-        cata_mp::mp_log( "[cdda-mp] CLI-PROCTURN: dturns=" + std::to_string( dturns ) +
-                         " ticks=" + std::to_string( ticks ) +
-                         " thirst=" + std::to_string( u.get_thirst() ) +
-                         " hunger=" + std::to_string( u.get_hunger() ) +
-                         " pain=" + std::to_string( u.get_pain() ) +
-                         " hp=" + std::to_string( u.get_hp() ) );
-        for( int i = 0; i < ticks; ++i ) {
-            u.process_turn();
-        }
-        u.set_moves( pre_process_turn_moves );
-    } else {
-        u.process_turn();
-    }
+    // Per-turn processing (effects, needs, move regen). SP runs it once; the
+    // MP-client must tick once per ELAPSED game-turn (skip on locked spin, catch
+    // up on jumps) and discard the move regen (moves come from server grants).
+    // Logic lives in mp_gamestate.cpp — one-line callout to minimize merge churn.
+    cata_mp::mp_do_turn_process_turn( u );
 
     if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
         ui_manager::redraw();

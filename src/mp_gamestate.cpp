@@ -149,6 +149,63 @@ void mp_log( const std::string &msg )
     }
 }
 
+// Per-turn body update, called from do_turn.cpp. SP/host: one plain update.
+// Client: the host-driven calendar advances in JUMPS and do_turn spins while
+// locked, so the no-arg update_body() (always exactly one turn) starved stamina
+// regen + every per-turn effect on a multi-turn jump. Catch up the full elapsed
+// span (mirrors SP's fast-forward), gated on a calendar change so the locked
+// spin doesn't re-run it.
+void mp_do_turn_update_body( Character &u )
+{
+    if( !is_client_mode() ) {
+        u.update_body();
+        return;
+    }
+    static time_point s_last_update_body = calendar::before_time_starts;
+    if( calendar::turn == s_last_update_body ) {
+        return;
+    }
+    if( s_last_update_body != calendar::before_time_starts &&
+        calendar::turn > s_last_update_body ) {
+        u.update_body( s_last_update_body, calendar::turn );
+    } else {
+        u.update_body();  // first run / clock rewind — single turn
+    }
+    s_last_update_body = calendar::turn;
+}
+
+// Per-turn processing (effects, needs, move regen), called from do_turn.cpp.
+// SP/host: one plain process_turn(). Client: process_turn() ticks effects/needs
+// exactly one turn per call with no catch-up, so calling it on every locked-spin
+// iteration over-applied them (confirmed: bleed/pain climbing while locked) and
+// a multi-turn jump under-applied them. Tick once per ELAPSED game-turn (skip on
+// locked spin, capped catch-up on jumps); discard the move regen — the client's
+// moves come from server grants.
+void mp_do_turn_process_turn( Character &u )
+{
+    const int pre_moves = u.get_moves();
+    if( !is_client_mode() ) {
+        u.process_turn();
+        return;
+    }
+    static time_point s_last_proc = calendar::before_time_starts;
+    int dturns;
+    if( s_last_proc == calendar::before_time_starts ) {
+        dturns = 1;                                   // first call
+    } else if( calendar::turn > s_last_proc ) {
+        dturns = to_turns<int>( calendar::turn - s_last_proc );
+    } else {
+        dturns = 0;                                   // locked spin / clock rewind
+    }
+    s_last_proc = calendar::turn;
+    constexpr int MAX_CATCHUP = 100;
+    const int ticks = dturns < MAX_CATCHUP ? dturns : MAX_CATCHUP;
+    for( int i = 0; i < ticks; ++i ) {
+        u.process_turn();
+    }
+    u.set_moves( pre_moves );
+}
+
 static bool server_mode_ = false;
 
 bool is_server_mode()
@@ -239,6 +296,13 @@ static std::unordered_map<uint32_t, size_t> g_server_veh_parts_count;
 // destroyed, driven out of bubble) so we can emit a "removed_vehicles" entry
 // in the state packet for the client to clean up.
 static std::unordered_set<uint32_t> g_server_veh_live_nids;
+
+// Host: nids of monsters that were alive (and net-id'd) at the last broadcast.
+// Diff against the currently-alive set to emit "removed_monsters" — monsters
+// that genuinely DIED/left the bubble, not merely ones outside the broadcast
+// radius. The client removes only these and never culls by absence, so a
+// transient short broadcast can't kill a live monster (the woodpecker bug).
+static std::unordered_set<uint32_t> g_server_mon_known_nids;
 
 // Client: maps server vehicle network IDs to the last-known absolute tile position.
 // Used to look up the vehicle object before moving it to the server-authoritative position.
@@ -2153,11 +2217,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
             if( jo.has_int( "client_stamina" ) ) {
-                const int sta_before = remote->get_stamina();
                 remote->set_stamina( jo.get_int( "client_stamina" ) );
-                mp_log( "[cdda-mp] HOST-RECV-STAMINA: client_stamina=" +
-                        std::to_string( jo.get_int( "client_stamina" ) ) +
-                        " proxy_was=" + std::to_string( sta_before ) );
             }
         } catch( const JsonError & ) {}
     }
@@ -3233,14 +3293,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 const int mcost = m.combined_movecost( cur, next );
                 const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
                 const int prev_moves = g_remote_moves;
-                const int hsta_pre = remote->get_stamina();
                 g_remote_moves -= remote->run_cost( mcost, diag );
                 remote->burn_move_stamina( prev_moves - g_remote_moves );
                 acted = true;
                 mp_log( "[cdda-mp] HOST-DRAG-NO-STEP: proxy held in place, "
-                        "AP charged " + std::to_string( prev_moves - g_remote_moves ) +
-                        " proxy_sta " + std::to_string( hsta_pre ) + "->" +
-                        std::to_string( remote->get_stamina() ) );
+                        "AP charged " + std::to_string( prev_moves - g_remote_moves ) );
         } else if( !m.impassable( next ) ) {
             // Mirror avatar_action::move boarding semantics: unboard from current
             // vehicle tile before setpos, then board at the new tile if boardable.
@@ -3303,12 +3360,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             const int ap_cost = remote->run_cost( mcost, diag );
             g_remote_moves -= ap_cost;
             // burn_move_stamina with the actual AP consumed, mirroring game.cpp:7776.
-            const int hsta_pre = remote->get_stamina();
             remote->burn_move_stamina( prev_moves - g_remote_moves );
-            mp_log( "[cdda-mp] HOST-MOVE-STAMINA: ap=" +
-                    std::to_string( prev_moves - g_remote_moves ) + " proxy_sta " +
-                    std::to_string( hsta_pre ) + "->" +
-                    std::to_string( remote->get_stamina() ) );
             // Auto-transition to walk when stamina runs out (mirrors game.cpp:8970).
             static const move_mode_id walk_id( "walk" );
             if( !remote->can_run() ) {
@@ -7073,14 +7125,26 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
 {
     std::string out = "[";
     bool first = true;
+    int n_sent = 0;
+    std::string excluded_near;  // in reality bubble but outside broadcast radius
     for( const auto &mon_ptr : get_creature_tracker().get_monsters_list() ) {
         if( !mon_ptr ) {
             continue;
         }
         const tripoint_abs_ms mp = mon_ptr->pos_abs();
-        if( std::abs( mp.x() - center.x() ) > radius ||
-            std::abs( mp.y() - center.y() ) > radius ||
-            mp.z() != center.z() ) {
+        const int dx = std::abs( mp.x() - center.x() );
+        const int dy = std::abs( mp.y() - center.y() );
+        if( dx > radius || dy > radius || mp.z() != center.z() ) {
+            // Diagnostic: a monster inside the reality bubble (≤84) but outside
+            // this broadcast radius is NOT sent, so the client culls it
+            // (MON-SYNC cull) even though it's alive on the host — the "monster
+            // died for no reason near the players" bug. The broadcast is centered
+            // on the client PROXY, which lags the real client, so the window can
+            // sit off the monsters the client sees.
+            if( mp.z() == center.z() && dx <= 84 && dy <= 84 ) {
+                excluded_near += mon_ptr->type->id.str() + "@d" +
+                                 std::to_string( std::max( dx, dy ) ) + " ";
+            }
             continue;
         }
         // Assign a stable network ID the first time this monster enters sync range.
@@ -7099,8 +7163,20 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
                + ",\"z\":" + std::to_string( mp.z() )
                + ",\"hp\":" + std::to_string( mon_ptr->get_hp() )
                + ",\"facing\":" + std::to_string( mon_facing ) + "}";
+        ++n_sent;
     }
     out += ']';
+    // Log only when the excluded-near set changes — this fires every broadcast
+    // while a distant monster lingers in the 40–84 band and would otherwise spam.
+    static std::string s_last_excluded_near;
+    if( excluded_near != s_last_excluded_near ) {
+        s_last_excluded_near = excluded_near;
+        if( !excluded_near.empty() ) {
+            mp_log( "[cdda-mp] MON-BROADCAST: sent=" + std::to_string( n_sent ) +
+                    " radius=" + std::to_string( radius ) +
+                    " EXCLUDED-NEAR (in bubble, not synced to client): " + excluded_near );
+        }
+    }
     return out;
 }
 
@@ -7482,12 +7558,18 @@ static void apply_vehicle_sync( JsonObject &jo )
             // No local vehicle and no snapshot in this packet (slim
             // vehicle_step before first state, or out-of-bounds).  Skip and
             // wait for the next full state broadcast which will carry one.
-            mp_log( "[cdda-mp] CLI-VEH-SKIP-UNKNOWN: nid=" + std::to_string( nid )
-                    + " new_abs=" + std::to_string( new_abs.x() )
-                    + "," + std::to_string( new_abs.y() )
-                    + "," + std::to_string( new_abs.z() )
-                    + " name=\"" + vname + "\""
-                    + " first_encounter=" + std::to_string( first_encounter ) );
+            // Log once per nid — this fires every frame for an unplaceable
+            // vehicle and used to flood ~23% of the client log.
+            static std::unordered_set<uint32_t> s_logged_skip_nids;
+            if( s_logged_skip_nids.insert( nid ).second ) {
+                mp_log( "[cdda-mp] CLI-VEH-SKIP-UNKNOWN: nid=" + std::to_string( nid )
+                        + " new_abs=" + std::to_string( new_abs.x() )
+                        + "," + std::to_string( new_abs.y() )
+                        + "," + std::to_string( new_abs.z() )
+                        + " name=\"" + vname + "\""
+                        + " first_encounter=" + std::to_string( first_encounter )
+                        + " (further skips for this nid suppressed)" );
+            }
             continue;
         }
 
@@ -7730,10 +7812,15 @@ static void apply_monster_sync( JsonObject &jo )
     }
 
     std::unordered_set<monster *> matched;
+    int n_recv = 0;
+    int n_spawned = 0;
+    int n_culled = 0;
+    std::string culled_log;
 
     for( const JsonValue &entry : jo.get_array( "monsters" ) ) {
         JsonObject mo = entry.get_object();
         mo.allow_omitted_members();
+        ++n_recv;
 
         const auto nid       = static_cast<uint32_t>( mo.get_int( "nid", 0 ) );
         const int  server_hp = mo.get_int( "hp", -1 );
@@ -7797,6 +7884,13 @@ static void apply_monster_sync( JsonObject &jo )
                 if( best != nullptr && nid != 0 ) {
                     g_net_id_map[nid] = best;
                 }
+                if( best != nullptr ) {
+                    ++n_spawned;
+                    mp_log( "[cdda-mp] MON-SPAWN: " + id_str + " nid=" +
+                            std::to_string( nid ) + " @ " + std::to_string( target.x() ) +
+                            "," + std::to_string( target.y() ) + " hp=" +
+                            std::to_string( server_hp ) );
+                }
             }
         }
 
@@ -7838,11 +7932,36 @@ static void apply_monster_sync( JsonObject &jo )
         }
     }
 
-    // Any client monster in range that the server didn't mention is dead on the server.
-    for( monster *mon : in_region ) {
-        if( !matched.count( mon ) && !mon->is_dead() ) {
-            mon->die( &m, nullptr );
+    // Remove ONLY monsters the host explicitly reports gone (died / left the
+    // bubble) via removed_monsters. NO cull-by-absence: a monster merely missing
+    // from this broadcast (out of radius, or a transient short broadcast) is
+    // left alone — it stays frozen until the host updates or removes it. This
+    // replaces the old "in_region but unmatched → die" loop that killed live
+    // monsters on a single missed broadcast (the woodpecker bug).
+    if( jo.has_array( "removed_monsters" ) ) {
+        for( const JsonValue &rv : jo.get_array( "removed_monsters" ) ) {
+            const uint32_t rnid = static_cast<uint32_t>( rv.get_int() );
+            if( rnid == 0 ) {
+                continue;
+            }
+            auto it = g_net_id_map.find( rnid );
+            if( it != g_net_id_map.end() && it->second && !it->second->is_dead() ) {
+                culled_log += it->second->type->id.str() + "(nid=" +
+                              std::to_string( rnid ) + ") ";
+                ++n_culled;
+                it->second->die( &m, nullptr );
+            }
         }
+    }
+
+    // Summary only when something changed (spawn/remove) — avoids per-turn spam.
+    if( n_spawned > 0 || n_culled > 0 ) {
+        mp_log( "[cdda-mp] MON-SYNC: host_sent=" + std::to_string( n_recv ) +
+                " in_region=" + std::to_string( in_region.size() ) +
+                " matched=" + std::to_string( matched.size() ) +
+                " spawned=" + std::to_string( n_spawned ) +
+                " removed=" + std::to_string( n_culled ) +
+                ( culled_log.empty() ? "" : " [removed: " + culled_log + "]" ) );
     }
 
     g->cleanup_dead();
@@ -8254,6 +8373,38 @@ std::string serialize_remote_player_state()
 
     std::string viewport = build_viewport( pos_bub );
     std::string monsters     = build_monster_list( pos, 40 );
+
+    // Death-based monster removal (mirrors removed_vehicles, but glitch-proof).
+    // A monster is "removed" only if it had a net id last broadcast and is no
+    // longer alive ANYWHERE in the creature tracker (genuinely died / left the
+    // bubble) — NOT merely because it fell outside this broadcast's radius. So
+    // a transient short broadcast, or a monster wandering past 40 tiles while
+    // still alive, never removes it on the client. Replaces the client's old
+    // cull-by-absence, which killed live monsters (the woodpecker bug).
+    std::unordered_set<uint32_t> mon_alive_now;
+    for( const auto &mon_ptr : get_creature_tracker().get_monsters_list() ) {
+        if( mon_ptr && mon_ptr->mp_net_id != 0 && !mon_ptr->is_dead() ) {
+            mon_alive_now.insert( mon_ptr->mp_net_id );
+        }
+    }
+    std::string removed_monsters_json = "[";
+    {
+        bool rmfirst = true;
+        for( const uint32_t old_nid : g_server_mon_known_nids ) {
+            if( mon_alive_now.count( old_nid ) ) {
+                continue;
+            }
+            if( !rmfirst ) {
+                removed_monsters_json += ',';
+            }
+            rmfirst = false;
+            removed_monsters_json += std::to_string( old_nid );
+            mp_log( "[cdda-mp] MON-REMOVED: nid=" + std::to_string( old_nid ) +
+                    " (died/left bubble)" );
+        }
+    }
+    removed_monsters_json += ']';
+    g_server_mon_known_nids = std::move( mon_alive_now );
 
     // Scan for tile changes around both the remote player AND the host so that
     // doors/terrain the host interacts with also reach the client.
@@ -8753,6 +8904,7 @@ std::string serialize_remote_player_state()
                       + ",\"z\":" + std::to_string( vabs.z() ) + "}";
            }() +
            ",\"monsters\":" + monsters +
+           ",\"removed_monsters\":" + removed_monsters_json +
            ",\"tile_changes\":" + tile_changes +
            ",\"vehicles\":" + vehicles_json +
            ",\"removed_vehicles\":" + removed_vehicles_json +

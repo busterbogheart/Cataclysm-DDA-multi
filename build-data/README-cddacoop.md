@@ -164,6 +164,16 @@ and extract it into `%APPDATA%\Cataclysm\sound\` (so you have
 
 ## Changelog
 
+### 2026-06-05
+
+- **Linux is here** — native Linux x64 download alongside macOS and Windows. Cross-play works across all three (everyone just needs the same build).
+- **Stamina fixed for the joining player** — the client's stamina now recovers at the proper rate instead of crawling, and you no longer rack up extra bleeding, pain, or thirst while it's not your turn.
+- **Monsters stop vanishing** — fixed creatures near the players occasionally dying or disappearing on the client for no reason.
+- **See your partner's condition** — the host's bleeding, injuries, and real HP now show up on the client, and the co-op partner health bar reflects their actual health.
+- **Smoother join** — joining shows whose game and which world you're connecting to ("Joining …"), and picking a preset character no longer makes you choose a world.
+- **Windows: just run the game** — launch `cataclysm-tiles.exe` directly (the old text-menu launcher is gone). Clearer connection errors when builds don't match.
+- **Support link** — a Support entry in the main menu, for anyone who wants to chip in.
+
 ### 2026-06-04
 
 - **Maps now match, finally** — the host's overmap is streamed to the client on join so both players reliably see the 

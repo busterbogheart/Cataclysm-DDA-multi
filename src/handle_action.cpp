@@ -2742,16 +2742,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 const int ap_cost = player_character.run_cost( mcost, diag );
                 const int pre_moves = player_character.get_moves();
                 mp_dispatch_pre_moves = pre_moves;
-                const int mp_sta_pre = player_character.get_stamina();
                 player_character.mod_moves( -ap_cost );
                 player_character.burn_move_stamina( pre_moves - player_character.get_moves() );
-                cata_mp::mp_log( "[cdda-mp] MOVE-STAMINA(client): mp_locked=" +
-                                 std::to_string( mp_locked ) + " pre_moves=" +
-                                 std::to_string( pre_moves ) + " ap_cost=" +
-                                 std::to_string( ap_cost ) + " moves_now=" +
-                                 std::to_string( player_character.get_moves() ) +
-                                 " sta " + std::to_string( mp_sta_pre ) + "->" +
-                                 std::to_string( player_character.get_stamina() ) );
                 player_character.set_activity_level(
                     player_character.current_movement_mode()->exertion_level() );
                 if( player_character.is_running() && !player_character.can_run() ) {

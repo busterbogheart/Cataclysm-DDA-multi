@@ -336,7 +336,7 @@ runs:
         rm -rf /tmp/cddacoop-stage
         mkdir -p /tmp/cddacoop-stage
         cp -R Cddacoop.app /tmp/cddacoop-stage/
-        cp build-data/README-cddacoop.md /tmp/cddacoop-stage/README.txt
+        bash build-data/md-to-readme-txt.sh build-data/README-cddacoop.md > /tmp/cddacoop-stage/README.txt
 
     - name: Build DMG and .zip
       id: package

@@ -219,6 +219,7 @@ jobs:
           files: |
             dist/cddacoop-*-macos-universal.zip
             dist/cddacoop-*-windows-x64.zip
+            dist/cddacoop-*-linux-x64.tar.gz
 
       # Kick the site rebuild directly. We can't rely on notify-site.yml's
       # `release: published` trigger here: this release is created by the

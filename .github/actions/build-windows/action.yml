@@ -106,7 +106,7 @@ runs:
       run: |
         mkdir -p Cddacoop
         cp cataclysm-tiles.exe Cddacoop/
-        cp build-data/README-cddacoop.md Cddacoop/README.txt
+        bash build-data/md-to-readme-txt.sh build-data/README-cddacoop.md > Cddacoop/README.txt
         cp -r data gfx Cddacoop/
         # SOUND=1 still wants the sound/ tree for menu sounds; the
         # CC-Sounds pack proper is downloaded by the user later.
