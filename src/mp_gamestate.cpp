@@ -831,6 +831,36 @@ void mp_set_client_host_world_name( const std::string &name )
     g_client_host_world_name = name;
 }
 
+// Host: the host avatar's character name, captured on the game thread for the
+// network thread's 'welcome' (so the join dialog can show "Joining X's game").
+static std::string g_host_player_name;
+static std::mutex g_host_player_name_mtx;
+
+void mp_set_host_player_name( const std::string &name )
+{
+    std::lock_guard<std::mutex> lk( g_host_player_name_mtx );
+    g_host_player_name = name;
+}
+
+std::string mp_get_host_player_name()
+{
+    std::lock_guard<std::mutex> lk( g_host_player_name_mtx );
+    return g_host_player_name;
+}
+
+// Client: the host's character name received in 'welcome'. Empty until processed.
+static std::string g_client_host_player_name;
+
+std::string mp_client_host_player_name()
+{
+    return g_client_host_player_name;
+}
+
+void mp_set_client_host_player_name( const std::string &name )
+{
+    g_client_host_player_name = name;
+}
+
 // Client: adopt the host's seed (received in 'welcome') into local worldgen,
 // once, before the host-area overmap is generated. No-op if no seed has been
 // received yet or it's already applied. Idempotent + safe to call repeatedly.
@@ -2123,7 +2153,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
             if( jo.has_int( "client_stamina" ) ) {
+                const int sta_before = remote->get_stamina();
                 remote->set_stamina( jo.get_int( "client_stamina" ) );
+                mp_log( "[cdda-mp] HOST-RECV-STAMINA: client_stamina=" +
+                        std::to_string( jo.get_int( "client_stamina" ) ) +
+                        " proxy_was=" + std::to_string( sta_before ) );
             }
         } catch( const JsonError & ) {}
     }
@@ -3199,11 +3233,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 const int mcost = m.combined_movecost( cur, next );
                 const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
                 const int prev_moves = g_remote_moves;
+                const int hsta_pre = remote->get_stamina();
                 g_remote_moves -= remote->run_cost( mcost, diag );
                 remote->burn_move_stamina( prev_moves - g_remote_moves );
                 acted = true;
                 mp_log( "[cdda-mp] HOST-DRAG-NO-STEP: proxy held in place, "
-                        "AP charged " + std::to_string( prev_moves - g_remote_moves ) );
+                        "AP charged " + std::to_string( prev_moves - g_remote_moves ) +
+                        " proxy_sta " + std::to_string( hsta_pre ) + "->" +
+                        std::to_string( remote->get_stamina() ) );
         } else if( !m.impassable( next ) ) {
             // Mirror avatar_action::move boarding semantics: unboard from current
             // vehicle tile before setpos, then board at the new tile if boardable.
@@ -3266,7 +3303,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             const int ap_cost = remote->run_cost( mcost, diag );
             g_remote_moves -= ap_cost;
             // burn_move_stamina with the actual AP consumed, mirroring game.cpp:7776.
+            const int hsta_pre = remote->get_stamina();
             remote->burn_move_stamina( prev_moves - g_remote_moves );
+            mp_log( "[cdda-mp] HOST-MOVE-STAMINA: ap=" +
+                    std::to_string( prev_moves - g_remote_moves ) + " proxy_sta " +
+                    std::to_string( hsta_pre ) + "->" +
+                    std::to_string( remote->get_stamina() ) );
             // Auto-transition to walk when stamina runs out (mirrors game.cpp:8970).
             static const move_mode_id walk_id( "walk" );
             if( !remote->can_run() ) {
@@ -3462,6 +3504,10 @@ void grant_client_turn()
     if( world_generator && world_generator->active_world ) {
         mp_set_host_world_name( world_generator->active_world->world_name );
     }
+    // Cache the host's character name for the join 'welcome' so the client's
+    // join dialog can show whose game it is. Runs before the connected-check so
+    // it's current the moment a client probes.
+    mp_set_host_player_name( get_avatar().name );
     if( !remote_player_connected ) {
         return;
     }
@@ -5087,6 +5133,11 @@ static bool apply_one_state_message( const std::string &msg )
             if( !wn.empty() && wn != "default" ) {
                 g_client_host_world_name = wn;
                 mp_log( "[cdda-mp] welcome: host world='" + wn + "'" );
+            }
+            const std::string hn = jo.get_string( "host_name", "" );
+            if( !hn.empty() ) {
+                mp_set_client_host_player_name( hn );
+                mp_log( "[cdda-mp] welcome: host player='" + hn + "'" );
             }
         } catch( const JsonError & ) {}
         const auto spos = msg.find( "\"seed\":" );

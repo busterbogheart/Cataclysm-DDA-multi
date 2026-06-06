@@ -749,8 +749,28 @@ bool game::do_turn()
     if( cata_mp::is_client_mode() ) {
         static time_point s_last_update_body = calendar::before_time_starts;
         if( calendar::turn != s_last_update_body ) {
+            const int sta_pre = u.get_stamina();
+            int dturns = 1;
+            if( s_last_update_body != calendar::before_time_starts &&
+                calendar::turn > s_last_update_body ) {
+                // Catch up the FULL elapsed span. The client's calendar advances
+                // in jumps (driven by the host's state packets), so the no-arg
+                // update_body() — which always regenerates exactly one turn —
+                // starved stamina regen and every other per-turn effect whenever
+                // the clock jumped >1 turn (confirmed: +20 stamina applied for a
+                // 12-turn jump). Mirror SP's fast-forward catch-up so N elapsed
+                // turns regenerate N turns' worth.
+                dturns = to_turns<int>( calendar::turn - s_last_update_body );
+                u.update_body( s_last_update_body, calendar::turn );
+            } else {
+                // First run or a clock rewind from a host resync — single turn.
+                u.update_body();
+            }
             s_last_update_body = calendar::turn;
-            u.update_body();
+            cata_mp::mp_log( "[cdda-mp] CLI-REGEN: dturns=" + std::to_string( dturns ) +
+                             " sta " + std::to_string( sta_pre ) + "->" +
+                             std::to_string( u.get_stamina() ) +
+                             " max=" + std::to_string( u.get_stamina_max() ) );
         }
     } else {
         u.update_body();
@@ -1235,6 +1255,22 @@ bool game::do_turn()
     // this block.  process_turn adds ~100 → 192.  Naive zero clobbers
     // the grant, autofire never fires, both players freeze forever.
     const int pre_process_turn_moves = u.get_moves();
+    if( cata_mp::is_client_mode() ) {
+        // Diagnostic (sibling-of-regen audit): process_turn() ticks effects
+        // (bleed/poison/meds) and needs exactly ONE turn per call, with no
+        // from/to catch-up. If the client's host-driven calendar jumps between
+        // calls (dturns > 1) those effects are under-applied; if it fires
+        // repeatedly within one turn (dturns == 0) they're over-applied.
+        static time_point s_last_proc = calendar::before_time_starts;
+        const int dturns = ( s_last_proc == calendar::before_time_starts )
+                           ? 1 : to_turns<int>( calendar::turn - s_last_proc );
+        s_last_proc = calendar::turn;
+        cata_mp::mp_log( "[cdda-mp] CLI-PROCTURN: dturns=" + std::to_string( dturns ) +
+                         " thirst=" + std::to_string( u.get_thirst() ) +
+                         " hunger=" + std::to_string( u.get_hunger() ) +
+                         " pain=" + std::to_string( u.get_pain() ) +
+                         " hp=" + std::to_string( u.get_hp() ) );
+    }
     u.process_turn();
     if( cata_mp::is_client_mode() ) {
         u.set_moves( pre_process_turn_moves );

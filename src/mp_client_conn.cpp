@@ -26,6 +26,7 @@ namespace cata_mp {
 // include the gamestate header) so we can trace connection lifecycle here.
 void mp_log( const std::string &msg );
 void mp_set_client_host_world_name( const std::string &name );
+void mp_set_client_host_player_name( const std::string &name );
 
 static bool client_mode_ = false;
 
@@ -253,6 +254,19 @@ bool client_connect( const std::string &host, uint16_t port,
                         const std::string wn = msg.substr( ws, we - ws );
                         if( !wn.empty() && wn != "default" ) {
                             mp_set_client_host_world_name( wn );
+                        }
+                    }
+                }
+                // Host's character name — so the join dialog can show whose game
+                // it is ("Joining <World> — <Host>'s game") before char select.
+                const auto hpos = msg.find( "\"host_name\":\"" );
+                if( hpos != std::string::npos ) {
+                    const size_t hs = hpos + 12;
+                    const size_t he = msg.find( '"', hs );
+                    if( he != std::string::npos ) {
+                        const std::string hn = msg.substr( hs, he - hs );
+                        if( !hn.empty() ) {
+                            mp_set_client_host_player_name( hn );
                         }
                     }
                 }

@@ -79,6 +79,7 @@ enum class main_menu_opts : int {
     SETTINGS,
     HELP,
     CREDITS,
+    SUPPORT,      // MP fork: opens a popup with the project's support/donate link.
     QUIT,
     NUM_MENU_OPTS,
 };
@@ -493,6 +494,7 @@ void main_menu::init_strings()
     vMenuItems.emplace_back( pgettext( "Main Menu", "Se<t|T>tings" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "H<e|E|?>lp" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<C|c>redits" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "<S|s>upport" ) );
 #if !defined(EMSCRIPTEN)
     vMenuItems.emplace_back( pgettext( "Main Menu", "<Q|q>uit" ) );
 #endif
@@ -725,7 +727,8 @@ bool main_menu::opening_screen()
                     sel1 = i;
                     sel2 = i == getopt( main_menu_opts::LOADCHAR ) ? last_world_pos : 0;
                     sel_line = 0;
-                    if( i == getopt( main_menu_opts::HELP ) ) {
+                    if( i == getopt( main_menu_opts::HELP ) ||
+                        i == getopt( main_menu_opts::SUPPORT ) ) {
                         action = "CONFIRM";
                     } else if( i == getopt( main_menu_opts::QUIT ) ) {
                         action = "QUIT";
@@ -784,7 +787,9 @@ bool main_menu::opening_screen()
                         on_move();
                     }
                     if( action == "SELECT" &&
-                        ( sel1 == getopt( main_menu_opts::HELP ) || sel1 == getopt( main_menu_opts::QUIT ) ) ) {
+                        ( sel1 == getopt( main_menu_opts::HELP ) ||
+                          sel1 == getopt( main_menu_opts::SUPPORT ) ||
+                          sel1 == getopt( main_menu_opts::QUIT ) ) ) {
                         action = "CONFIRM";
                     }
                     ui_manager::redraw();
@@ -1119,10 +1124,33 @@ bool main_menu::opening_screen()
                             return false;
                         }();
                         const std::string host_world = cata_mp::mp_client_host_world_name();
-                        const std::string join_title = host_world.empty()
-                                                       ? _( "Co-op: join a session" )
-                                                       : string_format( _( "Joining \"%s\"" ),
-                                                               host_world );
+                        const std::string host_player = cata_mp::mp_client_host_player_name();
+                        // Front-and-center announcement of whose game you're
+                        // joining — the uilist title alone is too easy to miss.
+                        // Shown once per distinct host so re-entering Join after
+                        // a cancel doesn't nag.
+                        if( !host_world.empty() ) {
+                            static std::string s_announced_host;
+                            const std::string host_key = host_player + "@" + host_world;
+                            if( host_key != s_announced_host ) {
+                                s_announced_host = host_key;
+                                if( host_player.empty() ) {
+                                    popup( _( "Joining world \"%s\"." ), host_world );
+                                } else {
+                                    popup( _( "Joining %s's game.\nWorld: \"%s\"" ),
+                                           host_player, host_world );
+                                }
+                            }
+                        }
+                        std::string join_title;
+                        if( host_world.empty() ) {
+                            join_title = _( "Co-op: join a session" );
+                        } else if( host_player.empty() ) {
+                            join_title = string_format( _( "Joining \"%s\"" ), host_world );
+                        } else {
+                            join_title = string_format( _( "Joining \"%s\" — %s's game" ),
+                                                        host_world, host_player );
+                        }
                         uilist jflow;
                         jflow.title = join_title;
                         jflow.entries.emplace_back( 0, true, 'n', _( "New character" ) );
@@ -1190,6 +1218,12 @@ bool main_menu::opening_screen()
                     }
                     break;
                 }
+                case main_menu_opts::SUPPORT:
+                    popup( "%s", _( "CDDA CO-OP is a free, fan-made project.\n\n"
+                                    "If you'd like to support development, visit:\n\n"
+                                    "    cddacoop.com\n\n"
+                                    "Thanks for playing!" ) );
+                    break;
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:
                 default:
@@ -1253,7 +1287,14 @@ bool main_menu::new_character_tab()
                     world_generator->set_active_world( nullptr );
                 } );
                 g->gamemode = nullptr;
-                WORLD *world = world_generator->pick_world();
+                // Joining client: never show the world picker (mirror the
+                // non-template path below). The chosen world is a throwaway spawn
+                // container — the client teleports to the host's world and adopts
+                // its seed after spawn — so prompting is pointless and dangerous
+                // (picking a real solo world would spawn into and corrupt it).
+                WORLD *world = cata_mp::is_client_mode()
+                               ? cata_mp::mp_ensure_client_scratch_world()
+                               : world_generator->pick_world();
                 if( world == nullptr ) {
                     continue;
                 }

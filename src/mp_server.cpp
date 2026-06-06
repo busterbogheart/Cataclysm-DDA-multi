@@ -19,6 +19,22 @@ namespace cata_mp {
 void mp_log( const std::string &msg );
 unsigned int mp_host_world_seed();
 std::string mp_get_host_world_name();
+std::string mp_get_host_player_name();
+
+// Escape a string for embedding in a JSON double-quoted value (host names can
+// contain quotes/backslashes). Minimal — covers the chars that break parsing.
+static std::string mp_json_escape( const std::string &s )
+{
+    std::string out;
+    out.reserve( s.size() + 2 );
+    for( const char c : s ) {
+        if( c == '"' || c == '\\' ) {
+            out += '\\';
+        }
+        out += c;
+    }
+    return out;
+}
 
 // Normalize a build-version string to its commit identity for the join
 // handshake. getVersionString() is the git commit hash, but the Makefile
@@ -283,6 +299,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                 mp_get_host_world_name() + "')" );
         session->send( "{\"type\":\"welcome\",\"player_id\":\"probe\""
                        ",\"world\":\"" + mp_get_host_world_name() + "\""
+                       ",\"host_name\":\"" + mp_json_escape( mp_get_host_player_name() ) + "\""
                        ",\"current_turn\":0,\"seed\":" +
                        std::to_string( mp_host_world_seed() ) + "}\n" );
         return;
@@ -332,7 +349,9 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // randomly-seeded terrain outside the tile-synced bubble.
         const std::string wname = mp_get_host_world_name();
         session->send( "{\"type\":\"welcome\",\"player_id\":\"" + name +
-                       "\",\"world\":\"" + wname + "\",\"current_turn\":0,\"seed\":" +
+                       "\",\"world\":\"" + wname +
+                       "\",\"host_name\":\"" + mp_json_escape( mp_get_host_player_name() ) +
+                       "\",\"current_turn\":0,\"seed\":" +
                        std::to_string( mp_host_world_seed() ) + "}\n" );
         mp_log( "[cdda-mp] SEED: welcome sent host seed " +
                 std::to_string( mp_host_world_seed() ) + " to '" + name + "'" );

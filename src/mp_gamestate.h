@@ -200,6 +200,11 @@ std::string mp_get_host_world_name();
 // after mp_menu_join_session() returns successfully.
 std::string mp_client_host_world_name();
 void mp_set_client_host_world_name( const std::string &name );
+// Host's character name, plumbed to the client's join dialog ("whose game").
+void mp_set_host_player_name( const std::string &name );
+std::string mp_get_host_player_name();
+std::string mp_client_host_player_name();
+void mp_set_client_host_player_name( const std::string &name );
 
 // True when hosting and the host avatar has an active wait activity (ACT_WAIT,
 // ACT_WAIT_STAMINA, etc.).  Used by do_turn to skip monmove() so monsters
