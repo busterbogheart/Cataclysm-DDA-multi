@@ -5620,6 +5620,54 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // Apply the host's active effects to the proxy so its status + overhead
+        // markers (bleeding, etc.) match the host. NOT signature-gated — effects
+        // change every turn. Full-state: clear then re-add the host's current set
+        // (empty array correctly clears, e.g. host stopped bleeding).
+        if( jo.has_array( "host_effects" ) && client_host_npc_spawned ) {
+            npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
+            if( host_npc ) {
+                host_npc->clear_effects();
+                for( const JsonValue &ev : jo.get_array( "host_effects" ) ) {
+                    JsonObject eo = ev.get_object();
+                    eo.allow_omitted_members();
+                    const std::string eid = eo.get_string( "id", "" );
+                    if( eid.empty() ) { continue; }
+                    const efftype_id et( eid );
+                    if( !et.is_valid() ) { continue; }
+                    const int intensity = eo.get_int( "intensity", 1 );
+                    const time_duration dur =
+                        time_duration::from_turns( std::max( 1, eo.get_int( "dur", 1 ) ) );
+                    const std::string bp_str = eo.get_string( "bp", "" );
+                    const bodypart_str_id bpsid( bp_str );
+                    if( bp_str.empty() || !bpsid.is_valid() ) {
+                        host_npc->add_effect( et, dur, false, intensity );
+                    } else {
+                        host_npc->add_effect( et, dur, bpsid.id(), intensity );
+                    }
+                }
+            }
+        }
+
+        // Apply the host's per-bodypart HP so the co-op partner-HP HUD reflects
+        // the host's real health (the bar reads partner->get_hp() off the proxy).
+        if( jo.has_array( "host_hp" ) && client_host_npc_spawned ) {
+            npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
+            if( host_npc ) {
+                for( const JsonValue &hv : jo.get_array( "host_hp" ) ) {
+                    JsonObject ho = hv.get_object();
+                    ho.allow_omitted_members();
+                    const std::string bp_str = ho.get_string( "id", "" );
+                    const int hp = ho.get_int( "hp", -1 );
+                    if( bp_str.empty() || hp < 0 ) { continue; }
+                    const bodypart_str_id bpsid( bp_str );
+                    if( bpsid.is_valid() ) {
+                        host_npc->set_part_hp_cur( bpsid.id(), hp );
+                    }
+                }
+            }
+        }
+
         std::cout << "[cdda-mp] monster sync..." << std::flush;
         apply_monster_sync( jo );
         std::cout << " ok" << std::endl;
@@ -8603,6 +8651,44 @@ std::string serialize_remote_player_state()
     removed_vehicles_json += ']';
     g_server_veh_live_nids = std::move( alive_now );
 
+    // Host's active effects (bleeding, poison, splints, buffs…) so the client's
+    // host-proxy shows the same status + overhead markers. The client->host
+    // direction already syncs bleed (client_bleed); this is the missing mirror,
+    // and covers ALL effects, not just bleed.
+    std::string host_effects_json = "[";
+    {
+        bool ef_first = true;
+        for( const effect &eff : host.get_effects() ) {
+            if( !ef_first ) {
+                host_effects_json += ',';
+            }
+            ef_first = false;
+            host_effects_json += "{\"id\":\"" + eff.get_id().str() +
+                                 "\",\"bp\":\"" + eff.get_bp().id().str() +
+                                 "\",\"intensity\":" + std::to_string( eff.get_intensity() ) +
+                                 ",\"dur\":" + std::to_string( to_turns<int>( eff.get_duration() ) ) + "}";
+        }
+    }
+    host_effects_json += "]";
+
+    // Host per-bodypart HP so the client's co-op partner-HP HUD reflects the
+    // host's real health (the bar reads partner->get_hp() off the proxy, which
+    // was never updated → stale).
+    std::string host_hp_json = "[";
+    {
+        bool hp_first = true;
+        for( const bodypart_id &bp : host.get_all_body_parts() ) {
+            if( !hp_first ) {
+                host_hp_json += ',';
+            }
+            hp_first = false;
+            host_hp_json += "{\"id\":\"" + bp.id().str() +
+                            "\",\"hp\":" + std::to_string( host.get_hp( bp ) ) +
+                            ",\"hp_max\":" + std::to_string( host.get_hp_max( bp ) ) + "}";
+        }
+    }
+    host_hp_json += "]";
+
     return "{\"type\":\"state\","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
            "\"host_name\":\"" + host.name + "\","
@@ -8629,6 +8715,8 @@ std::string serialize_remote_player_state()
                mp_compute_activity_pct( host.activity ) ) + ","
            "\"host_activity_moves_total\":" + std::to_string(
                host.activity ? host.activity.moves_total : 0 ) + ","
+           "\"host_effects\":" + host_effects_json + ","
+           "\"host_hp\":" + host_hp_json + ","
            + ( []() -> std::string {
                // One-shot wake_client signal — emit on this broadcast then clear.
                if( g_pending_wake_client ) {

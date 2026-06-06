@@ -1256,24 +1256,39 @@ bool game::do_turn()
     // the grant, autofire never fires, both players freeze forever.
     const int pre_process_turn_moves = u.get_moves();
     if( cata_mp::is_client_mode() ) {
-        // Diagnostic (sibling-of-regen audit): process_turn() ticks effects
-        // (bleed/poison/meds) and needs exactly ONE turn per call, with no
-        // from/to catch-up. If the client's host-driven calendar jumps between
-        // calls (dturns > 1) those effects are under-applied; if it fires
-        // repeatedly within one turn (dturns == 0) they're over-applied.
+        // process_turn() ticks effects (bleed/poison/meds) + needs exactly ONE
+        // turn per call, with no from/to catch-up. The client's do_turn spins
+        // while locked (calendar frozen) and its host-driven calendar advances
+        // in jumps, so calling it unconditionally over-ticked effects during the
+        // locked wait (confirmed: ~1200 dturns=0 calls with pain climbing while
+        // locked) and would under-tick on jumps. Tick once per ELAPSED game-turn:
+        // skip entirely when the calendar hasn't advanced, catch up (capped) when
+        // it jumps. The client's moves come from server grants, so process_turn's
+        // move regen is always discarded (snapshot/restore).
         static time_point s_last_proc = calendar::before_time_starts;
-        const int dturns = ( s_last_proc == calendar::before_time_starts )
-                           ? 1 : to_turns<int>( calendar::turn - s_last_proc );
+        int dturns;
+        if( s_last_proc == calendar::before_time_starts ) {
+            dturns = 1;                                   // first call
+        } else if( calendar::turn > s_last_proc ) {
+            dturns = to_turns<int>( calendar::turn - s_last_proc );
+        } else {
+            dturns = 0;                                   // locked spin / clock rewind
+        }
         s_last_proc = calendar::turn;
+        constexpr int MAX_CATCHUP = 100;
+        const int ticks = std::min( dturns, MAX_CATCHUP );
         cata_mp::mp_log( "[cdda-mp] CLI-PROCTURN: dturns=" + std::to_string( dturns ) +
+                         " ticks=" + std::to_string( ticks ) +
                          " thirst=" + std::to_string( u.get_thirst() ) +
                          " hunger=" + std::to_string( u.get_hunger() ) +
                          " pain=" + std::to_string( u.get_pain() ) +
                          " hp=" + std::to_string( u.get_hp() ) );
-    }
-    u.process_turn();
-    if( cata_mp::is_client_mode() ) {
+        for( int i = 0; i < ticks; ++i ) {
+            u.process_turn();
+        }
         u.set_moves( pre_process_turn_moves );
+    } else {
+        u.process_turn();
     }
 
     if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
