@@ -2735,19 +2735,43 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
             // Mirror SP movement cost locally so moves/stamina/activity display correctly.
             // SP path: game.cpp charges run_cost AP, then burns stamina from AP spent.
+            //
+            // Gate the burn so it only happens for a move that will actually
+            // execute exactly once.  When locked (out of turn, moves<=0) a move
+            // is QUEUED, and each subsequent spammed keypress overwrites that
+            // single pending move — only one ever fires per grant.  Burning on
+            // every locked press charged a full move's stamina per keypress for
+            // moves that never happened, draining stamina far faster than
+            // walking should (#4: "move out of turn, lose stamina").  Burn when:
+            //   - will_send: we have a grant and no ack pending -> this press
+            //     executes a move now (the SEND path), OR
+            //   - first_queued_move: locked, but no move is queued yet -> this
+            //     is the one move that will auto-fire on the next grant.
+            // Repeated locked presses while a move is already pending re-queue
+            // the (possibly new) direction without re-burning; the already-burnt
+            // stamina is what the queued action carries, so the fired move still
+            // costs exactly one move's worth.
             if( offset_it != dir_to_offset.end() ) {
-                const bool diag = ( std::abs( offset_it->second.x ) +
-                                    std::abs( offset_it->second.y ) ) == 2;
-                const int mcost   = here.combined_movecost( cur_pos, next_pos );
-                const int ap_cost = player_character.run_cost( mcost, diag );
-                const int pre_moves = player_character.get_moves();
-                mp_dispatch_pre_moves = pre_moves;
-                player_character.mod_moves( -ap_cost );
-                player_character.burn_move_stamina( pre_moves - player_character.get_moves() );
-                player_character.set_activity_level(
-                    player_character.current_movement_mode()->exertion_level() );
-                if( player_character.is_running() && !player_character.can_run() ) {
-                    player_character.reset_move_mode();
+                mp_dispatch_pre_moves = player_character.get_moves();
+                const bool will_send = player_character.get_moves() > 0 &&
+                                       !cata_mp::is_client_waiting_for_ack();
+                const bool first_queued_move = !will_send && !cata_mp::has_pending_move();
+                if( will_send || first_queued_move ) {
+                    const bool diag = ( std::abs( offset_it->second.x ) +
+                                        std::abs( offset_it->second.y ) ) == 2;
+                    const int mcost   = here.combined_movecost( cur_pos, next_pos );
+                    const int ap_cost = player_character.run_cost( mcost, diag );
+                    const int pre_moves = player_character.get_moves();
+                    player_character.mod_moves( -ap_cost );
+                    player_character.burn_move_stamina( pre_moves - player_character.get_moves() );
+                    player_character.set_activity_level(
+                        player_character.current_movement_mode()->exertion_level() );
+                    if( player_character.is_running() && !player_character.can_run() ) {
+                        player_character.reset_move_mode();
+                    }
+                } else {
+                    cata_mp::mp_log( "[cdda-mp] MOVE-BURN-SKIP: locked re-press, move already queued"
+                                     " moves=" + std::to_string( player_character.get_moves() ) );
                 }
             }
             // Mirror SP avatar_action::move's facing update — the client never
@@ -4428,6 +4452,32 @@ bool game::handle_action()
             ",\"y\":" + std::to_string( new_abs.y() ) +
             ",\"z\":" + std::to_string( new_abs.z() ) + "}";
         cata_mp::client_send( cata_mp::client_enrich_action( json ) );
+    }
+    // Client mode: backstop the grant/ack handshake for SP actions that consume
+    // the move grant WITHOUT going through mp_dispatch or mp_client_post_action
+    // (e.g. ACTION_AUTOATTACK -> avatar_action::autoattack, which spends moves
+    // melee'ing locally and dispatches nothing).  Without an explicit ack the
+    // host blocks forever in SRV-WAIT waiting for this grant's "wait" — the
+    // turn-ownership desync where each screen disagrees about whose turn it is,
+    // only cleared by a rejoin (#3).  Guards:
+    //   before_action_moves > 0 && now <= 0 : a real grant was consumed this
+    //       call (grants arrive mid-input during the locked-branch blocking
+    //       handle_action, so before_action_moves is already the post-grant 100).
+    //   !is_client_waiting_for_ack() : a dispatched action (move, smash, …)
+    //       already set the ack guard — don't double-ack it.
+    //   !activity : an action that started a long activity acks via the
+    //       activity-end / per-grant ACT-ACK path, not a one-shot wait.
+    if( cata_mp::is_client_mode() && act != ACTION_TIMEOUT &&
+        before_action_moves > 0 && player_character.get_moves() <= 0 &&
+        !cata_mp::is_client_waiting_for_ack() && !player_character.activity ) {
+        cata_mp::mp_log( std::string( "[cdda-mp] CLI-CONSUMED-NO-ACK: act=" ) +
+                         action_ident( act ) +
+                         " before=" + std::to_string( before_action_moves ) +
+                         " after=" + std::to_string( player_character.get_moves() ) +
+                         " -> sending wait to close grant" );
+        cata_mp::client_send( cata_mp::client_enrich_action(
+                                  "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+        cata_mp::client_mark_action_sent();
     }
     // In client MP mode the move budget is server-controlled; never drain it based on
     // wall-clock time.  UI screens like @ and x would otherwise consume the client's

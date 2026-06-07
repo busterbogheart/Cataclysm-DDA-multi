@@ -101,11 +101,16 @@ const std::map<std::string, coop_entry> &coop_table()
                 translate_marker( "CO-OP: may break.  Pet ownership and control across two players is unresolved; the joining player's tamed pets may be uncontrollable." )
             }
         },
-        {
-            "personal_portal_storms", { mod_coop::warn,
-                translate_marker( "CO-OP: may break.  The remote player is treated as an NPC, so portal storms ignore them and become one-sided." )
-            }
-        },
+        // personal_portal_storms: intentionally NOT listed (treated as ok).
+        // It's a default mod ~all co-op players run, and the impact is benign.
+        // The mod is just a monster-faction override (storm nether monsters hate
+        // "player" = the avatar, neutral to "human" = NPCs).  Portal storms run
+        // per-instance and aren't synced anyway, so each player still gets hit by
+        // their own local storm — nobody "misses" one.  It's arguably net-positive:
+        // without it the host's storm monsters would attack the client's proxy NPC
+        // and (with host->proxy HP/effect sync) deal the client phantom damage from
+        // a storm not on their screen.  Don't re-add a warn here — it would nag on
+        // nearly every co-op world for no real benefit.
         {
             "hunvre", { mod_coop::warn,
                 translate_marker( "CO-OP: may break.  The scripted intro and the sleep-death mechanic run only on the host and are skipped for the remote player." )

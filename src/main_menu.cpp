@@ -1099,7 +1099,37 @@ bool main_menu::opening_screen()
                             if( wpick.ret < 0 || static_cast<size_t>( wpick.ret ) >= wnames.size() ) {
                                 break;  // armed; user can re-enter Host
                             }
-                            start = load_character_tab( wnames[wpick.ret] );
+                            const std::string chosen_w = wnames[wpick.ret];
+                            // Host-time co-op screen for worlds made outside the
+                            // co-op create-screen (World > Create World never
+                            // applies the mod/NPC restrictions). Block worlds with
+                            // incompatible mods; warn (and allow) for warn-mods and
+                            // random NPCs.
+                            {
+                                std::vector<std::string> block_reasons;
+                                std::vector<std::string> warn_reasons;
+                                if( cata_mp::mp_world_coop_block( chosen_w, block_reasons,
+                                                                  warn_reasons ) ) {
+                                    std::string msg = _( "This world can't be hosted in co-op:" );
+                                    for( const std::string &r : block_reasons ) {
+                                        msg += "\n  - " + r;
+                                    }
+                                    msg += _( "\n\nPick a different world or create a new one." );
+                                    popup( "%s", msg );
+                                    break;  // still armed; user can re-enter Host
+                                }
+                                if( !warn_reasons.empty() ) {
+                                    std::string msg = _( "This world may not work fully in co-op:" );
+                                    for( const std::string &r : warn_reasons ) {
+                                        msg += "\n  - " + r;
+                                    }
+                                    msg += _( "\n\nHost it anyway?" );
+                                    if( !query_yn( "%s", msg ) ) {
+                                        break;
+                                    }
+                                }
+                            }
+                            start = load_character_tab( chosen_w );
                             if( start ) {
                                 load_game = true;
                             }

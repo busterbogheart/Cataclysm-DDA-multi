@@ -31,6 +31,7 @@
 #include "field_type.h"
 #include "map.h"
 #include "map_scale_constants.h"
+#include "submap.h"
 #include "move_mode.h"
 #include "memory_fast.h"
 #include "messages.h"
@@ -68,6 +69,8 @@
 #include "sounds.h"
 #endif
 #include <chrono>
+#include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -76,6 +79,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <thread>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -94,7 +98,27 @@ void mp_log( const std::string &msg )
     const long long delta_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>( now - last ).count();
     last = now;
-    const std::string line = "[+" + std::to_string( delta_ms ) + "ms] " + msg;
+    // Absolute wall-clock stamp [HH:MM:SS.mmm] in front of the per-log [+Nms]
+    // delta.  The delta is each log's private clock; the wall-clock lets the host
+    // and client logs be aligned against each other (assuming the two machines'
+    // clocks are roughly NTP-synced, which LAN/Tailscale gives).  Thread-safe:
+    // system_clock::now and localtime_r/_s into a local tm, no shared buffer.
+    const auto wall = std::chrono::system_clock::now();
+    const std::time_t wt = std::chrono::system_clock::to_time_t( wall );
+    const long wms = static_cast<long>(
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             wall.time_since_epoch() ).count() % 1000 );
+    std::tm tmv{};
+#if defined(_WIN32)
+    localtime_s( &tmv, &wt );
+#else
+    localtime_r( &wt, &tmv );
+#endif
+    char tbuf[20];
+    std::snprintf( tbuf, sizeof( tbuf ), "[%02d:%02d:%02d.%03ld]",
+                   tmv.tm_hour, tmv.tm_min, tmv.tm_sec, wms );
+    const std::string line = std::string( tbuf ) + "[+" +
+                             std::to_string( delta_ms ) + "ms] " + msg;
     std::cout << line << std::endl;
 
     // Also append to /tmp/cdda-mp-{server,client}.log so log capture doesn't
@@ -128,14 +152,21 @@ void mp_log( const std::string &msg )
         if( log_file.is_open() ) {
             log_file.close();
         }
-        // Append, never rotate/truncate: keep the FULL history in one file.
-        // The old rotate-on-mode-change behavior split a single play session
-        // across .log/.log.1 (a mode flip or session-end rotated the active
-        // session out from under us), which repeatedly hid the data being
-        // debugged in a rotated file (2026-06-03). One file is far easier to
-        // read; it grows unbounded, so clear it manually (`: > <path>`) between
-        // debugging runs when it gets large.
-        log_file.open( desired_path, std::ios::out | std::ios::app );
+        // Append (don't rotate per session — that split a play session across
+        // .log/.log.1 and hid debug data, 2026-06-03).  ONE exception: if the
+        // file has grown past a hard cap, truncate on open so it can't grow
+        // unbounded across dozens of launches.  Only fires at the start of a new
+        // launch, never mid-session, so it never pulls live data out from under
+        // a debugging run.
+        constexpr std::uintmax_t LOG_CAP_BYTES = 50ull * 1024 * 1024;  // 50 MB
+        std::error_code ec;
+        const std::uintmax_t sz =
+            std::filesystem::exists( desired_path, ec )
+            ? std::filesystem::file_size( desired_path, ec ) : 0;
+        const std::ios::openmode mode = ( !ec && sz > LOG_CAP_BYTES )
+                                        ? ( std::ios::out | std::ios::trunc )
+                                        : ( std::ios::out | std::ios::app );
+        log_file.open( desired_path, mode );
         current_path = desired_path;
         log_file << "\n[cdda-mp] ===================== LOG OPENED ====================="
                  << std::endl;
@@ -540,6 +571,7 @@ static std::vector<std::string> g_client_msgs_pending;
 // Host: reset overmap-stream state so the next client gets a fresh bulk send.
 // Defined far below with the rest of the overmap-streaming code.
 static void mp_reset_overmap_sync();
+static void mp_reset_map_sync();
 
 // Separation warning tier: 0=ok, 1=warn (≥50 tiles), 2=danger (≥57 tiles).
 // Shared by both host and client; resets on connect/disconnect.
@@ -1174,6 +1206,38 @@ static void mp_cleanup_stale_npcs()
     }
 }
 
+// Client: remove NPCs spawned by the client's own divergent local world — the
+// scratch world's random-NPC spawner and local map features (e.g. a refugee
+// center's "panicked persons") put NPCs the host's world doesn't have.  In co-op
+// the only legitimate NPC on the client is the host's proxy (client_host_npc_id);
+// host-world NPCs aren't synced, so every other active NPC is a local phantom.
+// Mirrors the monster/vehicle local-cull.  Runs each client drain; the active
+// NPC list is tiny so it's cheap.
+static void mp_cull_local_npcs()
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    std::vector<character_id> to_remove;
+    for( npc &n : g->all_npcs() ) {
+        if( n.getID() == client_host_npc_id ) {
+            continue;   // the host's proxy — the one NPC we keep
+        }
+        to_remove.push_back( n.getID() );
+    }
+    for( const character_id &id : to_remove ) {
+        if( const npc *n = g->critter_by_id<npc>( id ) ) {
+            mp_log( "[cdda-mp] CLI-NPC-CULL-LOCAL: id=" +
+                    std::to_string( id.get_value() ) + " name=\"" + n->name + "\"" );
+        }
+        g->remove_npc( id );             // active (loaded) copy
+        overmap_buffer.remove_npc( id ); // overmap copy, so it can't re-load
+    }
+    if( !to_remove.empty() ) {
+        g->cleanup_dead();
+    }
+}
+
 // Remove every NPC with the given name from both the active critter list and the
 // overmap buffer. Eliminates artifacts left by previous sessions before the
 // ID-tracking cleanup mechanism existed.
@@ -1339,6 +1403,7 @@ static void spawn_remote_player( const std::string &name )
     g_client_acted_this_turn = false;
     g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
     mp_reset_overmap_sync();  // bulk-send the overmap region to the fresh client
+    mp_reset_map_sync();      // re-stream submap terrain+furniture to the fresh client
     g_client_known_veh_nids.clear();  // re-snapshot every visible vehicle for the fresh client
     g_server_veh_parts_count.clear();
     g_server_veh_live_nids.clear();
@@ -3435,6 +3500,24 @@ static int g_om_sync_radius = 90;   // OMTs around the host (covers the m-screen
 static tripoint_abs_omt g_om_sync_last_center{ INT_MIN, INT_MIN, 0 };
 static bool g_om_sync_done = false;
 
+// ---- Map (submap terrain+furniture) streaming -----------------------------
+// One zoom level below overmap streaming.  The client regenerates submap detail
+// locally with divergent mapgen RNG, so its main view and pixel minimap
+// disagree with the host beyond the ~20-tile tile_changes patch.  Stream the
+// host's authoritative ter+furn for the reality bubble, per-submap and
+// incrementally (only newly-entered submaps each turn, capped), and overwrite
+// the client's local terrain.  Items/fields/traps stay on the per-turn
+// tile_changes delta; monsters/vehicles already synced.  Tracks which submaps
+// (abs sm coord, at the avatar's z) the client already has; submaps that scroll
+// out of the bubble are dropped so a return visit re-syncs.
+static std::set<tripoint_abs_sm> g_map_sync_sent;
+static const int g_map_sync_cap = 64;   // max submaps streamed per turn
+
+static void mp_reset_map_sync()
+{
+    g_map_sync_sent.clear();
+}
+
 static void mp_reset_overmap_sync()
 {
     g_om_sync_done = false;
@@ -3542,6 +3625,125 @@ static std::string build_overmap_sync()
     return msg;
 }
 
+// Stream the host's authoritative submap terrain+furniture for the reality
+// bubble so the client's main view and minimap match instead of its divergent
+// local mapgen.  Returns "" when there are no new submaps to send this turn
+// (steady state), so it's cheap on the hot path.  Sends at most g_map_sync_cap
+// submaps per call; the bubble fills over a few turns on join and incremental
+// rows stream in as a player moves.  Palette + per-submap RLE, like the overmap
+// sync.  Only the avatar's current z-level is synced (v1).
+static std::string build_map_sync()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return std::string();
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    map &m = get_map();
+    const tripoint_abs_sm origin = m.get_abs_sub();
+    const int az = get_avatar().posz();
+
+    // Forget submaps that have scrolled out of the bubble so a return visit
+    // re-syncs them (the client may have regenerated them locally after unload).
+    for( auto it = g_map_sync_sent.begin(); it != g_map_sync_sent.end(); ) {
+        const bool in_bubble = it->z() == az &&
+                               it->x() >= origin.x() && it->x() < origin.x() + MAPSIZE &&
+                               it->y() >= origin.y() && it->y() < origin.y() + MAPSIZE;
+        it = in_bubble ? std::next( it ) : g_map_sync_sent.erase( it );
+    }
+
+    std::vector<std::string> palette;
+    std::unordered_map<std::string, int> pal_idx;
+    auto idx_of = [&]( const std::string & s ) -> int {
+        auto f = pal_idx.find( s );
+        if( f != pal_idx.end() ) {
+            return f->second;
+        }
+        const int i = static_cast<int>( palette.size() );
+        palette.push_back( s );
+        pal_idx[s] = i;
+        return i;
+    };
+    auto rle = [&]( const std::vector<int> &cells ) -> std::string {
+        std::string out = "[";
+        bool first = true;
+        const int n = static_cast<int>( cells.size() );
+        int i = 0;
+        while( i < n ) {
+            int j = i + 1;
+            while( j < n && cells[j] == cells[i] ) {
+                ++j;
+            }
+            if( !first ) {
+                out += ',';
+            }
+            first = false;
+            out += "[" + std::to_string( j - i ) + "," + std::to_string( cells[i] ) + "]";
+            i = j;
+        }
+        out += "]";
+        return out;
+    };
+
+    std::string subs = "[";
+    bool first_sub = true;
+    int sent = 0;
+    for( int gy = 0; gy < MAPSIZE && sent < g_map_sync_cap; ++gy ) {
+        for( int gx = 0; gx < MAPSIZE && sent < g_map_sync_cap; ++gx ) {
+            const tripoint_abs_sm sm_abs{ origin.x() + gx, origin.y() + gy, az };
+            if( g_map_sync_sent.count( sm_abs ) ) {
+                continue;
+            }
+            const tripoint_abs_ms sm_ms0{ sm_abs.x() * SEEX, sm_abs.y() * SEEY, az };
+            const tripoint_bub_ms bub0 = m.get_bub( sm_ms0 );
+            if( !m.inbounds( bub0 ) ) {
+                continue;
+            }
+            std::vector<int> ter_cells;
+            std::vector<int> furn_cells;
+            ter_cells.reserve( SEEX * SEEY );
+            furn_cells.reserve( SEEX * SEEY );
+            for( int ly = 0; ly < SEEY; ++ly ) {
+                for( int lx = 0; lx < SEEX; ++lx ) {
+                    const tripoint_bub_ms bub{ bub0.x() + lx, bub0.y() + ly, bub0.z() };
+                    ter_cells.push_back( idx_of( m.ter( bub ).id().str() ) );
+                    furn_cells.push_back( idx_of( m.furn( bub ).id().str() ) );
+                }
+            }
+            if( !first_sub ) {
+                subs += ',';
+            }
+            first_sub = false;
+            subs += "{\"sx\":" + std::to_string( sm_abs.x() ) +
+                    ",\"sy\":" + std::to_string( sm_abs.y() ) +
+                    ",\"t\":" + rle( ter_cells ) +
+                    ",\"f\":" + rle( furn_cells ) + "}";
+            g_map_sync_sent.insert( sm_abs );
+            ++sent;
+        }
+    }
+    subs += "]";
+    if( sent == 0 ) {
+        return std::string();   // nothing new — steady state
+    }
+    std::string pal = "[";
+    for( size_t i = 0; i < palette.size(); ++i ) {
+        if( i ) {
+            pal += ',';
+        }
+        pal += "\"" + palette[i] + "\"";
+    }
+    pal += "]";
+    std::string msg = "{\"type\":\"map_sync\",\"z\":" + std::to_string( az ) +
+                      ",\"pal\":" + pal + ",\"subs\":" + subs + "}";
+    const long build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - t0 ).count();
+    mp_log( "[cdda-mp] MAPSYNC send: subs=" + std::to_string( sent ) +
+            " pal=" + std::to_string( palette.size() ) +
+            " bytes=" + std::to_string( msg.size() ) +
+            " ms=" + std::to_string( build_ms ) );
+    return msg;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -3588,8 +3790,13 @@ void grant_client_turn()
     g_remote_moves = remote->get_speed();
     ++g_grant_seq;
     const player_activity &ha = get_avatar().activity;
+    // turn= is the shared game clock (the client logs calendar_turn in its state
+    // packets) — use it to align the host and client logs by game turn, immune to
+    // wall-clock skew.  Safe to read here: grant_client_turn runs on the game
+    // thread.
     mp_log( "[cdda-mp] grant_client_turn: remote_moves=" + std::to_string( g_remote_moves ) +
             " seq=" + std::to_string( g_grant_seq ) +
+            " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) +
             " host_act=" + ( ha ? ha.id().str() : "none" ) );
     // Proxy skips npcmove so never auto-regenerates stamina. Replicate the
     // update_body() path that the real avatar gets each game turn.
@@ -3605,6 +3812,13 @@ void grant_client_turn()
         const std::string om = build_overmap_sync();
         if( !om.empty() ) {
             srv->post_broadcast( om + "\n" );
+        }
+        // Stream the bubble's submap terrain+furniture so the client's main view
+        // and minimap match the host instead of its divergent local mapgen.
+        // Incremental + capped, so cheap except on join / when entering new area.
+        const std::string mapm = build_map_sync();
+        if( !mapm.empty() ) {
+            srv->post_broadcast( mapm + "\n" );
         }
     }
 }
@@ -4433,10 +4647,18 @@ static void mp_start_pending_host_thread()
 {
     // Lifecycle trace: shows why the server thread does/doesn't start. A second
     // host session in one launch can arrive here with stale statics.
-    mp_log( "[cdda-mp] HOST-THREAD-CHECK: pending=" +
-            std::to_string( g_pending_host_start ) + " already_started=" +
-            std::to_string( g_host_thread_actually_started ) + " host_mode=" +
-            std::to_string( is_host_mode() ) );
+    {
+        // This runs every do_turn; once the thread is up the values never change,
+        // which spammed ~11k identical lines.  Log only on transition.
+        const std::string check = "pending=" + std::to_string( g_pending_host_start ) +
+                                  " already_started=" + std::to_string( g_host_thread_actually_started ) +
+                                  " host_mode=" + std::to_string( is_host_mode() );
+        static std::string last_check;
+        if( check != last_check ) {
+            last_check = check;
+            mp_log( "[cdda-mp] HOST-THREAD-CHECK: " + check );
+        }
+    }
     if( !g_pending_host_start || g_host_thread_actually_started ) {
         return;
     }
@@ -4541,6 +4763,55 @@ WORLD *mp_ensure_client_scratch_world()
         mp_log( "[cdda-mp] MENU: failed to create client scratch world" );
     }
     return neww;
+}
+
+bool mp_world_coop_block( const std::string &worldname,
+                          std::vector<std::string> &block_reasons,
+                          std::vector<std::string> &warn_reasons )
+{
+    WORLD *w = world_generator->get_world( worldname );
+    if( !w ) {
+        return false;
+    }
+    // Mods: incompatible -> block, warn -> warn.  Mirrors the create-screen mod
+    // list (worldfactory.cpp), which colors/blocks the same set — this catches
+    // worlds built outside that screen via World > Create World.
+    for( const mod_id &m : w->active_mod_order ) {
+        const std::string disp = m.is_valid() ? m->name() : m.str();
+        switch( mod_coop_status( m.str() ) ) {
+            case mod_coop::incompatible:
+                block_reasons.push_back(
+                    string_format( _( "Mod \"%s\" is not co-op compatible." ), disp ) );
+                break;
+            case mod_coop::warn:
+                warn_reasons.push_back(
+                    string_format( _( "Mod \"%s\" may break in co-op." ), disp ) );
+                break;
+            default:
+                break;
+        }
+    }
+    // Random NPCs: the co-op create-screen locks the "Random NPCs" slider to its
+    // lowest level, which sets NPC_SPAWNTIME = 10 ("Where is everyone?").  A
+    // standalone world keeps the default (4) or a higher spawn rate.  Note the
+    // sense of the value: LARGER NPC_SPAWNTIME = rarer NPCs, and 0 means random
+    // NPCs are fully off (game::perhaps_add_random_npc early-returns).  So a
+    // world spawns more random NPCs than co-op allows iff 0 < spawn_time < 10.
+    // Random NPCs aren't synced to the other player yet, so warn (per design).
+    const auto it = w->WORLD_OPTIONS.find( "NPC_SPAWNTIME" );
+    if( it != w->WORLD_OPTIONS.end() ) {
+        float spawn_time = 0.0f;
+        try {
+            spawn_time = std::stof( it->second.getValue() );
+        } catch( ... ) {
+            spawn_time = 0.0f;
+        }
+        if( spawn_time > 0.0f && spawn_time < 10.0f ) {
+            warn_reasons.push_back(
+                _( "Random NPCs are enabled — co-op can't sync them to the other player yet." ) );
+        }
+    }
+    return !block_reasons.empty();
 }
 
 // Returns the path to a world's mp_world.json sidecar.  Empty when the
@@ -5281,6 +5552,105 @@ static bool apply_one_state_message( const std::string &msg )
             g->invalidate_main_ui_adaptor();
         } catch( const JsonError &e ) {
             mp_log( "[cdda-mp] OMSYNC parse error: " + std::string( e.what() ) );
+        }
+        return true;
+    }
+
+    // Submap terrain+furniture stream (see build_map_sync).  Overwrites the
+    // client's divergent local mapgen via map::ter_set / furn_set (public API;
+    // they early-out on unchanged tiles, set the per-tile cache flags, and mark
+    // the submap player-adjusted so the synced terrain persists).  The host caps
+    // submaps per turn so the bulk join fill is spread over a few turns rather
+    // than one freeze; we time the apply below to confirm it stays cheap.
+    if( msg.find( "\"type\":\"map_sync\"" ) != std::string::npos ) {
+        const auto t0 = std::chrono::steady_clock::now();
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            const int z = jo.get_int( "z" );
+            std::vector<std::string> pal;
+            for( const JsonValue &pv : jo.get_array( "pal" ) ) {
+                pal.push_back( pv.get_string() );
+            }
+            // A palette entry is only ever used as ter OR furn within a given
+            // submap's t/f arrays; resolve both interpretations up front.
+            std::vector<ter_id> ter_pal( pal.size() );
+            std::vector<furn_id> furn_pal( pal.size() );
+            std::vector<bool> ter_ok( pal.size(), false );
+            std::vector<bool> furn_ok( pal.size(), false );
+            for( size_t i = 0; i < pal.size(); ++i ) {
+                const ter_str_id ts( pal[i] );
+                if( ts.is_valid() ) {
+                    ter_pal[i] = ts.id();
+                    ter_ok[i] = true;
+                }
+                const furn_str_id fs( pal[i] );
+                if( fs.is_valid() ) {
+                    furn_pal[i] = fs.id();
+                    furn_ok[i] = true;
+                }
+            }
+            map &m = get_map();
+            int applied = 0;
+            int skipped = 0;
+            auto decode = [&]( JsonArray arr, std::vector<int> &out ) {
+                for( JsonValue rv : arr ) {
+                    JsonArray run = rv.get_array();
+                    const int cnt = run.get_int( 0 );
+                    const int idx = run.get_int( 1 );
+                    for( int k = 0; k < cnt; ++k ) {
+                        out.push_back( idx );
+                    }
+                }
+            };
+            for( JsonValue sv : jo.get_array( "subs" ) ) {
+                JsonObject so = sv.get_object();
+                so.allow_omitted_members();
+                const int sx = so.get_int( "sx" );
+                const int sy = so.get_int( "sy" );
+                const tripoint_abs_ms sm_ms0{ sx * SEEX, sy * SEEY, z };
+                const tripoint_bub_ms bub0 = m.get_bub( sm_ms0 );
+                if( !m.inbounds( bub0 ) ) {
+                    ++skipped;   // outside this client's loaded bubble (far from host)
+                    continue;
+                }
+                std::vector<int> tcells;
+                std::vector<int> fcells;
+                decode( so.get_array( "t" ), tcells );
+                decode( so.get_array( "f" ), fcells );
+                for( int ly = 0; ly < SEEY; ++ly ) {
+                    for( int lx = 0; lx < SEEX; ++lx ) {
+                        const int ci = ly * SEEX + lx;
+                        const tripoint_bub_ms bub{ bub0.x() + lx, bub0.y() + ly, bub0.z() };
+                        if( ci < static_cast<int>( tcells.size() ) ) {
+                            const int pi = tcells[ci];
+                            if( pi >= 0 && pi < static_cast<int>( ter_ok.size() ) && ter_ok[pi] ) {
+                                m.ter_set( bub, ter_pal[pi] );
+                            }
+                        }
+                        if( ci < static_cast<int>( fcells.size() ) ) {
+                            const int pi = fcells[ci];
+                            if( pi >= 0 && pi < static_cast<int>( furn_ok.size() ) && furn_ok[pi] ) {
+                                m.furn_set( bub, furn_pal[pi] );
+                            }
+                        }
+                    }
+                }
+                ++applied;
+            }
+            if( applied > 0 ) {
+                m.invalidate_map_cache( z );
+                g->invalidate_main_ui_adaptor();
+            }
+            const long apply_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - t0 ).count();
+            mp_log( "[cdda-mp] MAPSYNC recv: applied=" + std::to_string( applied ) +
+                    " skipped=" + std::to_string( skipped ) +
+                    " pal=" + std::to_string( pal.size() ) +
+                    " ms=" + std::to_string( apply_ms ) );
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] MAPSYNC parse error: " + std::string( e.what() ) );
         }
         return true;
     }
@@ -6038,6 +6408,7 @@ void client_process_incoming()
     }
 
     mp_cleanup_stale_npcs();
+    mp_cull_local_npcs();   // drop client-local phantom NPCs (keep only host proxy)
 
     // Send the join message on the first tick — the save is loaded by now.
     const bool was_joined = client_join_is_sent();
@@ -6852,6 +7223,12 @@ bool is_client_waiting_for_ack()
     return g_client_waiting_for_ack;
 }
 
+bool has_pending_move()
+{
+    return !g_pending_action.empty() &&
+           g_pending_action.find( "\"action\":\"move\"" ) != std::string::npos;
+}
+
 void mp_client_post_action( int pre_moves )
 {
     if( !is_client_mode() ) {
@@ -7419,6 +7796,11 @@ static void apply_vehicle_sync( JsonObject &jo )
 
     const VehicleList vehs = m.get_vehicles();
 
+    // Authoritative positions of every host vehicle in this broadcast.
+    // vehicle_step lists ALL host vehicles, so this is the complete set; used
+    // after the apply loop to cull client-local phantom vehicles.
+    std::vector<tripoint_abs_ms> host_veh_positions;
+
     for( const JsonValue &entry : jo.get_array( "vehicles" ) ) {
         JsonObject vo = entry.get_object();
         vo.allow_omitted_members();
@@ -7427,6 +7809,7 @@ static void apply_vehicle_sync( JsonObject &jo )
         const tripoint_abs_ms new_abs{
             vo.get_int( "x" ), vo.get_int( "y" ), vo.get_int( "z" )
         };
+        host_veh_positions.push_back( new_abs );
         const int  face_deg     = vo.get_int( "face", 0 );
         const int  turn_dir_deg = vo.get_int( "turn_dir", face_deg );
         const int  vel          = vo.get_int( "vel",  0 );
@@ -7773,6 +8156,48 @@ static void apply_vehicle_sync( JsonObject &jo )
             }
         }
     }
+
+    // Cull purely client-local vehicles: the host's vehicle_step lists ALL its
+    // vehicles every broadcast, so any client vehicle far from every host
+    // vehicle is from the client's own divergent local mapgen (a wreck/parked
+    // car the host's world lacks).  Conservative on purpose — vehicles have no
+    // network id and the client matches them by fragile position/name, so we
+    // only cull vehicles well clear of every host position (never a real host
+    // vehicle whose client pivot has drifted) and never the player-controlled
+    // one.  Empty host list (host has no vehicles) culls all non-controlled
+    // local vehicles, which is correct.
+    {
+        const avatar &av = get_avatar();
+        const optional_vpart_position av_vp = m.veh_at( av.pos_bub() );
+        const vehicle *av_veh = av_vp ? &av_vp->vehicle() : nullptr;
+        constexpr int CULL_MIN_DIST = 8;
+        std::vector<vehicle *> local_cull;
+        for( const wrapped_vehicle &wv : m.get_vehicles() ) {
+            vehicle *v = wv.v;
+            if( !v || v == av_veh ) {
+                continue;
+            }
+            const tripoint_abs_ms vp = v->pos_abs();
+            int best = INT_MAX;
+            for( const tripoint_abs_ms &hp : host_veh_positions ) {
+                if( hp.z() != vp.z() ) {
+                    continue;
+                }
+                best = std::min( best,
+                                 std::max( std::abs( hp.x() - vp.x() ),
+                                           std::abs( hp.y() - vp.y() ) ) );
+            }
+            if( best > CULL_MIN_DIST ) {
+                local_cull.push_back( v );
+            }
+        }
+        for( vehicle *v : local_cull ) {
+            mp_log( "[cdda-mp] CLI-VEH-CULL-LOCAL: name=\"" + v->name + "\" abs=" +
+                    std::to_string( v->pos_abs().x() ) + "," +
+                    std::to_string( v->pos_abs().y() ) );
+            m.destroy_vehicle( v );
+        }
+    }
 }
 
 static void apply_monster_sync( JsonObject &jo )
@@ -7793,7 +8218,7 @@ static void apply_monster_sync( JsonObject &jo )
         }
     }
 
-    constexpr int SYNC_RADIUS = 40;
+    constexpr int SYNC_RADIUS = 84;   // match build_monster_list's broadcast radius
     const tripoint_abs_ms region_center = g_mp_remote_pos;
 
     // Collect all client monsters inside the sync region for cleanup pass.
@@ -7929,6 +8354,30 @@ static void apply_monster_sync( JsonObject &jo )
         if( mo.has_int( "facing" ) ) {
             best->facing = mo.get_int( "facing" ) == 0
                            ? FacingDirection::LEFT : FacingDirection::RIGHT;
+        }
+    }
+
+    // Cull purely client-local monsters: any monster inside the host's broadcast
+    // region with NO network id that the host didn't report this turn comes from
+    // the client's own divergent local mapgen (a client-local map feature the
+    // host's world doesn't have — e.g. a refugee center with turkeys/NPCs).  Host
+    // monsters always receive a net id on match/spawn, so mp_net_id==0 reliably
+    // means "never corresponded to a host monster," and the host's authoritative
+    // list covers this whole region — so the absence is real.  This is NOT the
+    // old cull-by-absence (which killed *synced* monsters, net_id!=0, on a missed
+    // broadcast — the woodpecker bug); those are untouched here.  remove_zombie
+    // despawns cleanly (no corpse, which would itself be a desync).
+    {
+        std::vector<monster *> local_cull;
+        for( monster *mon : in_region ) {
+            if( mon && mon->mp_net_id == 0 && !matched.count( mon ) && !mon->is_dead() ) {
+                local_cull.push_back( mon );
+            }
+        }
+        for( monster *mon : local_cull ) {
+            culled_log += mon->type->id.str() + "(local) ";
+            ++n_culled;
+            g->remove_zombie( *mon );
         }
     }
 
@@ -8372,7 +8821,12 @@ std::string serialize_remote_player_state()
     tripoint_abs_ms host_pos = host.pos_abs();
 
     std::string viewport = build_viewport( pos_bub );
-    std::string monsters     = build_monster_list( pos, 40 );
+    // Broadcast every monster in the reality bubble the client can see (~84-tile
+    // view radius), not just 40 — at 40, host monsters in the 40–84 band weren't
+    // sent (the EXCLUDED-NEAR diag) and the client filled the gap with its own
+    // divergent local-mapgen monsters.  Must match the client's cull radius in
+    // apply_monster_sync.
+    std::string monsters     = build_monster_list( pos, 84 );
 
     // Death-based monster removal (mirrors removed_vehicles, but glitch-proof).
     // A monster is "removed" only if it had a net id last broadcast and is no
@@ -8439,7 +8893,14 @@ std::string serialize_remote_player_state()
         bp_log += bp.id().str() + "=" + std::to_string( hp_cur ) + "/" + std::to_string( hp_max );
     }
     bparts_json += "]";
-    mp_log( "[cdda-mp] SRP-BP: " + bp_log );
+    // Per-turn body-part HP dump — rarely changes, so log only on change.
+    {
+        static std::string last_bp;
+        if( bp_log != last_bp ) {
+            last_bp = bp_log;
+            mp_log( "[cdda-mp] SRP-BP: " + bp_log );
+        }
+    }
 
     const std::string host_male_str = host.male ? "true" : "false";
 

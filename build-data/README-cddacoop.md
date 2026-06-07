@@ -162,6 +162,35 @@ and extract it into `%APPDATA%\Cataclysm\sound\` (so you have
 
 ---
 
+## Mods
+
+Most content mods work fine.  This co-op fork is built on standard CDDA. 
+**When you build a co-op world, mods are color-coded
+in the list and the info panel explains why**.
+
+- **Red = won't work in co-op.** These can't be selected, and the host can't create a world that contains one.
+- **Orange = may break.** You can still enable these, after a heads-up dialog;
+  some features just won't sync cleanly to the other player.  Or maybe it'll work perfectly. 
+- **Everything else works** as far as we know. If you find a mod that misbehaves
+  in co-op, please report it (see below) and we'll add it here.
+
+**Won't work (Red):** Sky Island, Isolation Protocol, Magiclysm, Mind Over
+Matter (and its Knacks-only variant), Xedra Evolved.  These rely on travel to
+separate map layers and/or sweeping scripted powers that can't be kept in sync.
+
+**May break (Orange):** Xedra Evolved: Innawoods, Bombastic Perks,
+Perk Melee System, Bionic Professions, the extra mutation scenarios, Sorcerer,
+Crazy Cataclysm, Deadly Bites, Tamable Wildlife, Hunvre, MMA. Typically the
+affected feature still works for whoever *triggers* it, but its status/UI or
+progression may not show up correctly for the other player.
+
+Why some mods don't fit: the second player is simulated as a special NPC inside
+the host's world, and only concrete results like tiles, damage, fields, stat changes etc
+ flow back to them. Mods built on dimension-hopping, instanced/pocket maps, or
+large scripted-effect/teleport power sets fall outside that model.
+
+---
+
 ## Changelog
 
 ### 2026-06-05

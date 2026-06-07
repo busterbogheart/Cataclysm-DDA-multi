@@ -156,6 +156,12 @@ void client_mark_action_sent();
 // game loop and by mp_dispatch to avoid double-sending while ack is pending.
 bool is_client_waiting_for_ack();
 
+// Client only: returns true if a *move* action is already queued for auto-fire.
+// Used by the handle_action move-cost mirror so spammed move keypresses while
+// locked (out of turn) don't re-burn stamina for a move that won't execute —
+// only one queued move ever fires per grant.
+bool has_pending_move();
+
 // Save the last smash action JSON so it can be re-queued for "keep smashing".
 void client_set_autosmash_json( const std::string &json );
 
@@ -310,6 +316,16 @@ bool mp_world_has_history( const std::string &worldname );
 // One-line plain-text badge for picker display, e.g. "  (co-op, host)".
 // Empty when the world has no co-op history.  Caller chooses the color.
 std::string mp_world_marker_badge( const std::string &worldname );
+// Host-time co-op validation for a world the host is about to host.  A world
+// made via the standalone World > Create World path never went through the
+// co-op create-screen's mod/NPC restrictions, so re-check it here.  Fills
+// block_reasons (incompatible mods — must not host) and warn_reasons (warn
+// mods + random NPCs enabled — may break).  Returns true if there is at least
+// one BLOCK reason.  Client/join callers should NOT call this — the host owns
+// the shared world and has already validated it.
+bool mp_world_coop_block( const std::string &worldname,
+                          std::vector<std::string> &block_reasons,
+                          std::vector<std::string> &warn_reasons );
 // SP Load -> picked a co-op world.  If the world has MP history, pops a
 // chooser (Solo / Arm Host / Cancel) and arms host mode when chosen.
 // Returns true if the caller should continue loading the world, false to
