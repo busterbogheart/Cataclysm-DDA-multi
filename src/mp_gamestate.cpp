@@ -4145,7 +4145,12 @@ void wait_for_client_action()
         // sits here with host_act=none most of the time, so input was starved
         // ("5/zoom/map only occasionally caught").
         inp_mngr.pump_events();
-        handle_key_blocking_activity();
+        // Block up to 16ms for an event (not a non-blocking poll). DIAG proved the
+        // non-blocking poll ran 57x/sec but caught ZERO keys — the SRV-WAIT sub-loop
+        // doesn't deliver SDL events to handle_input(0) the way the main loop does.
+        // Blocking (like the monster-interrupt popup, which IS responsive) catches
+        // them reliably. 16ms ≈ the loop's step, so it adds no real latency.
+        handle_key_blocking_activity( 16 );
         if( g_client_acted_this_turn ) {
             break;
         }

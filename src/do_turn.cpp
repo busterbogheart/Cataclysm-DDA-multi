@@ -240,7 +240,7 @@ bool cleanup_at_end()
 
 } // namespace turn_handler
 
-void handle_key_blocking_activity()
+void handle_key_blocking_activity( int timeout )
 {
     if( test_mode ) {
         return;
@@ -254,7 +254,11 @@ void handle_key_blocking_activity()
     if( has_unfinished_activity || u.has_destination()
         || cata_mp::is_host_waiting_for_client() ) {
         input_context ctxt = get_default_mode_input_context();
-        const std::string action = ctxt.handle_input( 0 );
+        // timeout>0 blocks up to that many ms for an event (like a popup / the main
+        // loop) — the MP host wait passes 16ms so keys are caught reliably; SP/client
+        // callers pass 0 (non-blocking poll, unchanged) since their own loop already
+        // pumps SDL events before this runs.
+        const std::string action = ctxt.handle_input( timeout );
         if( cata_mp::is_hosting() && cata_mp::is_host_waiting_for_client() &&
             !action.empty() && action != "ANY_INPUT" && action != "TIMEOUT" ) {
             cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-INPUT: action=\"" + action + "\"" );
