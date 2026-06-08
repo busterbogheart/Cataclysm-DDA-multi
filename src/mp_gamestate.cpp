@@ -3523,6 +3523,61 @@ static int g_om_sync_radius = 90;   // OMTs around the host (covers the m-screen
 static tripoint_abs_omt g_om_sync_last_center{ INT_MIN, INT_MIN, 0 };
 static bool g_om_sync_done = false;
 
+// Chunked overmap-sync apply. Applying the full ~32k-cell region with one
+// overmap_buffer.ter_set() per cell froze the client's main thread for ~5.6s on
+// receipt. Decode the packet into this buffer and drain a budget of cells per
+// do_turn (mp_drain_pending_omsync) so the far-map fills in over a few seconds
+// without ever blocking a frame. The overmap is far-map only (minimap / m-screen),
+// so a brief fill-in delay is invisible to normal play.
+struct pending_omsync_t {
+    int z = 0, ox = 0, oy = 0, w = 0;
+    std::vector<oter_id> cells;   // row-major resolved terrain
+    std::vector<char> ok;         // 1 = apply this cell, 0 = skip (ungenerated)
+    size_t cursor = 0;
+    bool active = false;
+};
+static pending_omsync_t g_pending_omsync;
+
+static void mp_drain_pending_omsync()
+{
+    pending_omsync_t &p = g_pending_omsync;
+    if( !p.active ) {
+        return;
+    }
+    // Only apply while actually a client. If the session ended (e.g. dropped to
+    // solo mid-apply), discard — don't write host overmap cells into a solo world.
+    if( !is_client_mode() ) {
+        p.active = false;
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    constexpr size_t BUDGET = 1200;   // cells per do_turn
+    const size_t end = std::min( p.cursor + BUDGET, p.cells.size() );
+    int applied = 0;
+    for( ; p.cursor < end; ++p.cursor ) {
+        if( p.ok[p.cursor] ) {
+            overmap_buffer.ter_set(
+                tripoint_abs_omt( p.ox + static_cast<int>( p.cursor % p.w ),
+                                  p.oy + static_cast<int>( p.cursor / p.w ), p.z ),
+                p.cells[p.cursor] );
+            ++applied;
+        }
+    }
+    if( p.cursor >= p.cells.size() ) {
+        p.active = false;
+        g->invalidate_main_ui_adaptor();   // one repaint once the region is complete
+        mp_log( "[cdda-mp] OMSYNC apply DONE (chunked)" );
+    }
+    const long dur = static_cast<long>(
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - t0 ).count() );
+    if( dur > 25 ) {
+        mp_log( "[cdda-mp] OMSYNC chunk: applied=" + std::to_string( applied ) +
+                " dur=" + std::to_string( dur ) + "ms remaining=" +
+                std::to_string( p.cells.size() - p.cursor ) );
+    }
+}
+
 // ---- Map (submap terrain+furniture) streaming -----------------------------
 // One zoom level below overmap streaming.  The client regenerates submap detail
 // locally with divergent mapgen RNG, so its main view and pixel minimap
@@ -5267,6 +5322,10 @@ void process_mp_events()
     // be spawned into a world.  No-op for --host CLI launches.
     mp_start_pending_host_thread();
 
+    // Client: drain a budget of queued overmap-sync cells this turn (no-op when
+    // nothing is pending). Keeps the ~32k-cell apply off the single-frame hot path.
+    mp_drain_pending_omsync();
+
     // On the very first tick, purge any MP NPCs that leaked into the world save
     // from a previous session (server and client share the same world directory).
     mp_cleanup_stale_npcs();
@@ -5609,28 +5668,37 @@ static bool apply_one_state_message( const std::string &msg )
                 pal_ok.push_back( ok );
             }
             const int total = w * h;
+            // Decode the RLE into the pending buffer instead of applying inline —
+            // mp_drain_pending_omsync() applies a budget of cells per do_turn so the
+            // ~32k ter_set calls don't freeze the main thread for seconds on receipt.
+            pending_omsync_t &p = g_pending_omsync;
+            p.z = z;
+            p.ox = ox;
+            p.oy = oy;
+            p.w = w;
+            p.cells.assign( total, oter_id() );
+            p.ok.assign( total, 0 );
+            p.cursor = 0;
             int cursor = 0;
-            int applied = 0;
+            int queued = 0;
             for( JsonValue rv : jo.get_array( "rle" ) ) {
                 JsonArray run = rv.get_array();
                 const int count = run.get_int( 0 );
                 const int pidx = run.get_int( 1 );
                 const bool valid = pidx >= 0 && pidx < static_cast<int>( palette.size() ) && pal_ok[pidx];
                 for( int k = 0; k < count && cursor < total; ++k, ++cursor ) {
-                    if( !valid ) {
-                        continue;
+                    if( valid ) {
+                        p.cells[cursor] = palette[pidx];
+                        p.ok[cursor] = 1;
+                        ++queued;
                     }
-                    const int xx = cursor % w;
-                    const int yy = cursor / w;
-                    overmap_buffer.ter_set( tripoint_abs_omt( ox + xx, oy + yy, z ), palette[pidx] );
-                    ++applied;
                 }
             }
-            mp_log( "[cdda-mp] OMSYNC recv: applied=" + std::to_string( applied ) + "/" +
-                    std::to_string( total ) + " pal=" + std::to_string( palette.size() ) );
-            // Repaint so an already-open overmap / minimap reflects the synced
-            // terrain instead of the stale (self-generated) render.
-            g->invalidate_main_ui_adaptor();
+            p.active = queued > 0;
+            mp_log( "[cdda-mp] OMSYNC recv: queued=" + std::to_string( queued ) + "/" +
+                    std::to_string( total ) + " pal=" + std::to_string( palette.size() ) +
+                    " (chunked apply)" );
+            // Repaint happens once the chunked apply completes (in the drain).
         } catch( const JsonError &e ) {
             mp_log( "[cdda-mp] OMSYNC parse error: " + std::string( e.what() ) );
         }
@@ -6646,12 +6714,22 @@ void client_process_incoming()
         // CLI-RENDER timing kept so we can measure that.
         const auto r0 = std::chrono::steady_clock::now();
         g->invalidate_main_ui_adaptor();
+        const auto r1 = std::chrono::steady_clock::now();
         ui_manager::redraw();
+        const auto r2 = std::chrono::steady_clock::now();
         refresh_display();
-        const long rdur = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::steady_clock::now() - r0 ).count();
+        const auto r3 = std::chrono::steady_clock::now();
+        auto ms = []( auto a, auto b ) {
+            return static_cast<long>(
+                       std::chrono::duration_cast<std::chrono::milliseconds>( b - a ).count() );
+        };
+        const long rdur = ms( r0, r3 );
         if( rdur > 25 ) {
-            mp_log( "[cdda-mp] CLI-RENDER: " + std::to_string( rdur ) + "ms" );
+            // Sub-timed so we know which call to cut: invalidate (cold cache rebuild)
+            // vs redraw (tile draw) vs present (framebuffer blit, slow w/o accel).
+            mp_log( "[cdda-mp] CLI-RENDER: " + std::to_string( rdur ) + "ms (inval=" +
+                    std::to_string( ms( r0, r1 ) ) + " redraw=" + std::to_string( ms( r1, r2 ) ) +
+                    " present=" + std::to_string( ms( r2, r3 ) ) + ")" );
         }
     }
 }
