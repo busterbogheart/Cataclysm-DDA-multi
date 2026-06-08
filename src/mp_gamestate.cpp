@@ -6169,6 +6169,22 @@ static bool apply_one_state_message( const std::string &msg )
         }
         if( jo.has_member( "moves" ) ) {
             const int srv_moves = jo.get_int( "moves" );
+            // Deadzone self-heal: the client is provably stuck — it has a queued
+            // action it never managed to fire (an action consumed this turn's
+            // grant locally before mp_dispatch, e.g. closing a car door, so it
+            // QUEUED instead of SENDing and never acked), moves are gone, and it
+            // is NOT waiting on an ack.  The host keeps re-broadcasting the same
+            // grant_seq (it's waiting for our ack), which the seq-guard below
+            // would reject as old-seq — leaving BOTH players locked until a quit.
+            // When that exact state coincides with an incoming moves>0 packet,
+            // accept it so the queued action auto-fires and acks the host.  This
+            // is authoritative host state restoring a stuck client, not a timeout
+            // wedge-breaker.  (Today's handle_action ack-backstop prevents most of
+            // these; this guarantees recovery for any path that slips past it.)
+            const bool deadzone_recover = srv_moves > 0 &&
+                                          !g_client_waiting_for_ack &&
+                                          !g_pending_action.empty() &&
+                                          get_avatar().get_moves() <= 0;
             // Refresh the "last heard from host" timestamp on any moves-bearing
             // state message (grants AND ack-clears).  The wedge-breaker uses
             // this to detect "host went silent" rather than "host hasn't sent
@@ -6191,8 +6207,14 @@ static bool apply_one_state_message( const std::string &msg )
                         " pending=" + ( g_pending_action.empty() ? "none" : g_pending_action.substr( 0, 40 ) ) );
                 g_client_waiting_for_ack = false;
                 get_avatar().set_moves( srv_moves );
-            } else if( ( !g_client_waiting_for_ack || get_avatar().activity ) &&
-                       ( grant_seq == 0 || grant_seq > g_client_last_grant_seq ) ) {
+            } else if( deadzone_recover ||
+                       ( ( !g_client_waiting_for_ack || get_avatar().activity ) &&
+                         ( grant_seq == 0 || grant_seq > g_client_last_grant_seq ) ) ) {
+                if( deadzone_recover ) {
+                    mp_log( "[cdda-mp] CLI-DEADZONE-RECOVER: re-applying moves=" +
+                            std::to_string( srv_moves ) + " seq=" + std::to_string( grant_seq ) +
+                            " to fire stuck pending action" );
+                }
                 // New grant: seq is fresh AND (no pending ack OR avatar is in an
                 // activity).  The activity-override bypasses the ack guard so
                 // long activities (drop, read, craft) don't stall when grants
