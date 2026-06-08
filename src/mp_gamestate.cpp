@@ -577,6 +577,12 @@ static void mp_reset_map_sync();
 // Shared by both host and client; resets on connect/disconnect.
 // Hysteresis: step up at 50/57, step down at 44/50.
 static int g_separation_tier = 0;
+// False until the host+client have been confirmed close (<40 tiles) at least once
+// this session. Suppresses the join transient: the client proxy spawns at its
+// scenario start (far) and is teleported next to the host a beat later, so the
+// first separation checks would otherwise fire "close the gap now" before the
+// players are actually together. Reset on session end / world exit.
+static bool g_separation_settled = false;
 static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_abs_ms &b );
 
 // Client: luminance emitted by the host player (flashlight, mutations, etc.).
@@ -1423,6 +1429,7 @@ static void spawn_remote_player( const std::string &name )
     g_server_veh_parts_count.clear();
     g_server_veh_live_nids.clear();
     g_separation_tier = 0;
+    g_separation_settled = false;
     g_last_forwarded_msg_count = Messages::appended_total();  // don't forward pre-connect history
     mp_save_npc_ids();  // persist ID so next session can clean it up
 
@@ -1471,6 +1478,7 @@ static void remove_remote_player()
     remote_player_npc_id = character_id();
     g_proxy_was_alive = false;
     g_separation_tier = 0;
+    g_separation_settled = false;
     // Do NOT reset g_grant_seq here.  It must stay monotonically increasing so
     // that a reconnecting client (which resets g_client_last_grant_seq=0 via the
     // join path) always sees seq > 0 and accepts the first new grant.  Resetting
@@ -5214,6 +5222,16 @@ std::string mp_menu_coop_status_text()
 static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_abs_ms &b )
 {
     const int dist = std::max( std::abs( a.x() - b.x() ), std::abs( a.y() - b.y() ) );
+    // Don't warn until the pair has first been confirmed together this session,
+    // so the spawn-far → teleport-close join sequence doesn't emit a spurious
+    // "close the gap now" / "close enough again" pair before play even starts.
+    if( !g_separation_settled ) {
+        if( dist < 40 ) {
+            g_separation_settled = true;
+        }
+        g_separation_tier = 0;
+        return;
+    }
     const int prev = g_separation_tier;
     if( dist >= 68 ) {
         g_separation_tier = 3;
@@ -6555,14 +6573,20 @@ void client_process_incoming()
     if( !g_pending_action.empty() && get_avatar().get_moves() <= 0 ) {
         // Diagnostic only: pending action exists but no moves to fire it.
         // Wait for the next grant — AUTOFIRE below will send on receipt.
-        // No wedge-breaker: under pure lockstep, the host's grant cadence
-        // is the rate limiter.  If grants aren't coming, the client must
-        // not act — bypassing the grant lets the client desync from the
-        // host's turn count.
-        mp_log( "[cdda-mp] CLI-DEADZONE: pending=" + g_pending_action.substr( 0, 60 ) +
-                " moves=" + std::to_string( get_avatar().get_moves() ) +
-                " ack=" + std::to_string( g_client_waiting_for_ack ) +
-                " last_seq=" + std::to_string( g_client_last_grant_seq ) );
+        // DEDUPED: this runs every do_turn iteration while locked (~60Hz), so an
+        // unconditional log floods the file. Emit only when the state changes.
+        static std::string last_dz;
+        const std::string dz = g_pending_action.substr( 0, 60 ) + "|" +
+                               std::to_string( get_avatar().get_moves() ) + "|" +
+                               std::to_string( g_client_waiting_for_ack ) + "|" +
+                               std::to_string( g_client_last_grant_seq );
+        if( dz != last_dz ) {
+            last_dz = dz;
+            mp_log( "[cdda-mp] CLI-DEADZONE: pending=" + g_pending_action.substr( 0, 60 ) +
+                    " moves=" + std::to_string( get_avatar().get_moves() ) +
+                    " ack=" + std::to_string( g_client_waiting_for_ack ) +
+                    " last_seq=" + std::to_string( g_client_last_grant_seq ) );
+        }
     }
     if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
         mp_log( "[cdda-mp] CLI-AUTOFIRE: pending=" + g_pending_action.substr( 0, 60 ) +
