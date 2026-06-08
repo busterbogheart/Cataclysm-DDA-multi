@@ -3742,10 +3742,40 @@ static std::string build_overmap_sync()
     }
     pal_json += ']';
 
+    // City names: overmap terrain (synced above) is seed-deterministic, but city
+    // NAMES are RNG-state-dependent and diverge on the client (same buildings,
+    // wrong town name). Stream the host's names for this region; the client matches
+    // its same-position cities and renames them. (Rivers are the same class —
+    // overmap data the oter sync doesn't carry — and would use this same hook.)
+    std::string cities_json = "[";
+    {
+        bool cfirst = true;
+        const tripoint_abs_sm center_sm = project_to<coords::sm>( center );
+        const int radius_sm = ( std::max( w, h ) / 2 + 1 ) * 2;
+        for( const city_reference &cr : overmap_buffer.get_cities_near( center_sm, radius_sm ) ) {
+            if( !cr.city || cr.city->name.empty() ) {
+                continue;
+            }
+            const tripoint_abs_omt cp = project_to<coords::omt>( cr.abs_sm_pos );
+            if( cp.x() < ox || cp.x() >= ox + w || cp.y() < oy || cp.y() >= oy + h ) {
+                continue;
+            }
+            if( !cfirst ) {
+                cities_json += ',';
+            }
+            cfirst = false;
+            cities_json += "{\"x\":" + std::to_string( cp.x() ) + ",\"y\":" +
+                           std::to_string( cp.y() ) + ",\"n\":\"" +
+                           json_escape_str( cr.city->name ) + "\"}";
+        }
+    }
+    cities_json += "]";
+
     std::string msg = "{\"type\":\"overmap_sync\",\"z\":" + std::to_string( z ) +
                       ",\"ox\":" + std::to_string( ox ) + ",\"oy\":" + std::to_string( oy ) +
                       ",\"w\":" + std::to_string( w ) + ",\"h\":" + std::to_string( h ) +
-                      ",\"pal\":" + pal_json + ",\"rle\":[" + runs + "]}";
+                      ",\"pal\":" + pal_json + ",\"cities\":" + cities_json +
+                      ",\"rle\":[" + runs + "]}";
     mp_log( "[cdda-mp] OMSYNC send: center=" + std::to_string( center.x() ) + "," +
             std::to_string( center.y() ) + " w=" + std::to_string( w ) +
             " real=" + std::to_string( real_omts ) + "/" + std::to_string( w * h ) +
@@ -5738,6 +5768,36 @@ static bool apply_one_state_message( const std::string &msg )
                 pal_ok.push_back( ok );
             }
             const int total = w * h;
+            // Apply the host's city NAMES to our same-position cities. Overmap
+            // terrain matches by seed, but names are RNG-state-divergent. Match by
+            // exact OMT position (the seed-synced overmap places cities identically).
+            if( jo.has_array( "cities" ) ) {
+                int renamed = 0;
+                for( const JsonValue &cv : jo.get_array( "cities" ) ) {
+                    JsonObject co = cv.get_object();
+                    co.allow_omitted_members();
+                    const tripoint_abs_omt cp( co.get_int( "x" ), co.get_int( "y" ), z );
+                    const std::string nm = co.get_string( "n", "" );
+                    if( nm.empty() ) {
+                        continue;
+                    }
+                    overmap_with_local_coords omc = overmap_buffer.get_existing_om_global( cp );
+                    if( !omc.om ) {
+                        continue;
+                    }
+                    for( city &c : omc.om->cities ) {
+                        if( project_combine( c.pos_om, c.pos ) == cp.xy() && c.name != nm ) {
+                            c.name = nm;
+                            ++renamed;
+                            break;
+                        }
+                    }
+                }
+                if( renamed > 0 ) {
+                    mp_log( "[cdda-mp] OMSYNC: renamed " + std::to_string( renamed ) +
+                            " cities to match host" );
+                }
+            }
             // Decode the RLE into the pending buffer instead of applying inline —
             // mp_drain_pending_omsync() applies a budget of cells per do_turn so the
             // ~32k ter_set calls don't freeze the main thread for seconds on receipt.
