@@ -5368,8 +5368,8 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
             hn->op_of_u.value = 10;
             g->add_npc_follower( hn->getID() );
         }
-        std::cout << "[cdda-mp] Spawned host NPC '" << host_npc->name << "' at abs "
-                  << abs_pos.x() << "," << abs_pos.y() << std::endl;
+        mp_log( "[cdda-mp] HOST-OVERLAY: spawned host NPC '" + host_npc->name +
+                "' at abs " + abs_pos.to_string() );
         return;
     }
 
@@ -5397,7 +5397,23 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
         host_npc->op_of_u.value = 10;
         g->add_npc_follower( host_npc->getID() );
     }
-    if( m.inbounds( abs_pos ) ) {
+    const bool host_inb = m.inbounds( abs_pos );
+    {
+        // Diagnose "host overlay stuck on client": logs whenever the received host
+        // abs position, its in-bounds status, or the overlay's current bubble tile
+        // changes.  If recv_abs keeps changing but cur_bub doesn't, the apply is
+        // broken; if recv_abs stops changing, the host isn't broadcasting movement;
+        // if inbounds=0, the host left the client's bubble and the overlay freezes.
+        static std::string last_overlay;
+        const std::string s = "recv_abs=" + abs_pos.to_string() +
+                              " inbounds=" + std::to_string( host_inb ) +
+                              " cur_bub=" + host_npc->pos_bub().to_string();
+        if( s != last_overlay ) {
+            last_overlay = s;
+            mp_log( "[cdda-mp] HOST-OVERLAY: " + s );
+        }
+    }
+    if( host_inb ) {
         const tripoint_bub_ms bub = m.get_bub( abs_pos );
         if( bub != host_npc->pos_bub() ) {
             // Mirror SP avatar_action::move boarding semantics for the host proxy:
@@ -5819,7 +5835,6 @@ static bool apply_one_state_message( const std::string &msg )
         }
 
         if( jo.has_object( "host_pos" ) ) {
-            std::cout << "[cdda-mp] updating host NPC..." << std::flush;
             JsonObject hpos = jo.get_object( "host_pos" );
             hpos.allow_omitted_members();
             const tripoint_abs_ms host_pos{
@@ -5830,7 +5845,6 @@ static bool apply_one_state_message( const std::string &msg )
             const bool host_ctrl_v  = jo.has_bool( "host_ctrl_veh" )
                                       ? jo.get_bool( "host_ctrl_veh" ) : false;
             update_client_host_npc( host_pos, host_name, host_in_veh, host_ctrl_v );
-            std::cout << " ok" << std::endl;
         }
 
         // Track the host's current activity for HUD + partner-notice display.
