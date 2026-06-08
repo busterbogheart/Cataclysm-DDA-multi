@@ -4105,6 +4105,16 @@ void wait_for_client_action()
         // input=150-327ms dominated SRV-WAIT while drain/pump/redraw were
         // <20ms and the client acked in 16ms). The top-of-loop check only
         // catches it a full input-poll too late.
+        // In a wait/long activity, poll input EVERY iteration BEFORE the
+        // drain-break below. The break fires the instant the client acks (~16ms
+        // during a wait activity) — before the 100ms-gated poll further down — so
+        // without this the host never sees 5/. (interrupt) or zoom/m-map presses
+        // while waiting (regression from the 2026-06-03 flicker fix). It uses a
+        // non-blocking handle_input(0), so it can't re-pace moves or flicker.
+        if( get_avatar().activity ) {
+            inp_mngr.pump_events();
+            handle_key_blocking_activity();
+        }
         if( g_client_acted_this_turn ) {
             break;
         }
@@ -4146,15 +4156,12 @@ void wait_for_client_action()
         // inp_mngr.pump_events() above, so no beachball during the tight phase.
         const long wait_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                          std::chrono::steady_clock::now() - t_start ).count();
-        if( wait_elapsed_ms > 100 ) {
-            if( !get_avatar().activity ) {
-                g->mp_poll_input();
-            } else {
-                // In-activity (|-wait, craft, etc.): keep the legacy 5-to-cancel
-                // poll path; handle_action would dispatch its own actions which
-                // is not what we want during a long activity.
-                handle_key_blocking_activity();
-            }
+        // No-activity host wait: the blocking input poll stays gated behind 100ms
+        // so it can't pace normal moves / flicker the turn signal. The in-activity
+        // case is now polled non-blocking every iteration above (before the
+        // drain-break), so it's not repeated here.
+        if( wait_elapsed_ms > 100 && !get_avatar().activity ) {
+            g->mp_poll_input();
         }
         const auto t_after_input = std::chrono::steady_clock::now();
         const int waitev_ms = static_cast<int>(
