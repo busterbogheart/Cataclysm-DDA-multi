@@ -1251,6 +1251,21 @@ static void mp_cull_local_npcs()
 void mp_on_world_exit()
 {
     mp_cleanup_done = false;
+    // A world exit ends any co-op session.  Clear the host/client session mode so
+    // the NEXT game started from the menu is treated as plain single-player.
+    // set_client_mode(false) was previously only called on a *connect failure*, so
+    // after a successful co-op session the process stayed in client mode until it
+    // quit.  A solo "play now" afterward then saw is_client_mode()==true, got
+    // routed into the disposable "Co-op (auto) - DO NOT SELECT" scratch world, and
+    // its save was suppressed — silent single-player save loss.  The join/host
+    // menu paths re-arm the mode before the next session, so clearing here is safe.
+    if( is_client_mode() || is_host_mode() ) {
+        mp_log( "[cdda-mp] WORLD-EXIT: clearing session mode (client=" +
+                std::to_string( is_client_mode() ) + " host=" +
+                std::to_string( is_host_mode() ) + ")" );
+        set_client_mode( false );
+        set_host_mode( false );
+    }
 }
 
 static void purge_npcs_by_name( const std::string &name )
@@ -4645,23 +4660,18 @@ static bool g_host_thread_actually_started = false;
 // --host CLI flag (main.cpp spawns its own thread in that path).
 static void mp_start_pending_host_thread()
 {
-    // Lifecycle trace: shows why the server thread does/doesn't start. A second
-    // host session in one launch can arrive here with stale statics.
-    {
-        // This runs every do_turn; once the thread is up the values never change,
-        // which spammed ~11k identical lines.  Log only on transition.
-        const std::string check = "pending=" + std::to_string( g_pending_host_start ) +
-                                  " already_started=" + std::to_string( g_host_thread_actually_started ) +
-                                  " host_mode=" + std::to_string( is_host_mode() );
-        static std::string last_check;
-        if( check != last_check ) {
-            last_check = check;
-            mp_log( "[cdda-mp] HOST-THREAD-CHECK: " + check );
-        }
-    }
+    // Nothing armed / already running: return immediately, BEFORE any logging.
+    // process_mp_events() calls this every do_turn even in pure single-player
+    // (the callout in do_turn.cpp is unconditional), so an early return here keeps
+    // a non-hosting player from touching the MP log at all on this path.
     if( !g_pending_host_start || g_host_thread_actually_started ) {
         return;
     }
+    // Lifecycle trace: only reached on the turn the server thread actually starts.
+    // A second host session in one launch can arrive here with stale statics.
+    mp_log( "[cdda-mp] HOST-THREAD-CHECK: pending=" + std::to_string( g_pending_host_start ) +
+            " already_started=" + std::to_string( g_host_thread_actually_started ) +
+            " host_mode=" + std::to_string( is_host_mode() ) );
     std::thread( []() {
         run_server( 8080, std::string(), getVersionString() );
     } ).detach();
