@@ -905,6 +905,56 @@ static std::string g_client_host_world_name;
 static unsigned int g_client_host_seed = 0;
 static bool g_client_host_seed_applied = false;
 
+// Host: the host avatar's overmap-terrain position, captured each turn on the
+// game thread for the join 'welcome'. A joining client spawns directly into the
+// host's area instead of generating its character's scenario start_location — a
+// divergent environment the host lacks that caused wrong-place vehicles and a
+// cull crash in dense areas (hospitals). Read via mp_host_omt()/mp_host_omt_valid().
+static std::atomic<int> g_host_omt_x{ 0 };
+static std::atomic<int> g_host_omt_y{ 0 };
+static std::atomic<int> g_host_omt_z{ 0 };
+static std::atomic<bool> g_host_omt_valid{ false };
+
+// Client: the host's OMT received in 'welcome' — the spawn target start_game uses
+// in client mode. invalid until a welcome carrying host_omt is processed.
+static tripoint_abs_omt g_client_host_spawn_omt = tripoint_abs_omt::invalid;
+
+void mp_capture_host_omt( const tripoint_abs_omt &p )
+{
+    g_host_omt_x.store( p.x() );
+    g_host_omt_y.store( p.y() );
+    g_host_omt_z.store( p.z() );
+    g_host_omt_valid.store( true );
+}
+
+bool mp_host_omt_valid()
+{
+    return g_host_omt_valid.load();
+}
+
+tripoint_abs_omt mp_host_omt()
+{
+    return tripoint_abs_omt( g_host_omt_x.load(), g_host_omt_y.load(), g_host_omt_z.load() );
+}
+
+tripoint_abs_omt mp_client_spawn_omt()
+{
+    return g_client_host_spawn_omt;
+}
+
+// Network-thread safe: returns ",\"host_omt\":[x,y,z]" for the welcome, or "" if
+// the host position isn't captured yet. Kept here so mp_server.cpp needn't know
+// coordinate types.
+std::string mp_host_omt_welcome_field()
+{
+    if( !g_host_omt_valid.load() ) {
+        return std::string();
+    }
+    return ",\"host_omt\":[" + std::to_string( g_host_omt_x.load() ) + "," +
+           std::to_string( g_host_omt_y.load() ) + "," +
+           std::to_string( g_host_omt_z.load() ) + "]";
+}
+
 // Host: current world seed, for the network thread's 'welcome' message.
 unsigned int mp_host_world_seed()
 {
@@ -3833,6 +3883,9 @@ void grant_client_turn()
     // game state. Runs before the connected-check so it's current the moment a
     // client joins. Seed is constant for a session; the store is idempotent.
     g_host_world_seed.store( g->get_seed() );
+    // Capture the host avatar's OMT for the join 'welcome' so a client spawns into
+    // the host's area, not its own scenario start_location.
+    mp_capture_host_omt( get_avatar().pos_abs_omt() );
     if( world_generator && world_generator->active_world ) {
         mp_set_host_world_name( world_generator->active_world->world_name );
     }
@@ -5601,6 +5654,16 @@ static bool apply_one_state_message( const std::string &msg )
             if( !hn.empty() ) {
                 mp_set_client_host_player_name( hn );
                 mp_log( "[cdda-mp] welcome: host player='" + hn + "'" );
+            }
+            // The host's OMT — start_game spawns the client here (host's area)
+            // instead of its character's scenario start_location.
+            if( jo.has_array( "host_omt" ) ) {
+                JsonArray ho = jo.get_array( "host_omt" );
+                if( ho.size() >= 3 ) {
+                    g_client_host_spawn_omt = tripoint_abs_omt(
+                                                  ho.get_int( 0 ), ho.get_int( 1 ), ho.get_int( 2 ) );
+                    mp_log( "[cdda-mp] welcome: host_omt=" + g_client_host_spawn_omt.to_string() );
+                }
             }
         } catch( const JsonError & ) {}
         const auto spos = msg.find( "\"seed\":" );

@@ -203,6 +203,15 @@ void mp_on_world_exit();
 unsigned int mp_host_world_seed();
 void mp_set_host_world_name( const std::string &name );
 std::string mp_get_host_world_name();
+// Host: capture the host avatar OMT each turn for the join 'welcome'.
+void mp_capture_host_omt( const tripoint_abs_omt &p );
+bool mp_host_omt_valid();
+tripoint_abs_omt mp_host_omt();
+// Welcome JSON field ",\"host_omt\":[x,y,z]" (or "" if not captured). Net-thread safe.
+std::string mp_host_omt_welcome_field();
+// Client: the host's OMT from the welcome — start_game spawns here in client mode
+// instead of the character's scenario start_location (invalid if not a client join).
+tripoint_abs_omt mp_client_spawn_omt();
 // Client: world name received from the host's 'welcome' message.  Empty until
 // after mp_menu_join_session() returns successfully.
 std::string mp_client_host_world_name();

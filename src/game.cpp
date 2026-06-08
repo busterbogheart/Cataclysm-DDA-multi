@@ -795,10 +795,20 @@ bool game::start_game()
 
     const start_location &start_loc = u.random_start_location ? scen->random_start_location().obj() :
                                       u.start_location.obj();
-    tripoint_abs_omt omtstart = tripoint_abs_omt::invalid;
+    // MP client: spawn directly into the host's overmap area (host seed already
+    // applied from the join 'welcome') instead of generating the character's
+    // scenario start_location — that generates a divergent environment the host
+    // lacks (wrong-place vehicles, and a cull crash in dense areas like hospitals).
+    // The character (stats/skills/traits/profession items) comes along unchanged.
+    tripoint_abs_omt omtstart = cata_mp::is_client_mode()
+                                ? cata_mp::mp_client_spawn_omt()
+                                : tripoint_abs_omt::invalid;
     std::unordered_map<std::string, std::string> associated_parameters;
     const bool select_starting_city = get_option<bool>( "SELECT_STARTING_CITY" );
     do {
+        if( !omtstart.is_invalid() ) {
+            break;   // MP client: host-area spawn already chosen; skip scenario find
+        }
         if( select_starting_city ) {
             if( !u.starting_city.has_value() ) {
                 u.starting_city = random_entry( city::get_all() );
