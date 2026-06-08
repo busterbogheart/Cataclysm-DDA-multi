@@ -292,6 +292,9 @@ void mp_menu_cancel_host();
 // need to call this so the title updates after Host/Join is picked from the UI.
 void mp_update_window_title();
 
+// Co-op block appended to the debug "Generate game report" output (debug.cpp).
+std::string mp_game_report_section();
+
 // Client-only: ensure a minimal scratch world exists so the client's
 // character-creation flow doesn't force the user into worldgen when they
 // have no local worlds.  The client will be teleported to the host's world

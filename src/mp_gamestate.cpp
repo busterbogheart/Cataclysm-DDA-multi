@@ -4751,7 +4751,44 @@ void mp_update_window_title()
 {
     const char *role = is_client_mode() ? "CLIENT"
                        : ( is_host_mode() ? "HOST" : "SP" );
-    set_title( string_format( "CDDA — %s — build %s", role, g_mp_build_stamp ) );
+    // Include the commit hash (getVersionString) in the title bar too, matching
+    // the main-menu version line, so a screenshot of any window shows the exact
+    // build both players are running — the #1 thing co-op bug reports need.
+    set_title( string_format( "CDDA co-op — %s — %s — build %s",
+                              role, getVersionString(), g_mp_build_stamp ) );
+}
+
+// Co-op section appended to the debug "Generate game report" output (debug.cpp).
+// Surfaces the fork identity + co-op session state + log locations so a pasted
+// report tells us everything we need to triage a multiplayer bug.
+std::string mp_game_report_section()
+{
+    std::string s;
+    s += "- Co-op Fork: Cataclysm-DDA Multiplayer (busterbogheart/Cataclysm-DDA-multi)\n";
+    const char *role = is_client_mode() ? "Client (joined a host)"
+                       : ( is_host_mode() ? "Host (running a session)"
+                           : "Single-player (not in a co-op session)" );
+    s += std::string( "- Co-op Role: " ) + role + "\n";
+    if( is_client_mode() ) {
+        const std::string hp = mp_client_host_player_name();
+        const std::string hw = mp_client_host_world_name();
+        s += "- Co-op Partner (host): " + ( hp.empty() ? std::string( "<unknown>" ) : hp )
+             + ( hw.empty() ? std::string() : "  (world: " + hw + ")" ) + "\n";
+    } else if( is_host_mode() ) {
+        s += "- Co-op Partner (client): "
+             + ( g_partner_name_cached.empty() ? std::string( "<none connected>" )
+                 : g_partner_name_cached ) + "\n";
+    }
+#if defined(_WIN32)
+    s += "- Co-op Logs (attach to bug reports): %USERPROFILE%\\cdda-mp-server.log (host) / "
+         "%USERPROFILE%\\cdda-mp-client.log (client)\n";
+#else
+    s += "- Co-op Logs (attach to bug reports): /tmp/cdda-mp-server.log (host) / "
+         "/tmp/cdda-mp-client.log (client)\n";
+#endif
+    s += "- Co-op Note: both players must run the SAME Game Version listed above; "
+         "mismatched builds are rejected at join.\n";
+    return s;
 }
 
 WORLD *mp_ensure_client_scratch_world()

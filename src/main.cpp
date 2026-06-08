@@ -1119,7 +1119,8 @@ int main( int argc, const char *argv[] )
         // on mode-change) can re-include it instead of overwriting back to
         // a stamp-less title.
         cata_mp::g_mp_build_stamp = stamp;
-        set_title( string_format( "CDDA — %s — build %s", role, stamp ) );
+        set_title( string_format( "CDDA co-op — %s — %s — build %s",
+                                  role, getVersionString(), stamp ) );
     }
 
     while( true ) {
