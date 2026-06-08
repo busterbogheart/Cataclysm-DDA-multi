@@ -61,6 +61,7 @@
 #include "npc.h"
 #include "options.h"
 #include "output.h"
+#include "overmap_ui.h"
 #include "overmapbuffer.h"
 #include "pimpl.h"
 #include "player_activity.h"
@@ -279,6 +280,10 @@ void handle_key_blocking_activity()
         } else if( action == "zoom_out" ) {
             g->zoom_out();
             g->mark_main_ui_adaptor_resize();
+        } else if( action == "map" ) {
+            // MP-locked host: allow viewing the overmap while waiting for the
+            // client (mirrors the full-input path; zoom already works the same way).
+            ui::omap::display();
         } else if( action == "player_data" ) {
             u.disp_info( true );
         } else if( action == "messages" ) {

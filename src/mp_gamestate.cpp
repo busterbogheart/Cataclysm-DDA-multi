@@ -4135,16 +4135,17 @@ void wait_for_client_action()
         // input=150-327ms dominated SRV-WAIT while drain/pump/redraw were
         // <20ms and the client acked in 16ms). The top-of-loop check only
         // catches it a full input-poll too late.
-        // In a wait/long activity, poll input EVERY iteration BEFORE the
-        // drain-break below. The break fires the instant the client acks (~16ms
-        // during a wait activity) — before the 100ms-gated poll further down — so
-        // without this the host never sees 5/. (interrupt) or zoom/m-map presses
-        // while waiting (regression from the 2026-06-03 flicker fix). It uses a
-        // non-blocking handle_input(0), so it can't re-pace moves or flicker.
-        if( get_avatar().activity ) {
-            inp_mngr.pump_events();
-            handle_key_blocking_activity();
-        }
+        // Poll input EVERY iteration BEFORE the drain-break. handle_key_blocking_
+        // activity handles BOTH a wait/long activity AND the no-activity host-locked
+        // case (is_host_waiting_for_client() is true throughout SRV-WAIT) — zoom,
+        // m-map, 5-to-cancel, messages. Non-blocking handle_input(0), so it can't
+        // re-pace moves or flicker. The break fires the instant the client acks
+        // (~16ms), before the 100ms-gated poll below; gating this on
+        // get_avatar().activity (prev attempt) missed the COMMON case — the host
+        // sits here with host_act=none most of the time, so input was starved
+        // ("5/zoom/map only occasionally caught").
+        inp_mngr.pump_events();
+        handle_key_blocking_activity();
         if( g_client_acted_this_turn ) {
             break;
         }
