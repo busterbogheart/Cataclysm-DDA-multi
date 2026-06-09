@@ -18,6 +18,11 @@ This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoo
    `xattr -cr Cddacoop.app` in Terminal first.
 3. **Windows:** Run `cataclysm-tiles.exe`. SmartScreen may warn — click
    **More info → Run anyway**.
+4. **Linux:** Extract the tarball and run `./cddacoop.sh` from inside the
+   `Cddacoop/` folder — the launcher loads the bundled libraries, so don't run
+   `cataclysm-tiles` directly. Built on Ubuntu 22.04, so you need glibc 2.35+
+   (most current distros). If it won't start, make it executable first:
+   `chmod +x cddacoop.sh cataclysm-tiles`.
 
 The main menu is straight experimental CDDA, kept up to date, pretty much.
 The **CO-OP** menu item is new.  Otherwise this plays as single-player CDDA.
@@ -105,6 +110,8 @@ Saves, worlds, config, screenshots, memorials:
 
 - **macOS:** `~/Library/Application Support/Cataclysm/`
 - **Windows:** `.\save\`, `.\config\`, etc. next to the exe (portable)
+- **Linux:** `save/`, `config/`, etc. inside the `Cddacoop/` folder, next to the
+  binary (portable — the launcher runs the game from there)
 
 Safe to delete the whole folder for a clean slate.
 
@@ -119,7 +126,9 @@ it for you, or you can skip and play silently; it lands at
 download `cc-sounds.zip` from the
 [releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases/latest)
 and extract it into `%APPDATA%\Cataclysm\sound\` (so you have
-`...\sound\CC-Sounds\`).
+`...\sound\CC-Sounds\`). On **Linux**, download `cc-sounds.zip` from the
+releases page and extract it into `Cddacoop/data/sound/` (so you have
+`Cddacoop/data/sound/CC-Sounds/`).
 
 ---
 
@@ -192,6 +201,16 @@ large scripted-effect/teleport power sets fall outside that model.
 ---
 
 ## Changelog
+
+### 2026-06-08
+
+- **Debug: new random monster spawn** — good luck!
+- **Town names match** — the client's city/town names on the minimap and overmap
+  now line up with the host's
+- **Better recovery from players deadlocking** — a client whose action got stuck mid-turn now
+  recovers on its own instead of forcing a quit.
+- **More visibility on game version** — your build's commit hash now shows in the title
+  bar and the in-game bug report (debug menu), so you can confirm you're on the same version as your partner  
 
 ### 2026-06-05
 
@@ -295,6 +314,7 @@ The standard CDDA logs help too especially for crashes:
 
 - **macOS:** `~/Library/Application Support/Cataclysm/cata.log` and `debug.log`
 - **Windows:** `cata.log` and `debug.log` next to the exe
+- **Linux:** `cata.log` and `debug.log` inside the `Cddacoop/` folder
 
 When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plus
 `cata.log`/`debug.log` if a crash was involved). 
