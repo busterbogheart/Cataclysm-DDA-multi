@@ -139,6 +139,9 @@ You need one of these to route your partner's traffic to your machine:
 - **Sleep** runs but two-player sleep dynamics aren't fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
+- **Z-levels (stairs, basements, roofs)** aren’t fully synced yet — moving
+  between floors can desync what each player sees. Stick to the same level
+  when you can, or expect rough edges going up or down.
 <!-- /SYNC:known-limits -->
 
 ---

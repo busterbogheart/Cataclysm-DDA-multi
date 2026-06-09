@@ -170,6 +170,8 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 - **Sleep** runs but two-player sleep dynamics aren't fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
+- **Z levels (stairs, basements, etc)** aren’t fully synced yet; moving
+  between floors can desync what each player sees
 
 ---
 
