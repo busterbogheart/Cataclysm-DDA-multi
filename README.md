@@ -165,6 +165,7 @@ The standard CDDA logs help too especially for crashes:
 
 - **macOS:** `~/Library/Application Support/Cataclysm/cata.log` and `debug.log`
 - **Windows:** `cata.log` and `debug.log` next to the exe
+- **Linux:** `cata.log` and `debug.log` inside the `Cddacoop/` folder
 
 When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plus
 `cata.log`/`debug.log` if a crash was involved).
