@@ -108,7 +108,9 @@ You need one of these to route your partner's traffic to your machine:
 
 Saves, worlds, config, screenshots, memorials:
 
-- **macOS:** `~/Library/Application Support/Cataclysm/`
+- **macOS:** `~/Library/Application Support/Cddacoop/` — kept **separate** from
+  single-player CDDA (which uses `.../Cataclysm/`), so co-op and SP saves, fonts,
+  and options never mix
 - **Windows:** `.\save\`, `.\config\`, etc. next to the exe (portable)
 - **Linux:** `save/`, `config/`, etc. inside the `Cddacoop/` folder, next to the
   binary (portable — the launcher runs the game from there)
@@ -122,7 +124,7 @@ Safe to delete the whole folder for a clean slate.
 The CC-Sounds pack (~135 MB) is **not bundled** in this zip to keep
 the download small. On **macOS** first launch the app offers to download
 it for you, or you can skip and play silently; it lands at
-`~/Library/Application Support/Cataclysm/sound/CC-Sounds/`. On **Windows**,
+`~/Library/Application Support/Cddacoop/sound/CC-Sounds/`. On **Windows**,
 download `cc-sounds.zip` from the
 [releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases/latest)
 and extract it into `%APPDATA%\Cataclysm\sound\` (so you have
@@ -201,6 +203,17 @@ large scripted-effect/teleport power sets fall outside that model.
 ---
 
 ## Changelog
+
+### 2026-06-09
+
+- **macOS: co-op keeps its own save folder now** — co-op no longer shares its
+  saves, fonts, and options with single-player CDDA (both used the same folder).
+  If your menus showed the wrong sans-serif font, that was single-player’s
+  config bleeding in — fixed. Heads-up: co-op reads from this new folder, so existing co-op worlds won’t
+  appear automatically — copy them over yourself from
+  `~/Library/Application Support/Cataclysm/save/<world>` into
+  `~/Library/Application Support/Cddacoop/save/`. (The app never touches your
+  single-player folder on its own.)
 
 ### 2026-06-08
 
@@ -312,7 +325,7 @@ The co-op logs are the important ones:
 
 The standard CDDA logs help too especially for crashes:
 
-- **macOS:** `~/Library/Application Support/Cataclysm/cata.log` and `debug.log`
+- **macOS:** `~/Library/Application Support/Cddacoop/cata.log` and `debug.log`
 - **Windows:** `cata.log` and `debug.log` next to the exe
 - **Linux:** `cata.log` and `debug.log` inside the `Cddacoop/` folder
 

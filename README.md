@@ -163,7 +163,7 @@ The co-op logs are the important ones:
 
 The standard CDDA logs help too especially for crashes:
 
-- **macOS:** `~/Library/Application Support/Cataclysm/cata.log` and `debug.log`
+- **macOS:** `~/Library/Application Support/Cddacoop/cata.log` and `debug.log`
 - **Windows:** `cata.log` and `debug.log` next to the exe
 - **Linux:** `cata.log` and `debug.log` inside the `Cddacoop/` folder
 

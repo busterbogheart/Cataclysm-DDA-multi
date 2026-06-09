@@ -19,7 +19,19 @@ cd "$RES"
 export DYLD_FRAMEWORK_PATH="$RES"
 export DYLD_LIBRARY_PATH="$RES"
 
-USER_SOUND_DIR="$HOME/Library/Application Support/Cataclysm/sound"
+# Co-op keeps its OWN user dir, separate from single-player CDDA. Mainline
+# CDDA (and older co-op builds) use ~/Library/Application Support/Cataclysm/;
+# sharing it means a player's SP fonts.json / options.json / saves bleed into
+# co-op (the sans-serif-menus bug, and mixed save lists). Redirect everything
+# to .../Cddacoop/ via --userdir on the exec below, and point the CC-Sounds
+# check at the same place.
+USERDIR="$HOME/Library/Application Support/Cddacoop"
+USER_SOUND_DIR="$USERDIR/sound"
+# NOTE: this launcher deliberately NEVER reads, writes, or deletes anything in
+# the single-player dir (~/Library/Application Support/Cataclysm/). The only
+# thing it does is point co-op at its own ...Cddacoop/ dir via --userdir below.
+# Players upgrading from a shared-dir build copy their co-op worlds over by hand
+# (see the README) — we don't auto-touch the SP dir to migrate them.
 # /releases/latest/download/<name> is a GitHub redirect to the latest
 # non-draft, non-prerelease release's matching asset. Resolves once a
 # v* release ships cc-sounds.zip; pre-releases don't satisfy this URL.
@@ -63,4 +75,4 @@ if ! has_soundpack; then
   fi
 fi
 
-exec ./cataclysm-tiles
+exec ./cataclysm-tiles --userdir "$USERDIR/"
