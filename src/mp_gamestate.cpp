@@ -8616,6 +8616,38 @@ static void apply_monster_sync( JsonObject &jo )
             }
         }
 
+        // DIAG (GH#1 dup, temp): no net_id or proximity match — about to spawn.
+        // Log WHY so we see whether same-type dups already exist (and under what
+        // net_id / distance / dead state), and whether the region center / avatar
+        // pos explain in_region=0. One line per would-be spawn.
+        if( best == nullptr ) {
+            std::string dtype;
+            mo.read( "id", dtype );
+            int same = 0;
+            std::string near;
+            for( const auto &ptr : mons ) {
+                monster *mm = ptr.get();
+                if( !mm || mm->type->id.str() != dtype ) {
+                    continue;
+                }
+                ++same;
+                const tripoint_abs_ms mp2 = mm->pos_abs();
+                near += "[nid=" + std::to_string( mm->mp_net_id ) + " d=" +
+                        std::to_string( std::abs( mp2.x() - target.x() ) +
+                                        std::abs( mp2.y() - target.y() ) ) +
+                        ( mm->is_dead() ? " DEAD" : "" ) +
+                        ( matched.count( mm ) ? " MATCHED" : "" ) + "] ";
+            }
+            mp_log( "[cdda-mp] MON-NOMATCH: nid=" + std::to_string( nid ) + " type=" + dtype +
+                    " target=" + std::to_string( target.x() ) + "," + std::to_string( target.y() ) +
+                    " region_ctr=" + std::to_string( region_center.x() ) + "," +
+                    std::to_string( region_center.y() ) +
+                    " av=" + std::to_string( get_avatar().pos_abs().x() ) + "," +
+                    std::to_string( get_avatar().pos_abs().y() ) +
+                    " trk_total=" + std::to_string( mons.size() ) +
+                    " same_type=" + std::to_string( same ) + " | " + near );
+        }
+
         // --- Spawn: server has a monster the client doesn't know about ---
         if( best == nullptr && m.inbounds( target ) && server_hp > 0 ) {
             std::string id_str;
