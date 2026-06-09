@@ -4437,6 +4437,17 @@ bool game::handle_action()
     // actions allowed only while alive
     if( !player_character.is_dead_state() ) {
         if( !do_regular_action( act, player_character, mouse_target ) ) {
+            // DIAG (#2 spam-deadlock, temp): do_regular_action returned false. If
+            // this consumed the move grant (e.g. autoattack with no clean
+            // dispatch), the early return here skips the ack-backstop below, so
+            // the host hangs forever in SRV-WAIT for this grant's wait.
+            if( cata_mp::is_client_mode() && act != ACTION_TIMEOUT ) {
+                cata_mp::mp_log( std::string( "[cdda-mp] DRA-FALSE: act=" ) + action_ident( act ) +
+                                 " before=" + std::to_string( before_action_moves ) +
+                                 " now=" + std::to_string( player_character.get_moves() ) +
+                                 " waiting_ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +
+                                 " activity=" + std::to_string( static_cast<bool>( player_character.activity ) ) );
+            }
             return false;
         }
     }
@@ -4467,6 +4478,16 @@ bool game::handle_action()
     //       already set the ack guard — don't double-ack it.
     //   !activity : an action that started a long activity acks via the
     //       activity-end / per-grant ACT-ACK path, not a one-shot wait.
+    // DIAG (#2 spam-deadlock, temp): whenever a grant was present this call
+    // (before>0), log the backstop guard inputs so a skipped ack reveals which
+    // guard blocked it (waiting_ack / activity / moves-not-consumed).
+    if( cata_mp::is_client_mode() && act != ACTION_TIMEOUT && before_action_moves > 0 ) {
+        cata_mp::mp_log( std::string( "[cdda-mp] BACKSTOP-GUARD: act=" ) + action_ident( act ) +
+                         " before=" + std::to_string( before_action_moves ) +
+                         " now=" + std::to_string( player_character.get_moves() ) +
+                         " waiting_ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +
+                         " activity=" + std::to_string( static_cast<bool>( player_character.activity ) ) );
+    }
     if( cata_mp::is_client_mode() && act != ACTION_TIMEOUT &&
         before_action_moves > 0 && player_character.get_moves() <= 0 &&
         !cata_mp::is_client_waiting_for_ack() && !player_character.activity ) {
