@@ -6554,7 +6554,14 @@ static bool apply_one_state_message( const std::string &msg )
                             + " moves " + std::to_string( pre_tick_moves ) + "->" + std::to_string( post_tick_moves )
                             + " moves_left " + std::to_string( pre_tick_moves_left ) + "->" + std::to_string( post_tick_moves_left )
                             + " ended=" + std::to_string( !get_avatar().activity )
-                            + " grant_seq=" + std::to_string( grant_seq ) );
+                            + " grant_seq=" + std::to_string( grant_seq )
+                            // DIAG (temp #2/#3 timing): ms from grant-received to this
+                            // in-activity ack = client work before ack. Host SRV-WAIT
+                            // minus this ≈ network RTT. Large here = client-bound (render
+                            // → #2/#3 help); small here w/ large SRV-WAIT = network-bound.
+                            + " since_grant=" + std::to_string(
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - g_last_grant_time ).count() ) + "ms" );
                     client_send( client_enrich_action(
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                     g_client_waiting_for_ack = true;
@@ -7618,7 +7625,11 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_id
                 ( id ? id.str() : "idle" ) );
         return;
     }
-    mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) );
+    mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) +
+            // DIAG (temp #2/#3 timing): same since_grant split as CLI-GRANT-ACT-ACK.
+            " since_grant=" + std::to_string(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - g_last_grant_time ).count() ) + "ms" );
     client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
     client_mark_action_sent();
 }
