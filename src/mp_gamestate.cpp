@@ -6012,6 +6012,15 @@ static bool apply_one_state_message( const std::string &msg )
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
             avatar &av = get_avatar();
+            // DIAG (pass-item deadlock, temp): capture the client's grant/move/ack
+            // state when a pass/trade is applied. The host hangs in SRV-WAIT after a
+            // pass-in-vehicle because the client ends at moves<=0 + queued move + no
+            // ack. This handler doesn't touch moves itself, so we want to see whether
+            // moves are already 0 here (grant lost / spent elsewhere) and whether an
+            // ack is pending. Pair with CLI-GRANT / CLI-DRAIN-END.
+            mp_log( "[cdda-mp] TRADE-APPLY: moves=" + std::to_string( av.get_moves() ) +
+                    " ack=" + std::to_string( is_client_waiting_for_ack() ) +
+                    " ms_since_grant=" + std::to_string( ms_since_last_grant() ) + "ms" );
             // "give" = items the host gave to our proxy → add to our avatar
             if( jo.has_array( "give" ) ) {
                 for( const JsonValue &iv : jo.get_array( "give" ) ) {

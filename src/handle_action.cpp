@@ -4467,6 +4467,16 @@ bool game::handle_action()
     //       already set the ack guard — don't double-ack it.
     //   !activity : an action that started a long activity acks via the
     //       activity-end / per-grant ACT-ACK path, not a one-shot wait.
+    // DIAG (deadlock family, temp): log the ack-guard inputs whenever a grant was
+    // present this call (before>0). A grant consumed to <=0 with no ack sent and no
+    // backstop firing = the host-hangs-in-SRV-WAIT bug (autoattack, pass-item, ...).
+    if( cata_mp::is_client_mode() && act != ACTION_TIMEOUT && before_action_moves > 0 ) {
+        cata_mp::mp_log( std::string( "[cdda-mp] BACKSTOP-GUARD: act=" ) + action_ident( act ) +
+                         " before=" + std::to_string( before_action_moves ) +
+                         " now=" + std::to_string( player_character.get_moves() ) +
+                         " waiting_ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +
+                         " activity=" + std::to_string( static_cast<bool>( player_character.activity ) ) );
+    }
     if( cata_mp::is_client_mode() && act != ACTION_TIMEOUT &&
         before_action_moves > 0 && player_character.get_moves() <= 0 &&
         !cata_mp::is_client_waiting_for_ack() && !player_character.activity ) {
