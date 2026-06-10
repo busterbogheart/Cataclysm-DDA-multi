@@ -39,15 +39,29 @@ CC_URL="https://github.com/busterbogheart/Cataclysm-DDA-multi/releases/latest/do
 
 # A soundpack is "installed" if any directory in the bundle's or the user's
 # sound dir holds a soundpack.txt manifest — the same marker CDDA scans for
-# when discovering soundpacks. Matches CC-Sounds, CC-Sounds-sfx-only,
+# when discovering soundpacks. Counts CC-Sounds, CC-Sounds-sfx-only,
 # CO.AG-music-only, or any pack dropped in manually, so we never re-prompt
 # someone who already has sound just because their folder isn't named
 # exactly "CC-Sounds".
+#
+# EXCLUDE the bundled placeholder packs: CC-Sounds proper is stripped from the
+# zip to keep the download small, but the build still ships Menu_Sound_Test (tiny
+# menu-click sounds) so SOUND=1 has something. Its soundpack.txt would otherwise
+# satisfy this check and suppress the CC-Sounds prompt for EVERYONE — shipping the
+# game with no real in-game audio and no nudge to fix it. Only a real pack
+# (incl. CC-Sounds-sfx-only) counts.
 has_soundpack() {
   for d in "$RES/data/sound" "$USER_SOUND_DIR"; do
     [ -d "$d" ] || continue
     for p in "$d"/*/soundpack.txt; do
-      [ -f "$p" ] && return 0
+      [ -f "$p" ] || continue
+      case "$p" in
+        # Bundled placeholder pack (menu clicks only, not real game audio) — don't
+        # count it. Everything else, INCLUDING CC-Sounds-sfx-only and CO.AG-music-
+        # only, counts as a real installed pack so we don't re-prompt those users.
+        */Menu_Sound_Test/soundpack.txt ) continue ;;
+      esac
+      return 0
     done
   done
   return 1
