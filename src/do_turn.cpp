@@ -1085,7 +1085,19 @@ bool game::do_turn()
                     // fast-forward and re-enters strict lockstep.
                     const bool had_act_pre = cata_mp::is_client_mode() &&
                                              static_cast<bool>( u.activity );
+                    // DIAG (temp #3): time the locked-branch wait poll — the suspect
+                    // for the ~349ms passive-activity per-turn cost (it renders the
+                    // wait popup AND blocks for input). RENDER:* probes split which.
+                    const auto hkba_t0 = std::chrono::steady_clock::now();
                     handle_key_blocking_activity();
+                    if( cata_mp::is_client_mode() ) {
+                        const int hkba_ms = static_cast<int>(
+                                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                        std::chrono::steady_clock::now() - hkba_t0 ).count() );
+                        if( hkba_ms > 30 ) {
+                            cata_mp::mp_log( "[cdda-mp] CLI-HKBA: " + std::to_string( hkba_ms ) + "ms" );
+                        }
+                    }
                     if( had_act_pre && !u.activity ) {
                         const std::string ended = cata_mp::get_client_turn_activity();
                         cata_mp::mp_log( "[cdda-mp] LOCKED-ACT-END: activity cancelled in locked branch, ended=" +
