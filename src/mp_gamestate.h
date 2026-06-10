@@ -485,6 +485,13 @@ character_id get_remote_player_npc_character_id();
 // is fast-forwarding through a long activity (wait, sleep, crafting).
 int ms_since_last_grant();
 
+// True when the client is in a long activity, so the expensive per-turn tiles
+// redraw can be rate-capped (it doesn't need 1:1 repaints while waiting/crafting/
+// reading, and skipping frees the client loop to process host grants promptly —
+// otherwise a ~317ms draw runs every turn, paces the host to it, and flickers the
+// turn border RED). Client-only; false on host/SP so they render normally.
+bool client_render_can_throttle();
+
 // Client only: true when the server's last state packet indicated the host is
 
 // Client only: true when the server has told us the proxy NPC is at vehicle controls.

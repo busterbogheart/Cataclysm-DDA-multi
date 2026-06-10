@@ -7578,6 +7578,11 @@ int ms_since_last_grant()
         duration_cast<milliseconds>( steady_clock::now() - g_last_grant_time ).count() );
 }
 
+bool client_render_can_throttle()
+{
+    return is_client_mode() && static_cast<bool>( get_avatar().activity );
+}
+
 bool client_ctrl_veh()
 {
     return g_client_ctrl_veh;

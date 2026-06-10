@@ -525,6 +525,20 @@ void invalidate( const rectangle<point> &rect, const bool reenable_uis_below )
 
 void redraw()
 {
+    // #3 (render throttle): while the client is in a long activity, rate-cap the
+    // full tiles redraw to ~1Hz. The ~317ms draw on a slow client otherwise runs
+    // every turn and blocks the loop from processing the host's grant — pacing the
+    // host to the client and flickering the turn border RED. The wait/craft/read
+    // screen is fine at 1Hz; the freed loop acks grants promptly so the host moves
+    // smoothly. Cap interval must exceed the draw cost (~317ms) to actually skip.
+    if( cata_mp::client_render_can_throttle() ) {
+        static auto last_draw = std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+        const auto now = std::chrono::steady_clock::now();
+        if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_draw ).count() < 1000 ) {
+            return;
+        }
+        last_draw = now;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     ui_adaptor::redraw();
     if( cata_mp::is_client_mode() ) {
