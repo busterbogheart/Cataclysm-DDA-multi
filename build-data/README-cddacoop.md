@@ -208,11 +208,11 @@ large scripted-effect/teleport power sets fall outside that model.
 
 ### 2026-06-09
 
-- **macOS: co-op keeps its own save folder now** — co-op no longer shares its
+- **macOS: co-op keeps its own save folder now** — (Windows and Linux were already separate).  Co-op no longer shares its
   saves, fonts, and options with single-player CDDA (both used the same folder).
   If your menus showed the wrong sans-serif font, that was single-player’s
-  config bleeding in — fixed. Heads-up: co-op reads from this new folder, so existing co-op worlds won’t
-  appear automatically — copy them over yourself from
+  config bleeding in, now fixed. Also: co-op reads from this new folder, so existing co-op worlds won’t
+  appear automatically.  Copy them over yourself from
   `~/Library/Application Support/Cataclysm/save/<world>` into
   `~/Library/Application Support/Cddacoop/save/`. (The app never touches your
   single-player folder on its own.)
@@ -220,8 +220,6 @@ large scripted-effect/teleport power sets fall outside that model.
 ### 2026-06-08
 
 - **Debug: new random monster spawn** — good luck!
-- **Town names match** — the client's city/town names on the minimap and overmap
-  now line up with the host's
 - **Better recovery from players deadlocking** — a client whose action got stuck mid-turn now
   recovers on its own instead of forcing a quit.
 - **More visibility on game version** — your build's commit hash now shows in the title
