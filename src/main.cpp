@@ -1138,24 +1138,7 @@ int main( int argc, const char *argv[] )
 
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
         get_event_bus().send<event_type::game_begin>( getVersionString() );
-        // DIAG (temp #2/#3 timing): wall-time of each client do_turn (redraw is
-        // inside do_turn). Pair with since_grant + host SRV-WAIT to split a turn
-        // into network vs client-render vs other. Only log slow turns to limit spam.
-        while( true ) {
-            const auto dt0 = std::chrono::steady_clock::now();
-            const bool done = g->do_turn();
-            if( cata_mp::is_client_mode() ) {
-                const int dt_ms = static_cast<int>(
-                                      std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::steady_clock::now() - dt0 ).count() );
-                if( dt_ms > 30 ) {
-                    cata_mp::mp_log( "[cdda-mp] CLI-DOTURN: " + std::to_string( dt_ms ) + "ms" );
-                }
-            }
-            if( done ) {
-                break;
-            }
-        }
+        while( !g->do_turn() ) {}
         // World unloaded (quit-to-menu). Reset per-world MP state so re-entering
         // a world re-runs the stale-proxy sweep instead of skipping it.
         cata_mp::mp_on_world_exit();

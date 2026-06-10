@@ -539,29 +539,12 @@ void redraw()
         }
         last_draw = now;
     }
-    const auto t0 = std::chrono::steady_clock::now();
     ui_adaptor::redraw();
-    if( cata_mp::is_client_mode() ) {
-        const int ms = static_cast<int>( std::chrono::duration_cast<std::chrono::milliseconds>(
-                                             std::chrono::steady_clock::now() - t0 ).count() );
-        if( ms > 30 ) {
-            cata_mp::mp_log( "[cdda-mp] RENDER: ui_manager::redraw=" + std::to_string( ms ) + "ms" );
-        }
-    }
 }
 
 void redraw_invalidated()
 {
-    const auto t0 = std::chrono::steady_clock::now();
     ui_adaptor::redraw_invalidated();
-    if( cata_mp::is_client_mode() ) {
-        const int ms = static_cast<int>( std::chrono::duration_cast<std::chrono::milliseconds>(
-                                             std::chrono::steady_clock::now() - t0 ).count() );
-        if( ms > 30 ) {
-            cata_mp::mp_log( "[cdda-mp] RENDER: ui_manager::redraw_invalidated=" + std::to_string( ms ) +
-                             "ms" );
-        }
-    }
 }
 
 void screen_resized()

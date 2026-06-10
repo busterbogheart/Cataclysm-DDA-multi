@@ -6554,14 +6554,7 @@ static bool apply_one_state_message( const std::string &msg )
                             + " moves " + std::to_string( pre_tick_moves ) + "->" + std::to_string( post_tick_moves )
                             + " moves_left " + std::to_string( pre_tick_moves_left ) + "->" + std::to_string( post_tick_moves_left )
                             + " ended=" + std::to_string( !get_avatar().activity )
-                            + " grant_seq=" + std::to_string( grant_seq )
-                            // DIAG (temp #2/#3 timing): ms from grant-received to this
-                            // in-activity ack = client work before ack. Host SRV-WAIT
-                            // minus this ≈ network RTT. Large here = client-bound (render
-                            // → #2/#3 help); small here w/ large SRV-WAIT = network-bound.
-                            + " since_grant=" + std::to_string(
-                                std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() - g_last_grant_time ).count() ) + "ms" );
+                            + " grant_seq=" + std::to_string( grant_seq ) );
                     client_send( client_enrich_action(
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                     g_client_waiting_for_ack = true;
@@ -7630,11 +7623,7 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_id
                 ( id ? id.str() : "idle" ) );
         return;
     }
-    mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) +
-            // DIAG (temp #2/#3 timing): same since_grant split as CLI-GRANT-ACT-ACK.
-            " since_grant=" + std::to_string(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - g_last_grant_time ).count() ) + "ms" );
+    mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) );
     client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
     client_mark_action_sent();
 }
@@ -8630,38 +8619,6 @@ static void apply_monster_sync( JsonObject &jo )
                     g_net_id_map[nid] = best;
                 }
             }
-        }
-
-        // DIAG (GH#1 dup, temp): no net_id or proximity match — about to spawn.
-        // Log WHY so we see whether same-type dups already exist (and under what
-        // net_id / distance / dead state), and whether the region center / avatar
-        // pos explain in_region=0. One line per would-be spawn.
-        if( best == nullptr ) {
-            std::string dtype;
-            mo.read( "id", dtype );
-            int same = 0;
-            std::string near;
-            for( const auto &ptr : mons ) {
-                monster *mm = ptr.get();
-                if( !mm || mm->type->id.str() != dtype ) {
-                    continue;
-                }
-                ++same;
-                const tripoint_abs_ms mp2 = mm->pos_abs();
-                near += "[nid=" + std::to_string( mm->mp_net_id ) + " d=" +
-                        std::to_string( std::abs( mp2.x() - target.x() ) +
-                                        std::abs( mp2.y() - target.y() ) ) +
-                        ( mm->is_dead() ? " DEAD" : "" ) +
-                        ( matched.count( mm ) ? " MATCHED" : "" ) + "] ";
-            }
-            mp_log( "[cdda-mp] MON-NOMATCH: nid=" + std::to_string( nid ) + " type=" + dtype +
-                    " target=" + std::to_string( target.x() ) + "," + std::to_string( target.y() ) +
-                    " region_ctr=" + std::to_string( region_center.x() ) + "," +
-                    std::to_string( region_center.y() ) +
-                    " av=" + std::to_string( get_avatar().pos_abs().x() ) + "," +
-                    std::to_string( get_avatar().pos_abs().y() ) +
-                    " trk_total=" + std::to_string( mons.size() ) +
-                    " same_type=" + std::to_string( same ) + " | " + near );
         }
 
         // --- Spawn: server has a monster the client doesn't know about ---

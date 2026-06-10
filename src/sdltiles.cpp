@@ -654,7 +654,6 @@ static void draw_gamepad_radial_menu();
 
 void refresh_display()
 {
-    const auto mp_rd_t0 = std::chrono::steady_clock::now();
     needupdate = false;
     lastupdate = GetTicks();
 
@@ -688,13 +687,6 @@ void refresh_display()
     draw_gamepad_radial_menu();
     RenderPresent( renderer );
     SetRenderTarget( renderer, display_buffer );
-    if( cata_mp::is_client_mode() ) {
-        const int mp_rd_ms = static_cast<int>( std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - mp_rd_t0 ).count() );
-        if( mp_rd_ms > 30 ) {
-            cata_mp::mp_log( "[cdda-mp] RENDER: refresh_display=" + std::to_string( mp_rd_ms ) + "ms" );
-        }
-    }
 }
 
 // only update if the set interval has elapsed
