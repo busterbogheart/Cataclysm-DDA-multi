@@ -206,17 +206,31 @@ runs:
       env:
         ARCH: ${{ inputs.arch }}
       run: |
-        # `make app` produces Cataclysm.app; with SDL3 (no FRAMEWORK) the
-        # trailing dylibbundler bundles the SDL3 dylibs the binary links from
-        # the prefix into Contents/Resources/. data/shaders (with the compiled
-        # .msl) is copied in by the app target.
+        # `make app` runs dylibbundler to bundle the binary's dylibs into
+        # Contents/Resources/. The SDL3 dylibs are @rpath-referenced and live
+        # in our build prefix; SDL3_mixer/ttf also link MacPorts codecs in
+        # /opt/local. dylibbundler only searches paths given via -s (Makefile:
+        # `$(addprefix -s ,$(DYLIBBUNDLER_SEARCH_PATHS))`), and that variable is
+        # undefined by default — so without these it can't resolve
+        # @rpath/libSDL3_image.0.dylib and drops into an interactive prompt that
+        # loops forever in CI (no stdin). Feed it the prefix + MacPorts lib dirs.
+        PREFIX="${{ runner.workspace }}/sdl3_prefix"
         UNI=""
         [ "$ARCH" = "universal" ] && UNI="UNIVERSAL_BINARY=1"
-        make app \
+        # `yes quit |` is a hang-guard: if dylibbundler ever still can't find a
+        # lib, it gets "quit" and aborts fast instead of looping on the prompt
+        # for hours. pipefail off + PIPESTATUS so yes's SIGPIPE doesn't fail the
+        # step when make actually succeeds.
+        set +o pipefail
+        yes quit | make app \
           TILES=1 SOUND=1 SDL3=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 \
           USE_HOME_DIR=1 RELEASE=1 \
+          DYLIBBUNDLER_SEARCH_PATHS="$PREFIX/lib /opt/local/lib" \
           $UNI
+        rc=${PIPESTATUS[1]}
+        set -o pipefail
+        [ "$rc" -eq 0 ] || { echo "make app failed (rc=$rc) — dylibbundler likely couldn't resolve a lib; widen DYLIBBUNDLER_SEARCH_PATHS"; exit 1; }
         mv Cataclysm.app Cddacoop.app
 
     - name: Install Cddacoop launcher
