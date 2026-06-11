@@ -64,11 +64,13 @@ runs:
       run: |
         vcpkg integrate install --vcpkg-root "$env:RUNNER_WORKSPACE\b\vcpkg"
 
-    - name: Cache vcpkg installed packages
-      uses: actions/cache@v4
-      with:
-        path: msvc-full-features/vcpkg_installed
-        key: vcpkg-installed-sdl3-${{ hashFiles('msvc-full-features/vcpkg.json', '.github/vcpkg_triplets/x64-windows-static.cmake') }}-f6672d8e480ccdecddfad3fd1b838ba369ffe6cd
+    # NOTE: upstream additionally wraps msvc-full-features/vcpkg_installed in an
+    # actions/cache here. We DON'T — run-vcpkg already enables vcpkg's native
+    # GitHub Actions binary cache (VCPKG_BINARY_SOURCES=clear;x-gha,readwrite),
+    # which caches/restores the built vcpkg packages. The extra actions/cache of
+    # the whole installed tree is redundant with that, and on a cache hit it hard-
+    # aborted the job against the GHA cache service with no error (run 27381075524).
+    # The x-gha binary cache alone keeps the SDL3 stack from recompiling.
 
     - name: Download ccache
       uses: robinraju/release-downloader@v1.9
