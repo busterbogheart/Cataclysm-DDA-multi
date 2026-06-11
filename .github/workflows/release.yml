@@ -94,7 +94,19 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       || github.event.inputs.windows == 'true'
-    runs-on: windows-latest
+    # windows-2022: the runner upstream's msvc-full-features.yml targets.
+    runs-on: windows-2022
+    # Env mirrors upstream's msvc-full-features.yml. VCPKG_OVERLAY_TRIPLETS
+    # points at our merged x64-windows-static.cmake (release-only, mpg123
+    # forced dynamic). CDDA_* drive the ccache shim wired up in the action.
+    env:
+      BACKTRACE: 1
+      CCACHE_LIMIT: 10GB
+      CDDA_CCACHE_PATH: ${{ github.workspace }}\ccache\
+      CDDA_USE_CCACHE: true
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\.github\vcpkg_triplets
+      CCACHE_HARDLINK: true
+      ZSTD_CLEVEL: 17
     steps:
       - uses: actions/checkout@v4
         with:

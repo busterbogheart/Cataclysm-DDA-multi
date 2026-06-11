@@ -1,12 +1,19 @@
 name: Build Windows binary
 description: >
-  Build cataclysm-tiles.exe via MSYS2/MinGW-w64, walk DLL deps with ntldd,
-  package into Cddacoop/ folder, zip, and upload as
-  cddacoop-windows-x64.
+  Build cataclysm-tiles.exe via MSVC + vcpkg (SDL3), mirroring upstream's
+  msvc-full-features.yml build. Packages into Cddacoop/ folder, zips, and
+  uploads as cddacoop-windows-x64.
+
+# WHY MSVC+vcpkg (not MSYS2/MinGW): this is the toolchain CleverRaven ships
+# Windows with. Mirroring it keeps us in parity — vcpkg.json, the overlay
+# triplets, and the msvc-full-features/*.vcxproj solution all merge straight
+# from upstream, so future merges touch zero of our packaging code. The build
+# step below is a near-verbatim copy of upstream .github/workflows/
+# msvc-full-features.yml; only the version stamp + ZIP packaging are ours.
 
 inputs:
   version:
-    description: 'Version string baked into the binary (e.g. v0.1.0 or test-20260523-a1b2c3d).'
+    description: 'Version string used for the ZIP filename (e.g. v0.1.0 or test-20260523-a1b2c3d).'
     required: true
 
 outputs:
@@ -17,115 +24,185 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Set up MSYS2 / MinGW-w64
+    # --- upstream build steps (msvc-full-features.yml), verbatim ---------------
+    - name: Setup msys2
       uses: msys2/setup-msys2@v2
       with:
-        msystem: MINGW64
-        update: false
-        cache: true
+        msystem: mingw64
         install: >-
-          base-devel
-          git
-          mingw-w64-x86_64-toolchain
-          mingw-w64-x86_64-SDL2
-          mingw-w64-x86_64-SDL2_image
-          mingw-w64-x86_64-SDL2_mixer
-          mingw-w64-x86_64-SDL2_ttf
-          mingw-w64-x86_64-gettext
-          mingw-w64-x86_64-libxmp
-          mingw-w64-x86_64-wavpack
-          mingw-w64-x86_64-opusfile
-          mingw-w64-x86_64-opus
-          mingw-w64-x86_64-ntldd
-          mingw-w64-x86_64-ccache
+          gettext
+          make
           zip
 
-    - name: Restore ccache
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Use GNU tar to enable zstd for actions/cache
+      shell: cmd
+      run: |
+        echo Adding GNU tar to PATH
+        echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
+
+    - name: Install stable CMake
+      uses: lukka/get-cmake@latest
+      with:
+        # 4.0.0 has issues compiling old packages (upstream pin)
+        cmakeVersion: 3.31.6
+
+    - name: Install vcpkg
+      uses: lukka/run-vcpkg@v11.6
+      id: runvcpkg
+      with:
+        vcpkgDirectory: '${{ runner.workspace }}/b/vcpkg'
+        # Must equal builtin-baseline in msvc-full-features/vcpkg.json.
+        vcpkgGitCommitId: 'f6672d8e480ccdecddfad3fd1b838ba369ffe6cd'
+
+    - name: Integrate vcpkg
+      shell: pwsh
+      env:
+        RUNNER_WORKSPACE: ${{ runner.workspace }}
+      run: |
+        vcpkg integrate install --vcpkg-root "$env:RUNNER_WORKSPACE\b\vcpkg"
+
+    - name: Cache vcpkg installed packages
       uses: actions/cache@v4
       with:
-        # Cache a path under the workspace, NOT ~/.ccache: this step runs in the
-        # default Windows shell where ~ is C:\Users\runneradmin, but the build
-        # runs in the MSYS2 shell where $HOME is C:\msys64\home\... — a different
-        # dir. The mismatch meant the cache only ever saved an empty folder, so
-        # the Windows build got 0% ccache hits and full-recompiled every run.
-        path: ${{ github.workspace }}/ccache
-        key: ccache-win-x64-v2-${{ github.sha }}
+        path: msvc-full-features/vcpkg_installed
+        key: vcpkg-installed-sdl3-${{ hashFiles('msvc-full-features/vcpkg.json', '.github/vcpkg_triplets/x64-windows-static.cmake') }}-f6672d8e480ccdecddfad3fd1b838ba369ffe6cd
+
+    - name: Download ccache
+      uses: robinraju/release-downloader@v1.9
+      with:
+        repository: 'ccache/ccache'
+        tag: 'v4.6.1'
+        fileName: 'ccache-4.6.1-windows-x86_64.zip'
+
+    - name: Install ccache
+      shell: pwsh
+      run: |
+        unzip ccache-4.6.1-windows-x86_64.zip
+        cp ccache-4.6.1-windows-x86_64/ccache.exe ccache-4.6.1-windows-x86_64/cl.exe
+        cp ccache-4.6.1-windows-x86_64/ccache.exe ccache-4.6.1-windows-x86_64/clang-cl.exe
+        mv ccache-4.6.1-windows-x86_64 $env:CDDA_CCACHE_PATH
+
+    - name: Get ccache vars
+      id: get-vars
+      shell: bash
+      run: |
+        echo "datetime=$(/bin/date -u "+%Y%m%d%H%M")" >> $GITHUB_OUTPUT
+        echo "ccache-path=$(echo "$APPDATA\\ccache")" >> $GITHUB_OUTPUT
+
+    - name: ccache cache files
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.get-vars.outputs.ccache-path }}
+        key: ccache-${{ github.ref_name }}-${{ runner.os }}-msvc--${{ steps.get-vars.outputs.datetime }}
         restore-keys: |
-          ccache-win-x64-v2-
-        save-always: true
+          ccache-master-${{ runner.os }}-msvc--
 
     - name: Configure ccache
-      shell: msys2 {0}
+      shell: pwsh
       run: |
-        # CCACHE_DIR must point at the SAME physical dir the cache action saves.
-        # ccache is a MinGW binary (wants a Windows path); msys2 coreutils want a
-        # unix path. cygpath bridges the two.
-        CCDIR="$(cygpath -u "$GITHUB_WORKSPACE")/ccache"
-        mkdir -p "$CCDIR"
-        echo "CCACHE_DIR=$(cygpath -w "$CCDIR")" >> "$GITHUB_ENV"
-        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
-        ccache -z
+        & "$env:CDDA_CCACHE_PATH\ccache.exe" -M 10G
+        & "$env:CDDA_CCACHE_PATH\ccache.exe" -s -v
+        & "$env:CDDA_CCACHE_PATH\ccache.exe" -z
 
+    - name: Symlink intermediates to C
+      shell: pwsh
+      run: |
+        mkdir -p "$env:TEMP\objwin"
+        New-Item -ItemType SymbolicLink -Target "$env:TEMP\objwin" objwin
+
+    # --- our additions: version stamp + slim ZIP -------------------------------
     - name: Strip CC-Sounds for slim ZIP
-      shell: msys2 {0}
+      shell: bash
       run: |
         rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
-        # Hide these tracked-file deletions from git's dirty check so the
-        # build-time version (getVersionString) stays the clean commit hash,
-        # identical to the mac/intel builds. Otherwise the Makefile appends
-        # "-dirty.<HHMMSS>" and the MP version handshake never matches across
-        # separately-built binaries.
+        # Hide these tracked-file deletions from git's dirty check so prebuild.cmd's
+        # `git describe --dirty` does NOT append "-dirty", keeping the baked version
+        # equal to the mac/linux builds' clean commit hash for the MP handshake.
         git ls-files -d -z | git update-index --assume-unchanged -z --stdin
 
     - name: Write version header
-      shell: msys2 {0}
-      env:
-        VERSION: ${{ inputs.version }}
+      shell: bash
       run: |
-        printf '#pragma once\n#define CDDACOOP_VERSION "%s"\n' "$VERSION" \
-          > src/cata_version_generated.h
+        # The MP handshake (mp_version_commit_id) compares the SHORT git commit
+        # token after stripping "-dirty"/"+SDL3". On MSVC, version.cpp #includes
+        # version.h, so we stamp it with the same `git rev-parse --short HEAD`
+        # the mac/linux Makefile bakes — guaranteeing all three release binaries
+        # reduce to the identical token and can connect to each other.
+        #
+        # BUT: the vcxproj runs msvc-full-features/prebuild.cmd as a PreBuildEvent,
+        # which does `git describe --tags --always --dirty --match cdda-experimental-*`
+        # and OVERWRITES version.h with the result. Our fork's origin carries all of
+        # upstream's cdda-experimental-* tags, so that describe would yield a
+        # tag string (e.g. cdda-experimental-...-gHASH) instead of the short SHA —
+        # silently desyncing the Windows handshake from mac/linux (whose Makefile
+        # uses --exact-match and is immune). Strip those tags from the CI checkout
+        # so prebuild's describe falls through to --always == the short SHA. This
+        # touches zero upstream files (the tags are remote; we only drop locals).
+        git tag -l 'cdda-experimental-*' | xargs -r git tag -d >/dev/null 2>&1 || true
+        SHA="$(git rev-parse --short HEAD)"
+        printf '// NOLINT(cata-header-guard)\n#define VERSION "%s"\n' "$SHA" > src/version.h
+        echo "Stamped src/version.h with VERSION=$SHA"
 
     - name: Build cataclysm-tiles.exe
-      shell: msys2 {0}
+      shell: pwsh
       run: |
-        make -j$(nproc) \
-          MSYS2=1 CCACHE=1 STATIC=1 \
-          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
-          RELEASE=1 \
-          cataclysm-tiles.exe
+        # SDL3 tiles release. We build only the game target (+ its zzip dep) —
+        # upstream additionally builds the test + JsonFormatter targets, which a
+        # release package does not ship; skipping them saves CI time. Everything
+        # about HOW deps are produced (MSVC, vcpkg, x64-windows-static, SDL3) is
+        # identical to upstream.
+        msbuild -m -p:Configuration=Release -p:Platform=x64 -p:UseSDL3=true `
+          "-target:Cataclysm-vcpkg-static" `
+          msvc-full-features/Cataclysm-vcpkg-static.sln
 
     - name: ccache stats
-      shell: msys2 {0}
-      run: ccache -s
+      shell: pwsh
+      run: |
+        & "$env:CDDA_CCACHE_PATH\ccache.exe" -s -v
+
+    - name: Dump vcpkg logs if build failed
+      if: failure()
+      shell: pwsh
+      env:
+        RUNNER_WORKSPACE: ${{ runner.workspace }}
+      run: |
+        Get-ChildItem "$env:RUNNER_WORKSPACE/b/vcpkg/buildtrees" -ErrorAction SilentlyContinue |
+        Foreach-Object {
+            Get-ChildItem $_.FullName -Filter *.log -ErrorAction SilentlyContinue |
+            Foreach-Object {
+              echo "================ $($_.FullName) ================"
+              type $_.FullName
+            }
+        }
 
     - name: Package ZIP
       id: package
-      shell: msys2 {0}
+      shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: |
+        # The main vcxproj sets OutDir to the repo root, so cataclysm-tiles.exe
+        # plus any applocal runtime DLLs (e.g. mpg123 — forced dynamic in the
+        # triplet for LGPL reasons, and SDL3 GPU shadercross runtime DLLs) land
+        # beside it here.
         mkdir -p Cddacoop
         cp cataclysm-tiles.exe Cddacoop/
         bash build-data/md-to-readme-txt.sh build-data/README-cddacoop.md > Cddacoop/README.txt
         cp -r data gfx Cddacoop/
-        # SOUND=1 still wants the sound/ tree for menu sounds; the
+        # SOUND build still wants the sound/ tree for menu sounds; the
         # CC-Sounds pack proper is downloaded by the user later.
         [ -d data/sound ] && cp -r data/sound Cddacoop/data/ || true
 
-        # Walk transitive DLL deps from the .exe and copy each one in.
-        # ntldd output line format:
-        #   <name>.dll => <path> (0x...)
-        # grep for mingw64 to drop system DLLs we shouldn't bundle.
-        # With STATIC=1 the .exe pulls everything in statically, so ntldd
-        # returns only Windows system DLLs and grep finds zero matches.
-        # The `|| true` on grep keeps msys2's pipefail from killing the
-        # script in that case; xargs with no input is a no-op.
-        ntldd -R Cddacoop/cataclysm-tiles.exe \
-          | { grep -i mingw64 || true; } \
-          | awk '{print $3}' \
-          | sed 's|\\|/|g' \
-          | sort -u \
-          | xargs -I{} cp {} Cddacoop/
+        # Bundle every DLL the vcpkg applocal step copied next to the exe.
+        # With x64-windows-static most deps link in; what remains are the
+        # forced-dynamic ones. Log them so the first run reveals the set.
+        shopt -s nullglob
+        dlls=( *.dll )
+        echo "Bundling ${#dlls[@]} runtime DLL(s): ${dlls[*]}"
+        for d in "${dlls[@]}"; do cp "$d" Cddacoop/; done
 
         ZIP="cddacoop-${VERSION}-windows-x64.zip"
         zip -r "$ZIP" Cddacoop
