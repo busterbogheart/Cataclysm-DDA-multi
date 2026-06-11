@@ -60,7 +60,10 @@
       <CompileAsManaged>false</CompileAsManaged>
       <AdditionalOptions>/bigobj /utf-8 %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\pch;$(MSBuildThisFileDirectory)..\src;$(MSBuildThisFileDirectory)..\src\third-party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- MP FORK: ..\src\third-party\asio added for the vendored standalone Asio
+           used by mp_server.cpp / mp_client_conn.cpp (#include <asio.hpp>). The
+           Makefile adds this via -isystem; MSVC needs it on the include path too. -->
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\pch;$(MSBuildThisFileDirectory)..\src;$(MSBuildThisFileDirectory)..\src\third-party;$(MSBuildThisFileDirectory)..\src\third-party\asio;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DisableSpecificWarnings>4661;4819;4146;26495;26444;26451;4068;6319;6237</DisableSpecificWarnings>
       <PreprocessorDefinitions>_SCL_SECURE_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;WIN32_LEAN_AND_MEAN;LOCALIZE;USE_VCPKG;ZSTD_STATIC_LINKING_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
