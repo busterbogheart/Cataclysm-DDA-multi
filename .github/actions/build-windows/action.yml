@@ -180,7 +180,9 @@ runs:
 
     - name: Package ZIP
       id: package
-      shell: bash
+      # msys2 (not Git Bash): we need `zip`, installed into the msys2 env above.
+      # Git Bash ships cp/bash but no zip, which fails this step with exit 127.
+      shell: msys2 {0}
       env:
         VERSION: ${{ inputs.version }}
       run: |
