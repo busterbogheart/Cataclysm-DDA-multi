@@ -889,17 +889,17 @@ void Character::load( const JsonObject &data )
         cached_mutations.emplace( add.first, add.second );
         on_mutation_gain( add.first );
     }
-    // We need to ensure that cached_mutations contains no invalid mutations before we do this
-    // As every time we add a mutation, we rebuild the enchantment cache, causing errors if
-    // we have invalid mutations.
-    recalculate_enchantment_cache();
-    recalculate_size();
 
     data.read( "my_bionics", *my_bionics );
     my_bionics->erase( std::remove_if( my_bionics->begin(), my_bionics->end(),
     []( const bionic & it ) {
         return it.id.is_null(); // remove obsoleted bionics
     } ), my_bionics->end() );
+    // We need to ensure that cached_mutations contains no invalid mutations before we do this
+    // As every time we add a mutation, we rebuild the enchantment cache, causing errors if
+    // we have invalid mutations.
+    recalculate_enchantment_cache();
+    recalculate_size();
 
     data.read( "known_monsters", known_monsters );
 
@@ -2889,6 +2889,9 @@ void item::craft_data::serialize( JsonOut &jsout ) const
     if( passive_end_counter != 0 ) {
         jsout.member( "passive_end_counter", passive_end_counter );
     }
+    if( awaiting_collection ) {
+        jsout.member( "awaiting_collection", awaiting_collection );
+    }
     jsout.end_object();
 }
 
@@ -2917,10 +2920,10 @@ static bool alloc_source_valid( const step_tool_alloc &a )
 
 // True when saved allocations still line up with the recipe: one step-owned
 // allocation per step tool group, then one root-derived allocation per root
-// group on each active (attended, timed) step, each matching a tool type and
-// count its group still offers.  A tool-group edit that breaks this shape fails.
-// Also rejects corrupt counters and units that disagree with the selected count,
-// so consumption never runs off an inconsistent allocation.
+// group on each timed step, each matching a tool type and count its group still
+// offers.  Also rejects corrupt counters and units that disagree with the
+// selected count, so a recipe edit or stale save forces a rebuild instead of
+// metering off an inconsistent allocation.
 static bool step_tool_allocs_fit_recipe(
     const recipe &making, int batch, const std::vector<std::vector<step_tool_alloc>> &allocs )
 {
@@ -2930,6 +2933,10 @@ static bool step_tool_allocs_fit_recipe(
     const int batch_mult = std::max( batch, 1 );
     const std::vector<std::vector<tool_comp>> &root_groups =
             making.root_requirements().get_tools();
+    int64_t total_time = 0;
+    for( const recipe_step &step : making.steps() ) {
+        total_time += std::max<int64_t>( step.time, 0 );
+    }
     // Root shares are crafter-dependent per step but always sum to the tool's
     // whole-craft total; check that invariant rather than the per-step split.
     std::vector<int> root_unit_sum( root_groups.size(), 0 );
@@ -2938,8 +2945,7 @@ static bool step_tool_allocs_fit_recipe(
         const recipe_step &step = making.steps()[s];
         const std::vector<std::vector<tool_comp>> &step_groups =
                 step.requirements.get_tools();
-        const bool step_active =
-            step.attention != step_attention::unattended && step.time > 0;
+        const bool step_timed = total_time > 0 && step.time > 0;
         std::vector<const step_tool_alloc *> owned;
         std::vector<const step_tool_alloc *> root;
         for( const step_tool_alloc &a : allocs[s] ) {
@@ -2950,7 +2956,7 @@ static bool step_tool_allocs_fit_recipe(
             ( a.root_derived ? root : owned ).push_back( &a );
         }
         if( owned.size() != step_groups.size() ||
-            root.size() != ( step_active ? root_groups.size() : 0u ) ) {
+            root.size() != ( step_timed ? root_groups.size() : 0u ) ) {
             return false;
         }
         for( size_t i = 0; i < owned.size(); ++i ) {
@@ -3018,6 +3024,7 @@ void item::craft_data::deserialize( const JsonObject &obj )
     }
     current_step = obj.get_int( "current_step", 0 );
     step_progress = obj.get_float( "step_progress", 0.0 );
+    bool allocs_cleared = false;
     // Validate step index against the recipe's actual step count.
     if( making && making->has_steps() ) {
         int max_step = static_cast<int>( making->steps().size() ) - 1;
@@ -3027,6 +3034,7 @@ void item::craft_data::deserialize( const JsonObject &obj )
         if( !step_tool_allocs_fit_recipe( *making, batch_size, step_tool_allocs ) ) {
             step_tool_allocs.clear();
             tools_to_continue = false;
+            allocs_cleared = true;
         }
     } else if( making ) {
         current_step = 0;
@@ -3079,6 +3087,7 @@ void item::craft_data::deserialize( const JsonObject &obj )
         if( !stepless_ok ) {
             step_tool_allocs.clear();
             tools_to_continue = false;
+            allocs_cleared = true;
         }
     } else {
         current_step = 0;
@@ -3130,9 +3139,16 @@ void item::craft_data::deserialize( const JsonObject &obj )
     }
     passive_start_counter = obj.get_int( "passive_start_counter", 0 );
     passive_end_counter = obj.get_int( "passive_end_counter", 0 );
+    awaiting_collection = obj.get_bool( "awaiting_collection", false );
     // Recipe-edit migration: drop stale passive runtime on shape mismatch.
     bool stale = false;
     if( making && !disassembly ) {
+        // Scrubbed allocs leave nothing to meter; drop the passive runtime too so
+        // an in-flight unattended step freezes for rebuild instead of finishing
+        // unmetered on load.
+        if( allocs_cleared ) {
+            stale = true;
+        }
         if( !step_plans.empty() && making->has_steps() &&
             step_plans.size() != making->steps().size() ) {
             stale = true;
@@ -4471,6 +4487,14 @@ void mm_submap::serialize( JsonOut &jsout ) const
     jsout.end_array();
 }
 
+static std::string migrate_memorized_terrain( const std::string &ter_id )
+{
+    if( auto it = ter_migrations.find( ter_str_id( ter_id ) ); it != ter_migrations.end() ) {
+        return it->second.first.str();
+    }
+    return ter_id;
+}
+
 void mm_submap::deserialize( int version, const JsonArray &ja )
 {
     size_t submap_array_idx = 0;
@@ -4488,7 +4512,7 @@ void mm_submap::deserialize( int version, const JsonArray &ja )
                 if( version < 1 ) { // legacy, remove after 0.H comes out
                     std::string id = ja_tile.get_string( 0 );
                     if( string_starts_with( id, "t_" ) ) {
-                        tile.set_ter_id( std::move( id ) );
+                        tile.set_ter_id( migrate_memorized_terrain( id ) );
                         tile.set_ter_subtile( ja_tile.get_int( 1 ) );
                         tile.set_ter_rotation( ja_tile.get_int( 2 ) );
                         tile.set_dec_id( "" );
@@ -4517,7 +4541,7 @@ void mm_submap::deserialize( int version, const JsonArray &ja )
                 } else {
                     remaining = ja_tile.get_int( 0 ) - 1;
                     tile.symbol = ja_tile.get_int( 1 );
-                    tile.set_ter_id( ja_tile.get_string( 2 ) );
+                    tile.set_ter_id( migrate_memorized_terrain( ja_tile.get_string( 2 ) ) );
                     tile.ter_subtile = ja_tile.get_int( 3 );
                     tile.ter_rotation = ja_tile.get_int( 4 );
                     if( ja_tile.size() > 5 ) {
