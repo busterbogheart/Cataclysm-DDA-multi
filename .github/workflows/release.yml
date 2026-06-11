@@ -106,9 +106,12 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       || github.event.inputs.linux == 'true'
-    # Build on an older Ubuntu so the glibc baseline is broad enough to run on
-    # most current distros (newer runners raise the minimum glibc).
-    runs-on: ubuntu-22.04
+    # SDL3 stack is built from source (setup-sdl3-stack) so the runner just
+    # needs a recent toolchain + the SDL3 build deps, which require 24.04
+    # (libdecor/pipewire/etc aren't on 22.04). Matches upstream's SDL3 runner.
+    # NOTE: raises the glibc baseline vs the old 22.04 SDL2 build — same
+    # tradeoff upstream took when it moved its SDL3 Linux job to 24.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
