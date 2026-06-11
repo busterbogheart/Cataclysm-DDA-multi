@@ -221,6 +221,59 @@ jobs:
             dist/cddacoop-*-windows-x64.zip
             dist/cddacoop-*-linux-x64.tar.gz
 
+      # Mirror the same artifacts to itch.io (cddacoop.itch.io/cddacoop) so the
+      # itch listing stays pinned to this commit alongside the site. Pushes the
+      # UNZIPPED contents per platform channel: butler diffs at the file level,
+      # so the unchanged data/tiles/sound (hundreds of MB) upload once and each
+      # preview only re-sends the changed binary — and itch-app users get patch
+      # auto-updates. The binary inside is the same commit either way, so itch
+      # builds still pass the in-game version handshake against site builds.
+      # Additive and non-critical: a missing key or an itch outage no-ops and
+      # never blocks the GitHub release or the site rebuild below.
+      - name: Push builds to itch.io
+        continue-on-error: true
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          ITCH_TARGET: cddacoop/cddacoop
+        run: |
+          if [ -z "$BUTLER_API_KEY" ]; then
+            echo "BUTLER_API_KEY not set — skipping itch.io push"
+            exit 0
+          fi
+
+          # Fetch butler (itch.io's official upload tool).
+          curl -sL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip
+          chmod +x butler
+          ./butler -V
+
+          # Unzip one artifact into a clean staging dir, then push that dir to
+          # its itch channel. Skips silently if the platform wasn't built in
+          # this run (partial dispatch) — matching the site's per-platform
+          # fallback, so itch and the site stay on the same per-platform commit.
+          push() {
+            archive_glob="$1"; channel="$2"; stage="$3"
+            file=$(ls $archive_glob 2>/dev/null | head -1 || true)
+            if [ -z "$file" ]; then
+              echo "no artifact for $channel ($archive_glob) — skipping"
+              return 0
+            fi
+            rm -rf "$stage" && mkdir -p "$stage"
+            case "$file" in
+              *.zip)    unzip -q "$file" -d "$stage" ;;
+              *.tar.gz) tar -xzf "$file" -C "$stage" ;;
+            esac
+            echo "=== pushing $channel from $file ==="
+            ./butler push "$stage" "$ITCH_TARGET:$channel" --userversion "$VERSION"
+          }
+
+          push "dist/cddacoop-*-macos-universal.zip" mac     stage/mac
+          push "dist/cddacoop-*-windows-x64.zip"     windows stage/windows
+          push "dist/cddacoop-*-linux-x64.tar.gz"    linux   stage/linux
+
+          ./butler status "$ITCH_TARGET" || true
+
       # Kick the site rebuild directly. We can't rely on notify-site.yml's
       # `release: published` trigger here: this release is created by the
       # default GITHUB_TOKEN, and GitHub deliberately does NOT fire workflow
