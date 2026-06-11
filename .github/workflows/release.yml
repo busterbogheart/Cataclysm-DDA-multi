@@ -32,6 +32,10 @@ on:
         description: 'Upload to preview release on site'
         type: boolean
         default: false
+      draft:
+        description: 'Make the release a DRAFT (collaborator-only; not public, not on the site — download from the release page or run artifacts while logged in). Needs Upload checked too.'
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -211,7 +215,10 @@ jobs:
         with:
           name: ${{ needs.setup.outputs.version }}
           tag_name: ${{ needs.setup.outputs.version }}
-          draft: false
+          # Draft = collaborator-only, not public, and the site filters it out
+          # (releases.filter(!draft)). Set via the `draft` dispatch input; tag
+          # pushes (inputs.draft empty) stay non-draft/public.
+          draft: ${{ github.event.inputs.draft == 'true' }}
           # Preview builds (dispatch) → prerelease. Tagged v* → stable.
           prerelease: ${{ github.ref_type != 'tag' }}
           # Auto-generated notes are appended below body for tagged
@@ -286,6 +293,9 @@ jobs:
       # notify-site.yml still covers manual `gh release edit` asset swaps,
       # which fire under a human PAT and so trigger the event normally.
       - name: Trigger site rebuild
+        # Skip for draft releases — the site filters drafts out, so a rebuild
+        # would either no-op or (worse) re-pin to an older non-draft build.
+        if: ${{ github.event.inputs.draft != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
         run: |
