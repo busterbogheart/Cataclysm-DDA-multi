@@ -187,6 +187,21 @@ auto simple_point_hash = []( const point &p )
     return p.x + p.y * 65536;
 };
 
+// SDL3 changed SDL_Vertex::color from SDL_Color (byte RGBA) to SDL_FColor
+// (normalized float RGBA). Convert our byte colors to whatever the active SDL
+// expects so the SDL_RenderGeometry call sites compile on both backends.
+#if defined(USE_SDL3)
+inline SDL_FColor to_vertex_color( const SDL_Color &c )
+{
+    return SDL_FColor{ c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f };
+}
+#else
+inline SDL_Color to_vertex_color( const SDL_Color &c )
+{
+    return c;
+}
+#endif
+
 } // namespace
 
 #if SDL_MAJOR_VERSION >= 3
@@ -1654,7 +1669,7 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
                 verts[1].position = b1;
                 verts[2].position = b2;
                 for( SDL_Vertex &v : verts ) {
-                    v.color = col;
+                    v.color = to_vertex_color( col );
                     v.tex_coord = { 0.0f, 0.0f };
                 }
                 SDL_RenderGeometry( renderer.get(), nullptr, verts, 3, nullptr, 0 );
@@ -3933,7 +3948,7 @@ bool cata_tiles::draw_vp_fillers( const tripoint_bub_ms &p, lit_level /*ll*/,
         SDL_Vertex verts[3];
         for( int k = 0; k < 3; ++k ) {
             verts[k].position = tri.v[k];
-            verts[k].color = tri.colors[k];
+            verts[k].color = to_vertex_color( tri.colors[k] );
             verts[k].tex_coord = { 0.0f, 0.0f };
         }
         SDL_RenderGeometry( renderer.get(), nullptr, verts, 3, nullptr, 0 );
