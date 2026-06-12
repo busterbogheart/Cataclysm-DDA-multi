@@ -43,7 +43,19 @@ body:
         host:   a1b2c3d
         client: a1b2c3d
     validations:
-      required: true
+      required: false
+
+  - type: textarea
+    id: game-report
+    attributes:
+      label: Game report (build, platform & enabled mods)
+      description: |
+        In the **main menu**, open Debug > Info > Generate Game Report and paste the output here. 
+        If the bug appeared on only one side, that player's report is enough.
+      placeholder: |
+        <paste the Generate Game Report output here>
+    validations:
+      required: false
 
   - type: dropdown
     id: network-setup
@@ -66,15 +78,15 @@ body:
       description: |
         **This is the single most useful thing in the report.** Attach or paste BOTH logs:
 
-        - **Host** — the player hosting:
+        - **Host** the player hosting:
           - macOS / Linux: `/tmp/cdda-mp-server.log`
           - Windows: `C:\Users\<name>\cdda-mp-server.log`
-        - **Client** — the player joining:
+        - **Client** the player joining:
           - macOS / Linux: `/tmp/cdda-mp-client.log`
           - Windows: `C:\Users\<name>\cdda-mp-client.log`
 
         You can drag-and-drop the files directly into this box. If a player only has one of the
-        two logs, that's fine — paste what you have and say which side it's from.
+        two logs, that's fine, paste what you have and say which side it's from.
     validations:
       required: true
 
@@ -82,7 +94,7 @@ body:
     id: steps-to-reproduce
     attributes:
       label: Steps to reproduce
-      description: Step-by-step, from both players' perspective where it matters.
+      description: As much as you, describe the actions taken that resulted in this bug
       placeholder: |
         1. Host starts a game, client joins.
         2. Client walks next to a zombie and attacks.
