@@ -2730,6 +2730,29 @@ void character_creator_ui_impl::draw_controls()
         }
     };
 
+    // Draw a tab's body with a guard.  Modded (and co-op) data can throw
+    // mid-render (a bad profession/scenario/trait/skill entry); if that
+    // exception unwinds past EndTabItem()/EndTabBar() it leaves ImGui's tab
+    // stack unbalanced and the next frame aborts with "Missing EndTabBar()"
+    // (an MSVC assert dialog on Windows).  Catch inside the tab so End* still
+    // runs, log once so the cause lands in debug.log, and show it inline.
+    auto draw_tab_body = []( const char *tab_name, const std::function<void()> &body ) {
+        try {
+            body();
+        } catch( const std::exception &e ) {
+            static std::set<std::string> logged;
+            const std::string key = std::string( tab_name ) + ": " + e.what();
+            if( logged.insert( key ).second ) {
+                DebugLog( D_ERROR, D_MAIN ) << "character creator tab " << key;
+            }
+            ImGui::TextWrapped( "%s", string_format(
+                                    _( "This tab could not be drawn (likely a mod data error):\n%s" ),
+                                    e.what() ).c_str() );
+        } catch( ... ) {
+            ImGui::TextWrapped( "%s", _( "This tab could not be drawn (unknown error)." ) );
+        }
+    };
+
     bool &top_bar_is_open = cc_uistate.top_bar_is_open;
     ImGui::SetNextItemOpen( top_bar_is_open );
     if( ( top_bar_is_open = ImGui::CollapsingHeader( string_format(
@@ -2742,44 +2765,58 @@ void character_creator_ui_impl::draw_controls()
     if( ImGui::BeginTabBar( "CHARACTER_CREATOR_TABS" ) ) {
         if( ImGui::BeginTabItem( _( "SCENARIO" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_SCENARIO )] ) ) {
-            check_new_tab( CHARCREATOR_SCENARIO );
-            draw_scenarios();
+            draw_tab_body( "SCENARIO", [&]() {
+                check_new_tab( CHARCREATOR_SCENARIO );
+                draw_scenarios();
+            } );
             ImGui::EndTabItem();
         }
         if( ImGui::BeginTabItem( _( "PROFESSION" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_PROFESSION )] ) ) {
-            check_new_tab( CHARCREATOR_PROFESSION );
-            draw_professions();
+            draw_tab_body( "PROFESSION", [&]() {
+                check_new_tab( CHARCREATOR_PROFESSION );
+                draw_professions();
+            } );
             ImGui::EndTabItem();
         }
         if( ImGui::BeginTabItem( _( "BACKGROUND" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_BACKGROUND )] ) ) {
-            check_new_tab( CHARCREATOR_BACKGROUND );
-            draw_backgrounds();
+            draw_tab_body( "BACKGROUND", [&]() {
+                check_new_tab( CHARCREATOR_BACKGROUND );
+                draw_backgrounds();
+            } );
             ImGui::EndTabItem();
         }
         if( ImGui::BeginTabItem( _( "STATS" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_STATS )] ) ) {
-            check_new_tab( CHARCREATOR_STATS );
-            draw_stats();
+            draw_tab_body( "STATS", [&]() {
+                check_new_tab( CHARCREATOR_STATS );
+                draw_stats();
+            } );
             ImGui::EndTabItem();
         }
         if( ImGui::BeginTabItem( _( "TRAITS" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_TRAITS )] ) ) {
-            check_new_tab( CHARCREATOR_TRAITS );
-            draw_traits();
+            draw_tab_body( "TRAITS", [&]() {
+                check_new_tab( CHARCREATOR_TRAITS );
+                draw_traits();
+            } );
             ImGui::EndTabItem();
         }
         if( ImGui::BeginTabItem( _( "SKILLS" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_SKILLS )] ) ) {
-            check_new_tab( CHARCREATOR_SKILLS );
-            draw_skills();
+            draw_tab_body( "SKILLS", [&]() {
+                check_new_tab( CHARCREATOR_SKILLS );
+                draw_skills();
+            } );
             ImGui::EndTabItem();
         }
         if( ImGui::BeginTabItem( _( "SUMMARY" ), nullptr,
                                  tab_selected[static_cast<int>( CHARCREATOR_SUMMARY )] ) ) {
-            check_new_tab( CHARCREATOR_SUMMARY );
-            draw_summary();
+            draw_tab_body( "SUMMARY", [&]() {
+                check_new_tab( CHARCREATOR_SUMMARY );
+                draw_summary();
+            } );
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

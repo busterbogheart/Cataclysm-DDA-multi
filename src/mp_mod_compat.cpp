@@ -3,9 +3,13 @@
 #include <map>
 #include <utility>
 
+#include "cata_path.h"
 #include "color.h"
+#include "mod_manager.h"
 #include "mp_gamestate.h"
 #include "translations.h"
+#include "type_id.h"
+#include "worldfactory.h"
 
 namespace cata_mp
 {
@@ -17,6 +21,28 @@ struct coop_entry {
     mod_coop status;
     const char *note;
 };
+
+// Generic note for any enabled mod we don't ship and haven't vetted.  These are
+// dropped into the user's mods/ folder; we can't reason about their sync safety,
+// and a mod mismatch between host and client is a common cause of client crashes.
+const char *third_party_note = translate_marker(
+    "CO-OP: untested third-party mod.  This mod is not bundled with the game and has not been vetted for co-op; it may desync or crash the joining player.  Both players must have the exact same mods installed." );
+
+// True when a mod is NOT shipped with the game.  Bundled (and core) mods load
+// from the data dir; downloaded/third-party mods load from the user mods/ dir.
+// Unknown or unresolvable ids are treated as third-party (warn, not silently ok).
+bool is_third_party_mod( const std::string &ident )
+{
+    const mod_id mid( ident );
+    if( !mid.is_valid() ) {
+        return true;
+    }
+    const MOD_INFORMATION &info = mid.obj();
+    if( info.core ) {
+        return false;
+    }
+    return info.path.get_logical_root() == cata_path::root_path::user;
+}
 
 // Keyed by mod_id::str().  See the 2026-06 audit for the per-mod reasoning.
 const std::map<std::string, coop_entry> &coop_table()
@@ -129,14 +155,22 @@ const std::map<std::string, coop_entry> &coop_table()
 
 mod_coop mod_coop_status( const std::string &ident )
 {
+    // Explicit per-mod classification from the audit always wins.
     const auto it = coop_table().find( ident );
-    return it == coop_table().end() ? mod_coop::ok : it->second.status;
+    if( it != coop_table().end() ) {
+        return it->second.status;
+    }
+    // Anything else: bundled mods are fine; unvetted third-party mods warn.
+    return is_third_party_mod( ident ) ? mod_coop::warn : mod_coop::ok;
 }
 
 std::string mod_coop_note( const std::string &ident )
 {
     const auto it = coop_table().find( ident );
-    return it == coop_table().end() ? std::string() : _( it->second.note );
+    if( it != coop_table().end() ) {
+        return _( it->second.note );
+    }
+    return is_third_party_mod( ident ) ? _( third_party_note ) : std::string();
 }
 
 std::string mod_coop_info_suffix( const std::string &ident )
@@ -144,13 +178,13 @@ std::string mod_coop_info_suffix( const std::string &ident )
     if( !is_mp_mode() ) {
         return std::string();
     }
-    const auto it = coop_table().find( ident );
-    if( it == coop_table().end() ) {
+    const std::string note = mod_coop_note( ident );
+    if( note.empty() ) {
         return std::string();
     }
-    // Red for hard-incompatible, orange (CDDA's c_brown) for "may break".
-    const nc_color col = it->second.status == mod_coop::incompatible ? c_red : c_brown;
-    return "\n" + colorize( _( it->second.note ), col );
+    // Red for hard-incompatible, orange (CDDA's c_brown) for warn / third-party.
+    const nc_color col = mod_coop_status( ident ) == mod_coop::incompatible ? c_red : c_brown;
+    return "\n" + colorize( note, col );
 }
 
 } // namespace cata_mp

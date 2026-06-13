@@ -3991,6 +3991,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     cata_mp::mp_notify_session_ending();
                     player_character.set_moves( 0 );
                     uquit = QUIT_SAVED;
+                    cata_mp::mp_log( "[mp-quit] HOST save&quit: saved + notified, uquit=QUIT_SAVED set" );
                 } else if( save_is_dirty && query_yn( _( "Unable to save, quit anyway?" ) ) ) {
                     // Game refused to save because of unsupported game state. But we don't want to trap them here, so at least let give them the option.
                     cata_mp::mp_notify_session_ending();

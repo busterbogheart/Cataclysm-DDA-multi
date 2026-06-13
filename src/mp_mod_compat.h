@@ -18,8 +18,9 @@ enum class mod_coop {
     incompatible,  // hard break — must not be enabled in co-op
 };
 
-// Classify a mod by its string ident (mod_id::str()).  Unknown / unlisted
-// mods are treated as ok.
+// Classify a mod by its string ident (mod_id::str()).  Audited mods use their
+// listed status; other bundled/core mods are ok; unvetted third-party mods
+// (loaded from the user mods/ dir, or unknown ids) warn.
 mod_coop mod_coop_status( const std::string &ident );
 
 // The co-op note for a mod, or "" when none.  Plain text (no color tags).

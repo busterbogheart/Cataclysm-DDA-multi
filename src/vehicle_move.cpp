@@ -2466,6 +2466,13 @@ units::angle map::shake_vehicle( vehicle &veh, const int velocity_before,
     const int d_vel = std::abs( veh.velocity - velocity_before ) / 100;
 
     std::vector<rider_data> riders = veh.get_riders();
+    if( cata_mp::is_hosting() && !riders.empty() ) {
+        cata_mp::mp_log( "[veh-shake] veh=" + veh.name +
+                         " vel=" + std::to_string( veh.velocity ) +
+                         " vel_before=" + std::to_string( velocity_before ) +
+                         " d_vel=" + std::to_string( d_vel ) +
+                         " riders=" + std::to_string( riders.size() ) );
+    }
 
     units::angle coll_turn = 0_degrees;
     for( const rider_data &r : riders ) {
@@ -2521,6 +2528,15 @@ units::angle map::shake_vehicle( vehicle &veh, const int velocity_before,
         } else {
             // Reduce potential damage based on quality of seatbelt
             dmg -= veh.part( belt_idx ).info().bonus;
+        }
+        if( cata_mp::is_hosting() ) {
+            cata_mp::mp_log( "[veh-shake] rider=" + ( psg ? psg->name : std::string( "pet" ) ) +
+                             " is_avatar=" + std::to_string( psg && psg->is_avatar() ) +
+                             " belt_idx=" + std::to_string( belt_idx ) +
+                             " move_resist=" + std::to_string( move_resist ) +
+                             " d_vel=" + std::to_string( d_vel ) +
+                             " dmg=" + std::to_string( dmg ) +
+                             " throw_from_seat=" + std::to_string( throw_from_seat ) );
         }
 
         // Damage passengers if d_vel is too high

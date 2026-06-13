@@ -1102,6 +1102,15 @@ vehicle *map::move_vehicle( vehicle &veh, const tripoint_rel_ms &dp, const tiler
     do {
         collisions.clear();
         veh.collision( *this, collisions, dp1, false );
+        if( cata_mp::is_hosting() && !collisions.empty() ) {
+            for( const veh_collision &c : collisions ) {
+                cata_mp::mp_log( "[veh-coll] veh=" + veh.name +
+                                 " type=" + std::to_string( static_cast<int>( c.type ) ) +
+                                 " imp=" + std::to_string( c.imp ) +
+                                 " target=" + c.target_name +
+                                 " dp=" + std::to_string( dp1.x() ) + "," + std::to_string( dp1.y() ) );
+            }
+        }
 
         // Vehicle collisions
         std::map<vehicle *, std::vector<veh_collision> > veh_collisions;

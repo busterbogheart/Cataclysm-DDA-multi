@@ -206,6 +206,15 @@ large scripted-effect/teleport power sets fall outside that model.
 
 ## Changelog
 
+### 2026-06-13
+
+- **Co-op warns you about untested mods** — any enabled mod that isn't bundled with the game (third-party /
+  downloaded mods) now shows a co-op warning in the mod menu instead of silently passing. A mod mismatch
+  between host and client is a common cause of the joining player crashing, so both players should run the
+  exact same mods.
+- **Merge with upstream CDDA** — 371 commits of upstream changes: new content, balance and fixes
+- **Now on itch.io** — releases now mirror to itch.io alongside the downloads here
+
 ### 2026-06-09
 
 - **macOS: co-op keeps its own save folder now** — (Windows and Linux were already separate).  Co-op no longer shares its
