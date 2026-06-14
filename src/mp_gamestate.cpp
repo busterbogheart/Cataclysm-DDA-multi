@@ -3789,25 +3789,13 @@ static std::string build_overmap_sync()
 // (steady state), so it's cheap on the hot path.  Sends at most g_map_sync_cap
 // submaps per call; the bubble fills over a few turns on join and incremental
 // rows stream in as a player moves.  Palette + per-submap RLE, like the overmap
-// sync.  Only the avatar's current z-level is synced (v1).
-static std::string build_map_sync()
+// sync.  Builds the message for a single z-level `az`; which z-levels get synced
+// (and the sent-set pruning) live in the build_map_sync() wrapper below.
+static std::string build_map_sync_z( int az )
 {
-    if( !is_hosting() || !remote_player_connected ) {
-        return std::string();
-    }
     const auto t0 = std::chrono::steady_clock::now();
     map &m = get_map();
     const tripoint_abs_sm origin = m.get_abs_sub();
-    const int az = get_avatar().posz();
-
-    // Forget submaps that have scrolled out of the bubble so a return visit
-    // re-syncs them (the client may have regenerated them locally after unload).
-    for( auto it = g_map_sync_sent.begin(); it != g_map_sync_sent.end(); ) {
-        const bool in_bubble = it->z() == az &&
-                               it->x() >= origin.x() && it->x() < origin.x() + MAPSIZE &&
-                               it->y() >= origin.y() && it->y() < origin.y() + MAPSIZE;
-        it = in_bubble ? std::next( it ) : g_map_sync_sent.erase( it );
-    }
 
     std::vector<std::string> palette;
     std::unordered_map<std::string, int> pal_idx;
@@ -3898,8 +3886,57 @@ static std::string build_map_sync()
     mp_log( "[cdda-mp] MAPSYNC send: subs=" + std::to_string( sent ) +
             " pal=" + std::to_string( palette.size() ) +
             " bytes=" + std::to_string( msg.size() ) +
-            " ms=" + std::to_string( build_ms ) );
+            " ms=" + std::to_string( build_ms ) +
+            " z=" + std::to_string( az ) );
     return msg;
+}
+
+// Cross-z terrain sync.  The client can stand on a different floor than the host
+// — it may spawn a level off, or either player walks up/down stairs.  The v1
+// behavior synced only the host's z-level, so the floor the *client* was on kept
+// showing its divergent local mapgen: it looked like the whole tile was erased
+// except for the one synced floor (reported 2026-06-14, client a floor below the
+// host).  Fix: sync the union of the host's z and the remote player's z.  Same z
+// => one message (no extra cost); different floors => one message per floor.
+static std::string build_map_sync()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return std::string();
+    }
+    const tripoint_abs_sm origin = get_map().get_abs_sub();
+
+    // Which floors to sync this turn: the host's, plus the client's if its proxy
+    // is on a different one.
+    const int host_z = get_avatar().posz();
+    int client_z = host_z;
+    const npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+    if( remote ) {
+        client_z = remote->posz();
+    }
+    const bool two_floors = client_z != host_z;
+
+    // Forget submaps that have scrolled out of the synced region — a different
+    // x/y bubble, or a z-level we're no longer syncing — so a return visit
+    // re-syncs them (the client may have regenerated them locally after unload).
+    for( auto it = g_map_sync_sent.begin(); it != g_map_sync_sent.end(); ) {
+        const bool z_synced = it->z() == host_z || ( two_floors && it->z() == client_z );
+        const bool in_bubble = z_synced &&
+                               it->x() >= origin.x() && it->x() < origin.x() + MAPSIZE &&
+                               it->y() >= origin.y() && it->y() < origin.y() + MAPSIZE;
+        it = in_bubble ? std::next( it ) : g_map_sync_sent.erase( it );
+    }
+
+    std::string out = build_map_sync_z( host_z );
+    if( two_floors ) {
+        const std::string client_msg = build_map_sync_z( client_z );
+        if( !client_msg.empty() ) {
+            if( !out.empty() ) {
+                out += '\n';
+            }
+            out += client_msg;
+        }
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
