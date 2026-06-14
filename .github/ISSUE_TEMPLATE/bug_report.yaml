@@ -96,22 +96,24 @@ body:
       label: Crash logs (if the game crashed)
       description: |
         **If the game crashed** (closed unexpectedly, froze, or showed a crash dialog), attach both
-        `crash.log` and `debug.log`. These live in your **user-data `config` folder**, which is
-        **NOT** next to the game `.exe` — it's in your OS user folder:
+        `crash.log` and `debug.log`. The co-op build is **portable** on Windows/Linux — the logs are
+        in a `config` folder **next to the game**, NOT in AppData (the crash dialog shows the relative
+        path `./config/debug.log` for this reason):
 
-        - **Windows:** `%LOCALAPPDATA%\cataclysm-dda\config\crash.log` and `...\debug.log`
-          (paste `%LOCALAPPDATA%\cataclysm-dda\config` into the File Explorer address bar — that's
-          `C:\Users\<name>\AppData\Local\cataclysm-dda\config`)
-        - **macOS:** `~/Library/Application Support/Cataclysm/config/crash.log` and `.../debug.log`
-          (in Finder: Go > Go to Folder… and paste `~/Library/Application Support/Cataclysm/config`)
-        - **Linux:** `~/.cataclysm-dda/config/crash.log` and `~/.cataclysm-dda/config/debug.log`
+        - **Windows:** `config\crash.log` and `config\debug.log` **inside the folder you unzipped**
+          (next to `cataclysm-tiles.exe`). There is no AppData folder for this build.
+        - **macOS:** `~/Library/Application Support/Cddacoop/config/crash.log` and `.../debug.log`
+          (in Finder: Go > Go to Folder… and paste `~/Library/Application Support/Cddacoop/config`).
+          Note it's **Cddacoop**, not Cataclysm — co-op keeps its own folder.
+        - **Linux:** `config/crash.log` and `config/debug.log` inside the `Cddacoop/` folder next to
+          the binary.
 
         Drag-and-drop both files into this box. `crash.log` has the backtrace; `debug.log` has the
         last actions before the crash — both help a lot. (`crash.log` only exists if there was a crash.)
 
         **Windows minidump (optional, large):** the game also writes a `.core` minidump file **next
-        to `cataclysm-tiles.exe`** (the folder you unzipped). It's big (tens of MB) and only useful
-        if a developer asks for it — the text `crash.log` above is the one we need first.
+        to `cataclysm-tiles.exe`**. It's big (tens of MB) and only useful if a developer asks for it —
+        the text `crash.log` above is the one we need first.
       placeholder: Write N/A if the game did not crash.
     validations:
       required: false
