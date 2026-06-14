@@ -603,18 +603,42 @@ static const efftype_id effect_bleed( "bleed" );
 // definition lives further down with the mp_edge_t frame that shares it.
 static bool mp_turn_show_green();
 
+// ---------------------------------------------------------------------------
+// Co-op text chat (basic).  Each line is shown in two places: up to the last
+// MP_CHAT_OVERLAY_MAX lines directly above the info panel (magenta), and in the
+// main message log.  Wire: {"type":"chat","from":<name>,"text":<line>}, sent
+// client<->host; each side just displays what it receives (2-player).
+static constexpr size_t MP_CHAT_OVERLAY_MAX = 3;
+// Each line carries the sender's color so host vs client messages are visually
+// distinct (host = light cyan, client = light blue) in both the overlay and log.
+struct mp_chat_line {
+    std::string text;
+    nc_color color;
+};
+static std::vector<mp_chat_line> g_mp_chat_overlay;   // newest last
+
+static int mp_chat_overlay_count()
+{
+    return static_cast<int>( std::min( g_mp_chat_overlay.size(), MP_CHAT_OVERLAY_MAX ) );
+}
+
 struct mp_hud_t {
     catacurses::window win;
     ui_adaptor ui;
 
     static constexpr int W = 56;
-    static constexpr int H = 3;
+    static constexpr int H = 3;   // top border + status row + bottom border
 
     mp_hud_t() {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
-            win = catacurses::newwin( H, W, point( 0, TERMY - H ) );
-            mp_log( "[cdda-mp] HUD: panel resize H=" + std::to_string( H ) + " W=" +
-                    std::to_string( W ) + " TERMY=" + std::to_string( TERMY ) );
+            // Single window: any chat lines render INSIDE the top of the co-op
+            // box, above the status row.  One stable window/area — the earlier
+            // two-window overlay churned the ui_adaptor stack and made the panel
+            // flicker / vanish on unrelated redraws (focus changes, turn-waits).
+            const int ch = mp_chat_overlay_count();
+            // border + chat lines + separator + status row + border
+            const int height = ch > 0 ? ch + 4 : H;
+            win = catacurses::newwin( height, W, point( 0, TERMY - height ) );
             ua.position_from_window( win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
@@ -628,6 +652,23 @@ struct mp_hud_t {
         // Border color tracks the same turn-state signal as the edge frame so
         // panel + frame pulse together.
         draw_border( win, mp_turn_show_green() ? c_light_green : c_red );
+
+        // Chat lines inside the top of the box, each in its sender's color
+        // (host = light cyan, client = light blue).  The status row sits below.
+        const int ch = mp_chat_overlay_count();
+        if( ch > 0 ) {
+            const int start = static_cast<int>( g_mp_chat_overlay.size() ) - ch;
+            for( int i = 0; i < ch; ++i ) {
+                const mp_chat_line &cl = g_mp_chat_overlay[start + i];
+                mvwprintz( win, point( 1, 1 + i ), cl.color, "%s",
+                           cl.text.substr( 0, W - 2 ).c_str() );
+            }
+            // Separator between chat and the status row.
+            mvwprintz( win, point( 1, ch + 1 ), c_dark_gray, "%s",
+                       std::string( W - 2, '-' ).c_str() );
+        }
+        // Status row sits below the chat + separator when chat is present.
+        const int crow = ch > 0 ? ch + 2 : 1;
 
         // Partner-centric single content row.  Host sees the connected client;
         // client sees the host.  Both read from the local NPC proxy that the
@@ -653,7 +694,7 @@ struct mp_hud_t {
         }
 
         if( !remote_player_connected && is_hosting() ) {
-            mvwprintz( win, point( 2, 1 ), c_dark_gray, "%s",
+            mvwprintz( win, point( 2, crow ), c_dark_gray, "%s",
                        _( "Partner not connected" ) );
             wnoutrefresh( win );
             return;
@@ -667,11 +708,16 @@ struct mp_hud_t {
         if( pname.empty() ) {
             pname = "Partner";
         }
+        // First name only.
+        const size_t pname_sp = pname.find( ' ' );
+        if( pname_sp != std::string::npos ) {
+            pname = pname.substr( 0, pname_sp );
+        }
         if( pname.size() > 10 ) {
-            pname = pname.substr( 0, 8 ) + "..";
+            pname = pname.substr( 0, 10 );
         }
         int x = 1;
-        mvwprintz( win, point( x, 1 ), c_white, "%-10s", pname.c_str() );
+        mvwprintz( win, point( x, crow ), c_white, "%-10s", pname.c_str() );
         x += 11;
 
         // Move mode in square brackets — first char only (w/r/c/p) for compactness.
@@ -683,7 +729,7 @@ struct mp_hud_t {
                 mm = mode_str[0];
             }
         }
-        mvwprintz( win, point( x, 1 ), partner ? c_white : c_dark_gray, "[%c]", mm );
+        mvwprintz( win, point( x, crow ), partner ? c_white : c_dark_gray, "[%c]", mm );
         x += 4;
 
         // HP bar — 6 chars colored by the WORST body part's HP fraction.
@@ -713,12 +759,12 @@ struct mp_hud_t {
                        : worst > 0.33f ? c_yellow : c_red;
             filled = static_cast<int>( std::round( worst * bar_w ) );
         }
-        mvwprintz( win, point( x, 1 ), c_white, "[" );
+        mvwprintz( win, point( x, crow ), c_white, "[" );
         for( int i = 0; i < bar_w; ++i ) {
-            mvwprintz( win, point( x + 1 + i, 1 ),
+            mvwprintz( win, point( x + 1 + i, crow ),
                        i < filled ? hp_color : c_dark_gray, "#" );
         }
-        mvwprintz( win, point( x + 1 + bar_w, 1 ), c_white, "]" );
+        mvwprintz( win, point( x + 1 + bar_w, crow ), c_white, "]" );
         x += bar_w + 3;
 
         // Activity + progress %.  Use the verb phrase (e.g. "reading",
@@ -732,9 +778,9 @@ struct mp_hud_t {
             if( static_cast<int>( vshown.size() ) > avail ) {
                 vshown = vshown.substr( 0, std::max( 0, avail - 2 ) ) + "..";
             }
-            mvwprintz( win, point( x, 1 ), c_yellow, "%s", vshown.c_str() );
+            mvwprintz( win, point( x, crow ), c_yellow, "%s", vshown.c_str() );
             x += static_cast<int>( vshown.size() ) + 1;
-            mvwprintz( win, point( x, 1 ), c_light_blue, "%d%%",
+            mvwprintz( win, point( x, crow ), c_light_blue, "%d%%",
                        g_partner_activity_pct );
             x += 5;
         }
@@ -748,7 +794,7 @@ struct mp_hud_t {
             const nc_color dc = drift == 0 ? c_green
                                 : std::abs( drift ) <= 1 ? c_yellow : c_red;
             const std::string ds = "Δ" + std::to_string( drift );
-            mvwprintz( win, point( W - static_cast<int>( ds.size() ) - 1, 1 ),
+            mvwprintz( win, point( W - static_cast<int>( ds.size() ) - 1, crow ),
                        dc, "%s", ds.c_str() );
         }
 
@@ -875,6 +921,113 @@ void ensure_mp_hud()
         mp_log( "[cdda-mp] HUD: created mp_hud (fresh)" );
     }
     g_mp_hud->ui.invalidate_ui();
+}
+
+static std::string json_escape_str( const std::string &s );   // defined below
+
+// Display a chat line locally: push to the overlay above the panel and into the
+// main message log (magenta).  Used for both received lines and the local echo.
+static void mp_chat_display( const std::string &from, const std::string &text, bool from_host )
+{
+    // Host messages = light cyan, client messages = light blue, on both ends.
+    const nc_color col = from_host ? c_light_cyan : c_light_blue;
+    const char *tag = from_host ? "light_cyan" : "light_blue";
+    // First name only (matches the status-row name).  "You" has no space so
+    // it's left as-is.
+    std::string name = from;
+    const size_t name_sp = name.find( ' ' );
+    if( name_sp != std::string::npos ) {
+        name = name.substr( 0, name_sp );
+    }
+    std::string line = "[" + name + "] " + text;
+    // Strip angle brackets so a chat line can't inject color tags into the
+    // overlay or the message log (both parse them).
+    for( char &c : line ) {
+        if( c == '<' || c == '>' ) {
+            c = '\'';
+        }
+    }
+    const int prev_count = mp_chat_overlay_count();
+    g_mp_chat_overlay.push_back( { line, col } );
+    while( g_mp_chat_overlay.size() > MP_CHAT_OVERLAY_MAX ) {
+        g_mp_chat_overlay.erase( g_mp_chat_overlay.begin() );
+    }
+    if( g_mp_hud ) {
+        // Only resize when the visible line count actually changes (0->1->2->3),
+        // never per-message once full — repeated resizes churned the panel.
+        if( mp_chat_overlay_count() != prev_count ) {
+            g_mp_hud->ui.mark_resize();
+        }
+        g_mp_hud->ui.invalidate_ui();
+    }
+    add_msg( m_info, "%s", "<color_" + std::string( tag ) + ">" + line + "</color>" );
+}
+
+// Parse + display an incoming {"type":"chat",...} packet.  Shared by the host
+// and client receive paths (2-player: each side just shows what it receives).
+static void mp_handle_chat_msg( const std::string &msg )
+{
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        const std::string from = jo.get_string( "from", "Partner" );
+        const std::string text = jo.get_string( "text", std::string() );
+        const bool from_host = jo.get_bool( "host", true );
+        // Dedup: the partner always has the opposite role.  A received message
+        // whose sender-role matches ours is our own echo bouncing back — we
+        // already displayed it locally, so drop it.  (2-player assumption.)
+        if( from_host == is_hosting() ) {
+            return;
+        }
+        if( !text.empty() ) {
+            mp_chat_display( from, text, from_host );
+        }
+    } catch( const JsonError &e ) {
+        mp_log( "[cdda-mp] chat parse error: " + std::string( e.what() ) );
+    }
+}
+
+// Keybound entry point (ACTION_COOP_CHAT): prompt for a line and send it to the
+// partner, then echo it locally.
+void mp_open_chat()
+{
+    mp_log( "[cdda-mp] mp_open_chat: ENTER hosting=" + std::string( is_hosting() ? "1" : "0" ) +
+            " remote_connected=" + std::string( remote_player_connected ? "1" : "0" ) +
+            " client_mode=" + std::string( is_client_mode() ? "1" : "0" ) );
+    // remote_player_connected is host-side only; on the client, being in client
+    // mode means we're joined to a host.  Gate on the correct side.
+    const bool partner = is_hosting() ? remote_player_connected : is_client_mode();
+    if( !partner ) {
+        add_msg( m_warning, _( "No co-op partner connected." ) );
+        return;
+    }
+    std::string text = string_input_popup()
+                       .title( _( "Co-op chat: " ) )
+                       .width( 60 )
+                       .query_string();
+    // Trim surrounding whitespace; ignore empty/cancelled input.
+    const size_t a = text.find_first_not_of( " \t" );
+    if( a == std::string::npos ) {
+        return;
+    }
+    text = text.substr( a, text.find_last_not_of( " \t" ) - a + 1 );
+    if( text.size() > 256 ) {
+        text = text.substr( 0, 256 );
+    }
+    const bool host = is_hosting();
+    const std::string from = get_avatar().get_name();
+    const std::string js = "{\"type\":\"chat\",\"from\":\"" + json_escape_str( from ) +
+                           "\",\"text\":\"" + json_escape_str( text ) +
+                           "\",\"host\":" + ( host ? "true" : "false" ) + "}";
+    if( host ) {
+        if( server *srv = get_active_server() ) {
+            srv->post_broadcast( js + "\n" );
+        }
+    } else {
+        client_send( js );
+    }
+    mp_chat_display( _( "You" ), text, host );   // local echo — own messages show as "You"
 }
 
 // Client: last confirmed position of the remote player (our avatar as seen by the server).
@@ -1957,6 +2110,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     if( msg.find( "\"type\":\"note_sync\"" ) != std::string::npos ) {
         mp_handle_note_sync( msg );
+        return;
+    }
+
+    if( msg.find( "\"type\":\"chat\"" ) != std::string::npos ) {
+        mp_handle_chat_msg( msg );
         return;
     }
 
@@ -5524,6 +5682,7 @@ void process_mp_events()
         return data.find( "\"action\":\"worn_sync\"" ) != std::string::npos
                || data.find( "\"type\":\"trade_delta\"" ) != std::string::npos
                || data.find( "\"type\":\"note_sync\"" ) != std::string::npos
+               || data.find( "\"type\":\"chat\"" ) != std::string::npos
                || data.find( "\"type\":\"templates_list\"" ) != std::string::npos
                || data.find( "\"type\":\"resync_request\"" ) != std::string::npos
                || data.find( "\"client_tile_changes\":" ) != std::string::npos;
@@ -6085,6 +6244,11 @@ static bool apply_one_state_message( const std::string &msg )
 
     if( msg.find( "\"type\":\"note_sync\"" ) != std::string::npos ) {
         mp_handle_note_sync( msg );
+        return true;
+    }
+
+    if( msg.find( "\"type\":\"chat\"" ) != std::string::npos ) {
+        mp_handle_chat_msg( msg );
         return true;
     }
 

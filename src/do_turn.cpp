@@ -295,6 +295,10 @@ void handle_key_blocking_activity( int timeout )
             Messages::display_messages();
         } else if( action == "help" ) {
             get_help().display_help();
+        } else if( action == "coop_chat" ) {
+            // MP-locked host: let the host send chat while waiting for the client
+            // (the key was otherwise swallowed here before reaching handle_action).
+            cata_mp::mp_open_chat();
         } else if( action != "HELP_KEYBINDINGS" ) {
             refresh = false;
         }

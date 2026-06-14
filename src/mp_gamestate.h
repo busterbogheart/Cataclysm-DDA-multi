@@ -527,6 +527,10 @@ void mp_handle_pass_item();
 // A busy partner is never interrupted — the gesture just whiffs with flavor.
 void mp_high_five();
 
+// MP: open the co-op text-chat prompt (ACTION_COOP_CHAT).  Sends the typed line
+// to the partner and echoes it locally; shown above the info panel + message log.
+void mp_open_chat();
+
 // Overmap note sync — call after add_note / delete_note / mark_note_dangerous
 // so the partner's overmap mirrors the change.
 void mp_sync_note_add( const tripoint_abs_omt &pos, const std::string &text );

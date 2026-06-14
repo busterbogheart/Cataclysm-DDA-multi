@@ -1077,7 +1077,9 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
                                    guy.as_monster()->has_flag( mon_flag_CONVERSATION ) &&
                                    !guy.as_monster()->type->chat_topics.empty() ) ) && player_character.posz() == guy.posz() &&
                player_character.sees( here, guy.pos_bub( here ) ) &&
-               rl_dist( player_character.pos_abs(), guy.pos_abs() ) <= SEEX * 2;
+               rl_dist( player_character.pos_abs(), guy.pos_abs() ) <= SEEX * 2 &&
+               // MP: a remote human player's proxy is not a chattable/commandable NPC.
+               !( guy.is_npc() && cata_mp::is_partner_npc( guy.as_npc()->getID() ) );
     } );
 
     if( p.has_value() ) {
@@ -1093,20 +1095,26 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
 
     const int available_count = available.size();
     const std::vector<npc *> followers = get_npcs_if( [&]( const npc & guy ) {
+        // MP: human-player proxies aren't AI followers — exclude so the
+        // follower-command entries (guard, wake, danger, move-to, etc.) don't
+        // appear for / target a human partner.  Real NPC followers keep them.
         return guy.is_player_ally() && guy.is_following() &&
-               guy.can_hear( player_character.pos_bub(), volume );
+               guy.can_hear( player_character.pos_bub(), volume ) &&
+               !cata_mp::is_partner_npc( guy.getID() );
     } );
     const int follower_count = followers.size();
     const std::vector<npc *> guards = get_npcs_if( [&]( const npc & guy ) {
         return guy.mission == NPC_MISSION_GUARD_ALLY &&
                guy.companion_mission_role_id != "FACTION_CAMP" &&
-               guy.can_hear( player_character.pos_bub(), volume );
+               guy.can_hear( player_character.pos_bub(), volume ) &&
+               !cata_mp::is_partner_npc( guy.getID() );  // MP: not a human proxy
     } );
     const int guard_count = guards.size();
 
     const std::vector<npc *> available_for_activities = get_npcs_if( [&]( const npc & guy ) {
         return guy.is_player_ally() && guy.can_hear( player_character.pos_bub(), volume ) &&
-               guy.companion_mission_role_id != "FACTION_CAMP";
+               guy.companion_mission_role_id != "FACTION_CAMP" &&
+               !cata_mp::is_partner_npc( guy.getID() );  // MP: not a human proxy
     } );
     const int available_for_activities_count = available_for_activities.size();
 

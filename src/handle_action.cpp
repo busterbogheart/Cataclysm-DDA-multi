@@ -3183,6 +3183,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             ACTION_QUICKSAVE, ACTION_SAVE,
             ACTION_KEYBINDINGS,
             ACTION_EXPORT_BUG_REPORT_ARCHIVE,
+            // Co-op chat: zero-AP, opens a popup and sends a message, never
+            // mutates world state — safe to use while waiting for the client.
+            ACTION_COOP_CHAT,
         };
         if( !host_ui_actions.count( act ) ) {
             cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-BLOCK: act=" + std::to_string( act ) );
@@ -3684,6 +3687,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
         case ACTION_HIGH_FIVE:
             cata_mp::mp_high_five();
+            break;
+
+        case ACTION_COOP_CHAT:
+            cata_mp::mp_open_chat();
             break;
 
         case ACTION_PICK_STYLE:

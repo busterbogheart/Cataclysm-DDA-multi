@@ -5599,5 +5599,12 @@
     "name": "High-five partner",
     "category": "DEFAULTMODE",
     "bindings": [ ]
+  },
+  {
+    "type": "keybinding",
+    "id": "coop_chat",
+    "name": "Co-op chat",
+    "category": "DEFAULTMODE",
+    "bindings": [ ]
   }
 ]

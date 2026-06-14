@@ -362,6 +362,8 @@ enum action_id : int {
     ACTION_PASS_ITEM,
     /** MP: high-five the adjacent partner (small mutual morale boost) */
     ACTION_HIGH_FIVE,
+    /** MP: open the co-op text-chat prompt */
+    ACTION_COOP_CHAT,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/
