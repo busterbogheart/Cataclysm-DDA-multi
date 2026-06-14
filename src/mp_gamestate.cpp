@@ -3571,6 +3571,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 // the client skips (keeping its own terrain there).
 static int g_om_sync_radius = 90;   // OMTs around the host (covers the m-screen)
 static tripoint_abs_omt g_om_sync_last_center{ INT_MIN, INT_MIN, 0 };
+static int g_om_sync_last_client_z = INT_MIN;   // proxy z at last sync (stair retrigger)
 static bool g_om_sync_done = false;
 
 // Chunked overmap-sync apply. Applying the full ~32k-cell region with one
@@ -3586,22 +3587,25 @@ struct pending_omsync_t {
     size_t cursor = 0;
     bool active = false;
 };
-static pending_omsync_t g_pending_omsync;
+// FIFO of per-z regions.  The host may stream more than one floor's overmap in a
+// turn (host and client on different z), so each region drains independently
+// instead of overwriting the previous (the v1 single buffer).
+static std::vector<pending_omsync_t> g_pending_omsync;
 
 static void mp_drain_pending_omsync()
 {
-    pending_omsync_t &p = g_pending_omsync;
-    if( !p.active ) {
+    if( g_pending_omsync.empty() ) {
         return;
     }
     // Only apply while actually a client. If the session ended (e.g. dropped to
     // solo mid-apply), discard — don't write host overmap cells into a solo world.
     if( !is_client_mode() ) {
-        p.active = false;
+        g_pending_omsync.clear();
         return;
     }
     const auto t0 = std::chrono::steady_clock::now();
     constexpr size_t BUDGET = 1200;   // cells per do_turn
+    pending_omsync_t &p = g_pending_omsync.front();
     const size_t end = std::min( p.cursor + BUDGET, p.cells.size() );
     int applied = 0;
     for( ; p.cursor < end; ++p.cursor ) {
@@ -3613,18 +3617,21 @@ static void mp_drain_pending_omsync()
             ++applied;
         }
     }
-    if( p.cursor >= p.cells.size() ) {
-        p.active = false;
-        g->invalidate_main_ui_adaptor();   // one repaint once the region is complete
-        mp_log( "[cdda-mp] OMSYNC apply DONE (chunked)" );
-    }
+    const bool done = p.cursor >= p.cells.size();
+    const size_t remaining = p.cells.size() - p.cursor;
+    const int done_z = p.z;
     const long dur = static_cast<long>(
                          std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - t0 ).count() );
     if( dur > 25 ) {
         mp_log( "[cdda-mp] OMSYNC chunk: applied=" + std::to_string( applied ) +
                 " dur=" + std::to_string( dur ) + "ms remaining=" +
-                std::to_string( p.cells.size() - p.cursor ) );
+                std::to_string( remaining ) );
+    }
+    if( done ) {
+        g_pending_omsync.erase( g_pending_omsync.begin() );
+        g->invalidate_main_ui_adaptor();   // one repaint once the region is complete
+        mp_log( "[cdda-mp] OMSYNC apply DONE (chunked) z=" + std::to_string( done_z ) );
     }
 }
 
@@ -3650,31 +3657,19 @@ static void mp_reset_overmap_sync()
 {
     g_om_sync_done = false;
     g_om_sync_last_center = tripoint_abs_omt{ INT_MIN, INT_MIN, 0 };
+    g_om_sync_last_client_z = INT_MIN;
 }
 
-static std::string build_overmap_sync()
+// Build the overmap-region message for a single z-level.  The region is centered
+// on the host's x/y (`center`); `z` selects the floor.  Throttling and the choice
+// of which floors to sync live in the build_overmap_sync() wrapper below.
+static std::string build_overmap_sync_z( int z, const tripoint_abs_omt &center )
 {
-    if( !is_hosting() || !remote_player_connected ) {
-        return std::string();
-    }
-    const tripoint_abs_omt center = get_avatar().pos_abs_omt();
-    // Only (re)send on the first sync or after the host moved a meaningful
-    // distance — keeps this off the per-turn hot path.
-    const int step = 20;
-    if( g_om_sync_done &&
-        std::abs( center.x() - g_om_sync_last_center.x() ) < step &&
-        std::abs( center.y() - g_om_sync_last_center.y() ) < step ) {
-        return std::string();
-    }
-    g_om_sync_last_center = center;
-    g_om_sync_done = true;
-
     const int R = g_om_sync_radius;
     const int ox = center.x() - R;
     const int oy = center.y() - R;
     const int w = 2 * R + 1;
     const int h = 2 * R + 1;
-    const int z = 0;   // surface overmap only for now
 
     std::vector<std::string> palette;
     std::unordered_map<std::string, int> pal_idx;
@@ -3726,10 +3721,9 @@ static std::string build_overmap_sync()
         }
     }
     flush_run();
-    // Nothing generated near the host yet (e.g. first turn before the bubble
-    // settles) — don't latch g_om_sync_done so we retry next turn.
+    // Nothing generated at this z near the host (e.g. an unvisited floor, or the
+    // first turn before the bubble settles) — the wrapper decides whether to retry.
     if( real_omts == 0 ) {
-        g_om_sync_done = false;
         return std::string();
     }
 
@@ -3748,7 +3742,7 @@ static std::string build_overmap_sync()
     // its same-position cities and renames them. (Rivers are the same class —
     // overmap data the oter sync doesn't carry — and would use this same hook.)
     std::string cities_json = "[";
-    {
+    if( z == 0 ) {   // cities live on the surface layer; only the z=0 sync carries names
         bool cfirst = true;
         const tripoint_abs_sm center_sm = project_to<coords::sm>( center );
         const int radius_sm = ( std::max( w, h ) / 2 + 1 ) * 2;
@@ -3777,10 +3771,60 @@ static std::string build_overmap_sync()
                       ",\"pal\":" + pal_json + ",\"cities\":" + cities_json +
                       ",\"rle\":[" + runs + "]}";
     mp_log( "[cdda-mp] OMSYNC send: center=" + std::to_string( center.x() ) + "," +
-            std::to_string( center.y() ) + " w=" + std::to_string( w ) +
+            std::to_string( center.y() ) + " z=" + std::to_string( z ) +
+            " w=" + std::to_string( w ) +
             " real=" + std::to_string( real_omts ) + "/" + std::to_string( w * h ) +
             " pal=" + std::to_string( palette.size() ) + " bytes=" + std::to_string( msg.size() ) );
     return msg;
+}
+
+// Cross-z overmap (far-map) sync.  The v1 sync only streamed the surface (z=0),
+// so the m-screen / minimap was wrong whenever a player was underground or up a
+// floor.  Mirror the terrain fix: sync the union of {host z, client proxy z}.
+// Throttled — resends only on the first sync, after the host moves a meaningful
+// x/y distance, or when either player's floor changed (took stairs).
+static std::string build_overmap_sync()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return std::string();
+    }
+    const tripoint_abs_omt center = get_avatar().pos_abs_omt();
+    const int host_z = center.z();
+    int client_z = host_z;
+    const npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+    if( remote ) {
+        client_z = remote->pos_abs_omt().z();
+    }
+
+    const int step = 20;
+    const bool moved = std::abs( center.x() - g_om_sync_last_center.x() ) >= step ||
+                       std::abs( center.y() - g_om_sync_last_center.y() ) >= step;
+    const bool z_changed = host_z != g_om_sync_last_center.z() ||
+                           client_z != g_om_sync_last_client_z;
+    if( g_om_sync_done && !moved && !z_changed ) {
+        return std::string();
+    }
+
+    // Build the host's floor first; if nothing's generated there yet, don't latch
+    // — retry next turn (mirrors the v1 real_omts==0 retry).
+    std::string host_msg = build_overmap_sync_z( host_z, center );
+    if( host_msg.empty() ) {
+        g_om_sync_done = false;
+        return std::string();
+    }
+    g_om_sync_last_center = center;
+    g_om_sync_last_client_z = client_z;
+    g_om_sync_done = true;
+
+    std::string out = std::move( host_msg );
+    if( client_z != host_z ) {
+        const std::string cmsg = build_overmap_sync_z( client_z, center );
+        if( !cmsg.empty() ) {
+            out += '\n';
+            out += cmsg;
+        }
+    }
+    return out;
 }
 
 // Stream the host's authoritative submap terrain+furniture for the reality
@@ -5844,7 +5888,7 @@ static bool apply_one_state_message( const std::string &msg )
             // Decode the RLE into the pending buffer instead of applying inline —
             // mp_drain_pending_omsync() applies a budget of cells per do_turn so the
             // ~32k ter_set calls don't freeze the main thread for seconds on receipt.
-            pending_omsync_t &p = g_pending_omsync;
+            pending_omsync_t p;
             p.z = z;
             p.ox = ox;
             p.oy = oy;
@@ -5868,6 +5912,14 @@ static bool apply_one_state_message( const std::string &msg )
                 }
             }
             p.active = queued > 0;
+            if( queued > 0 ) {
+                // A fresh sync of a floor supersedes any still-pending region for
+                // the same z; drop it, then enqueue this one.
+                for( auto it = g_pending_omsync.begin(); it != g_pending_omsync.end(); ) {
+                    it = ( it->z == z ) ? g_pending_omsync.erase( it ) : std::next( it );
+                }
+                g_pending_omsync.push_back( std::move( p ) );
+            }
             mp_log( "[cdda-mp] OMSYNC recv: queued=" + std::to_string( queued ) + "/" +
                     std::to_string( total ) + " pal=" + std::to_string( palette.size() ) +
                     " (chunked apply)" );
