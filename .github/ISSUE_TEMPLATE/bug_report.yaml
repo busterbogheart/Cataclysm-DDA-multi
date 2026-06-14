@@ -91,6 +91,32 @@ body:
       required: true
 
   - type: textarea
+    id: crash-logs
+    attributes:
+      label: Crash logs (if the game crashed)
+      description: |
+        **If the game crashed** (closed unexpectedly, froze, or showed a crash dialog), attach both
+        `crash.log` and `debug.log`. These live in your **user-data `config` folder**, which is
+        **NOT** next to the game `.exe` — it's in your OS user folder:
+
+        - **Windows:** `%LOCALAPPDATA%\cataclysm-dda\config\crash.log` and `...\debug.log`
+          (paste `%LOCALAPPDATA%\cataclysm-dda\config` into the File Explorer address bar — that's
+          `C:\Users\<name>\AppData\Local\cataclysm-dda\config`)
+        - **macOS:** `~/Library/Application Support/Cataclysm/config/crash.log` and `.../debug.log`
+          (in Finder: Go > Go to Folder… and paste `~/Library/Application Support/Cataclysm/config`)
+        - **Linux:** `~/.cataclysm-dda/config/crash.log` and `~/.cataclysm-dda/config/debug.log`
+
+        Drag-and-drop both files into this box. `crash.log` has the backtrace; `debug.log` has the
+        last actions before the crash — both help a lot. (`crash.log` only exists if there was a crash.)
+
+        **Windows minidump (optional, large):** the game also writes a `.core` minidump file **next
+        to `cataclysm-tiles.exe`** (the folder you unzipped). It's big (tens of MB) and only useful
+        if a developer asks for it — the text `crash.log` above is the one we need first.
+      placeholder: Write N/A if the game did not crash.
+    validations:
+      required: false
+
+  - type: textarea
     id: steps-to-reproduce
     attributes:
       label: Steps to reproduce
@@ -139,8 +165,8 @@ body:
     attributes:
       label: Additional context
       description: |
-        Anything else. If the game crashed, also attach from each player's `config` folder:
-        `crash.log` and `debug.log`.
+        Anything else. (If the game crashed, attach `crash.log` and `debug.log` in the
+        **Crash logs** field above.)
       placeholder: |
         - you can drag and drop files into this issue post
     validations:
