@@ -1974,6 +1974,26 @@ void host_broadcast_vehicle_step()
     srv->post_broadcast( "{\"type\":\"vehicle_step\",\"vehicles\":" + vehicles_json + "}\n" );
 }
 
+// A relayed line is shown to the PARTNER, so a mention of the partner by name
+// should read as "you" to them (host's "Niesha swaps places with player2" →
+// client sees "Niesha swaps places with you").  Guarded against the same-name
+// case: if the partner's cached name equals the local player's own name (e.g.
+// both picked the same preset), we can't disambiguate, so leave names rather
+// than collapse to "you swaps places with you".  own_name is the local avatar.
+static void mp_addressee_to_you( std::string &s, const std::string &own_name )
+{
+    const std::string &name = g_partner_name_cached;
+    if( name.empty() || name == own_name ) {
+        return;
+    }
+    size_t p = 0;
+    while( ( p = s.find( name, p ) ) != std::string::npos ) {
+        const std::string repl = ( p == 0 ) ? "You" : "you";
+        s.replace( p, name.size(), repl );
+        p += repl.size();
+    }
+}
+
 void host_capture_avatar_msgs( unsigned long long pre_msg )
 {
     if( !is_hosting() || !remote_player_connected ) {
@@ -1999,7 +2019,7 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
         // sees "<host> drops your X" and reads "your" as referring to itself
         // — wrong subject.
         mp_rewrite_first_to_third( out, host_name );
-        mp_log( "[cdda-mp] host_combat_msg: " + out );
+        mp_addressee_to_you( out, host_name );   // partner's name → "you" (guarded)
         g_host_action_msgs_pending.push_back( out );
     }
 }
@@ -7433,6 +7453,12 @@ static void client_capture_avatar_msgs()
         if( text.rfind( "You ", 0 ) != 0 && text.rfind( "Now ", 0 ) != 0 ) {
             continue;  // skip ambient/UI/inventory chatter
         }
+        // Swap is already shown correctly on the host by the swap_with_partner
+        // handler ("<client> swaps places with you"); relaying the client's
+        // "You swap places with <host>" too would duplicate it.
+        if( text.find( "swap places" ) != std::string::npos ) {
+            continue;
+        }
         std::string out = text;
         if( out.rfind( "You ", 0 ) == 0 ) {
             // "You finish waiting" → "finish waiting" → "finishes waiting" → "Roy finishes waiting"
@@ -7443,6 +7469,7 @@ static void client_capture_avatar_msgs()
             // "Now reading X" → "Roy is now reading X"
             out = client_name + " is " + out;
         }
+        mp_addressee_to_you( out, client_name );   // partner's name → "you" (guarded)
         g_client_msgs_pending.push_back( out );
     }
 }
