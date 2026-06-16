@@ -827,8 +827,14 @@ ifeq ($(TILES), 1)
 		-I$(FRAMEWORKSDIR)/SDL3.framework/Headers \
 		-I$(FRAMEWORKSDIR)/SDL3_image.framework/Headers \
 		-I$(FRAMEWORKSDIR)/SDL3_ttf.framework/Headers
+        ifeq ($(SOUND), 1)
+          OSX_INC += -I$(FRAMEWORKSDIR)/SDL3_mixer.framework/Headers
+        endif
         LDFLAGS += -F$(FRAMEWORKSDIR) -rpath $(FRAMEWORKSDIR) \
 		 -framework SDL3 -framework SDL3_image -framework SDL3_ttf -framework Cocoa
+        ifeq ($(SOUND), 1)
+          LDFLAGS += -framework SDL3_mixer
+        endif
         CXXFLAGS += $(OSX_INC)
       else
         CXXFLAGS += $(subst -I,-isystem ,$(shell $(PKG_CONFIG) --cflags sdl3 sdl3-image sdl3-ttf))
