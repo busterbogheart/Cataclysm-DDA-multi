@@ -6855,6 +6855,10 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_array( "bodyparts" ) ) {
             avatar &av = get_avatar();
             int total_damage = 0;
+            int n_parts = 0;          // parts in this sync
+            int n_dropped = 0;        // parts whose HP fell vs. baseline
+            int first_delta = 0;      // delta of the first dropped part
+            bool uniform_drop = true; // every dropped part fell by first_delta
             for( const JsonValue &bpv : jo.get_array( "bodyparts" ) ) {
                 JsonObject bpo = bpv.get_object();
                 bpo.allow_omitted_members();
@@ -6862,6 +6866,7 @@ static bool apply_one_state_message( const std::string &msg )
                 const bodypart_id bp = bodypart_str_id( bp_str ).id();
                 const int new_hp = bpo.get_int( "hp" );
                 const auto prev_it = g_last_bodypart_hp.find( bp_str );
+                ++n_parts;
                 // Synthesise a "you were hit" message from HP deltas — but only
                 // when the previous baseline was a *valid* HP (<= this part's
                 // current max).  A baseline above max predates a max-HP
@@ -6879,13 +6884,32 @@ static bool apply_one_state_message( const std::string &msg )
                             + " max=" + std::to_string( av.get_part_hp_max( bp ) )
                             + " delta=" + std::to_string( delta ) );
                     total_damage += delta;
+                    if( n_dropped == 0 ) {
+                        first_delta = delta;
+                    } else if( delta != first_delta ) {
+                        uniform_drop = false;
+                    }
+                    ++n_dropped;
                 }
                 g_last_bodypart_hp[bp_str] = new_hp;
                 av.set_part_hp_cur( bp, new_hp );
             }
-            if( total_damage > 0 ) {
+            // Suppress the message for the recompute signature: EVERY part in the
+            // sync fell by the IDENTICAL amount.  Real combat damages specific
+            // parts by varied amounts (armor, hit location) — it never knocks all
+            // ~12 parts down by the same value at once.  That uniform pattern is a
+            // host-side HP recompute (e.g. a stat re-apply on the proxy) that
+            // oscillates 84<->75/96 and self-corrects, not an attack.  Was firing
+            // a phantom "hit for 108 damage!" after innocuous gestures like a
+            // high-five (confirmed 2026-06-15: all 12 parts 84->75 delta=9 twice).
+            const bool recompute_sig = n_dropped == n_parts && n_dropped >= 6 && uniform_drop;
+            if( total_damage > 0 && !recompute_sig ) {
                 mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: total=" + std::to_string( total_damage ) );
                 add_msg( m_bad, "You are hit for %d damage!", total_damage );
+            } else if( recompute_sig ) {
+                mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: suppressed uniform recompute (all "
+                        + std::to_string( n_parts ) + " parts -" + std::to_string( first_delta )
+                        + ")" );
             }
         }
 
