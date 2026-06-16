@@ -210,7 +210,7 @@ runs:
         UNI=""
         [ "$ARCH" = "universal" ] && UNI="UNIVERSAL_BINARY=1"
         make -j"$(sysctl -n hw.logicalcpu)" \
-          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 CCACHE=1 \
           FRAMEWORK=1 \
           USE_HOME_DIR=1 \
@@ -265,7 +265,7 @@ runs:
         UNI=""
         [ "$ARCH" = "universal" ] && UNI="UNIVERSAL_BINARY=1"
         make app \
-          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 \
           FRAMEWORK=1 \
           USE_HOME_DIR=1 \
