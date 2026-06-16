@@ -1,20 +1,18 @@
 name: Build macOS binary
 description: >
-  Build cataclysm-tiles (SDL3 universal), package it as Cddacoop.app inside a
-  DMG + zip, and upload them as workflow artifacts named cddacoop-macos-<arch>.
-  SDL3 (>=3.4.0) isn't packaged universal anywhere, so the whole SDL3 stack is
-  built from source as a fat (arm64+x86_64) binary, mirroring upstream's mac
-  SDL3 recipe. MSL shaders are compiled at make time via SDL_shadercross.
+  Build cataclysm-tiles, package it as Cddacoop.app inside a DMG, and upload
+  the DMG as a workflow artifact named cddacoop-macos-<arch>.
 
 inputs:
   arch:
     description: >
-      universal (arm64+x86_64 fat binary — the default), or arm64 / x64.
-      Used verbatim in the artifact/zip name (cddacoop-...-macos-<arch>).
+      universal (arm64+x86_64 fat binary — the default; runs natively on both
+      Apple Silicon and Intel Macs), or arm64 / x64 for a single-arch build.
+      The label is used verbatim in the artifact/zip name (cddacoop-...-macos-<arch>).
     required: false
     default: universal
   version:
-    description: 'Version string baked into the binary.'
+    description: 'Version string baked into the binary (e.g. v0.1.0 or test-20260523-a1b2c3d).'
     required: true
 
 outputs:
@@ -22,133 +20,136 @@ outputs:
     description: 'Filesystem path of the produced DMG, relative to the repo root.'
     value: ${{ steps.package.outputs.dmg-path }}
   zip-path:
-    description: 'Filesystem path of the produced .zip, relative to the repo root.'
+    description: 'Filesystem path of the produced .zip (Cddacoop.app + README), relative to the repo root.'
     value: ${{ steps.package.outputs.zip-path }}
 
 runs:
   using: composite
   steps:
-    - name: Install build dependencies (brew)
+    - name: Install build dependencies
       shell: bash
       run: |
-        # glslang -> glslangValidator (GLSL->SPIR-V); shadercross then does
-        # SPIR-V->MSL.  dylibbundler bundles the SDL3 dylibs into the .app.
-        HOMEBREW_NO_AUTO_UPDATE=yes HOMEBREW_NO_INSTALL_CLEANUP=yes brew install \
-          gettext dylibbundler create-dmg ccache glslang cmake ninja
+        # SDL2 itself comes from libsdl.org frameworks (next step) — those
+        # are built with macOS 10.11+ deployment target and statically embed
+        # codec deps (libjxl, libavif, libwebp, libvorbis, libflac, etc.).
+        # Going through brew here pulls in dylibs built for the runner's
+        # current macOS, which reference newer libc++ symbols (e.g.
+        # __libcpp_verbose_abort) and fail on older macOS at load time.
+        brew install \
+          gettext \
+          dylibbundler \
+          create-dmg \
+          ccache
 
-    - name: Install MacPorts (universal codec deps for SDL3_mixer/ttf)
-      uses: melusina-org/setup-macports@c7eb59386def259a274627092566a7f7b8d219b1 # v1
-
-    - name: Install universal MacPorts packages
-      shell: bash
-      run: |
-        # SDL3_mixer/ttf link these as real dylibs (VENDORED=OFF for mixer); the
-        # mac artifact is universal, so each (plus libiconv, a transitive dep of
-        # flac/wavpack) must be +universal.  Mirrors upstream's mac SDL3 job.
-        sudo port install freetype +universal pkgconfig +universal \
-            libiconv +universal libogg +universal flac +universal \
-            libvorbis +universal wavpack +universal mpg123 +universal
-
-    - name: Cache SDL3 stack (universal, from source)
-      id: cache-sdl3
+    - name: Cache SDL2 frameworks
+      id: sdl-cache
       uses: actions/cache@v4
       with:
-        path: ${{ runner.workspace }}/sdl3_prefix
-        key: sdl3-stack-universal-sdl-3.4.10-image-3.4.4-ttf-3.2.2-mixer-3.2.4-${{ runner.os }}-v1
+        path: ~/Library/Frameworks
+        key: sdl2-frameworks-2.30.11-2.8.5-2.8.1-2.24.0-v1
 
-    - name: Build SDL3 stack from source (universal)
-      if: steps.cache-sdl3.outputs.cache-hit != 'true'
+    - name: Install SDL2 frameworks from libsdl.org
+      if: steps.sdl-cache.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        SDL2_VERSION: '2.30.11'
+        SDL2_IMAGE_VERSION: '2.8.5'
+        SDL2_MIXER_VERSION: '2.8.1'
+        SDL2_TTF_VERSION: '2.24.0'
       run: |
-        set -euxo pipefail
-        PREFIX="${{ runner.workspace }}/sdl3_prefix"
-        export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:/opt/local/lib/pkgconfig"
-        # wavpack's Findwavpack.cmake uses plain find_library (no pkg-config),
-        # so /opt/local must be on CMAKE_PREFIX_PATH.
-        export CMAKE_PREFIX_PATH="$PREFIX:/opt/local"
-        ARCH_ARG='-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
-        BUILD_ROOT="${RUNNER_TEMP}/sdl3-build"; mkdir -p "$PREFIX" "$BUILD_ROOT"; cd "$BUILD_ROOT"
+        # Use the official SDL2 frameworks (universal arm64+x86_64, deployment
+        # target macOS 10.11+) instead of brew dylibs. The Makefile already
+        # supports FRAMEWORK=1 — auto-detects ~/Library/Frameworks.
+        mkdir -p "$HOME/Library/Frameworks"
 
-        git clone --depth 1 --branch release-3.4.10 https://github.com/libsdl-org/SDL.git sdl3_src
-        cmake -S sdl3_src -B sdl3_build "$ARCH_ARG" \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DBUILD_SHARED_LIBS=ON
-        cmake --build sdl3_build -j"$(sysctl -n hw.ncpu)"; cmake --install sdl3_build
+        install_framework() {
+          local name="$1" ver="$2" repo="$3"
+          local dmg="${name}-${ver}.dmg"
+          local url="https://github.com/libsdl-org/${repo}/releases/download/release-${ver}/${dmg}"
+          local mnt="/tmp/${name}-mnt"
+          echo "Downloading ${url}"
+          curl -fL --retry 3 -o "/tmp/${dmg}" "${url}"
+          hdiutil attach -nobrowse -mountpoint "${mnt}" "/tmp/${dmg}"
+          # The DMG layout has the .framework at the root.
+          cp -R "${mnt}/${name}.framework" "$HOME/Library/Frameworks/"
+          hdiutil detach "${mnt}"
+          rm "/tmp/${dmg}"
+        }
 
-        git clone --depth 1 --branch release-3.4.4 --recurse-submodules --shallow-submodules https://github.com/libsdl-org/SDL_image.git sdl3_image_src
-        cmake -S sdl3_image_src -B sdl3_image_build "$ARCH_ARG" \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DSDLIMAGE_VENDORED=ON -DSDLIMAGE_DEPS_SHARED=OFF -DSDLIMAGE_STRICT=ON \
-            -DSDLIMAGE_BACKEND_IMAGEIO=OFF \
-            -DSDLIMAGE_PNG=ON -DSDLIMAGE_PNG_LIBPNG=ON -DSDLIMAGE_JPG=ON \
-            -DSDLIMAGE_AVIF=OFF -DSDLIMAGE_JXL=OFF -DSDLIMAGE_TIF=OFF -DSDLIMAGE_WEBP=OFF \
-            -DPNG_ARM_NEON=off -DBUILD_SHARED_LIBS=ON
-        cmake --build sdl3_image_build -j"$(sysctl -n hw.ncpu)"; cmake --install sdl3_image_build
+        install_framework SDL2        "${SDL2_VERSION}"        SDL
+        install_framework SDL2_image  "${SDL2_IMAGE_VERSION}"  SDL_image
+        install_framework SDL2_mixer  "${SDL2_MIXER_VERSION}"  SDL_mixer
+        install_framework SDL2_ttf    "${SDL2_TTF_VERSION}"    SDL_ttf
 
-        git clone --depth 1 --branch release-3.2.2 --recurse-submodules --shallow-submodules https://github.com/libsdl-org/SDL_ttf.git sdl3_ttf_src
-        cmake -S sdl3_ttf_src -B sdl3_ttf_build "$ARCH_ARG" \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DSDLTTF_VENDORED=ON -DSDLTTF_STRICT=ON -DSDLTTF_PLUTOSVG=OFF -DBUILD_SHARED_LIBS=ON
-        cmake --build sdl3_ttf_build -j"$(sysctl -n hw.ncpu)"; cmake --install sdl3_ttf_build
+    - name: Verify SDL2 frameworks
+      shell: bash
+      run: ls -la "$HOME/Library/Frameworks/"
 
-        git clone --depth 1 --branch release-3.2.4 --recurse-submodules --shallow-submodules https://github.com/libsdl-org/SDL_mixer.git sdl3_mixer_src
-        cmake -S sdl3_mixer_src -B sdl3_mixer_build "$ARCH_ARG" \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DSDLMIXER_VENDORED=OFF -DSDLMIXER_DEPS_SHARED=OFF -DSDLMIXER_STRICT=ON \
-            -DSDLMIXER_FLAC=ON -DSDLMIXER_FLAC_LIBFLAC=ON -DSDLMIXER_FLAC_DRFLAC=OFF \
-            -DSDLMIXER_MP3=ON -DSDLMIXER_MP3_MPG123=ON -DSDLMIXER_MP3_MPG123_SHARED=OFF -DSDLMIXER_MP3_DRMP3=OFF \
-            -DSDLMIXER_VORBIS_VORBISFILE=ON -DSDLMIXER_VORBIS_STB=OFF -DSDLMIXER_VORBIS_TREMOR=OFF \
-            -DSDLMIXER_WAVPACK=ON \
-            -DSDLMIXER_OPUS=OFF -DSDLMIXER_MOD=OFF -DSDLMIXER_MIDI=OFF -DSDLMIXER_GME=OFF \
-            -DBUILD_SHARED_LIBS=ON
-        cmake --build sdl3_mixer_build -j"$(sysctl -n hw.ncpu)"; cmake --install sdl3_mixer_build
-
-    - name: Cache SDL_shadercross (for MSL shaders)
-      id: cache-shadercross
+    - name: Cache universal FreeType
+      if: ${{ inputs.arch == 'universal' }}
+      id: ft-cache
       uses: actions/cache@v4
       with:
-        path: ${{ runner.workspace }}/shadercross_prefix
-        key: shadercross-6b06e55c-${{ runner.os }}-v1
+        path: ~/ft-universal
+        # Key on FT version + compiler flags — if either changes we rebuild.
+        key: freetype-universal-2.13.3-macos10.15-v1
 
-    - name: Build SDL_shadercross from source
-      if: steps.cache-shadercross.outputs.cache-hit != 'true'
+    - name: Build universal FreeType (only for the universal link)
+      if: ${{ inputs.arch == 'universal' && steps.ft-cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
-        set -euxo pipefail
-        PREFIX="${{ runner.workspace }}/sdl3_prefix"
-        SC_PREFIX="${{ runner.workspace }}/shadercross_prefix"
-        SC="${RUNNER_TEMP}/SDL_shadercross"
-        git clone --recursive https://github.com/libsdl-org/SDL_shadercross.git "$SC"
-        cd "$SC"; git checkout 6b06e55c7c5d7e7a09a8a14f76e866dcfad5ab99; git submodule update --init --recursive
-        cmake -S external/SPIRV-Cross -B spirv_cross_build -GNinja \
-            -DCMAKE_BUILD_TYPE=Release -DSPIRV_CROSS_SHARED=OFF -DSPIRV_CROSS_STATIC=ON \
-            -DSPIRV_CROSS_CLI=OFF -DSPIRV_CROSS_ENABLE_TESTS=OFF \
-            -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/spirv_cross_prefix"
-        cmake --build spirv_cross_build; cmake --install spirv_cross_build
-        # DXC OFF: DXIL is Windows-only; macOS only needs MSL via SPIRV-Cross.
-        cmake -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/spirv_cross_prefix;$PREFIX" \
-            -DCMAKE_INSTALL_PREFIX="$SC_PREFIX" \
-            -DSDLSHADERCROSS_VENDORED=OFF -DSDLSHADERCROSS_INSTALL=ON \
-            -DSDLSHADERCROSS_CLI=ON -DSDLSHADERCROSS_SHARED=OFF -DSDLSHADERCROSS_STATIC=ON \
-            -DSDLSHADERCROSS_SPIRVCROSS_SHARED=OFF -DSDLSHADERCROSS_DXC=OFF
-        cmake --build build; cmake --install build
+        # Homebrew's freetype is single-arch (arm64 on this runner), so the
+        # x86_64 slice of a universal binary can't link against it —
+        # imgui_freetype.o needs FT_* symbols and the linker rejects the
+        # arm64-only dylib ("found architecture 'arm64', required 'x86_64'").
+        # Build a fat (x86_64 + arm64) *static* FreeType with no external deps
+        # and point pkg-config at it, so the Makefile's `pkg-config
+        # --cflags/--libs freetype2` resolves to this universal build for BOTH
+        # compile and link. Static + --without-* = nothing to bundle, no
+        # runtime dylib deps, and freetype is baked into the binary.
+        FT_VER=2.13.3
+        PREFIX="$HOME/ft-universal"
+        # Use the SourceForge release tarball — it vendors all submodules (dlg)
+        # so the build doesn't try `git submodule update` (which fails in a
+        # non-git tarball). The GitHub source archive (archive/refs/tags) omits
+        # submodules; Savannah's release tarball is self-contained but returns
+        # 502 intermittently from CI runners. SourceForge is both.
+        curl -fL --retry 5 --retry-all-errors -o /tmp/ft.tar.gz \
+          "https://downloads.sourceforge.net/project/freetype/freetype2/${FT_VER}/freetype-${FT_VER}.tar.gz"
+        mkdir -p /tmp/ft
+        tar -xzf /tmp/ft.tar.gz -C /tmp/ft --strip-components=1
+        (
+          cd /tmp/ft
+          # --without-zlib makes FreeType use its bundled gzip, so the static
+          # .a needs no external -lz at the final link (fully self-contained).
+          ./configure --prefix="$PREFIX" \
+            --enable-static --disable-shared \
+            --without-harfbuzz --without-brotli --without-png --without-bzip2 \
+            --without-zlib \
+            CC=clang \
+            CFLAGS="-arch x86_64 -arch arm64 -mmacosx-version-min=10.15" \
+            LDFLAGS="-arch x86_64 -arch arm64"
+          make -j"$(sysctl -n hw.logicalcpu)"
+          make install
+        )
 
-    - name: Configure SDL3 + shader env
+    - name: Verify universal FreeType
+      if: ${{ inputs.arch == 'universal' }}
       shell: bash
       run: |
-        PREFIX="${{ runner.workspace }}/sdl3_prefix"
-        SC_PREFIX="${{ runner.workspace }}/shadercross_prefix"
-        {
-          echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig:/opt/local/lib/pkgconfig"
-          echo "CMAKE_PREFIX_PATH=$PREFIX:/opt/local"
-          echo "DYLD_LIBRARY_PATH=$PREFIX/lib"
-        } >> "$GITHUB_ENV"
-        echo "$SC_PREFIX/bin" >> "$GITHUB_PATH"
+        echo "=== libfreetype.a archs (must list both) ==="
+        lipo -archs "$HOME/ft-universal/lib/libfreetype.a"
+        # Prepend so later steps (build, app, audit) all resolve freetype2 to
+        # the universal build via $GITHUB_ENV persistence.
+        echo "PKG_CONFIG_PATH=$HOME/ft-universal/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
 
     - name: Restore ccache
       uses: actions/cache@v4
       with:
         path: ~/.ccache
+        # Versioned per-arch so arm64 / x64 don't share entries. SHA in the
+        # primary key means we save a fresh slice each commit; the
+        # restore-keys fallback warms it from the most recent prior build.
         key: ccache-mac-${{ inputs.arch }}-${{ github.sha }}
         restore-keys: |
           ccache-mac-${{ inputs.arch }}-
@@ -158,38 +159,62 @@ runs:
       run: |
         echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
         echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
-        mkdir -p "$HOME/.ccache"; ccache -z
+        # CCACHE_SLOPPINESS is set inside CDDA's Makefile (see CCACHEBIN);
+        # we just need the dir + size budget.
+        mkdir -p "$HOME/.ccache"
+        ccache -z  # zero stats for this run
 
     - name: Write version header
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: |
+        # Generated header instead of passing -DCDDACOOP_VERSION to every
+        # translation unit. Only the (future) MP handshake .cpp includes
+        # this, so version changes don't invalidate the entire ccache.
         printf '#pragma once\n#define CDDACOOP_VERSION "%s"\n' "$VERSION" \
           > src/cata_version_generated.h
 
     - name: Rebrand bundle identity (Cataclysm → Cddacoop)
       shell: bash
       run: |
+        # Patch in place rather than committing renamed files to keep
+        # upstream merge conflicts minimal (per CLAUDE.md rule).
+        # macOS sed needs -i '' for in-place edits.
         sed -i '' \
           -e 's|com\.cataclysmdda\.en\.cataclysm|com.cddacoop.app|g' \
           -e 's|<string>Cataclysm</string>|<string>Cddacoop</string>|' \
           build-data/osx/Info.plist
+        # Hide this tracked-file edit from git's dirty check so the build-time
+        # version (getVersionString) stays the clean commit hash, identical on
+        # every platform. Otherwise the Makefile appends "-dirty.<HHMMSS>" and
+        # the MP version handshake can never match across separately-built
+        # binaries (arm/win/intel all differ by build time).
         git update-index --assume-unchanged build-data/osx/Info.plist
 
-    - name: Build cataclysm-tiles (SDL3)
+    - name: Build cataclysm-tiles
       shell: bash
       env:
         ARCH: ${{ inputs.arch }}
       run: |
-        # SDL3 via pkg-config (no FRAMEWORK on SDL3 — frameworks were SDL2).
-        # Shaders (MSL) compile at make time via shadercross on PATH.
+        # FRAMEWORK=1 → link against SDL2.framework et al. installed in the
+        # previous step. The Makefile uses `ifdef FRAMEWORK` (presence, not
+        # value) and finds them under ~/Library/Frameworks.
+        # RELEASE=1 strips symbols and turns on optimization.
+        # CCACHE=1 wires CDDA's own ccache integration (CCACHE_SLOPPINESS,
+        # CCACHE_CPP2 already set by Makefile around CCACHEBIN).
+        # UNIVERSAL_BINARY=1 → Makefile adds `-arch x86_64 -arch arm64` to
+        # compile + link so one fat binary runs on both architectures. The
+        # SDL2 frameworks from libsdl.org are already universal, so the slices
+        # link cleanly; the audit step below proves the output is truly fat.
         UNI=""
         [ "$ARCH" = "universal" ] && UNI="UNIVERSAL_BINARY=1"
         make -j"$(sysctl -n hw.logicalcpu)" \
-          TILES=1 SOUND=1 SDL3=1 LINTJSON=0 PCH=0 \
+          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 CCACHE=1 \
-          USE_HOME_DIR=1 RELEASE=1 \
+          FRAMEWORK=1 \
+          USE_HOME_DIR=1 \
+          RELEASE=1 \
           $UNI \
           cataclysm-tiles
 
@@ -197,61 +222,115 @@ runs:
       shell: bash
       run: ccache -s
 
+    - name: Smoke test — load game data headless (--check-mods)
+      shell: bash
+      run: |
+        # Catch data/mod-load crashes (bad JSON, removed fields, mod incompat)
+        # before they ship. --check-mods sets test_mode=true → loads core + the
+        # default mods and exits, no SDL window. Run the just-built repo-root
+        # binary (data/ still alongside; SDL2 frameworks in ~/Library/Frameworks
+        # for the dyld link). Advisory for now (::warning, never fails the build)
+        # while we validate the harness on real runners; flip to a hard gate once
+        # it's proven green.
+        set +e
+        timeout 300 ./cataclysm-tiles --check-mods 2>&1 | tail -40
+        rc=${PIPESTATUS[0]}
+        echo "SMOKE EXIT: $rc"
+        if [ "$rc" = "0" ]; then
+          echo "SMOKE: PASS"
+        else
+          echo "::warning title=Smoke test::--check-mods exited $rc (advisory)"
+        fi
+
     - name: Strip CC-Sounds for slim DMG
       shell: bash
-      run: rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
+      run: |
+        # The launcher prompts to download the sound pack from the release
+        # on first launch. Keeps the DMG ~25-50 MB instead of ~155 MB.
+        rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
 
     - name: Package .app bundle
       shell: bash
       env:
         ARCH: ${{ inputs.arch }}
       run: |
-        # `make app` runs dylibbundler to bundle the binary's dylibs into
-        # Contents/Resources/. The SDL3 dylibs are @rpath-referenced and live
-        # in our build prefix; SDL3_mixer/ttf also link MacPorts codecs in
-        # /opt/local. dylibbundler only searches paths given via -s (Makefile:
-        # `$(addprefix -s ,$(DYLIBBUNDLER_SEARCH_PATHS))`), and that variable is
-        # undefined by default — so without these it can't resolve
-        # @rpath/libSDL3_image.0.dylib and drops into an interactive prompt that
-        # loops forever in CI (no stdin). Feed it the prefix + MacPorts lib dirs.
-        PREFIX="${{ runner.workspace }}/sdl3_prefix"
+        # `make app` produces Cataclysm.app at the repo root (name is
+        # hardcoded in the Makefile). With FRAMEWORK=1, the Makefile copies
+        # SDL2.framework / SDL2_image.framework / SDL2_mixer.framework /
+        # SDL2_ttf.framework into Contents/Resources/. The trailing
+        # dylibbundler still runs and bundles any remaining brew dylibs the
+        # binary depends on. Must carry the same UNIVERSAL_BINARY flag as the
+        # build step so the linker flags match (otherwise `app` would relink
+        # single-arch over the fat .o files).
         UNI=""
         [ "$ARCH" = "universal" ] && UNI="UNIVERSAL_BINARY=1"
-        # `yes quit |` is a hang-guard: if dylibbundler ever still can't find a
-        # lib, it gets "quit" and aborts fast instead of looping on the prompt
-        # for hours. pipefail off + PIPESTATUS so yes's SIGPIPE doesn't fail the
-        # step when make actually succeeds.
-        set +o pipefail
-        yes quit | make app \
-          TILES=1 SOUND=1 SDL3=1 LINTJSON=0 PCH=0 \
+        make app \
+          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
           NATIVE=osx CLANG=1 \
-          USE_HOME_DIR=1 RELEASE=1 \
-          DYLIBBUNDLER_SEARCH_PATHS="$PREFIX/lib /opt/local/lib" \
+          FRAMEWORK=1 \
+          USE_HOME_DIR=1 \
+          RELEASE=1 \
           $UNI
-        rc=${PIPESTATUS[1]}
-        set -o pipefail
-        [ "$rc" -eq 0 ] || { echo "make app failed (rc=$rc) — dylibbundler likely couldn't resolve a lib; widen DYLIBBUNDLER_SEARCH_PATHS"; exit 1; }
+        # Rename post-hoc so the user-visible app inside the DMG matches the
+        # site / DMG filename without patching the Makefile.
         mv Cataclysm.app Cddacoop.app
 
     - name: Install Cddacoop launcher
       shell: bash
       run: |
+        # Overwrite the bundle launcher with our Host/Join/SP menu script.
+        # Info.plist's CFBundleExecutable still references "Cataclysm.sh",
+        # so we keep the filename and just replace its contents.
         cp build-data/osx/cddacoop-launcher.sh Cddacoop.app/Contents/MacOS/Cataclysm.sh
         chmod +x Cddacoop.app/Contents/MacOS/Cataclysm.sh
 
-    - name: Audit bundle (universal-fat check)
+    - name: Audit bundled dylibs (compatibility check)
       shell: bash
       env:
         ARCH: ${{ inputs.arch }}
       run: |
+        # Verify nothing in the bundle references __libcpp_verbose_abort (the
+        # libc++ symbol that breaks loading on macOS < 13.3 / Xcode < 14.3).
+        # If anything does, the .app will fail with "symbol not found" on
+        # older macOS — fail the build instead of shipping it.
         RES="Cddacoop.app/Contents/Resources"
-        echo "=== Bundle Mach-O contents ==="; ls "$RES" | grep -E '\.dylib$|\.framework$' || true
-        otool -L "$RES/cataclysm-tiles" 2>/dev/null | head -25 || otool -L Cddacoop.app/Contents/MacOS/cataclysm-tiles | head -25
+        echo "=== Bundle contents ==="
+        ls "$RES" | grep -E '\.framework$|\.dylib$' || true
+        echo "=== Binary load commands ==="
+        otool -L "$RES/cataclysm-tiles" | head -20
+        echo "=== Symbol scan for __libcpp_verbose_abort ==="
+        # Use a temp file because pipe-into-while runs in a subshell.
+        BAD=$(mktemp)
+        find "Cddacoop.app" -type f \( -name "*.dylib" -o -name "cataclysm-tiles" -o -path "*/Versions/A/SDL2*" \) -print0 |
+          while IFS= read -r -d '' f; do
+            if nm -u "$f" 2>/dev/null | grep -q "__ZNSt3__122__libcpp_verbose_abort"; then
+              echo "  FAIL: $f references __libcpp_verbose_abort" | tee -a "$BAD"
+            fi
+          done
+        if [ -s "$BAD" ]; then
+          rm -f "$BAD"
+          echo "Aborting: at least one bundled dylib won't load on macOS < 13.3"
+          exit 1
+        fi
+        rm -f "$BAD"
+        echo "  OK: no __libcpp_verbose_abort references found"
+
+        # Universal builds must be genuinely fat: the main binary AND every
+        # bundled Mach-O (dylibs + framework binaries) must carry both arm64
+        # and x86_64 slices. A brew dylib slipping in arm64-only would link
+        # fine on this arm runner but crash the x86_64 slice on Intel Macs
+        # with "no suitable image found". Fail loudly here rather than ship a
+        # half-broken universal. `file` reports each Mach-O architecture.
         if [ "$ARCH" = "universal" ]; then
           echo "=== Universal (fat) architecture check ==="
           FATBAD=$(mktemp)
-          find "Cddacoop.app" -type f \( -name "*.dylib" -o -name "cataclysm-tiles" \) -print0 |
+          # Mach-O files to verify: the executable, every .dylib, and the
+          # actual binary inside each bundled *.framework (skip headers etc.).
+          find "Cddacoop.app" -type f \
+            \( -name "*.dylib" -o -name "cataclysm-tiles" \
+               -o -path "*.framework/Versions/A/SDL2*" \) -print0 |
             while IFS= read -r -d '' f; do
+              # Only inspect real Mach-O files; symlinks/scripts are skipped.
               file "$f" | grep -q "Mach-O" || continue
               archs="$(lipo -archs "$f" 2>/dev/null || true)"
               if ! { echo "$archs" | grep -qw x86_64 && echo "$archs" | grep -qw arm64; }; then
@@ -260,14 +339,22 @@ runs:
                 echo "  ok:   $f ($archs)"
               fi
             done
-          if [ -s "$FATBAD" ]; then rm -f "$FATBAD"; echo "Aborting: single-arch Mach-O in universal build."; exit 1; fi
-          rm -f "$FATBAD"; echo "  OK: every bundled Mach-O is fat (arm64 + x86_64)"
+          if [ -s "$FATBAD" ]; then
+            rm -f "$FATBAD"
+            echo "Aborting: universal build has single-arch Mach-O(s); Intel slice would crash."
+            exit 1
+          fi
+          rm -f "$FATBAD"
+          echo "  OK: every bundled Mach-O contains both arm64 and x86_64"
         fi
 
     - name: Stage payload (.app + README)
       shell: bash
       run: |
-        rm -rf /tmp/cddacoop-stage; mkdir -p /tmp/cddacoop-stage
+        # Stage in a temp dir so create-dmg gets the README inside the DMG
+        # mount and `ditto` zips the same pair.  Cddacoop.app is renamed
+        rm -rf /tmp/cddacoop-stage
+        mkdir -p /tmp/cddacoop-stage
         cp -R Cddacoop.app /tmp/cddacoop-stage/
         bash build-data/md-to-readme-txt.sh build-data/README-cddacoop.md > /tmp/cddacoop-stage/README.txt
 
@@ -280,14 +367,25 @@ runs:
       run: |
         DMG="cddacoop-${VERSION}-macos-${ARCH}.dmg"
         ZIP="cddacoop-${VERSION}-macos-${ARCH}.zip"
+
+        # DMG — styled mount with Applications drop-link.  README is
+        # passed as an extra payload so it shows up next to the .app.
         create-dmg \
           --volname "Cddacoop ${VERSION}" \
-          --window-size 540 380 --icon-size 96 \
-          --icon "Cddacoop.app" 140 190 --icon "README.txt" 270 320 \
-          --app-drop-link 400 190 --hide-extension "Cddacoop.app" \
+          --window-size 540 380 \
+          --icon-size 96 \
+          --icon "Cddacoop.app" 140 190 \
+          --icon "README.txt" 270 320 \
+          --app-drop-link 400 190 \
+          --hide-extension "Cddacoop.app" \
           --no-internet-enable \
-          "${DMG}" /tmp/cddacoop-stage
+          "${DMG}" \
+          /tmp/cddacoop-stage
         echo "dmg-path=${DMG}" >> "$GITHUB_OUTPUT"
+
+        # Zip — preserves macOS metadata + resource forks.  No
+        # --keepParent so the zip's top level is Cddacoop.app + README.txt
+        # directly, not a wrapping staging-dir.
         ditto -c -k --sequesterRsrc /tmp/cddacoop-stage "${ZIP}"
         echo "zip-path=${ZIP}" >> "$GITHUB_OUTPUT"
 
