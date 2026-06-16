@@ -79,6 +79,14 @@ bool mp_in_burst_mode();
 // dispatch when the host is interrupting the client's wait.
 void mark_wake_client_pending();
 
+// Host-only: queue a one-shot signal that the host swapped with / pushed the
+// client this turn (host-initiated, performed locally on the host).  The next
+// state broadcast carries the flag; the client renders the observer message
+// ("<host> swaps places with you.") locally from the proxy's real name, so no
+// rendered text crosses the wire.
+void mark_partner_swap_pending();
+void mark_partner_push_pending();
+
 // Current partner-separation tier (0 = close, 1 = mild warn, 2 = urgent
 // warn / leeway, 3 = pause).  Read by do_turn to auto-pause the calendar
 // at tier 3.
@@ -252,6 +260,16 @@ bool should_fast_forward();
 // Client only: returns true when the client host-NPC proxy occupies the given
 // absolute map position.  Used by handle_action to block walk-through-host.
 bool is_client_host_at( const tripoint_abs_ms &abs );
+
+// Client only: the host is authoritative for the client avatar's z-position.
+// All vertical movement (ramps, ledge falls) arrives via host teleport, so the
+// client avatar must never run its own gravity_check / try_fall against the
+// local shadow map — which lags map_sync and frequently still shows t_open_air
+// on the destination z when the teleport lands, producing a spurious "You fall
+// down 1 story!" and impact damage on a perfectly valid ramp crossing.  SP's
+// walk_move(via_ramp) never falls; this restores that behavior for the client.
+// Returns true when the caller should skip the fall.
+bool client_suppress_self_gravity( const Character &who );
 
 // Server only: broadcast a host_died packet to connected clients so they can
 // show a "waiting for respawn" message instead of a raw disconnect spam.

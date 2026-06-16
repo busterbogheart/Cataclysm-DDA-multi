@@ -5426,6 +5426,11 @@ bool game::npc_menu( npc &who )
             add_msg( _( "You swap places with %s." ), who.get_name() );
             swap_critters( u, who );
             u.mod_moves( -200 );
+            // Host swapping with the client's proxy: flag it so the client
+            // renders "<host> swaps places with you." locally (no text relay).
+            if( cata_mp::is_hosting() && cata_mp::is_partner_npc( who.getID() ) ) {
+                cata_mp::mark_partner_swap_pending();
+            }
         }
     } else if( choice == push ) {
         if( !obeys ) {
@@ -5454,6 +5459,11 @@ bool game::npc_menu( npc &who )
             u.mod_moves( -20 );
             if( oldpos != who.pos_bub() ) {
                 add_msg( _( "%s moves out of the way." ), who.get_name() );
+                // Host pushing the client's proxy: flag it so the client
+                // renders "<host> pushes you out of the way." locally.
+                if( cata_mp::is_hosting() && cata_mp::is_partner_npc( who.getID() ) ) {
+                    cata_mp::mark_partner_push_pending();
+                }
             } else {
                 add_msg( m_warning, _( "%s has nowhere to go!" ), who.get_name() );
             }

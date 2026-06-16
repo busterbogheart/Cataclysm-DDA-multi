@@ -2806,8 +2806,21 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     player_character.facing = FacingDirection::LEFT;
                 }
             }
-            const std::string json = "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" +
-                                     dir + "\"}";
+            // Mirror avatar_action::move ramp z-adjustment (avatar_action.cpp:237-241):
+            // if the destination tile has RAMP_UP/DOWN, include dz so the server
+            // places the proxy at the correct z-level and the client teleports there.
+            int ramp_dz = 0;
+            if( offset_it != dir_to_offset.end() ) {
+                if( here.has_flag( ter_furn_flag::TFLAG_RAMP_UP, next_pos ) ) {
+                    ramp_dz = 1;
+                } else if( here.has_flag( ter_furn_flag::TFLAG_RAMP_DOWN, next_pos ) ) {
+                    ramp_dz = -1;
+                }
+            }
+            const std::string json = ramp_dz == 0
+                ? "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" + dir + "\"}"
+                : "{\"type\":\"action\",\"action\":\"move\",\"dir\":\"" + dir + "\",\"dz\":"
+                  + std::to_string( ramp_dz ) + "}";
             mp_dispatch( json, /*charge_from_caller=*/true );
             return true;
         }

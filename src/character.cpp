@@ -6940,6 +6940,9 @@ void Character::gravity_check()
     if( has_flag( json_flag_PHASE_MOVEMENT ) ) {
         return; // debug trait immunity to gravity, walls etc
     }
+    if( cata_mp::client_suppress_self_gravity( *this ) ) {
+        return; // host-authoritative: client avatar never self-falls (see mp_gamestate)
+    }
     map &here = get_map();
     if( here.is_open_air( pos_bub() ) && !in_vehicle && !has_effect_with_flag( json_flag_GLIDING ) &&
         here.try_fall( pos_bub(), this ) ) {
@@ -6951,6 +6954,9 @@ void Character::gravity_check( map *here )
 {
     if( has_flag( json_flag_PHASE_MOVEMENT ) ) {
         return; // debug trait immunity to gravity, walls etc
+    }
+    if( cata_mp::client_suppress_self_gravity( *this ) ) {
+        return; // host-authoritative: client avatar never self-falls (see mp_gamestate)
     }
     const tripoint_bub_ms pos = pos_bub( *here );
     if( here->is_open_air( pos ) && !in_vehicle && !has_effect_with_flag( json_flag_GLIDING ) &&
