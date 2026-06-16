@@ -817,8 +817,42 @@ bool game::do_turn()
             std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
         }
     }
-    while( u.get_moves() > 0 && u.activity ) {
-        u.activity.do_turn( u );
+    if( cata_mp::is_client_mode() ) {
+        // DIAG: a client firing a ranged weapon froze hard here (no key, incl.
+        // esc) — ACT_AIM's do_turn (aim_activity_actor) opens the interactive
+        // mode_fire UI and only sets act.moves_left, never decrementing
+        // u.get_moves(), so if the aim UI returns without resolving this loop
+        // can spin forever with moves stuck at 100.  Log per-iteration state to
+        // tell a SPIN (these lines repeat) from a BLOCK (no lines — stuck inside
+        // do_turn/mode_fire), and break out at a high cap so a recurrence is
+        // recoverable instead of a hard-kill.  Logging is throttled; the
+        // non-client path below is the untouched SP loop.
+        int spin = 0;
+        const std::string spin_act = pre_activity_id ? pre_activity_id.str() : "none";
+        while( u.get_moves() > 0 && u.activity ) {
+            const int pre_ml = u.activity ? u.activity.moves_left : 0;
+            u.activity.do_turn( u );
+            ++spin;
+            const int post_ml = u.activity ? u.activity.moves_left : 0;
+            if( spin <= 3 || spin % 200 == 0 ) {
+                cata_mp::mp_log( "[cdda-mp] ACT-LOOP: act=" + spin_act +
+                                 " iter=" + std::to_string( spin ) +
+                                 " moves=" + std::to_string( u.get_moves() ) +
+                                 " ml=" + std::to_string( pre_ml ) + "->" +
+                                 std::to_string( post_ml ) +
+                                 " act_now=" + ( u.activity ? u.activity.id().str() : "none" ) );
+            }
+            if( spin > 5000 ) {
+                cata_mp::mp_log( "[cdda-mp] ACT-LOOP-RUNAWAY: breaking act=" + spin_act +
+                                 " moves=" + std::to_string( u.get_moves() ) +
+                                 " — interactive activity made no progress" );
+                break;
+            }
+        }
+    } else {
+        while( u.get_moves() > 0 && u.activity ) {
+            u.activity.do_turn( u );
+        }
     }
     // Client: if a wait activity consumed the server-granted moves this turn,
     // dispatch "wait" so the server advances its timeline in sync.
