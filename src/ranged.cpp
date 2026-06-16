@@ -4007,12 +4007,19 @@ bool target_ui::action_aim_and_shoot( const std::string &action )
         }
     }
     if( it == aim_types.end() ) {
-        debugmsg( "Could not find a valid aim_type for %s", action.c_str() );
-        aim_mode = aim_types.begin();
-        it = aim_types.begin();   // fall back to a valid iterator — the original
-        // code set aim_mode but still dereferenced `it` (== end()) below, which
-        // crashed.  PRECISE_SHOT/CAREFUL_SHOT aren't in aim_types when a weapon's
-        // recoil thresholds deduplicate, yet their keybinds still reach here.
+        // CAREFUL_SHOT / PRECISE_SHOT are dropped from aim_types when a weapon's
+        // sight dispersion deduplicates the recoil thresholds (see get_aim_types),
+        // yet their keybinds stay registered and still reach here. That's an
+        // expected state, not an error — fall back to the most precise aim tier
+        // this weapon actually offers (aim_types is ordered least->most precise,
+        // so the last entry). Only a genuinely unknown action is a real bug.
+        // The old debugmsg fired a popup that, mid-aim on the MP client, crashed
+        // the client and dropped the host along with it.
+        if( action != "CAREFUL_SHOT" && action != "PRECISE_SHOT" ) {
+            debugmsg( "Could not find a valid aim_type for %s", action.c_str() );
+        }
+        it = aim_types.empty() ? aim_types.begin() : std::prev( aim_types.end() );
+        aim_mode = it;
     }
     int aim_threshold = it->threshold;
     set_last_target();
