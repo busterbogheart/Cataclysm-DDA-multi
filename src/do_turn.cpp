@@ -1176,11 +1176,27 @@ bool game::do_turn()
                 // the LOCKED branch is a dead end for newly-assigned
                 // activities (see veh_interact remove flow above).
                 const bool act_just_assigned = !had_activity_before_ha && u.activity;
-                if( act_just_assigned && !cata_mp::is_client_waiting_for_ack() ) {
+                // INTERACTIVE activities (ACT_AIM, ACT_FIRSTAID, ACT_AUTOATTACK,
+                // ACT_AUTODRIVE) run a local blocking UI.  Do NOT enter the
+                // lockstep wait here: this is the locked branch, only reached when
+                // the client is waiting for the host's grant — i.e. when the host
+                // is idle.  Dispatching a wait sets the ack guard, and with an idle
+                // host that never sends the releasing ack, the aim UI starves of
+                // input and deadlocks (the "freeze while host waits in place"; aim
+                // worked whenever the host was actively cycling turns).  The aim UI
+                // runs locally; the resulting shot syncs through the normal
+                // post-resolution wait once it consumes moves.  Passive long-actions
+                // (craft/read/wait/…) still need the assignment-time wait.
+                if( act_just_assigned && !cata_mp::is_client_waiting_for_ack()
+                    && cata_mp::is_passive_activity( u.activity.id().str() ) ) {
                     cata_mp::mp_log( "[cdda-mp] LOCKED-DISPATCH: activity just assigned in locked HA, dispatching wait id="
                                      + u.activity.id().str() );
                     cata_mp::client_dispatch_wait_for_activity(
                         u.activity.id(), /*force_idle=*/true );
+                } else if( act_just_assigned ) {
+                    cata_mp::mp_log( "[cdda-mp] LOCKED-DISPATCH: interactive act="
+                                     + u.activity.id().str()
+                                     + " — run UI locally, no lockstep wait" );
                 }
             }
 
