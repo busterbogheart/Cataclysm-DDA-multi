@@ -176,7 +176,16 @@ bool init( int frequency, int out_channels, int chunk_size,
     if( opts.memory_only ) {
         g_mixer = MIX_CreateMixer( &spec );
     } else {
+        // SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK expands to a C-style cast inside the
+        // SDL3 header; under -Werror -Wold-style-cast that fails to build when the
+        // header is read as a non-system include (seen on a Tier-3 macOS box where
+        // a homebrew SDL3 at /usr/local/include shadows the framework headers).
+        // The macro is SDL's own sentinel — suppress the third-party-cast warning
+        // just for this use.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
         g_mixer = MIX_CreateMixerDevice( SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec );
+#pragma GCC diagnostic pop
     }
     ( void )chunk_size;
     if( g_mixer == nullptr ) {
