@@ -3977,6 +3977,10 @@ bool target_ui::action_aim_and_shoot( const std::string &action )
     if( it == aim_types.end() ) {
         debugmsg( "Could not find a valid aim_type for %s", action.c_str() );
         aim_mode = aim_types.begin();
+        it = aim_types.begin();   // fall back to a valid iterator — the original
+        // code set aim_mode but still dereferenced `it` (== end()) below, which
+        // crashed.  PRECISE_SHOT/CAREFUL_SHOT aren't in aim_types when a weapon's
+        // recoil thresholds deduplicate, yet their keybinds still reach here.
     }
     int aim_threshold = it->threshold;
     set_last_target();

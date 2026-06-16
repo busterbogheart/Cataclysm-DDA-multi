@@ -7016,8 +7016,20 @@ static bool apply_one_state_message( const std::string &msg )
                 // here also causes subsequent grants in the same drain to take
                 // the CLI-SKIP branch, providing proper backpressure so the
                 // host advances at the client's pace.
-                if( ca ) {
-                    // Any active player_activity in MP is a long action: it needs
+                if( ca && !is_passive_activity( ca.id().str() ) ) {
+                    // Interactive activity (ACT_AIM, ACT_FIRSTAID, ACT_AUTOATTACK,
+                    // ACT_AUTODRIVE): its do_turn opens a BLOCKING UI (e.g. aiming's
+                    // target_ui via mode_fire).  Ticking it here — inside
+                    // client_process_incoming, during network-message processing —
+                    // ran that UI re-entrantly and crashed (target_ui::run /
+                    // ~display_buffer_draw_scope) and froze before.  Do NOT tick it;
+                    // the main do_turn act loop drives it in a valid UI context and
+                    // dispatches its own wait when moves are consumed.  Moves were
+                    // already set above from the grant.
+                    mp_log( "[cdda-mp] CLI-GRANT: interactive act=" + ca.id().str() +
+                            " deferred to main loop (no incoming-path tick)" );
+                } else if( ca ) {
+                    // Any passive player_activity in MP is a long action: it needs
                     // one tick per host grant, and we must ack the grant before
                     // the next message in this drain (the host's ack-clear) zeroes
                     // our moves.  Covers `|` wait, crafting, reading, butchering,
