@@ -416,9 +416,13 @@ else
   WARNINGS += -Wno-unknown-warning
   # GCC 16 -Wsfinae-incomplete: SFINAE on incomplete forward-declared types
   # (e.g. std::reference_wrapper<vehicle>) is link-compatible across TUs.
+  # GCC 16 -Wmaybe-uninitialized: false positive inside libstdc++ stl_algobase
+  # on vehicle_part_iterator (veh_interact.cpp) — the optional<vpart_reference>
+  # is initialized, the analyzer just can't see it across the iterator.
   GCC_MAJOR := $(shell $(CROSS)$(OS_COMPILER) -dumpversion 2>/dev/null | cut -d. -f1)
   ifeq ($(shell expr $(GCC_MAJOR) \>= 16 2>/dev/null), 1)
     CXX_WARNINGS += -Wno-error=sfinae-incomplete
+    CXX_WARNINGS += -Wno-error=maybe-uninitialized
   endif
 endif
 
