@@ -57,6 +57,7 @@
 #include "magic_type.h"
 #include "map.h"
 #include "mp_gamestate.h"  // DIAG: client aim-freeze instrumentation (temp)
+#include "mp_client_conn.h"  // DIAG: cata_mp::is_client_mode (temp)
 #include "map_scale_constants.h"
 #include "mapdata.h"
 #include "math_defines.h"
