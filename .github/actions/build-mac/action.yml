@@ -235,7 +235,7 @@ runs:
         set +e
         # macOS has no GNU `timeout` (it's coreutils); use a portable perl alarm
         # so the smoke can't hang the job. (rc 142 == timed out via SIGALRM.)
-        perl -e 'alarm 300; exec @ARGV' ./cataclysm-tiles --check-mods 2>&1 | tail -40
+        perl -e 'alarm 300; exec @ARGV' ./cataclysm-tiles --check-mods dda 2>&1 | tail -40
         rc=${PIPESTATUS[0]}
         echo "SMOKE EXIT: $rc"
         if [ "$rc" = "0" ]; then

@@ -106,7 +106,7 @@ runs:
         # STATIC build, run from repo root with data/ present. Advisory for now
         # (never fails the build) while we validate the harness on real runners.
         set +e
-        timeout 300 ./cataclysm-tiles.exe --check-mods 2>&1 | tail -40
+        timeout 300 ./cataclysm-tiles.exe --check-mods dda 2>&1 | tail -40
         rc=${PIPESTATUS[0]}
         echo "SMOKE EXIT: $rc"
         if [ "$rc" = "0" ]; then
