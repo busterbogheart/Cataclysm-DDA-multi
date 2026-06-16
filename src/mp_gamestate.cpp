@@ -386,6 +386,11 @@ static std::string g_pending_action;
 // target is destroyed or the bash fails to make progress.
 static bool g_client_autosmash = false;
 static std::string g_client_autosmash_json; // the smash JSON to re-queue
+// Set when a partial-bash result arrives and we need to ask "Keep smashing?".
+// The query MUST run from the main do_turn loop (client_resolve_pending_ui),
+// never inline in apply_one_state_message — a blocking popup from inside network
+// processing is the same re-entrant-UI crash class as the aim bug.
+static bool g_client_smash_query_pending = false;
 
 // Client: set when the host sends host_died or the socket drops.
 // Suppresses further processing and the lost-connection spam.
@@ -7098,12 +7103,18 @@ static bool apply_one_state_message( const std::string &msg )
                 }
             }
             if( sr == "hit" ) {
-                // Partial bash: ask once if not already in auto-smash mode, then re-queue.
-                if( !g_client_autosmash ) {
-                    g_client_autosmash = query_yn( _( "Keep smashing until destroyed?" ) );
-                }
-                if( g_client_autosmash && !g_client_autosmash_json.empty() ) {
-                    g_pending_action = g_client_autosmash_json;
+                // Partial bash. If already auto-smashing, re-queue immediately.
+                // Otherwise DEFER the "Keep smashing?" prompt — query_yn opens a
+                // blocking popup, and running it here (inside apply_one_state_message,
+                // i.e. network-message processing) is the same re-entrant-UI crash
+                // class as the aim bug.  client_resolve_pending_ui() (main do_turn
+                // loop) asks it in a valid context.
+                if( g_client_autosmash ) {
+                    if( !g_client_autosmash_json.empty() ) {
+                        g_pending_action = g_client_autosmash_json;
+                    }
+                } else {
+                    g_client_smash_query_pending = true;
                 }
             } else {
                 // Destroyed, impossible, or failed — stop auto-smashing.
@@ -7201,6 +7212,20 @@ static bool apply_one_state_message( const std::string &msg )
         std::cout << "[cdda-mp] unknown exception in state processing" << std::endl;
     }
     return true;
+}
+
+void client_resolve_pending_ui()
+{
+    // Drains blocking UI deferred out of the network-recv path (apply_one_state_
+    // message).  MUST be called from the main do_turn loop, where a top-level UI
+    // context is valid — never from inside packet processing.
+    if( g_client_smash_query_pending ) {
+        g_client_smash_query_pending = false;
+        g_client_autosmash = query_yn( _( "Keep smashing until destroyed?" ) );
+        if( g_client_autosmash && !g_client_autosmash_json.empty() ) {
+            g_pending_action = g_client_autosmash_json;
+        }
+    }
 }
 
 void client_process_incoming()

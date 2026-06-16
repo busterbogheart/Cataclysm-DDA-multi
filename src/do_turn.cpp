@@ -686,6 +686,9 @@ bool game::do_turn()
     cata_mp::process_mp_events();
     // Apply any server state updates received since the last turn (client mode)
     cata_mp::client_process_incoming();
+    // Resolve any blocking UI deferred out of the recv path (e.g. the smash
+    // "Keep smashing?" prompt) now that we're back in a valid top-level context.
+    cata_mp::client_resolve_pending_ui();
     if( cata_mp::is_client_mode() ) {
         avatar &u_dbg = get_avatar();
         const std::string msg = "[cdda-mp] post-incoming moves=" +

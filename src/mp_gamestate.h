@@ -113,6 +113,11 @@ bool client_acted_this_turn();
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();
 
+// Run blocking UI that was deferred out of the network-recv path (e.g. the smash
+// "Keep smashing?" prompt).  Call from do_turn() right after
+// client_process_incoming(), where a top-level UI context is valid.
+void client_resolve_pending_ui();
+
 // Block until the server has sent the initial position and the avatar has been
 // teleported to the host area.  Call once after the game world is loaded but
 // before the first do_turn(), so the player never sees their scenario start tile.
