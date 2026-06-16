@@ -6413,25 +6413,29 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
     if( inputdelay < 0 ) {
         long diag_spin = 0;  // DIAG (temp): client aim-freeze input-wait probe
         do {
-            CheckMessages();
-            if( last_input.type != input_event_t::error ) {
-                break;
-            }
-            // DIAG: if we spin a long time with no recognized input, dump state
-            // once/sec — how many SDL events are queued (keypresses arriving but
-            // not converting?) vs an empty queue (no events reaching us at all).
-            if( cata_mp::is_client_mode() && ++diag_spin % 1000 == 0 ) {
-                SDL_Event peek[16];
+            // DIAG: peek the queue BEFORE CheckMessages drains it, plus the
+            // renderer-recovery abort state. If abort_frame=1, the merge's
+            // recovery machine is gating the frame/input on the client (the
+            // suspected cause). q_before>0 = keys ARE arriving (CheckMessages
+            // just isn't converting them); q_before=0 = nothing reaching SDL.
+            if( cata_mp::is_client_mode() && diag_spin % 1000 == 0 ) {
                 SDL_PumpEvents();
+                SDL_Event peek[16];
 #if SDL_MAJOR_VERSION >= 3
                 const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST );
 #else
                 const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT );
 #endif
                 cata_mp::mp_log( "[cdda-mp] GIE-SPIN: " + std::to_string( diag_spin ) +
-                                 " last_input.type=" + std::to_string( static_cast<int>( last_input.type ) ) +
-                                 " sdl_events_queued=" + std::to_string( nq ) +
-                                 ( nq > 0 ? ( " first_evtype=" + std::to_string( static_cast<unsigned>( peek[0].type ) ) ) : "" ) );
+                                 " abort_frame=" + std::to_string( renderer_should_abort_frame() ) +
+                                 " q_before=" + std::to_string( nq ) +
+                                 ( nq > 0 ? ( " first_evtype=" + std::to_string( static_cast<unsigned>( peek[0].type ) ) ) : "" ) +
+                                 " last_input.type=" + std::to_string( static_cast<int>( last_input.type ) ) );
+            }
+            ++diag_spin;
+            CheckMessages();
+            if( last_input.type != input_event_t::error ) {
+                break;
             }
             SDL_Delay( 1 );
         } while( last_input.type == input_event_t::error );
