@@ -122,12 +122,10 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       || github.event.inputs.linux == 'true'
-    # SDL3 stack is built from source (setup-sdl3-stack) so the runner just
-    # needs a recent toolchain + the SDL3 build deps, which require 24.04
-    # (libdecor/pipewire/etc aren't on 22.04). Matches upstream's SDL3 runner.
-    # NOTE: raises the glibc baseline vs the old 22.04 SDL2 build — same
-    # tradeoff upstream took when it moved its SDL3 Linux job to 24.04.
-    runs-on: ubuntu-24.04
+    # SDL2-for-now: apt libsdl2-dev on 22.04 keeps the glibc baseline broad
+    # (lower than 24.04) so the binary runs on more distros. (SDL3 era bumped
+    # this to 24.04 to build SDL3 from source; reverted with the SDL2 switch.)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -158,6 +156,18 @@ jobs:
 
       - name: List artifacts
         run: ls -lh dist/ || echo "No artifacts"
+
+      # The CC-Sounds pack (~135 MB) is stripped from the platform bundles to
+      # keep downloads slim; the launcher fetches it on first run. The full
+      # pack lives tracked at data/sound/CC-Sounds/ (the build actions delete it
+      # from the bundle, but this upload job has a clean checkout). Zip it from
+      # inside data/sound/ so the archive root is CC-Sounds/ — that's exactly
+      # what the launcher unzips into .../Cddacoop/sound/.
+      - name: Stage CC-Sounds pack
+        run: |
+          mkdir -p dist
+          ( cd data/sound && zip -rqy ../../dist/cc-sounds.zip CC-Sounds )
+          ls -lh dist/cc-sounds.zip
 
       - name: Build release body
         env:
@@ -242,6 +252,7 @@ jobs:
             dist/cddacoop-*-macos-universal.zip
             dist/cddacoop-*-windows-x64.zip
             dist/cddacoop-*-linux-x64.tar.gz
+            dist/cc-sounds.zip
 
       # Mirror the same artifacts to itch.io (cddacoop.itch.io/cddacoop) so the
       # itch listing stays pinned to this commit alongside the site. Pushes the

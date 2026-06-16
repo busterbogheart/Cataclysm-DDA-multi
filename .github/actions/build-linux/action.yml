@@ -25,19 +25,9 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           g++ make git pkg-config ccache \
-          glslang-tools \
-          gettext libncursesw5-dev zlib1g-dev
-        # SDL3 (sdl3 + image/ttf/mixer >= 3.4.0) isn't packaged in apt, so the
-        # setup-sdl3-stack action below builds it from source (copied verbatim
-        # from upstream). glslang-tools provides glslangValidator for the SPIR-V
-        # shader compile the SDL3 tiles build runs at make time (Linux = spv, so
-        # no SDL_shadercross/DXC needed — that's only for macOS MSL / Windows DXIL).
-
-    - name: Setup SDL3 stack (built from source, cached)
-      uses: ./.github/actions/setup-sdl3-stack
-      with:
-        cache-key: sdl3-stack-sdl-3.4.10-image-3.4.4-ttf-3.2.2-mixer-3.2.4-ubuntu-24.04-v1
-        prefix: ${{ runner.workspace }}/sdl3_prefix
+          libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+          libfreetype6-dev gettext libncursesw5-dev \
+          zlib1g-dev
 
     - name: Restore ccache
       uses: actions/cache@v4
@@ -79,12 +69,31 @@ runs:
       run: |
         make -j"$(nproc)" \
           CCACHE=1 RELEASE=1 \
-          TILES=1 SOUND=1 LINTJSON=0 PCH=0 \
+          TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
           cataclysm-tiles
 
     - name: ccache stats
       shell: bash
       run: ccache -s
+
+    - name: Smoke test — load game data headless (--check-mods)
+      shell: bash
+      run: |
+        # Catch data/mod-load crashes before they ship. --check-mods sets
+        # test_mode=true → loads core + default mods and exits. Linux CI runners
+        # are headless (no X), so wrap in xvfb-run in case the binary touches SDL
+        # video at startup before test_mode short-circuits. Advisory for now
+        # (never fails the build) while we validate the harness.
+        sudo apt-get install -y --no-install-recommends xvfb || true
+        set +e
+        timeout 300 xvfb-run -a ./cataclysm-tiles --check-mods 2>&1 | tail -40
+        rc=${PIPESTATUS[0]}
+        echo "SMOKE EXIT: $rc"
+        if [ "$rc" = "0" ]; then
+          echo "SMOKE: PASS"
+        else
+          echo "::warning title=Smoke test::--check-mods exited $rc (advisory)"
+        fi
 
     - name: Package tarball
       id: package
