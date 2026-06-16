@@ -2999,6 +2999,14 @@ target_handler::trajectory target_ui::run()
         // Wait for user input (or use value retrieved from activity)
         if( action.empty() ) {
             int timeout = get_option<int>( "EDGE_SCROLL" );
+            // MP: EDGE_SCROLL = -1 (edge scrolling Disabled) makes handle_input
+            // block with no timeout. The remote client must never hard-block in an
+            // interactive UI — if an SDL event fails to arrive it hangs forever and
+            // strands the host in SRV-WAIT. Clamp to a positive poll so the client's
+            // aim loop stays timed/responsive, exactly like SP with edge scroll on.
+            if( timeout < 0 && cata_mp::is_client_mode() ) {
+                timeout = 50;
+            }
             action = ctxt.handle_input( timeout );
             if( diag ) {
                 cata_mp::mp_log( "[cdda-mp] AIM-RUN: iter" + std::to_string( diag_iter ) +
