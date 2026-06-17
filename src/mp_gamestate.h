@@ -550,6 +550,13 @@ void mp_handle_pass_item();
 // A busy partner is never interrupted — the gesture just whiffs with flavor.
 void mp_high_five();
 
+// MP: relay a local yell as authoritative world-noise.  Called from game::chat()
+// right after the avatar shouts.  No-op on the host (its shout already made real
+// noise); on the client it sends a noise-only packet so the host reproduces the
+// sound at the remote player's proxy position (monsters hear it).  vol is the
+// avatar's shout volume; order=true for command yells (loudest).
+void mp_relay_shout( int vol, bool order );
+
 // MP: open the co-op text-chat prompt (ACTION_COOP_CHAT).  Sends the typed line
 // to the partner and echoes it locally; shown above the info panel + message log.
 void mp_open_chat();

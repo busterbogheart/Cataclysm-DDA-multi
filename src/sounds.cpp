@@ -359,6 +359,15 @@ void sounds::add_footstep( const tripoint_bub_ms &p, int volume, int, monster *,
                                          sound_t::movement, footstep, false, true, "", "", seas_str} );
 }
 
+void sounds::sound_monsters_only( const tripoint_bub_ms &p, int vol, sound_t category )
+{
+    // Silent sounds are inaudible to monsters and would divide by zero in
+    // cluster_sounds — same guard as sounds::sound().
+    if( vol > 0 ) {
+        recent_sounds.emplace_back( p, monster_sound_event{ vol, is_provocative( category ) } );
+    }
+}
+
 template <typename C>
 static void vector_quick_remove( std::vector<C> &source, int index )
 {

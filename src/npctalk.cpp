@@ -1545,6 +1545,12 @@ void game::chat( const std::optional<tripoint_bub_ms> &p )
     if( !message.empty() ) {
         add_msg( _( "You yell %s" ), message );
         u.shout( string_format( _( "%s yelling %s" ), u.disp_name(), message ), is_order );
+        // MP: a client's local shout only makes noise in its own bubble.  Relay
+        // it so the host reproduces the noise authoritatively at the remote
+        // player's real (proxy) position — so the partner's nearby monsters
+        // actually hear it.  Noise only: the spoken line reaches the partner via
+        // the normal message relay.  No-op on the host (already authoritative).
+        cata_mp::mp_relay_shout( u.get_shout_volume(), is_order );
     }
     if( !emote_msg.empty() ) {
         add_msg( emote_msg );

@@ -2118,6 +2118,7 @@ static void srv_emit_ack( const char *action_name )
 
 static void mp_handle_note_sync( const std::string &msg );
 static void mp_handle_high_five_recv( const std::string &msg );
+static void mp_handle_shout_recv( const std::string &msg );
 
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
@@ -2185,6 +2186,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     if( msg.find( "\"type\":\"high_five\"" ) != std::string::npos ) {
         mp_handle_high_five_recv( msg );
+        return;
+    }
+
+    if( msg.find( "\"type\":\"shout\"" ) != std::string::npos ) {
+        mp_handle_shout_recv( msg );
         return;
     }
 
@@ -9524,6 +9530,51 @@ void mp_high_five()
 
     if( is_client_mode() ) {
         mp_client_post_action( pre_moves );
+    }
+}
+
+void mp_relay_shout( int vol, bool order )
+{
+    // The host's own yell already created authoritative noise locally when it
+    // called sounds::sound() inside Character::shout(); nothing to relay.  Only
+    // the client needs to forward, because its local shout lands in its own
+    // (non-authoritative) bubble — the host must reproduce the noise at the
+    // proxy.  Noise only: the spoken line is shown on each side via the normal
+    // message path, so the packet carries volume + loudness, not text.
+    if( vol <= 0 || !is_client_mode() ) {
+        return;
+    }
+    const std::string payload = "{\"type\":\"shout\",\"vol\":" + std::to_string( vol ) +
+                                ",\"order\":" + ( order ? "true" : "false" ) + "}";
+    client_send( payload );
+    mp_log( "[cdda-mp] shout relay sent: vol=" + std::to_string( vol ) +
+            " order=" + ( order ? "1" : "0" ) );
+}
+
+static void mp_handle_shout_recv( const std::string &msg )
+{
+    npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+    if( !remote ) {
+        return;
+    }
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        const int vol = jo.get_int( "vol", 0 );
+        const bool order = jo.get_bool( "order", false );
+        if( vol <= 0 ) {
+            return;
+        }
+        // Authoritative world-noise at the remote player's real position so the
+        // host's monsters hear the yell.  Monster-only (no host "you hear" line):
+        // the spoken text already reaches this player via the message relay.
+        sounds::sound_monsters_only( remote->pos_bub(), vol,
+                                     order ? sounds::sound_t::order : sounds::sound_t::alert );
+        mp_log( "[cdda-mp] shout recv: vol=" + std::to_string( vol ) +
+                " order=" + ( order ? "1" : "0" ) + " at proxy" );
+    } catch( const JsonError &e ) {
+        mp_log( std::string( "[cdda-mp] shout recv parse error: " ) + e.what() );
     }
 }
 

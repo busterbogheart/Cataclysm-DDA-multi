@@ -2437,7 +2437,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // while locked because the activity needs moves to actually start.
             static const std::set<action_id> menu_allowed_while_locked = {
                 ACTION_PICKUP, ACTION_PICKUP_ALL,
-                ACTION_BUTCHER, ACTION_LOOT, ACTION_CHAT,
+                ACTION_BUTCHER, ACTION_LOOT,
                 ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
                 ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
             };
@@ -2453,6 +2453,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_RELOAD_ITEM, ACTION_RELOAD_WEAPON, ACTION_RELOAD_WIELDED,
                 ACTION_USE, ACTION_USE_WIELDED, ACTION_READ,
                 ACTION_PASS_ITEM, ACTION_HIGH_FIVE,
+                // Yelling (the chat menu) shouts immediately and costs a full
+                // turn — it is NOT a browse-a-menu/assign-activity action, so it
+                // must be blocked while locked (otherwise it shouts at negative
+                // moves and never syncs to the host).
+                ACTION_CHAT,
                 // Combat
                 ACTION_FIRE, ACTION_FIRE_BURST, ACTION_AUTOATTACK,
                 ACTION_THROW, ACTION_THROW_WIELDED,
@@ -3184,7 +3189,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             ACTION_PICKUP, ACTION_PICKUP_ALL, ACTION_LOOT,
             ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
             ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
-            ACTION_BUTCHER, ACTION_CHAT,
+            ACTION_BUTCHER,
             // Move-mode toggles are zero-AP and just flip flags.
             ACTION_TOGGLE_RUN, ACTION_TOGGLE_CROUCH, ACTION_TOGGLE_PRONE,
             ACTION_CYCLE_MOVE, ACTION_CYCLE_MOVE_REVERSE,
@@ -3608,9 +3613,16 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             butcher( mouse_target );
             break;
 
-        case ACTION_CHAT:
+        case ACTION_CHAT: {
+            const int pre_chat_moves = player_character.get_moves();
             chat( mouse_target );
+            // Yelling / commanding shouts and costs a full turn; sync that turn
+            // (and the worn diff) to the host like any other AP-consuming client
+            // action.  No-op on the host and when the menu was cancelled (the
+            // pre/post-moves gate inside mp_client_post_action handles both).
+            cata_mp::mp_client_post_action( pre_chat_moves );
             break;
+        }
 
         case ACTION_PEEK:
             if( mouse_target ) {
