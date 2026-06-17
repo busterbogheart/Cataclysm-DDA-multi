@@ -244,6 +244,12 @@ std::string enum_to_string<sounds::sound_t>( sounds::sound_t data )
 // Static globals tracking sounds events of various kinds.
 // The sound events since the last monster turn.
 static std::vector<std::pair<tripoint_bub_ms, monster_sound_event>> recent_sounds;
+// Snapshot of the last turn that produced any sound, retained ONLY for the
+// "Show sound clustering" debug overlay.  recent_sounds is cleared at the end of
+// process_sounds() every turn — before the player can open the debug menu — so
+// the overlay always drew empty after a real action.  This keeps the most recent
+// non-empty set visible until the next sound occurs.
+static std::vector<std::pair<tripoint_bub_ms, monster_sound_event>> last_turn_recent_sounds;
 // The sound events since the last interactive player turn. (doesn't count sleep etc)
 static std::vector<std::pair<tripoint_bub_ms, sound_event>> sounds_since_last_turn;
 // The sound events currently displayed to the player.
@@ -524,6 +530,12 @@ void sounds::process_sounds()
             }
         }
     }
+    // Keep this turn's sounds for the debug overlay before wiping the live
+    // buffer (sticky: only overwrite when there was actually sound, so the last
+    // yell/shot/etc. stays visible until the next one).
+    if( !recent_sounds.empty() ) {
+        last_turn_recent_sounds = recent_sounds;
+    }
     recent_sounds.clear();
 }
 
@@ -799,6 +811,7 @@ void sounds::process_sound_markers( Character *you )
 void sounds::reset_sounds()
 {
     recent_sounds.clear();
+    last_turn_recent_sounds.clear();
     sounds_since_last_turn.clear();
     sound_markers.clear();
 }
@@ -821,10 +834,14 @@ std::vector<tripoint_bub_ms> sounds::get_footstep_markers()
 
 std::pair<std::vector<tripoint_bub_ms>, std::vector<tripoint_bub_ms>> sounds::get_monster_sounds()
 {
-    auto sound_clusters = cluster_sounds( recent_sounds );
+    // Draw from the retained snapshot, not the live buffer: by the time the
+    // player opens the debug overlay, process_sounds() has already cleared
+    // recent_sounds for the turn.  Sole consumer is the debug overlay.
+    const auto &source = last_turn_recent_sounds;
+    auto sound_clusters = cluster_sounds( source );
     std::vector<tripoint_bub_ms> sound_locations;
-    sound_locations.reserve( recent_sounds.size() );
-    for( const auto &sound : recent_sounds ) {
+    sound_locations.reserve( source.size() );
+    for( const auto &sound : source ) {
         sound_locations.push_back( sound.first );
     }
     std::vector<tripoint_bub_ms> cluster_centroids;
