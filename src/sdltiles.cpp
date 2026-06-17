@@ -5473,6 +5473,9 @@ static void CheckMessages()
 #else
                 case CATA_WINDOWEVENT_FOCUS_LOST:
                     window_focus = false;
+                    if( cata_mp::is_client_mode() ) {
+                        cata_mp::mp_log( "[cdda-mp] WIN-FOCUS: LOST" );
+                    }
                     if( IsTextInputActive( ::window.get() ) ) {
                         text_input_active_when_regaining_focus = true;
                         // Stop text input to not interfere with other programs
@@ -5489,6 +5492,9 @@ static void CheckMessages()
                     break;
                 case CATA_WINDOWEVENT_FOCUS_GAINED:
                     window_focus = true;
+                    if( cata_mp::is_client_mode() ) {
+                        cata_mp::mp_log( "[cdda-mp] WIN-FOCUS: GAINED" );
+                    }
                     // Restore text input status
                     if( text_input_active_when_regaining_focus ) {
                         StartTextInput( ::window.get() );
@@ -6457,6 +6463,8 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
                 const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT );
 #endif
                 cata_mp::mp_log( "[cdda-mp] GIE-TIMED: delay=" + std::to_string( inputdelay ) +
+                                 " win_focus=" + std::to_string( window_focus ) +
+                                 " kbd_focus=" + std::to_string( SDL_GetKeyboardFocus() == ::window.get() ) +
                                  " abort_frame=" + std::to_string( renderer_should_abort_frame() ) +
                                  " q=" + std::to_string( nq ) +
                                  ( nq > 0 ? ( " evtype=" + std::to_string( static_cast<unsigned>( peek[0].type ) ) ) : "" ) +
