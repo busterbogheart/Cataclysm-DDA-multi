@@ -37,6 +37,7 @@
 #include "input.h"
 #include "loading_ui.h"
 #include "mod_manager.h"
+#include "mp_client_conn.h"
 #include "mp_gamestate.h"
 #include "options.h"
 #include "output.h"
@@ -556,6 +557,16 @@ void realDebugmsg( const char *filename, const char *line, const char *funcname,
     }
 
     if( test_mode ) {
+        return;
+    }
+
+    // MP: a client must never open the blocking debug-error modal.  That modal
+    // runs its own nested input loop (debug_error_prompt below), which on a
+    // client (a) stops acking the host -> wedges BOTH players, and (b) can
+    // double-crash via ImGui when the debugmsg is raised mid-redraw.  The error
+    // is already written to debug.log above, so it still self-diagnoses; we just
+    // don't let it become a fatal two-player modal.  Mirrors the test_mode skip.
+    if( cata_mp::is_client_mode() ) {
         return;
     }
 
