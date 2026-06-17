@@ -5446,7 +5446,8 @@ static void CheckMessages()
         // motion (spam). If keydowns appear here during the deaf aim, they ARE
         // arriving and something downstream eats them (e.g. ImGui capture); if
         // they never appear, the OS/SDL isn't delivering them despite focus.
-        if( cata_mp::is_client_mode() && ev.type != SDL_MOUSEMOTION ) {
+        if( cata_mp::is_client_mode() && ev.type != SDL_MOUSEMOTION &&
+            ev.type != static_cast<Uint32>( SDL_GAMEPAD_SCHEDULER ) ) {
             cata_mp::mp_log( "[cdda-mp] CHK-EV: type=" + std::to_string( static_cast<unsigned>( ev.type ) ) +
                              " imgui_shown=" + std::to_string( imclient && imclient->any_window_shown() ) +
                              " imgui_capkbd=" + std::to_string( cataimgui::client::want_capture_keyboard() ) );
@@ -6397,6 +6398,26 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
     // CheckMessages poll below still reads it.
     SDL_PumpEvents();
     drain_renderer_recovery();
+
+    // DIAG (temp): probe the HARVEST source. Right after SDL_PumpEvents (which
+    // is what pulls OS key events off macOS's Cocoa run loop into SDL's queue),
+    // count keyboard events sitting in the queue. nkey=0 while the user mashes =>
+    // the OS isn't handing this app keys in this state (activation/harvest), not a
+    // downstream drop. Also log the keyboard mode: keychar => text-input/IME path
+    // (can swallow keys on macOS), keycode => raw.
+    if( cata_mp::is_client_mode() ) {
+        SDL_Event kpeek[8];
+#if SDL_MAJOR_VERSION >= 3
+        const int nkey = SDL_PeepEvents( kpeek, 8, SDL_PEEKEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_TEXT_INPUT );
+#else
+        const int nkey = SDL_PeepEvents( kpeek, 8, SDL_PEEKEVENT, SDL_KEYDOWN, SDL_TEXTINPUT );
+#endif
+        const bool keychar = actual_keyboard_mode( preferred_keyboard_mode ) == keyboard_mode::keychar;
+        cata_mp::mp_log( "[cdda-mp] GIE-ENTRY: mode=" + std::string( keychar ? "keychar" : "keycode" ) +
+                         " tia=" + std::to_string( IsTextInputActive( ::window.get() ) ) +
+                         " nkey_in_q=" + std::to_string( nkey ) +
+                         " inputdelay=" + std::to_string( inputdelay ) );
+    }
 
 #if !defined(__ANDROID__) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE == 1)
     if( actual_keyboard_mode( preferred_keyboard_mode ) == keyboard_mode::keychar ) {
