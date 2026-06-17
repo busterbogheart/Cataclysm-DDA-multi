@@ -213,15 +213,6 @@ large scripted-effect/teleport power sets fall outside that model.
   the overmap should match up.  Ramps/bridges should not impede the client anymore. 
 - **In-game text chat!** — Bind `Co-op chat` to a key and chat w/ your partner.  Kept in messages
 and a new 3-line area above the co-op panel bottom left.  (Alternately you can yell a sentence if you're close enough)
-- **Yelling actually makes noise now** — shouting a sentence creates real in-world sound: monsters can hear it,
-  and your partner can too if they're close enough (how far depends on how loud you yell and how perceptive
-  they are).  It costs action points now, so no free spamming.
-- **Aiming and firing no longer freeze or crash the client** — fixed a crash when opening the aim UI, a hard
-  freeze when firing repeatedly, and a freeze that hit the joining player whenever the host was sitting idle.
-- **No more phantom "hit for 108 damage!"** — those bogus damage messages from behind-the-scenes health syncs
-  are gone.
-- **Steadier joining player** — the client no longer hard-crashes on an internal debug error (it logs and keeps
-  going), and the "Keep smashing?" prompt no longer jams up the connection.
 
 ### 2026-06-13
 

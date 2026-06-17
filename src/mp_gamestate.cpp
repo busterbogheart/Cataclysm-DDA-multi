@@ -9566,11 +9566,18 @@ static void mp_handle_shout_recv( const std::string &msg )
         if( vol <= 0 ) {
             return;
         }
-        // Authoritative world-noise at the remote player's real position so the
-        // host's monsters hear the yell.  Monster-only (no host "you hear" line):
-        // the spoken text already reaches this player via the message relay.
-        sounds::sound_monsters_only( remote->pos_bub(), vol,
-                                     order ? sounds::sound_t::order : sounds::sound_t::alert );
+        // Authoritative sound at the remote player's real position: a FULL sound
+        // (not monster-only) so the host (a) hears it as a real "you hear <name>
+        // yells" message — the only tiles-visible signal, since CDDA's sound
+        // overlay is curses-only — (b) gets the normal '?' sound marker when the
+        // partner is out of view, and (c) draws monsters toward the proxy tile.
+        // The "<name> yells" line this produces on the host is suppressed from
+        // the host->client relay (mp_forward_*), so the client doesn't double it
+        // against its own local "You yell ...".
+        sounds::sound( remote->pos_bub(), vol,
+                       order ? sounds::sound_t::order : sounds::sound_t::alert,
+                       string_format( _( "%s yells" ), remote->disp_name() ),
+                       false, "shout", "default" );
         mp_log( "[cdda-mp] shout recv: vol=" + std::to_string( vol ) +
                 " order=" + ( order ? "1" : "0" ) + " at proxy" );
     } catch( const JsonError &e ) {
@@ -9980,6 +9987,14 @@ std::string serialize_remote_player_state()
                 text.find( "pushes you out of the way" ) != std::string::npos ||
                 text.rfind( "You push ", 0 ) == 0 ) {
                 mp_log( "[cdda-mp] between-action: suppressed swap/push relay: " + text );
+                continue;
+            }
+            // The host's "you hear <partner> yells" line comes from the proxy's
+            // relayed shout (mp_handle_shout_recv); the client already printed its
+            // own "You yell ..." locally, so forwarding this would double it (and
+            // the You-substitution would garble it to "you hear You yells").
+            if( text.find( " yells" ) != std::string::npos ) {
+                mp_log( "[cdda-mp] between-action: suppressed relayed-yell echo: " + text );
                 continue;
             }
             const bool has_npc    = !npc_name.empty() && text.find( npc_name ) != std::string::npos;
