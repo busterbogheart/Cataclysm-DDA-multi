@@ -5442,6 +5442,15 @@ static void CheckMessages()
     int imgui_buf_h = 0;
     get_display_buffer_dims( &imgui_buf_w, &imgui_buf_h );
     while( SDL_PollEvent( &ev ) ) {
+        // DIAG (temp): ground-truth of what SDL hands the client. Skip mouse
+        // motion (spam). If keydowns appear here during the deaf aim, they ARE
+        // arriving and something downstream eats them (e.g. ImGui capture); if
+        // they never appear, the OS/SDL isn't delivering them despite focus.
+        if( cata_mp::is_client_mode() && ev.type != SDL_MOUSEMOTION ) {
+            cata_mp::mp_log( "[cdda-mp] CHK-EV: type=" + std::to_string( static_cast<unsigned>( ev.type ) ) +
+                             " imgui_shown=" + std::to_string( imclient && imclient->any_window_shown() ) +
+                             " imgui_capkbd=" + std::to_string( cataimgui::client::want_capture_keyboard() ) );
+        }
         // Build a display_buffer-coord copy for ImGui and gameplay
         // consumers. The raw `ev` stays in window coordinates so android
         // shortcut and joystick hit-tests see the same domain SDL emitted.
