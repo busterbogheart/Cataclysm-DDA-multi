@@ -6440,6 +6440,29 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
             SDL_Delay( 1 );
         } while( last_input.type == input_event_t::error );
     } else if( inputdelay > 0 ) {
+        // DIAG (temp): probe the timed input path used by the aim UI. The aim
+        // loop calls handle_input(EDGE_SCROLL>0) -> inputdelay>0 -> here. When the
+        // client aims while the host is idle the loop returns TIMEOUT forever
+        // (deaf to keys). q = SDL events queued at entry; evtype 768=KEYDOWN,
+        // 771=TEXTINPUT (SDL2). q>0 w/ keydown = arriving but not converted;
+        // q=0 = nothing reaching SDL (focus/delivery). abort_frame = recovery gate.
+        if( cata_mp::is_client_mode() ) {
+            static long gie_timed = 0;
+            if( gie_timed++ % 20 == 0 ) {
+                SDL_PumpEvents();
+                SDL_Event peek[16];
+#if SDL_MAJOR_VERSION >= 3
+                const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST );
+#else
+                const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT );
+#endif
+                cata_mp::mp_log( "[cdda-mp] GIE-TIMED: delay=" + std::to_string( inputdelay ) +
+                                 " abort_frame=" + std::to_string( renderer_should_abort_frame() ) +
+                                 " q=" + std::to_string( nq ) +
+                                 ( nq > 0 ? ( " evtype=" + std::to_string( static_cast<unsigned>( peek[0].type ) ) ) : "" ) +
+                                 " last_input.type=" + std::to_string( static_cast<int>( last_input.type ) ) );
+            }
+        }
         uint32_t starttime = GetTicks();
         uint32_t endtime = 0;
         bool timedout = false;
