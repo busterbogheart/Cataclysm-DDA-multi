@@ -7,9 +7,7 @@
 #include <vector>
 
 #include "cached_options.h"
-// DIAG (temp #3): time client redraws to split the passive-activity per-turn cost.
-#include "mp_gamestate.h"
-#include "mp_client_conn.h"
+#include "mp_gamestate.h"  // cata_mp::client_render_can_throttle
 #include "cata_assert.h"
 #include "cata_imgui.h"
 #include "cata_scope_helpers.h"

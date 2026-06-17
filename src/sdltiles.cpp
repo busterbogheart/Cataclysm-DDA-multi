@@ -57,9 +57,6 @@
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
-// DIAG (temp #3): time the client present to split passive-activity per-turn cost.
-#include "mp_gamestate.h"
-#include "mp_client_conn.h"
 #include "hash_utils.h"
 #include "horde_entity.h"
 #include "input.h"
@@ -5442,16 +5439,6 @@ static void CheckMessages()
     int imgui_buf_h = 0;
     get_display_buffer_dims( &imgui_buf_w, &imgui_buf_h );
     while( SDL_PollEvent( &ev ) ) {
-        // DIAG (temp): ground-truth of what SDL hands the client. Skip mouse
-        // motion (spam). If keydowns appear here during the deaf aim, they ARE
-        // arriving and something downstream eats them (e.g. ImGui capture); if
-        // they never appear, the OS/SDL isn't delivering them despite focus.
-        if( cata_mp::is_client_mode() && ev.type != SDL_MOUSEMOTION &&
-            ev.type != static_cast<Uint32>( SDL_GAMEPAD_SCHEDULER ) ) {
-            cata_mp::mp_log( "[cdda-mp] CHK-EV: type=" + std::to_string( static_cast<unsigned>( ev.type ) ) +
-                             " imgui_shown=" + std::to_string( imclient && imclient->any_window_shown() ) +
-                             " imgui_capkbd=" + std::to_string( cataimgui::client::want_capture_keyboard() ) );
-        }
         // Build a display_buffer-coord copy for ImGui and gameplay
         // consumers. The raw `ev` stays in window coordinates so android
         // shortcut and joystick hit-tests see the same domain SDL emitted.
@@ -5483,9 +5470,6 @@ static void CheckMessages()
 #else
                 case CATA_WINDOWEVENT_FOCUS_LOST:
                     window_focus = false;
-                    if( cata_mp::is_client_mode() ) {
-                        cata_mp::mp_log( "[cdda-mp] WIN-FOCUS: LOST" );
-                    }
                     if( IsTextInputActive( ::window.get() ) ) {
                         text_input_active_when_regaining_focus = true;
                         // Stop text input to not interfere with other programs
@@ -5502,9 +5486,6 @@ static void CheckMessages()
                     break;
                 case CATA_WINDOWEVENT_FOCUS_GAINED:
                     window_focus = true;
-                    if( cata_mp::is_client_mode() ) {
-                        cata_mp::mp_log( "[cdda-mp] WIN-FOCUS: GAINED" );
-                    }
                     // Restore text input status
                     if( text_input_active_when_regaining_focus ) {
                         StartTextInput( ::window.get() );
@@ -6399,26 +6380,6 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
     SDL_PumpEvents();
     drain_renderer_recovery();
 
-    // DIAG (temp): probe the HARVEST source. Right after SDL_PumpEvents (which
-    // is what pulls OS key events off macOS's Cocoa run loop into SDL's queue),
-    // count keyboard events sitting in the queue. nkey=0 while the user mashes =>
-    // the OS isn't handing this app keys in this state (activation/harvest), not a
-    // downstream drop. Also log the keyboard mode: keychar => text-input/IME path
-    // (can swallow keys on macOS), keycode => raw.
-    if( cata_mp::is_client_mode() ) {
-        SDL_Event kpeek[8];
-#if SDL_MAJOR_VERSION >= 3
-        const int nkey = SDL_PeepEvents( kpeek, 8, SDL_PEEKEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_TEXT_INPUT );
-#else
-        const int nkey = SDL_PeepEvents( kpeek, 8, SDL_PEEKEVENT, SDL_KEYDOWN, SDL_TEXTINPUT );
-#endif
-        const bool keychar = actual_keyboard_mode( preferred_keyboard_mode ) == keyboard_mode::keychar;
-        cata_mp::mp_log( "[cdda-mp] GIE-ENTRY: mode=" + std::string( keychar ? "keychar" : "keycode" ) +
-                         " tia=" + std::to_string( IsTextInputActive( ::window.get() ) ) +
-                         " nkey_in_q=" + std::to_string( nkey ) +
-                         " inputdelay=" + std::to_string( inputdelay ) );
-    }
-
 #if !defined(__ANDROID__) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE == 1)
     if( actual_keyboard_mode( preferred_keyboard_mode ) == keyboard_mode::keychar ) {
         focus_aware_start_text_input();
@@ -6447,28 +6408,7 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
     }
 
     if( inputdelay < 0 ) {
-        long diag_spin = 0;  // DIAG (temp): client aim-freeze input-wait probe
         do {
-            // DIAG: peek the queue BEFORE CheckMessages drains it, plus the
-            // renderer-recovery abort state. If abort_frame=1, the merge's
-            // recovery machine is gating the frame/input on the client (the
-            // suspected cause). q_before>0 = keys ARE arriving (CheckMessages
-            // just isn't converting them); q_before=0 = nothing reaching SDL.
-            if( cata_mp::is_client_mode() && diag_spin % 1000 == 0 ) {
-                SDL_PumpEvents();
-                SDL_Event peek[16];
-#if SDL_MAJOR_VERSION >= 3
-                const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST );
-#else
-                const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT );
-#endif
-                cata_mp::mp_log( "[cdda-mp] GIE-SPIN: " + std::to_string( diag_spin ) +
-                                 " abort_frame=" + std::to_string( renderer_should_abort_frame() ) +
-                                 " q_before=" + std::to_string( nq ) +
-                                 ( nq > 0 ? ( " first_evtype=" + std::to_string( static_cast<unsigned>( peek[0].type ) ) ) : "" ) +
-                                 " last_input.type=" + std::to_string( static_cast<int>( last_input.type ) ) );
-            }
-            ++diag_spin;
             CheckMessages();
             if( last_input.type != input_event_t::error ) {
                 break;
@@ -6476,31 +6416,6 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
             SDL_Delay( 1 );
         } while( last_input.type == input_event_t::error );
     } else if( inputdelay > 0 ) {
-        // DIAG (temp): probe the timed input path used by the aim UI. The aim
-        // loop calls handle_input(EDGE_SCROLL>0) -> inputdelay>0 -> here. When the
-        // client aims while the host is idle the loop returns TIMEOUT forever
-        // (deaf to keys). q = SDL events queued at entry; evtype 768=KEYDOWN,
-        // 771=TEXTINPUT (SDL2). q>0 w/ keydown = arriving but not converted;
-        // q=0 = nothing reaching SDL (focus/delivery). abort_frame = recovery gate.
-        if( cata_mp::is_client_mode() ) {
-            static long gie_timed = 0;
-            if( gie_timed++ % 20 == 0 ) {
-                SDL_PumpEvents();
-                SDL_Event peek[16];
-#if SDL_MAJOR_VERSION >= 3
-                const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST );
-#else
-                const int nq = SDL_PeepEvents( peek, 16, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT );
-#endif
-                cata_mp::mp_log( "[cdda-mp] GIE-TIMED: delay=" + std::to_string( inputdelay ) +
-                                 " win_focus=" + std::to_string( window_focus ) +
-                                 " kbd_focus=" + std::to_string( SDL_GetKeyboardFocus() == ::window.get() ) +
-                                 " abort_frame=" + std::to_string( renderer_should_abort_frame() ) +
-                                 " q=" + std::to_string( nq ) +
-                                 ( nq > 0 ? ( " evtype=" + std::to_string( static_cast<unsigned>( peek[0].type ) ) ) : "" ) +
-                                 " last_input.type=" + std::to_string( static_cast<int>( last_input.type ) ) );
-            }
-        }
         uint32_t starttime = GetTicks();
         uint32_t endtime = 0;
         bool timedout = false;

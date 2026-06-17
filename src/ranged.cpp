@@ -56,8 +56,7 @@
 #include "magic_enchantment.h"
 #include "magic_type.h"
 #include "map.h"
-#include "mp_gamestate.h"  // DIAG: client aim-freeze instrumentation (temp)
-#include "mp_client_conn.h"  // DIAG: cata_mp::is_client_mode (temp)
+#include "mp_client_conn.h"  // cata_mp::is_client_mode (EDGE_SCROLL clamp for remote client)
 #include "map_scale_constants.h"
 #include "mapdata.h"
 #include "math_defines.h"
@@ -2847,9 +2846,6 @@ double Character::gun_value( const item &weap, int ammo ) const
 
 target_handler::trajectory target_ui::run()
 {
-    if( cata_mp::is_client_mode() ) {
-        cata_mp::mp_log( "[cdda-mp] AIM-RUN: entry (target_ui::run reached)" );
-    }
     if( mode == TargetMode::Spell && !no_mana && !casting->can_cast( *you ) ) {
         you->add_msg_if_player( m_bad, _( "You don't have enough %s to cast this spell" ),
                                 casting->energy_string() );
@@ -2974,25 +2970,10 @@ target_handler::trajectory target_ui::run()
     ExitCode loop_exit_code;
     std::string timed_out_action;
     bool skip_redraw = false;
-    if( cata_mp::is_client_mode() ) {
-        cata_mp::mp_log( "[cdda-mp] AIM-RUN: entering event loop (mode=" +
-                         std::to_string( static_cast<int>( mode ) ) + ")" );
-    }
-    int diag_iter = 0;  // DIAG: per-iteration log to pin where consecutive-fire freeze lands
     for( ;; action.clear() ) {
-        const bool diag = cata_mp::is_client_mode();
-        ++diag_iter;
         if( !skip_redraw ) {
-            if( diag ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-RUN: iter" + std::to_string( diag_iter ) +
-                                 " -> ui_manager::redraw()" );
-            }
             g->invalidate_main_ui_adaptor();
             ui_manager::redraw();
-            if( diag ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-RUN: iter" + std::to_string( diag_iter ) +
-                                 " redraw returned -> handle_input" );
-            }
         }
         skip_redraw = false;
 
@@ -3008,10 +2989,6 @@ target_handler::trajectory target_ui::run()
                 timeout = 50;
             }
             action = ctxt.handle_input( timeout );
-            if( diag ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-RUN: iter" + std::to_string( diag_iter ) +
-                                 " handle_input returned act=" + action );
-            }
         }
 
         // If an aiming mode is selected, use "*_SHOT" instead of "FIRE"

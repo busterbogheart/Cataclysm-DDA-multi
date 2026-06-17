@@ -68,13 +68,6 @@ void sound( const tripoint_bub_ms &p, int vol, sound_t category, const translati
 /** Functions identical to sound(..., true). */
 void ambient_sound( const tripoint_bub_ms &p, int vol, sound_t category,
                     const std::string &description );
-/**
- * Register a sound for MONSTER hearing/AI only — no player "you hear" message
- * and no sound marker, so it needs no description.  Co-op uses this to reproduce
- * a remote player's shout as authoritative world-noise on the host without
- * double-printing the spoken line (which is relayed over the network separately).
- */
-void sound_monsters_only( const tripoint_bub_ms &p, int vol, sound_t category );
 /** Creates a list of coordinates at which to draw footsteps. */
 void add_footstep( const tripoint_bub_ms &p, int volume, int distance, monster *source,
                    const std::string &footstep );

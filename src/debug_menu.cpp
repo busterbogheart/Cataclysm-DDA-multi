@@ -3706,29 +3706,16 @@ static void print_npc_magic()
 static void show_sound()
 {
 #if defined(TILES)
-    // Persistent TOGGLE: invoke once to turn the overlay on, again to turn it
-    // off.  The old version grabbed a one-time snapshot and blocked on a
-    // keypress, which was useless in practice — recent_sounds is cleared every
-    // turn (process_sounds) before you can open the debug menu, so it always
-    // drew empty, and it could never show sounds AS they happen during play.
-    // Holding the callback in a function-static shared_ptr keeps it drawing each
-    // frame; it re-reads the retained last-turn snapshot every redraw, so a
-    // honk / yell / shot (including a co-op relayed yell on the host) lights up
-    // live and sticks until the next sound.  game stores draw callbacks as
-    // weak_ptrs, so dropping the shared_ptr stops the overlay.
-    static shared_ptr_fast<game::draw_callback_t> sound_cb;
-    if( sound_cb ) {
-        sound_cb = nullptr;
-        add_msg( _( "Sound clustering overlay OFF." ) );
-        return;
-    }
-    sound_cb = make_shared_fast<game::draw_callback_t>( []() {
-        avatar &player_character = get_avatar();
-        const tripoint_bub_ms pos = player_character.pos_bub();
+    map &here = get_map();
+
+    avatar &player_character = get_avatar();
+    const tripoint_bub_ms pos = player_character.pos_bub( here );
+    const auto &sounds_to_draw = sounds::get_monster_sounds();
+
+    shared_ptr_fast<game::draw_callback_t> sound_cb = make_shared_fast<game::draw_callback_t>( [&]() {
         const point offset {
             player_character.view_offset.xy().raw() + point( POSX - pos.x(), POSY - pos.y() )
         };
-        const auto sounds_to_draw = sounds::get_monster_sounds();
         wattron( g->w_terrain, c_yellow );
         for( const tripoint_bub_ms &sound : sounds_to_draw.first ) {
             mvwaddch( g->w_terrain, sound.xy().raw() + offset, '?' );
@@ -3741,7 +3728,9 @@ static void show_sound()
         wattroff( g->w_terrain, c_red );
     } );
     g->add_draw_callback( sound_cb );
-    add_msg( _( "Sound clustering overlay ON — yellow ? = sound source, red ? = cluster centroid." ) );
+
+    ui_manager::redraw();
+    inp_mngr.wait_for_any_key();
 #else
     popup( _( "This binary was not compiled with tiles support." ) );
 #endif
