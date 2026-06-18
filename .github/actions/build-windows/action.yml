@@ -114,6 +114,12 @@ runs:
         else
           echo "::warning title=Smoke test::--check-mods exited $rc (advisory)"
         fi
+        # DIAG (temp): segfault/exit-1 in headless --check-mods — dump debug.log
+        # (errors go there, not stdout) to see what the runner actually logged.
+        echo "=== debug.log dump (diagnose smoke exit) ==="
+        find . -maxdepth 4 -name debug.log 2>/dev/null | while read -r f; do
+          echo "--- $f ---"; cat "$f"; echo
+        done
 
     - name: Package ZIP
       id: package

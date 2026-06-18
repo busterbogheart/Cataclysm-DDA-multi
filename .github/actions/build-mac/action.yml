@@ -243,6 +243,15 @@ runs:
         else
           echo "::warning title=Smoke test::--check-mods exited $rc (advisory)"
         fi
+        # DIAG (temp): --check-mods exits 1 when debug_has_error_been_observed()
+        # is set, even if mod data is clean — those errors go to debug.log, not
+        # stdout. Dump it so we can see what the headless runner actually logged.
+        echo "=== debug.log dump (diagnose smoke exit) ==="
+        find . -maxdepth 4 -name debug.log 2>/dev/null | while read -r f; do
+          echo "--- $f ---"; cat "$f"; echo
+        done
+        maclog="$HOME/Library/Application Support/Cddacoop/config/debug.log"
+        [ -f "$maclog" ] && { echo "--- $maclog ---"; cat "$maclog"; }
 
     - name: Strip CC-Sounds for slim DMG
       shell: bash
