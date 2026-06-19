@@ -3010,6 +3010,25 @@ target_handler::trajectory target_ui::run()
             }
         }
 
+        // MP: keep the lockstep flowing during the aim modal, exactly like the
+        // main game loop's input handler (handle_action.cpp get_player_input).
+        // target_ui::run() has its OWN input loop that otherwise pumps none of
+        // the MP layer — so while a player aims, the host stops serving clients
+        // and the client stops pulling host state / refreshing the UI. That
+        // halts the shared turn cycle and wedges the aiming client's window
+        // (the deaf-freeze). Mirror the main loop here: host drains client
+        // actions every frame; client pulls host updates on the idle TIMEOUT.
+        // Safe re-entrancy: client_process_incoming() DEFERS interactive
+        // activities (ACT_AIM) instead of ticking them (mp_gamestate.cpp), so
+        // it can't re-enter this target_ui::run().
+        if( cata_mp::is_hosting() ) {
+            cata_mp::process_mp_events();
+        }
+        if( cata_mp::is_client_mode() && action == "TIMEOUT" ) {
+            cata_mp::client_process_incoming();
+            g->invalidate_main_ui_adaptor();
+        }
+
         // If an aiming mode is selected, use "*_SHOT" instead of "FIRE"
         if( mode == TargetMode::Fire && action == "FIRE" && aim_mode->has_threshold ) {
             action = aim_mode->action;
