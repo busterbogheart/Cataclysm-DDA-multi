@@ -496,9 +496,15 @@ input_context game::get_player_input( std::string &action )
             // unblock immediately instead of sitting on a host keypress.
             // Without this the SRV-WAIT loop sees 1–13s input phases and the
             // HUD stays locked even though the lockstep already advanced.
+            // Also break the instant the partner enters an interactive activity
+            // (ACT_AIM/etc.): it won't ack until its UI resolves, so a poll that
+            // was already blocking when the partner started aiming would sit here
+            // for the whole aim (the transition-into-aim 6s freeze). The SRV-WAIT
+            // loop's entry guard then keeps the poll skipped for the duration.
             if( cata_mp::is_hosting() && action == "TIMEOUT" &&
                 cata_mp::is_host_waiting_for_client() &&
-                cata_mp::client_acted_this_turn() ) {
+                ( cata_mp::client_acted_this_turn() ||
+                  cata_mp::partner_in_interactive_activity() ) ) {
                 break;
             }
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH

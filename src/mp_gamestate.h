@@ -109,6 +109,13 @@ bool is_host_waiting_for_client();
 // instead of sitting idle until the next host keypress.
 bool client_acted_this_turn();
 
+// True when the partner is in an interactive activity (ACT_AIM/FIRSTAID/
+// AUTOATTACK/AUTODRIVE) — i.e. running a local UI that won't send a wait until
+// it resolves.  Used by the host wait so it neither enters nor stays in the
+// blocking input poll while the partner aims (mirror of the client staying
+// responsive while the host aims).
+bool partner_in_interactive_activity();
+
 // Drain the server recv queue and apply each state message to the local avatar.
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();

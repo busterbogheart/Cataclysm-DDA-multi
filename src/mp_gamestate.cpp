@@ -4435,6 +4435,8 @@ void wait_for_client_action()
     // ack that won't come.  Cheap to do — only broadcasts on actual edge.
     std::string prev_wait_host_act = get_avatar().activity
                                      ? get_avatar().activity.id().str() : "";
+    // Log the partner-interactive skip (below) once per wait, not per-iter.
+    bool logged_partner_interactive_skip = false;
     while( remote_player_connected ) {
         if( g_client_acted_this_turn ) {
             break;  // client acted, advance shared clock by this turn
@@ -4555,8 +4557,22 @@ void wait_for_client_action()
         // so it can't pace normal moves / flicker the turn signal. The in-activity
         // case is now polled non-blocking every iteration above (before the
         // drain-break), so it's not repeated here.
-        if( wait_elapsed_ms > 100 && !get_avatar().activity ) {
+        // Partner in an interactive activity (ACT_AIM/FIRSTAID/AUTOATTACK/
+        // AUTODRIVE) runs its UI locally and won't send a wait until it resolves.
+        // mp_poll_input() blocks until a host keypress OR client_acted_this_turn()
+        // — neither happens while the partner aims, so it would sit here for the
+        // ENTIRE aim (the 10s+ "input=" SRV-WAIT phases / host beachball). Skip the
+        // blocking poll then: the non-blocking handle_key_blocking_activity(16)
+        // above still gives the host zoom/menu access, and the loop keeps spinning
+        // every ~16ms (SDL pumped), so the host stays responsive — the mirror of
+        // the client staying responsive while the host aims (ranged.cpp:2988).
+        const bool partner_interactive = partner_in_interactive_activity();
+        if( wait_elapsed_ms > 100 && !get_avatar().activity && !partner_interactive ) {
             g->mp_poll_input();
+        } else if( partner_interactive && !logged_partner_interactive_skip ) {
+            mp_log( "[cdda-mp] SRV-WAIT: partner interactive (" + g_partner_activity +
+                    ") — skipping blocking host poll to stay responsive" );
+            logged_partner_interactive_skip = true;
         }
         const auto t_after_input = std::chrono::steady_clock::now();
         const int waitev_ms = static_cast<int>(
@@ -4749,6 +4765,11 @@ bool is_host_waiting_for_client()
 bool client_acted_this_turn()
 {
     return g_client_acted_this_turn;
+}
+
+bool partner_in_interactive_activity()
+{
+    return !g_partner_activity.empty() && !is_passive_activity( g_partner_activity );
 }
 
 bool is_partner_in_wait_activity()

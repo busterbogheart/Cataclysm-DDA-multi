@@ -57,6 +57,7 @@
 #include "magic_type.h"
 #include "map.h"
 #include "mp_client_conn.h"  // cata_mp::is_client_mode (EDGE_SCROLL clamp for remote client)
+#include "mp_gamestate.h"    // cata_mp::mp_log (temp aim-hang diagnostics)
 #include "map_scale_constants.h"
 #include "mapdata.h"
 #include "math_defines.h"
@@ -2846,6 +2847,10 @@ double Character::gun_value( const item &weap, int ammo ) const
 
 target_handler::trajectory target_ui::run()
 {
+    if( cata_mp::is_client_mode() ) {
+        cata_mp::mp_log( "[cdda-mp] AIM-UI: run() entry mode=" +
+                         std::to_string( static_cast<int>( mode ) ) );
+    }
     if( mode == TargetMode::Spell && !no_mana && !casting->can_cast( *you ) ) {
         you->add_msg_if_player( m_bad, _( "You don't have enough %s to cast this spell" ),
                                 casting->energy_string() );
@@ -2970,7 +2975,14 @@ target_handler::trajectory target_ui::run()
     ExitCode loop_exit_code;
     std::string timed_out_action;
     bool skip_redraw = false;
+    if( cata_mp::is_client_mode() ) {
+        cata_mp::mp_log( "[cdda-mp] AIM-UI: entering event loop" );
+    }
     for( ;; action.clear() ) {
+        if( cata_mp::is_client_mode() ) {
+            cata_mp::mp_log( "[cdda-mp] AIM-UI: iter top skip_redraw=" +
+                             std::to_string( skip_redraw ) );
+        }
         if( !skip_redraw ) {
             g->invalidate_main_ui_adaptor();
             ui_manager::redraw();
@@ -2988,7 +3000,14 @@ target_handler::trajectory target_ui::run()
             if( timeout < 0 && cata_mp::is_client_mode() ) {
                 timeout = 50;
             }
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_log( "[cdda-mp] AIM-UI: handle_input timeout=" +
+                                 std::to_string( timeout ) );
+            }
             action = ctxt.handle_input( timeout );
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_log( "[cdda-mp] AIM-UI: got action=" + action );
+            }
         }
 
         // If an aiming mode is selected, use "*_SHOT" instead of "FIRE"

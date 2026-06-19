@@ -821,7 +821,17 @@ bool game::do_turn()
         }
     }
     while( u.get_moves() > 0 && u.activity ) {
+        if( cata_mp::is_client_mode() ) {
+            cata_mp::mp_log( "[cdda-mp] ACT-LOOP: tick start act=" +
+                             ( u.activity ? u.activity.id().str() : std::string( "none" ) ) +
+                             " moves=" + std::to_string( u.get_moves() ) );
+        }
         u.activity.do_turn( u );
+        if( cata_mp::is_client_mode() ) {
+            cata_mp::mp_log( "[cdda-mp] ACT-LOOP: tick done act=" +
+                             ( u.activity ? u.activity.id().str() : std::string( "none" ) ) +
+                             " moves=" + std::to_string( u.get_moves() ) );
+        }
     }
     // Client: if a wait activity consumed the server-granted moves this turn,
     // dispatch "wait" so the server advances its timeline in sync.
