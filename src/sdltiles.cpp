@@ -111,6 +111,8 @@ std::unique_ptr<cataimgui::client> imclient;
 #include "vpart_position.h"
 #include "worldfactory.h"
 #endif
+#include "mp_gamestate.h"    // cata_mp::mp_log (temp aim-input diagnostics)
+#include "mp_client_conn.h"  // cata_mp::is_client_mode (temp aim-input diagnostics)
 
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
@@ -5521,6 +5523,12 @@ static void CheckMessages()
         } else {
             switch( ev.type ) {
                 case CATA_KEYDOWN: {
+                    if( cata_mp::is_client_mode() ) {
+                        cata_mp::mp_log( "[cdda-mp] SDL-KEYDOWN: sym=" +
+                                         std::to_string( static_cast<long>( GetKeysym( ev ).sym ) ) +
+                                         " text_input_active=" +
+                                         std::to_string( IsTextInputActive( ::window.get() ) ) );
+                    }
 #if defined(__ANDROID__)
                     // Toggle virtual keyboard with Android back button. For some reason I get double inputs, so ignore everything once it's already down.
                     if( GetKeysym( ev ).sym == SDLK_AC_BACK && ac_back_down_time == 0 ) {
