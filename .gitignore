@@ -128,7 +128,9 @@ Cataclysm.exe.lastcodeanalysissucceeded
 *.sw?
 *~
 \#*
-!save/**
+# Ignore live test worlds under save/, but keep the trimmed reference archives
+save/*
+!save/*.tar.gz
 gmon.out
 
 # System Files
