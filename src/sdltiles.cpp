@@ -5582,6 +5582,14 @@ static void CheckMessages()
                     } else {
                         last_input = sdl_keysym_to_keycode_evt( GetKeysym( ev ) );
                     }
+                    if( cata_mp::is_client_mode() ) {
+                        cata_mp::mp_log( "[cdda-mp] SDL-KEYDOWN-RESULT: type=" +
+                                         std::to_string( static_cast<int>( last_input.type ) ) +
+                                         " keys=" + ( last_input.sequence.empty() ? std::string( "none" )
+                                                 : std::to_string( last_input.sequence.front() ) ) +
+                                         " text_input=" +
+                                         std::to_string( IsTextInputActive( ::window.get() ) ) );
+                    }
                 }
                 break;
                 case CATA_KEYUP: {
