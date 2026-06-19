@@ -2492,9 +2492,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             { ACTION_MOVE_BACK_RIGHT,  "se" },
             { ACTION_MOVE_BACK_LEFT,   "sw" },
         };
-        // Helper: either send immediately (moves available) or queue for auto-fire.
-        // Local prediction only runs on the send path — queued actions are corrected
-        // by the server's next state packet when they eventually fire.
+        // Helper: send immediately if moves are available and no ack is pending.
+        // Actions pressed while locked (moves=0) or while waiting for an ack
+        // are silently dropped — no queue. The 65-100ms grant window means
+        // dropped input during lock is imperceptible in normal play.
         // charge_from_caller=true: caller already charged AP and burned stamina;
         // don't zero moves (they already reflect the real cost).
         // mp_dispatch_pre_moves: set to get_moves() BEFORE any AP charge when
@@ -2512,11 +2513,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                                    : player_character.get_moves() > 0;
             cata_mp::mp_log( std::string( "[cdda-mp] mp_dispatch act=" ) +
                              action_ident( act ) + " path=" +
-                             ( had_grant && !cata_mp::is_client_waiting_for_ack() ? "SEND" : "QUEUE" ) +
+                             ( had_grant && !cata_mp::is_client_waiting_for_ack() ? "SEND" : "DROP" ) +
                              " moves=" + std::to_string( player_character.get_moves() ) +
                              " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() ) +
                              " json=" + full_json.substr( 0, 60 ) );
-            // Don't double-send while a previous action is still awaiting ack — queue instead.
+            // Only send if we have a grant and no ack is pending. Otherwise drop.
             if( had_grant && !cata_mp::is_client_waiting_for_ack() ) {
                 cata_mp::client_send( cata_mp::client_enrich_action( full_json ) );
                 if( !charge_from_caller ) {
@@ -2524,11 +2525,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 }
                 // Suppress stale pre-ack grants that are still in the TCP buffer.
                 cata_mp::client_mark_action_sent();
-            } else {
-                cata_mp::client_queue_action( full_json );
-                // Zero moves so the input loop exits and do_turn can call
-                // client_process_incoming() to drain the pending ACK.
-                player_character.set_moves( 0 );
             }
         };
 
@@ -2746,29 +2742,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             }
 
             // Mirror SP movement cost locally so moves/stamina/activity display correctly.
-            // SP path: game.cpp charges run_cost AP, then burns stamina from AP spent.
-            //
-            // Gate the burn so it only happens for a move that will actually
-            // execute exactly once.  When locked (out of turn, moves<=0) a move
-            // is QUEUED, and each subsequent spammed keypress overwrites that
-            // single pending move — only one ever fires per grant.  Burning on
-            // every locked press charged a full move's stamina per keypress for
-            // moves that never happened, draining stamina far faster than
-            // walking should (#4: "move out of turn, lose stamina").  Burn when:
-            //   - will_send: we have a grant and no ack pending -> this press
-            //     executes a move now (the SEND path), OR
-            //   - first_queued_move: locked, but no move is queued yet -> this
-            //     is the one move that will auto-fire on the next grant.
-            // Repeated locked presses while a move is already pending re-queue
-            // the (possibly new) direction without re-burning; the already-burnt
-            // stamina is what the queued action carries, so the fired move still
-            // costs exactly one move's worth.
+            // Only burn AP when the move will actually send (will_send) — locked
+            // presses are dropped without consuming stamina.
             if( offset_it != dir_to_offset.end() ) {
                 mp_dispatch_pre_moves = player_character.get_moves();
                 const bool will_send = player_character.get_moves() > 0 &&
                                        !cata_mp::is_client_waiting_for_ack();
-                const bool first_queued_move = !will_send && !cata_mp::has_pending_move();
-                if( will_send || first_queued_move ) {
+                if( will_send ) {
                     const bool diag = ( std::abs( offset_it->second.x ) +
                                         std::abs( offset_it->second.y ) ) == 2;
                     const int mcost   = here.combined_movecost( cur_pos, next_pos );
@@ -2781,9 +2761,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     if( player_character.is_running() && !player_character.can_run() ) {
                         player_character.reset_move_mode();
                     }
-                } else {
-                    cata_mp::mp_log( "[cdda-mp] MOVE-BURN-SKIP: locked re-press, move already queued"
-                                     " moves=" + std::to_string( player_character.get_moves() ) );
                 }
             }
             // Mirror SP avatar_action::move's facing update — the client never
@@ -2794,15 +2771,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // TODO: iso-tileset branch (mirror avatar_action.cpp:318-329) if
             // anyone uses an isometric tileset in MP.
             //
-            // Gate on !mp_locked: when the client has 0 moves the action will
-            // queue rather than send.  Updating av.facing locally there would
-            // flip the sprite immediately (visual "turn-in-place"), which SP
-            // doesn't do — SP always has moves > 0 at input time, so a
-            // direction press always results in an actual move attempt.
-            // Trade-off: queued moves carry a stale client_facing on the wire,
-            // so the host's proxy will lag one turn on pure-horizontal queued
-            // moves.  Acceptable for now; fix separately by deriving facing
-            // from `dir` on the host side.
+            // Gate on !mp_locked: when the client has 0 moves the action is
+            // dropped. Updating av.facing locally would flip the sprite
+            // immediately (visual "turn-in-place"), which SP doesn't do.
             if( !mp_locked && offset_it != dir_to_offset.end() &&
                 !g->is_tileset_isometric() ) {
                 if( offset_it->second.x > 0 ) {

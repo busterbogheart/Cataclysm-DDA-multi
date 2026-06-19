@@ -78,8 +78,6 @@ static void veh_mp_dispatch( const std::string &base_json )
         cata_mp::client_send( enriched );
         pc.set_moves( 0 );
         cata_mp::client_mark_action_sent();
-    } else {
-        cata_mp::client_queue_action( enriched );
     }
 }
 

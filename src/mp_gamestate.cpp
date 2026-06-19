@@ -377,15 +377,12 @@ static std::vector<std::string> g_host_action_msgs_pending;
 // Rebuilt each sync tick from creature_tracker before applying updates.
 static std::unordered_map<uint32_t, monster *> g_net_id_map;
 
-// Client: action JSON queued to auto-fire once the server grants moves again.
-// Latest keypress wins — pressing a different key replaces the queued action.
-static std::string g_pending_action;
-
 // Client: "keep smashing" continuation state.
-// When set, auto-re-queue the smash action after each partial bash until the
+// When set, auto-re-fire the smash action after each partial bash until the
 // target is destroyed or the bash fails to make progress.
 static bool g_client_autosmash = false;
-static std::string g_client_autosmash_json; // the smash JSON to re-queue
+static std::string g_client_autosmash_json; // the smash JSON to re-fire
+static bool g_autosmash_pending = false;    // fire the smash on the next available grant
 // Set when a partial-bash result arrives and we need to ask "Keep smashing?".
 // The query MUST run from the main do_turn loop (client_resolve_pending_ui),
 // never inline in apply_one_state_message — a blocking popup from inside network
@@ -6952,27 +6949,8 @@ static bool apply_one_state_message( const std::string &msg )
         }
         if( jo.has_member( "moves" ) ) {
             const int srv_moves = jo.get_int( "moves" );
-            // Deadzone self-heal: the client is provably stuck — it has a queued
-            // action it never managed to fire (an action consumed this turn's
-            // grant locally before mp_dispatch, e.g. closing a car door, so it
-            // QUEUED instead of SENDing and never acked), moves are gone, and it
-            // is NOT waiting on an ack.  The host keeps re-broadcasting the same
-            // grant_seq (it's waiting for our ack), which the seq-guard below
-            // would reject as old-seq — leaving BOTH players locked until a quit.
-            // When that exact state coincides with an incoming moves>0 packet,
-            // accept it so the queued action auto-fires and acks the host.  This
-            // is authoritative host state restoring a stuck client, not a timeout
-            // wedge-breaker.  (Today's handle_action ack-backstop prevents most of
-            // these; this guarantees recovery for any path that slips past it.)
-            const bool deadzone_recover = srv_moves > 0 &&
-                                          !g_client_waiting_for_ack &&
-                                          !g_pending_action.empty() &&
-                                          get_avatar().get_moves() <= 0;
             // Refresh the "last heard from host" timestamp on any moves-bearing
-            // state message (grants AND ack-clears).  The wedge-breaker uses
-            // this to detect "host went silent" rather than "host hasn't sent
-            // a fresh grant" — the old metric let ack-clear-only periods (host
-            // is busy processing our previous actions) look like wedges.
+            // state message (grants AND ack-clears).
             g_last_grant_time = std::chrono::steady_clock::now();
             if( is_partial_turn && srv_moves > 0 ) {
                 // Partial-turn update from host (e.g., pldrive consumed some AP
@@ -6986,18 +6964,11 @@ static bool apply_one_state_message( const std::string &msg )
                 mp_log( "[cdda-mp] CLI-ACK-CLEAR: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
                         " ack_was=" + std::to_string( g_client_waiting_for_ack ) +
-                        " last_seq=" + std::to_string( g_client_last_grant_seq ) +
-                        " pending=" + ( g_pending_action.empty() ? "none" : g_pending_action.substr( 0, 40 ) ) );
+                        " last_seq=" + std::to_string( g_client_last_grant_seq ) );
                 g_client_waiting_for_ack = false;
                 get_avatar().set_moves( srv_moves );
-            } else if( deadzone_recover ||
-                       ( ( !g_client_waiting_for_ack || get_avatar().activity ) &&
-                         ( grant_seq == 0 || grant_seq > g_client_last_grant_seq ) ) ) {
-                if( deadzone_recover ) {
-                    mp_log( "[cdda-mp] CLI-DEADZONE-RECOVER: re-applying moves=" +
-                            std::to_string( srv_moves ) + " seq=" + std::to_string( grant_seq ) +
-                            " to fire stuck pending action" );
-                }
+            } else if( ( !g_client_waiting_for_ack || get_avatar().activity ) &&
+                       ( grant_seq == 0 || grant_seq > g_client_last_grant_seq ) ) {
                 // New grant: seq is fresh AND (no pending ack OR avatar is in an
                 // activity).  The activity-override bypasses the ack guard so
                 // long activities (drop, read, craft) don't stall when grants
@@ -7117,7 +7088,7 @@ static bool apply_one_state_message( const std::string &msg )
                 // loop) asks it in a valid context.
                 if( g_client_autosmash ) {
                     if( !g_client_autosmash_json.empty() ) {
-                        g_pending_action = g_client_autosmash_json;
+                        g_autosmash_pending = true;
                     }
                 } else {
                     g_client_smash_query_pending = true;
@@ -7229,7 +7200,7 @@ void client_resolve_pending_ui()
         g_client_smash_query_pending = false;
         g_client_autosmash = query_yn( _( "Keep smashing until destroyed?" ) );
         if( g_client_autosmash && !g_client_autosmash_json.empty() ) {
-            g_pending_action = g_client_autosmash_json;
+            g_autosmash_pending = true;
         }
     }
 }
@@ -7277,7 +7248,7 @@ void client_process_incoming()
             mp_log( "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) +
                     ": moves changed " + std::to_string( pre_apply_moves ) + "->" +
                     std::to_string( post_apply_moves ) +
-                    " pending=" + ( g_pending_action.empty() ? "none" : "yes" ) );
+                    " autosmash=" + std::to_string( g_autosmash_pending ) );
         }
     }
     // (Repaint consolidated into the single throttled redraw at the END of this
@@ -7285,75 +7256,26 @@ void client_process_incoming()
     // per drain — which on the slower client doubled the per-grant render and,
     // because divergent two-machine worlds make recv_count>0 every grant, paced
     // the host's per-turn lockstep wait to ~2x render-speed. 2026-06-03.)
-    // Snapshot state right before autofire check.  If a grant set moves=92 in
-    // an earlier iteration of this drain loop but a later message zeroed them,
-    // we should see it here.  Deduped against the previous emission so an
-    // idle/locked client (do_turn spinning at ~60Hz with no state change)
-    // doesn't flood the log — fresh state changes still emit immediately.
+    // Snapshot drain-end state. Deduped so idle/locked do_turn (~60Hz) doesn't flood log.
     {
         const std::string msg = "[cdda-mp] CLI-DRAIN-END: moves=" +
                                 std::to_string( get_avatar().get_moves() ) +
                                 " ack=" + std::to_string( g_client_waiting_for_ack ) +
-                                " last_seq=" + std::to_string( g_client_last_grant_seq ) +
-                                " pending=" + ( g_pending_action.empty() ? "none" : "yes" );
+                                " last_seq=" + std::to_string( g_client_last_grant_seq );
         static std::string last;
         if( msg != last ) {
             mp_log( msg );
             last = msg;
         }
     }
-    // Auto-fire any queued action now that the server has restored our moves.
-    // Do NOT zero moves after firing — leave moves > 0 so the input loop runs
-    // immediately after, giving the user the chance to queue the next action.
-    // The ack guard (set below) prevents the input loop from double-sending.
-    if( !g_pending_action.empty() && get_avatar().get_moves() <= 0 ) {
-        // Diagnostic only: pending action exists but no moves to fire it.
-        // Wait for the next grant — AUTOFIRE below will send on receipt.
-        // DEDUPED: this runs every do_turn iteration while locked (~60Hz), so an
-        // unconditional log floods the file. Emit only when the state changes.
-        static std::string last_dz;
-        const std::string dz = g_pending_action.substr( 0, 60 ) + "|" +
-                               std::to_string( get_avatar().get_moves() ) + "|" +
-                               std::to_string( g_client_waiting_for_ack ) + "|" +
-                               std::to_string( g_client_last_grant_seq );
-        if( dz != last_dz ) {
-            last_dz = dz;
-            mp_log( "[cdda-mp] CLI-DEADZONE: pending=" + g_pending_action.substr( 0, 60 ) +
-                    " moves=" + std::to_string( get_avatar().get_moves() ) +
-                    " ack=" + std::to_string( g_client_waiting_for_ack ) +
-                    " last_seq=" + std::to_string( g_client_last_grant_seq ) );
-        }
-    }
-    if( !g_pending_action.empty() && get_avatar().get_moves() > 0 ) {
-        mp_log( "[cdda-mp] CLI-AUTOFIRE: pending=" + g_pending_action.substr( 0, 60 ) +
-                " moves=" + std::to_string( get_avatar().get_moves() ) +
-                " ack=" + std::to_string( g_client_waiting_for_ack ) );
-        // If we entered a wait activity AFTER queueing a move-style action,
-        // the queued action is stale (user intent is now "wait").  Replace it
-        // with a fresh wait so the host still receives our ack for this turn.
-        // Under Option-A pure lockstep, every grant must be ack'd or the host
-        // hits its 2s SAFETY-TIMEOUT and movement becomes sluggish.
-        const player_activity &pact = get_avatar().activity;
-        static const activity_id act_wait( "ACT_WAIT" );
-        static const activity_id act_wait_stamina( "ACT_WAIT_STAMINA" );
-        static const activity_id act_wait_weather( "ACT_WAIT_WEATHER" );
-        static const activity_id act_wait_npc( "ACT_WAIT_NPC" );
-        const bool in_wait_activity = pact && (
-                pact.id() == act_wait || pact.id() == act_wait_stamina ||
-                pact.id() == act_wait_weather || pact.id() == act_wait_npc );
-        const bool pending_is_wait =
-                g_pending_action.find( "\"action\":\"wait\"" ) != std::string::npos;
-        if( in_wait_activity && !pending_is_wait ) {
-            mp_log( "[cdda-mp] auto-fire: replacing stale action with wait (in " +
-                    pact.id().str() + ")" );
-            g_pending_action = client_enrich_action(
-                    "{\"type\":\"action\",\"action\":\"wait\"}" );
-        }
-        mp_log( "[cdda-mp] CLI-AUTOFIRE-SEND: sending last_seq=" + std::to_string( g_client_last_grant_seq ) );
-        client_send( g_pending_action );
-        g_pending_action.clear();
-        // Keep moves > 0: input loop will run so the user can queue the next action.
-        // Ack guard prevents a second send before the server acknowledges this one.
+    // Auto-fire pending autosmash when a grant arrives and no ack is outstanding.
+    if( g_autosmash_pending && !g_client_autosmash_json.empty() &&
+        get_avatar().get_moves() > 0 && !g_client_waiting_for_ack ) {
+        mp_log( "[cdda-mp] CLI-AUTOSMASH: sending smash, moves=" +
+                std::to_string( get_avatar().get_moves() ) );
+        g_autosmash_pending = false;
+        client_send( g_client_autosmash_json );
+        get_avatar().set_moves( 0 );
         g_client_waiting_for_ack = true;
         g_ack_set_time = std::chrono::steady_clock::now();
     }
@@ -7887,12 +7809,6 @@ std::string client_enrich_action( const std::string &json )
     return enriched;
 }
 
-void client_queue_action( const std::string &json )
-{
-    g_pending_action = client_enrich_action( json );
-    mp_log( "[cdda-mp] client_queue_action: " + json.substr( 0, 80 ) );
-}
-
 // Client-side post-grab dispatcher.  Called by the handle_action.cpp wrapper
 // around the SP grab() handler.  The SP function already ran on the client,
 // mutating the local avatar's grab state — we just need to forward the delta
@@ -7919,14 +7835,11 @@ void mp_client_dispatch_grab_if_changed( object_type pre_type,
             std::to_string( static_cast<int>( av.get_grab_type() ) ) +
             " offset=(" + std::to_string( av.grab_point.x() ) + "," +
             std::to_string( av.grab_point.y() ) + ") path=" +
-            ( had_grant && !is_client_waiting_for_ack() ? "SEND" : "QUEUE" ) );
+            ( had_grant && !is_client_waiting_for_ack() ? "SEND" : "DROP" ) );
     if( had_grant && !is_client_waiting_for_ack() ) {
         client_send( client_enrich_action( json ) );
         av.set_moves( 0 );
         client_mark_action_sent();
-    } else {
-        client_queue_action( json );
-        av.set_moves( 0 );
     }
 }
 
@@ -7946,14 +7859,11 @@ void mp_client_dispatch_hauling_if_changed( bool pre_hauling )
     const bool had_grant = av.get_moves() > 0;
     mp_log( std::string( "[cdda-mp] CLI-HAUL-SEND hauling=" ) +
             std::to_string( av.is_hauling() ) + " path=" +
-            ( had_grant && !is_client_waiting_for_ack() ? "SEND" : "QUEUE" ) );
+            ( had_grant && !is_client_waiting_for_ack() ? "SEND" : "DROP" ) );
     if( had_grant && !is_client_waiting_for_ack() ) {
         client_send( client_enrich_action( json ) );
         av.set_moves( 0 );
         client_mark_action_sent();
-    } else {
-        client_queue_action( json );
-        av.set_moves( 0 );
     }
 }
 
@@ -8083,12 +7993,6 @@ void client_mark_action_sent()
 bool is_client_waiting_for_ack()
 {
     return g_client_waiting_for_ack;
-}
-
-bool has_pending_move()
-{
-    return !g_pending_action.empty() &&
-           g_pending_action.find( "\"action\":\"move\"" ) != std::string::npos;
 }
 
 void mp_client_post_action( int pre_moves )

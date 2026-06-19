@@ -138,10 +138,6 @@ extern std::string g_mp_build_stamp;
 // (class npc is already forward-declared at global scope above.)
 void mp_tick_proxy_activity( ::npc &guy );
 
-// Queue an action JSON to be sent to the server on the next tick when moves are
-// available. Replaces any previously queued action (latest keypress wins).
-void client_queue_action( const std::string &json );
-
 // Client-only: invoke from the wrapper around the SP grab() handler in
 // handle_action.cpp's ACTION_GRAB case.  Snapshot the avatar's grab state
 // before running SP grab(), then call this with the pre-snapshot; we forward
@@ -168,12 +164,6 @@ void client_mark_action_sent();
 // server's acknowledgement (moves<=0 packet).  Used by do_turn() to block the
 // game loop and by mp_dispatch to avoid double-sending while ack is pending.
 bool is_client_waiting_for_ack();
-
-// Client only: returns true if a *move* action is already queued for auto-fire.
-// Used by the handle_action move-cost mirror so spammed move keypresses while
-// locked (out of turn) don't re-burn stamina for a move that won't execute —
-// only one queued move ever fires per grant.
-bool has_pending_move();
 
 // Save the last smash action JSON so it can be re-queued for "keep smashing".
 void client_set_autosmash_json( const std::string &json );
