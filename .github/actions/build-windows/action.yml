@@ -88,10 +88,14 @@ runs:
     - name: Build cataclysm-tiles.exe
       shell: msys2 {0}
       run: |
+        # BACKTRACE=1 compiles the dbghelp-based crash handler (src/debug.cpp,
+        # links -ldbghelp) so a segfault writes a symbolicated crash.log. The
+        # Makefile declines to auto-enable it on MSYS2 ("headers probably not
+        # available") — testing that assumption; dbghelp.h ships with MinGW-w64.
         make -j$(nproc) \
           MSYS2=1 CCACHE=1 STATIC=1 \
           TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
-          RELEASE=1 \
+          RELEASE=1 BACKTRACE=1 \
           cataclysm-tiles.exe
 
     - name: ccache stats
