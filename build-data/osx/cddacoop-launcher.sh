@@ -32,10 +32,13 @@ USER_SOUND_DIR="$USERDIR/sound"
 # thing it does is point co-op at its own ...Cddacoop/ dir via --userdir below.
 # Players upgrading from a shared-dir build copy their co-op worlds over by hand
 # (see the README) — we don't auto-touch the SP dir to migrate them.
-# /releases/latest/download/<name> is a GitHub redirect to the latest
-# non-draft, non-prerelease release's matching asset. Resolves once a
-# v* release ships cc-sounds.zip; pre-releases don't satisfy this URL.
-CC_URL="https://github.com/busterbogheart/Cataclysm-DDA-multi/releases/latest/download/cc-sounds.zip"
+# Resolve cc-sounds.zip from the GitHub releases API instead of the
+# /releases/latest/download/<name> redirect: that redirect only resolves the
+# newest NON-prerelease release, but every cddacoop build ships as a
+# prerelease, so it 404s. The API lists releases newest-first INCLUDING
+# prereleases — we take the first one whose assets include cc-sounds.zip, so
+# the pack resolves even if the very newest build didn't re-upload it.
+CC_API="https://api.github.com/repos/busterbogheart/Cataclysm-DDA-multi/releases?per_page=30"
 
 # A soundpack is "installed" if any directory in the bundle's or the user's
 # sound dir holds a soundpack.txt manifest — the same marker CDDA scans for
@@ -78,7 +81,16 @@ if ! has_soundpack; then
     # notifications stand in for the progress bar. display notification /
     # display dialog are posted by our own process and need no permission.
     osascript -e 'display notification "Downloading CC-Sounds (~135 MB)… the game will open when it finishes." with title "Cddacoop"' 2>/dev/null || true
-    if curl -L --fail --retry 3 -s "$CC_URL" -o /tmp/cc-sounds.zip \
+    # Ask the API for the newest release that carries cc-sounds.zip. Releases
+    # come back newest-first, so the first browser_download_url ending in
+    # cc-sounds.zip is the freshest pack. No jq on stock macOS — grep the URL
+    # straight out of the JSON. Empty result (API down / rate-limited / no
+    # asset) falls through to the same failure dialog as a failed download.
+    CC_URL=$(curl -L --fail --retry 3 -s "$CC_API" 2>/dev/null \
+        | grep -Eo 'https://[^"]*cc-sounds\.zip' \
+        | head -1)
+    if [ -n "$CC_URL" ] \
+        && curl -L --fail --retry 3 -s "$CC_URL" -o /tmp/cc-sounds.zip \
         && unzip -oq /tmp/cc-sounds.zip -d "$USER_SOUND_DIR"; then
       rm -f /tmp/cc-sounds.zip
       osascript -e 'display notification "CC-Sounds installed." with title "Cddacoop"' 2>/dev/null || true
