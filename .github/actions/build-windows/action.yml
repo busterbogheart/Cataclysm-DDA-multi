@@ -95,7 +95,7 @@ runs:
         make -j$(nproc) \
           MSYS2=1 CCACHE=1 STATIC=1 \
           TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
-          RELEASE=1 BACKTRACE=1 \
+          RELEASE=1 LTO=1 BACKTRACE=1 \
           cataclysm-tiles.exe
 
     - name: ccache stats
