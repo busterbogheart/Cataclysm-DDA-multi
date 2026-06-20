@@ -2887,6 +2887,23 @@ target_handler::trajectory target_ui::run()
     } );
     ui.mark_resize();
 
+    // MP: on the client, ui_manager::redraw() intermittently fails to run this
+    // adaptor's on_screen_resize callback (its redraw is interleaved with the
+    // MP HUD redraws, invalidate_main_ui_adaptor, and the skip_redraw throttle).
+    // When skipped, init_window_and_input() never runs — so w_target (the firing
+    // panel) is never created AND ctxt stays the default-constructed bindingless
+    // "default" context, which makes every aim key resolve to ERROR and get
+    // discarded: the firing panel doesn't appear and the aim goes deaf, locking
+    // both players. Front-load the init so the panel window and TARGET input
+    // context always exist before the event loop, instead of depending on a
+    // deferred callback that can be skipped. SP keeps the lazy resize-driven path
+    // (it owns its redraw outright and the callback always fires there); the
+    // on_screen_resize callback above still handles genuine terminal resizes.
+    if( cata_mp::is_client_mode() ) {
+        init_window_and_input();
+        ui.position_from_window( w_target );
+    }
+
     ui.on_redraw( [&]( const ui_adaptor & ) {
         draw_ui_window();
     } );
