@@ -2984,8 +2984,17 @@ target_handler::trajectory target_ui::run()
                              std::to_string( skip_redraw ) );
         }
         if( !skip_redraw ) {
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_log( "[cdda-mp] AIM-UI: pre-invalidate" );
+            }
             g->invalidate_main_ui_adaptor();
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_log( "[cdda-mp] AIM-UI: pre-redraw" );
+            }
             ui_manager::redraw();
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_log( "[cdda-mp] AIM-UI: post-redraw" );
+            }
         }
         skip_redraw = false;
 
