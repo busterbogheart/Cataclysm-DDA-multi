@@ -215,7 +215,6 @@ runs:
           FRAMEWORK=1 \
           USE_HOME_DIR=1 \
           RELEASE=1 \
-          LTO=1 \
           $UNI \
           cataclysm-tiles
 
@@ -276,7 +275,6 @@ runs:
           FRAMEWORK=1 \
           USE_HOME_DIR=1 \
           RELEASE=1 \
-          LTO=1 \
           $UNI
         # Rename post-hoc so the user-visible app inside the DMG matches the
         # site / DMG filename without patching the Makefile.
