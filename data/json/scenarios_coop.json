@@ -1,0 +1,12 @@
+[
+  {
+    "type": "scenario",
+    "id": "coop_dropin",
+    "name": "Co-op Drop-In",
+    "points": 0,
+    "description": "Drop in to a friend's co-op world.  Build your character normally — stats, skills, traits, profession, gear — and the host decides where you land.  No scenario missions and no starting NPC, so nothing from your character setup leaks into the shared world.  (Co-op only; not selectable in single-player.)",
+    "allowed_locs": [ "sloc_shelter_safe" ],
+    "start_name": "Co-op (host decides where you land)",
+    "flags": [ "LONE_START" ]
+  }
+]
