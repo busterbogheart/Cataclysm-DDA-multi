@@ -474,7 +474,11 @@ ifeq ($(RELEASE), 1)
   ifeq ($(LTO), 1)
     ifeq ($(NATIVE), osx)
       ifneq ($(CLANG), 0)
-        LTOFLAGS += -flto=full
+        # ThinLTO, not full LTO: full `-flto` on the UNIVERSAL (arm64+x86_64)
+        # binary holds whole-program IR for both slices at link time and blows
+        # up — release #72 ran ~2h and never finished. ThinLTO links per-module
+        # in parallel (near-normal link time) and keeps most of the runtime win.
+        LTOFLAGS += -flto=thin
       endif
     else
       ifeq ($(GOLD), 1)
@@ -483,7 +487,9 @@ ifeq ($(RELEASE), 1)
     endif
 
     ifneq ($(CLANG), 0)
-      LTOFLAGS += -flto
+      # clang (mac, or any CLANG=1 build): ThinLTO. GCC has no -flto=thin, so the
+      # gcc branch below uses gcc's parallel jobserver LTO instead.
+      LTOFLAGS += -flto=thin
     else
       LTOFLAGS += -flto=jobserver -flto-odr-type-merging
     endif
