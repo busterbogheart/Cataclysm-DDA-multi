@@ -5550,8 +5550,21 @@ static void CheckMessages()
                     if( mode == keyboard_mode::keychar ) {
                         const int lc = sdl_keysym_to_curses( GetKeysym( ev ) );
                         if( lc <= 0 ) {
-                            // a key we don't know in curses and won't handle.
-                            break;
+                            // keychar has no curses char for this key (numpad
+                            // directions KP_4/5/6/8, etc.). On the MP client the
+                            // ImGui HUD keeps SDL text input ACTIVE, which forces
+                            // keychar mode — so these keys get silently dropped
+                            // here, which is the deaf-aim freeze (numpad can't
+                            // move the aim cursor / fire, host locks behind the
+                            // client). Fall back to the keycode path so they still
+                            // produce input. Client-gated to leave SP/host
+                            // keyboard behavior (and merge surface) untouched.
+                            if( cata_mp::is_client_mode() ) {
+                                last_input = sdl_keysym_to_keycode_evt( GetKeysym( ev ) );
+                            } else {
+                                // a key we don't know in curses and won't handle.
+                                break;
+                            }
                         } else if( add_alt_code( lc ) ) {
                             // key was handled
                         } else {
