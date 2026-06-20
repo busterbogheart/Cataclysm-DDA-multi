@@ -3156,7 +3156,35 @@ target_handler::trajectory target_ui::run()
             break;
         }
         case ExitCode::Timeout: {
-            // We've ran out of moves, save UI state
+            // Co-op: NEVER suspend the aim across a turn. Reopening target_ui::run
+            // next turn (after the host has mutated the shared world and the client
+            // re-synced monsters/vehicles/items/HUD) dereferences references this UI
+            // held = use-after-free crash on precise/careful/aimed shots that outrun
+            // a single grant's AP. Resolve in-turn instead so the activity ends now
+            // and never reopens. SP/host keep the original suspend->resume.
+            if( cata_mp::is_client_mode() ) {
+                const bool aim_and_shoot = timed_out_action == "AIMED_SHOT" ||
+                                           timed_out_action == "CAREFUL_SHOT" ||
+                                           timed_out_action == "PRECISE_SHOT";
+                if( aim_and_shoot && mode != TargetMode::SelectOnly && !traj.empty() ) {
+                    // Fire at the aim reached so far. traj already holds the line to
+                    // dst; leaving it non-empty makes aim_activity_actor::do_turn set
+                    // moves_left=0 and resolve the shot — exactly the Fire path.
+                    bool harmful = !( mode == TargetMode::Spell &&
+                                      casting->damage( player_character ) <= 0 );
+                    on_target_accepted( harmful );
+                } else {
+                    // Manual "aim for N turns" (or no valid target): end the aim
+                    // without an auto-fire; accumulated recoil reduction stays.
+                    traj.clear();
+                    if( mode == TargetMode::Fire || ( mode == TargetMode::Reach && activity ) ) {
+                        activity->aborted = true;
+                        activity->should_unload_RAS = unload_RAS_weapon;
+                    }
+                }
+                break;
+            }
+            // SP / host: save UI state and resume next turn.
             activity->acceptable_losses = list_friendlies_in_lof();
             traj.clear();
             activity->action = timed_out_action;
