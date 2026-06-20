@@ -2847,10 +2847,6 @@ double Character::gun_value( const item &weap, int ammo ) const
 
 target_handler::trajectory target_ui::run()
 {
-    if( cata_mp::is_client_mode() ) {
-        cata_mp::mp_log( "[cdda-mp] AIM-UI: run() entry mode=" +
-                         std::to_string( static_cast<int>( mode ) ) );
-    }
     if( mode == TargetMode::Spell && !no_mana && !casting->can_cast( *you ) ) {
         you->add_msg_if_player( m_bad, _( "You don't have enough %s to cast this spell" ),
                                 casting->energy_string() );
@@ -2899,14 +2895,19 @@ target_handler::trajectory target_ui::run()
     // deferred callback that can be skipped. SP keeps the lazy resize-driven path
     // (it owns its redraw outright and the callback always fires there); the
     // on_screen_resize callback above still handles genuine terminal resizes.
-    if( cata_mp::is_client_mode() ) {
-        init_window_and_input();
-        ui.position_from_window( w_target );
-    }
-
     ui.on_redraw( [&]( const ui_adaptor & ) {
         draw_ui_window();
     } );
+
+    if( cata_mp::is_client_mode() ) {
+        init_window_and_input();
+        ui.position_from_window( w_target );
+        // Same redraw-skip also drops the panel PAINT (draw_ui_window via
+        // on_redraw) on entry, so the firing panel can appear a frame or two
+        // late. Force this adaptor invalidated so the first ui_manager::redraw()
+        // in the loop paints it instead of waiting to be picked up.
+        ui.invalidate_ui();
+    }
 
     // Handle multi-turn aiming
     std::string action;
@@ -2992,26 +2993,10 @@ target_handler::trajectory target_ui::run()
     ExitCode loop_exit_code;
     std::string timed_out_action;
     bool skip_redraw = false;
-    if( cata_mp::is_client_mode() ) {
-        cata_mp::mp_log( "[cdda-mp] AIM-UI: entering event loop" );
-    }
     for( ;; action.clear() ) {
-        if( cata_mp::is_client_mode() ) {
-            cata_mp::mp_log( "[cdda-mp] AIM-UI: iter top skip_redraw=" +
-                             std::to_string( skip_redraw ) );
-        }
         if( !skip_redraw ) {
-            if( cata_mp::is_client_mode() ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-UI: pre-invalidate" );
-            }
             g->invalidate_main_ui_adaptor();
-            if( cata_mp::is_client_mode() ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-UI: pre-redraw" );
-            }
             ui_manager::redraw();
-            if( cata_mp::is_client_mode() ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-UI: post-redraw" );
-            }
         }
         skip_redraw = false;
 
@@ -3026,14 +3011,7 @@ target_handler::trajectory target_ui::run()
             if( timeout < 0 && cata_mp::is_client_mode() ) {
                 timeout = 50;
             }
-            if( cata_mp::is_client_mode() ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-UI: handle_input timeout=" +
-                                 std::to_string( timeout ) );
-            }
             action = ctxt.handle_input( timeout );
-            if( cata_mp::is_client_mode() ) {
-                cata_mp::mp_log( "[cdda-mp] AIM-UI: got action=" + action );
-            }
         }
 
         // MP: keep the lockstep flowing during the aim modal, exactly like the

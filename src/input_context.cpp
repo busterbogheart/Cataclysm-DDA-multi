@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <execinfo.h>   // DIAG (revert): backtrace() for deaf-aim default-context probe
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -28,8 +27,6 @@
 #include "imgui/imgui.h"
 #include "input.h"
 #include "map.h"
-#include "mp_client_conn.h"
-#include "mp_gamestate.h"
 #include "options.h"
 #include "output.h"
 #include "point.h"
@@ -478,27 +475,6 @@ const std::string &input_context::handle_input()
 
 const std::string &input_context::handle_input( const int timeout )
 {
-    // DIAG (revert before release): name the caller of any client-side
-    // "default"-category handle_input. The deaf-aim logs show a default context
-    // eating keys while the aim's TARGET context never sees them; this backtrace
-    // identifies which code path runs that default poll during the aim modal.
-    if( cata_mp::is_client_mode() && category == "default"
-        && cata_mp::get_client_turn_activity() == "ACT_AIM" ) {
-        static int bt_count = 0;
-        if( bt_count < 12 ) {
-            ++bt_count;
-            void *frames[16];
-            const int n = backtrace( frames, 16 );
-            char **syms = backtrace_symbols( frames, n );
-            std::string bt;
-            for( int i = 0; i < n && i < 12; ++i ) {
-                bt += "\n    " + std::string( syms ? syms[i] : "?" );
-            }
-            free( syms );
-            cata_mp::mp_log( "[cdda-mp] DEFAULT-HANDLE-INPUT #" + std::to_string( bt_count ) +
-                             " timeout=" + std::to_string( timeout ) + " bt:" + bt );
-        }
-    }
     const int old_timeout = inp_mngr.get_timeout();
     if( timeout >= 0 ) {
         inp_mngr.set_timeout( timeout );
@@ -514,29 +490,6 @@ const std::string &input_context::handle_input( const int timeout )
         }
 
         const std::string &action = input_to_action( next_action );
-
-        // DIAG (revert before release): deaf-aim seam. Logs the binding-lookup
-        // result on the client — the one uninstrumented step between a decoded
-        // key (SDL-KEYDOWN-RESULT) and a TIMEOUT return. Distinguishes a
-        // keycode-vs-keychar TYPE MISMATCH (action==CATA_ERROR on a non-error
-        // event) from input being swallowed upstream.
-        if( cata_mp::is_client_mode() && next_action.type != input_event_t::timeout
-            && next_action.type != input_event_t::error ) {
-            std::string bind_types;
-            const std::vector<input_event> &binds =
-                inp_mngr.get_input_for_action( "FIRE", category );
-            for( const input_event &b : binds ) {
-                bind_types += std::to_string( static_cast<int>( b.type ) ) + "/"
-                              + ( b.sequence.empty() ? std::string( "none" )
-                                  : std::to_string( b.sequence.front() ) ) + " ";
-            }
-            cata_mp::mp_log( "[cdda-mp] INPUT-TO-ACTION: cat=" + category
-                             + " ev_type=" + std::to_string( static_cast<int>( next_action.type ) )
-                             + " ev_key=" + ( next_action.sequence.empty() ? std::string( "none" )
-                                     : std::to_string( next_action.sequence.front() ) )
-                             + " action=" + action
-                             + " FIRE_binds=[" + bind_types + "]" );
-        }
 
         //Special global key to toggle language to english and back
         if( action == "toggle_language_to_en" ) {

@@ -111,8 +111,7 @@ std::unique_ptr<cataimgui::client> imclient;
 #include "vpart_position.h"
 #include "worldfactory.h"
 #endif
-#include "mp_gamestate.h"    // cata_mp::mp_log (temp aim-input diagnostics)
-#include "mp_client_conn.h"  // cata_mp::is_client_mode (temp aim-input diagnostics)
+#include "mp_client_conn.h"  // cata_mp::is_client_mode (client keychar->keycode fallback)
 
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
@@ -5523,12 +5522,6 @@ static void CheckMessages()
         } else {
             switch( ev.type ) {
                 case CATA_KEYDOWN: {
-                    if( cata_mp::is_client_mode() ) {
-                        cata_mp::mp_log( "[cdda-mp] SDL-KEYDOWN: sym=" +
-                                         std::to_string( static_cast<long>( GetKeysym( ev ).sym ) ) +
-                                         " text_input_active=" +
-                                         std::to_string( IsTextInputActive( ::window.get() ) ) );
-                    }
 #if defined(__ANDROID__)
                     // Toggle virtual keyboard with Android back button. For some reason I get double inputs, so ignore everything once it's already down.
                     if( GetKeysym( ev ).sym == SDLK_AC_BACK && ac_back_down_time == 0 ) {
@@ -5594,14 +5587,6 @@ static void CheckMessages()
                         }
                     } else {
                         last_input = sdl_keysym_to_keycode_evt( GetKeysym( ev ) );
-                    }
-                    if( cata_mp::is_client_mode() ) {
-                        cata_mp::mp_log( "[cdda-mp] SDL-KEYDOWN-RESULT: type=" +
-                                         std::to_string( static_cast<int>( last_input.type ) ) +
-                                         " keys=" + ( last_input.sequence.empty() ? std::string( "none" )
-                                                 : std::to_string( last_input.sequence.front() ) ) +
-                                         " text_input=" +
-                                         std::to_string( IsTextInputActive( ::window.get() ) ) );
                     }
                 }
                 break;

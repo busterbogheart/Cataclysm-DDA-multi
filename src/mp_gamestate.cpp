@@ -841,8 +841,16 @@ static bool mp_turn_show_green()
     const bool in_wait_act = pact && (
                                  pact.id() == s_act_wait || pact.id() == s_act_wait_stamina ||
                                  pact.id() == s_act_wait_weather || pact.id() == s_act_wait_npc );
+    // On the CLIENT, local moves>0 is NOT sufficient to act: the client must
+    // also not be waiting on the host's grant/ack for the turn it already sent.
+    // Without this, the bar paints green (we have stale local moves) while the
+    // client is actually blocked until the host moves/waits — the "green but
+    // can't proceed" lie. Mirrors the client's act-readiness gate
+    // (moves>0 && !waiting_for_ack). On the host this term is false (host uses
+    // g_host_waiting_for_client), so host behavior is unchanged.
+    const bool client_blocked_on_ack = is_client_mode() && g_client_waiting_for_ack;
     const bool go = get_avatar().get_moves() > 0 && !in_wait_act
-                    && !g_host_waiting_for_client;
+                    && !g_host_waiting_for_client && !client_blocked_on_ack;
     const auto now = std::chrono::steady_clock::now();
     if( go ) {
         g_mp_last_go_time = now;
