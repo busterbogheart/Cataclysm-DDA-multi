@@ -59,6 +59,7 @@
 #include "output.h"
 #include "overmap_ui.h"
 #include "overmapbuffer.h"
+#include "past_games_info.h"
 #include "path_info.h"
 #include "pimpl.h"
 #include "player_difficulty.h"
@@ -827,6 +828,17 @@ bool avatar::create( character_type type, const std::string &tempname )
         } else {
             cc_uistate.set_initial_tab( CHARCREATOR_SCENARIO );
         }
+        // Pre-warm the past-games/achievements cache BEFORE the char-creator's
+        // ImGui frame opens. scenario::can_pick() (run every frame in
+        // update_uilist_entries for achievement-gated scenarios) lazily calls
+        // past_games_info::ensure_loaded(), which on its first run puts up a
+        // "please wait" popup + ui_manager::redraw() — a nested redraw inside
+        // the char-creator's ImGui window stack that aborts (SIGABRT in
+        // ImGui::End/ErrorRecovery). Loading it here, outside the frame, makes
+        // ensure_loaded() hit its `if(loaded_) return` early-out during the draw
+        // so no nested redraw ever happens. (Upstream bug — past_games_info.cpp
+        // even has a TODO about the imgui-stack corruption; this side-steps it.)
+        get_past_games( false );
         character_creator_ui ccui;
         cc_uistate.generation_type = type;
         ccui.display();
