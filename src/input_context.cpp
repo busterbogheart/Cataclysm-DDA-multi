@@ -482,7 +482,8 @@ const std::string &input_context::handle_input( const int timeout )
     // "default"-category handle_input. The deaf-aim logs show a default context
     // eating keys while the aim's TARGET context never sees them; this backtrace
     // identifies which code path runs that default poll during the aim modal.
-    if( cata_mp::is_client_mode() && category == "default" ) {
+    if( cata_mp::is_client_mode() && category == "default"
+        && cata_mp::get_client_turn_activity() == "ACT_AIM" ) {
         static int bt_count = 0;
         if( bt_count < 12 ) {
             ++bt_count;
