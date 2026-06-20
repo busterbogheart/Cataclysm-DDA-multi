@@ -342,6 +342,25 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             }
         }
 
+        // Role-exclusivity (A1): a client must not join with the host's own
+        // character name. Same-name = proxy-of-yourself + same remote-player
+        // save file + the "you swaps places with you" grammar collapse, and on
+        // a single machine it's the signature of accidentally joining your own
+        // hosted world. The host OWNS a world + character; a client has only a
+        // (distinct) character. Reject before authenticating.
+        {
+            const std::string host_name = mp_get_host_player_name();
+            if( !host_name.empty() && name == host_name ) {
+                const std::string errmsg = "That character name (\\\"" + name +
+                                           "\\\") is the host's. Co-op needs a different character "
+                                           "from the host — you can't join your own world.";
+                session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
+                mp_log( "[cdda-mp] JOIN REJECTED — name collides with host ('" + name + "')" );
+                session->disconnect();
+                return;
+            }
+        }
+
         session->name = name;
         session->authenticated = true;
 

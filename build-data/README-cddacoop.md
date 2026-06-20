@@ -27,6 +27,23 @@ This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoo
 The main menu is straight experimental CDDA, kept up to date, pretty much.
 The **CO-OP** menu item is new.  Otherwise this plays as single-player CDDA.
 
+### Co-op won't touch your single-player game
+
+You can try co-op without any worry about your solo save:
+
+- **Separate save folder.**  Co-op keeps its own save/config/options folder,
+  apart from single-player CDDA — it never reads, writes, or deletes anything in
+  your single-player game's folder.  (On macOS especially: co-op lives in
+  `…/Cddacoop/`, single-player in `…/Cataclysm/`.  See **Where things live**.)
+- **Co-op worlds are badged** in the world list, so you can always tell a co-op
+  world from a solo one.
+- **You reach co-op through the CO-OP menu** — Host or Join.
+- **You can't accidentally join your own world.**  Joining with the host's own
+  character is refused; a client always plays a *different* character from the
+  host.
+
+So your single-player save folder is never touched by co-op.
+
 ---
 
 ## Playing co-op
