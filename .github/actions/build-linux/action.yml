@@ -68,7 +68,7 @@ runs:
       shell: bash
       run: |
         make -j"$(nproc)" \
-          CCACHE=1 RELEASE=1 LTO=1 \
+          CCACHE=1 RELEASE=1 \
           TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
           cataclysm-tiles
 
