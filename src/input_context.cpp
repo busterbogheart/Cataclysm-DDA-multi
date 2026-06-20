@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <execinfo.h>   // DIAG (revert): backtrace() for deaf-aim default-context probe
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -477,6 +478,26 @@ const std::string &input_context::handle_input()
 
 const std::string &input_context::handle_input( const int timeout )
 {
+    // DIAG (revert before release): name the caller of any client-side
+    // "default"-category handle_input. The deaf-aim logs show a default context
+    // eating keys while the aim's TARGET context never sees them; this backtrace
+    // identifies which code path runs that default poll during the aim modal.
+    if( cata_mp::is_client_mode() && category == "default" ) {
+        static int bt_count = 0;
+        if( bt_count < 12 ) {
+            ++bt_count;
+            void *frames[16];
+            const int n = backtrace( frames, 16 );
+            char **syms = backtrace_symbols( frames, n );
+            std::string bt;
+            for( int i = 0; i < n && i < 12; ++i ) {
+                bt += "\n    " + std::string( syms ? syms[i] : "?" );
+            }
+            free( syms );
+            cata_mp::mp_log( "[cdda-mp] DEFAULT-HANDLE-INPUT #" + std::to_string( bt_count ) +
+                             " timeout=" + std::to_string( timeout ) + " bt:" + bt );
+        }
+    }
     const int old_timeout = inp_mngr.get_timeout();
     if( timeout >= 0 ) {
         inp_mngr.set_timeout( timeout );
