@@ -27,6 +27,8 @@
 #include "imgui/imgui.h"
 #include "input.h"
 #include "map.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "options.h"
 #include "output.h"
 #include "point.h"
@@ -490,6 +492,29 @@ const std::string &input_context::handle_input( const int timeout )
         }
 
         const std::string &action = input_to_action( next_action );
+
+        // DIAG (revert before release): deaf-aim seam. Logs the binding-lookup
+        // result on the client — the one uninstrumented step between a decoded
+        // key (SDL-KEYDOWN-RESULT) and a TIMEOUT return. Distinguishes a
+        // keycode-vs-keychar TYPE MISMATCH (action==CATA_ERROR on a non-error
+        // event) from input being swallowed upstream.
+        if( cata_mp::is_client_mode() && next_action.type != input_event_t::timeout
+            && next_action.type != input_event_t::error ) {
+            std::string bind_types;
+            const std::vector<input_event> &binds =
+                inp_mngr.get_input_for_action( "FIRE", category );
+            for( const input_event &b : binds ) {
+                bind_types += std::to_string( static_cast<int>( b.type ) ) + "/"
+                              + ( b.sequence.empty() ? std::string( "none" )
+                                  : std::to_string( b.sequence.front() ) ) + " ";
+            }
+            cata_mp::mp_log( "[cdda-mp] INPUT-TO-ACTION: cat=" + category
+                             + " ev_type=" + std::to_string( static_cast<int>( next_action.type ) )
+                             + " ev_key=" + ( next_action.sequence.empty() ? std::string( "none" )
+                                     : std::to_string( next_action.sequence.front() ) )
+                             + " action=" + action
+                             + " FIRE_binds=[" + bind_types + "]" );
+        }
 
         //Special global key to toggle language to english and back
         if( action == "toggle_language_to_en" ) {
