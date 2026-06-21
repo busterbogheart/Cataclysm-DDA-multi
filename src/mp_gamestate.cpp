@@ -5522,9 +5522,8 @@ bool mp_load_promote_prompt( const std::string &worldname )
         return true;
     }
     uilist menu;
-    menu.title = string_format( _( "\"%s\" is a co-op world" ), worldname );
-    menu.text = _( "Load it solo, or arm Host so your partner can Join?\n\n"
-                   "Either way it stays separate from your single-player worlds." );
+    menu.title = _( "This world has co-op history" );
+    menu.text = _( "Load as solo, or arm Host so your partner can Join?" );
     // Distinct positive retvals + an explicit cancel sentinel.  Avoids any
     // ambiguity with uilist's own UILIST_CANCEL (-1027) on ESC.
     constexpr int RET_SOLO = 1;

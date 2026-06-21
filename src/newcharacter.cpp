@@ -1,6 +1,5 @@
 #include "avatar.h" // IWYU pragma: associated
 #include "mp_gamestate.h"
-#include "mp_client_conn.h"  // cata_mp::is_client_mode (co-op scenario gating)
 
 #include <algorithm>
 #include <climits>
@@ -3148,23 +3147,7 @@ void character_creator_uistate::recalc_scenario_list( const avatar &u )
             if( scen.scen_is_blacklisted() ) {
                 continue;
             }
-            // Co-op scenario gating (A4a):
-            //  - client: lock to the dedicated "Co-op Drop-In" scenario — it's
-            //    char-only (no missions / no starting NPC; the host decides the
-            //    spawn), so nothing leaks into the shared world. Only choice.
-            //  - host: normal LONE_START scenarios (the host sets up the shared
-            //    world's start), but never the client-only drop-in.
-            //  - single-player: hide the co-op-only drop-in scenario entirely.
-            const bool is_coop_dropin = scen.ident().str() == "coop_dropin";
-            if( cata_mp::is_client_mode() ) {
-                if( !is_coop_dropin ) {
-                    continue;
-                }
-            } else if( cata_mp::is_host_mode() ) {
-                if( is_coop_dropin || !scen.has_flag( "LONE_START" ) ) {
-                    continue;
-                }
-            } else if( is_coop_dropin ) {
+            if( cata_mp::is_mp_mode() && !scen.has_flag( "LONE_START" ) ) {
                 continue;
             }
             new_scenarios.push_back( &scen );

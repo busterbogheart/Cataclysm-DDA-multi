@@ -1138,18 +1138,6 @@ bool main_menu::opening_screen()
                         }
                     } else if( sel2 == 1 ) {
                         // Join
-                        // Role-exclusivity (A1, client side): you can't join a
-                        // session while this instance is hosting one. Roles are
-                        // mutually exclusive — a host owns a world, a client has
-                        // only a character. (The host also rejects a same-name
-                        // join as the authoritative backstop.)
-                        if( cata_mp::is_hosting() ) {
-                            popup( _( "You're currently hosting a co-op session.\n\n"
-                                      "You can't also join one from the same game — host and "
-                                      "client are separate roles.  Quit hosting first to join "
-                                      "someone else's game." ) );
-                            break;
-                        }
                         if( !cata_mp::mp_menu_join_session() ) {
                             break;
                         }
