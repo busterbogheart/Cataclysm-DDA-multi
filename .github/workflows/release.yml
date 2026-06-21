@@ -1,5 +1,10 @@
 name: Release
 
+# Run name shown in the Actions tab: "<summary> [<platforms> <sha>]" for a
+# dispatch, or just "Release [<sha>]" if no summary was given / on a tag push.
+# Uses github.event.inputs.* (strings) to match the if:-condition style below.
+run-name: "${{ github.event.inputs.summary || 'Release' }} [${{ github.event.inputs.mac == 'true' && 'mac ' || '' }}${{ github.event.inputs.windows == 'true' && 'win ' || '' }}${{ github.event.inputs.linux == 'true' && 'linux ' || '' }}${{ github.sha }}]"
+
 # Build selected platforms, then optionally upload to a per-build release on
 # GitHub. Triggered by tag push (all platforms) or manual dispatch with
 # platform toggles.
@@ -36,6 +41,10 @@ on:
         description: 'Make the release a DRAFT (collaborator-only; not public, not on the site — download from the release page or run artifacts while logged in). Needs Upload checked too.'
         type: boolean
         default: false
+      summary:
+        description: 'Short headline for this build — one major fix/feature. Shown in the release title and the Actions run name (e.g. "co-op join fix"). Optional.'
+        type: string
+        default: ''
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -49,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      release_name: ${{ steps.v.outputs.release_name }}
     steps:
       - name: Compute version
         id: v
@@ -56,6 +66,10 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
+          IN_MAC: ${{ github.event.inputs.mac }}
+          IN_WIN: ${{ github.event.inputs.windows }}
+          IN_LINUX: ${{ github.event.inputs.linux }}
+          SUMMARY: ${{ github.event.inputs.summary }}
         run: |
           # Always use the short commit SHA as the build identifier — this is
           # what the binary stamps into its VERSION string and what the in-game
@@ -65,6 +79,27 @@ jobs:
           VER="${SHA:0:10}"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Build version: $VER"
+
+          # Human-readable release TITLE (display only; tag_name stays $VER so the
+          # site + in-game handshake keep keying on the SHA). Shape:
+          #   "<platforms> — <summary> (<sha>)"  e.g. "mac+win — co-op join fix (336832ac58)"
+          # Tag push: "<tag> (<sha>)". No summary: just "<platforms> (<sha>)".
+          if [ "$REF_TYPE" = "tag" ]; then
+            REL="$REF_NAME ($VER)"
+          else
+            PLATS=""
+            [ "$IN_MAC" = "true" ]   && PLATS="${PLATS:+$PLATS+}mac"
+            [ "$IN_WIN" = "true" ]   && PLATS="${PLATS:+$PLATS+}win"
+            [ "$IN_LINUX" = "true" ] && PLATS="${PLATS:+$PLATS+}linux"
+            [ -z "$PLATS" ] && PLATS="build"
+            if [ -n "$SUMMARY" ]; then
+              REL="$PLATS — $SUMMARY ($VER)"
+            else
+              REL="$PLATS ($VER)"
+            fi
+          fi
+          echo "release_name=$REL" >> "$GITHUB_OUTPUT"
+          echo "Release name: $REL"
 
   build-mac:
     name: Build macOS (universal)
@@ -235,7 +270,9 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ needs.setup.outputs.version }}
+          # Display title is the descriptive name; tag_name stays the SHA so the
+          # site API lookup and the in-game version handshake are unaffected.
+          name: ${{ needs.setup.outputs.release_name }}
           tag_name: ${{ needs.setup.outputs.version }}
           # Draft = collaborator-only, not public, and the site filters it out
           # (releases.filter(!draft)). Set via the `draft` dispatch input; tag
