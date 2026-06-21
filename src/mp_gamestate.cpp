@@ -1775,7 +1775,13 @@ static void remove_remote_player()
     }
     // Remove from overmap buffer so the NPC doesn't get written back into the
     // world save, which would cause a stale NPC to appear on next load.
-    if( remote_player_npc_id.is_valid() ) {
+    // Guard with find_npc(): the proxy is normally an in-bubble ACTIVE npc
+    // (already despawned by g->remove_npc above) and was never registered as an
+    // overmap NPC, so an unconditional remove_npc() hits its internal "NPC not
+    // found" debugmsg — a BLOCKING modal popup on the host EVERY time the client
+    // disconnects ("client quit drags the host down", 2026-06-21). find_npc()
+    // returns null without complaint, so we only remove when it's actually there.
+    if( remote_player_npc_id.is_valid() && overmap_buffer.find_npc( remote_player_npc_id ) ) {
         overmap_buffer.remove_npc( remote_player_npc_id );
     }
 
@@ -4525,6 +4531,17 @@ void wait_for_client_action()
     // Log the partner-interactive skip (below) once per wait, not per-iter.
     bool logged_partner_interactive_skip = false;
     while( remote_player_connected ) {
+        // Host requested quit (save&quit / suicide / die) while waiting for the
+        // client: stop waiting immediately so do_turn can return and the game
+        // exits. The client was already told via mp_notify_session_ending().
+        // Without this the wait spins forever once the client has left — no ack
+        // ever arrives — and save&quit appears to do nothing (regression
+        // 2026-06-21: host stuck in SRV-WAIT, uquit=QUIT_SAVED set but ignored).
+        if( g->uquit != QUIT_NO ) {
+            mp_log( "[cdda-mp] SRV-WAIT: uquit=" + std::to_string( g->uquit ) +
+                    " set, breaking out of client wait" );
+            break;
+        }
         if( g_client_acted_this_turn ) {
             break;  // client acted, advance shared clock by this turn
         }

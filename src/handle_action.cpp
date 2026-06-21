@@ -3174,6 +3174,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             ACTION_OPTIONS, ACTION_TOGGLE_PANEL_ADM,
             ACTION_AUTOPICKUP, ACTION_AUTONOTES,
             ACTION_SAFEMODE, ACTION_DISTRACTION_MANAGER,
+            // Safe-mode toggles/flags are zero-AP — allow while locked so the host
+            // can flip safe mode while waiting for the client (mirrors the client,
+            // which already falls through to these). Without them the host's
+            // default-deny gate blocked ACTION_TOGGLE_SAFEMODE (2026-06-21).
+            ACTION_TOGGLE_SAFEMODE, ACTION_TOGGLE_AUTOSAFE,
+            ACTION_IGNORE_ENEMY, ACTION_WHITELIST_ENEMY,
             ACTION_COLOR, ACTION_WORLD_MODS,
             ACTION_QUICKSAVE, ACTION_SAVE,
             ACTION_KEYBINDINGS,
