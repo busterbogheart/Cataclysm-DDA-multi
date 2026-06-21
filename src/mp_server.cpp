@@ -294,15 +294,21 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                 return;
             }
         }
-        // Probe accepted — send world name + seed so the client can display
-        // "Joining <world>" before character creation.
+        // Probe accepted — send world name + seed + host OMT so the client can
+        // display "Joining <world>" AND adopt the seed + spawn location before
+        // character creation runs (client start_game() needs both before it
+        // builds the host-area overmap; the post-JOIN welcome arrives too late —
+        // it lands on the first do_turn, after start_game has already generated
+        // the overmap with its own rng_bits() seed → ocean-spawn / "different
+        // overmap" co-op join regression, 2026-06-21).
         mp_log( "[cdda-mp] PROBE accepted — version OK; sending welcome (world='" +
                 mp_get_host_world_name() + "')" );
         session->send( "{\"type\":\"welcome\",\"player_id\":\"probe\""
                        ",\"world\":\"" + mp_get_host_world_name() + "\""
                        ",\"host_name\":\"" + mp_json_escape( mp_get_host_player_name() ) + "\""
                        ",\"current_turn\":0,\"seed\":" +
-                       std::to_string( mp_host_world_seed() ) + "}\n" );
+                       std::to_string( mp_host_world_seed() ) +
+                       mp_host_omt_welcome_field() + "}\n" );
         return;
     }
 

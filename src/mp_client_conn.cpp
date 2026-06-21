@@ -27,6 +27,7 @@ namespace cata_mp {
 void mp_log( const std::string &msg );
 void mp_set_client_host_world_name( const std::string &name );
 void mp_set_client_host_player_name( const std::string &name );
+void mp_store_pending_welcome( const std::string &msg );
 
 static bool client_mode_ = false;
 
@@ -270,6 +271,11 @@ bool client_connect( const std::string &host, uint16_t port,
                         }
                     }
                 }
+                // Stash + pre-parse the welcome NOW (connect time, before char
+                // creation) so start_game() can adopt the host seed + spawn-omt
+                // before it builds the host-area overmap. The game-loop replay
+                // below still fires on the first do_turn (idempotent).
+                mp_store_pending_welcome( msg );
                 // Store the welcome so the game-loop handler can adopt the seed.
                 g_pending_join = "{\"type\":\"join\",\"name\":\"" + name + "\"";
                 if( !password.empty() ) {

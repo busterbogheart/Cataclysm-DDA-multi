@@ -1081,6 +1081,13 @@ static std::string g_client_host_world_name;
 static unsigned int g_client_host_seed = 0;
 static bool g_client_host_seed_applied = false;
 
+// Client: the raw join 'welcome' stashed at connect time so start_game() can
+// adopt the host seed + spawn-omt BEFORE worldgen. The welcome's own arrival on
+// the first do_turn is too late — start_game has already built the host-area
+// overmap with the client's own rng_bits() seed by then. See
+// mp_store_pending_welcome() / mp_client_prepare_spawn().
+static std::string g_pending_welcome;
+
 // Host: the host avatar's overmap-terrain position, captured each turn on the
 // game thread for the join 'welcome'. A joining client spawns directly into the
 // host's area instead of generating its character's scenario start_location — a
@@ -1202,6 +1209,78 @@ static void mp_client_apply_host_seed()
     g_client_host_seed_applied = true;
     mp_log( "[cdda-mp] SEED: client adopted host seed " +
             std::to_string( g_client_host_seed ) + " (was " + std::to_string( before ) + ")" );
+}
+
+// Client: parse the fields a joining client needs out of a 'welcome' message —
+// host world name, host player name, host spawn OMT, and worldgen seed. When
+// apply_seed_now is true the seed is adopted immediately (engine seed already
+// finalized, e.g. the game-loop replay path); when false the seed value is only
+// stored — used at connect time, before start_game()'s rng_bits() runs, with the
+// actual adoption deferred to mp_client_prepare_spawn().
+static void parse_welcome_fields( const std::string &msg, bool apply_seed_now )
+{
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        const std::string wn = jo.get_string( "world", "" );
+        if( !wn.empty() && wn != "default" ) {
+            g_client_host_world_name = wn;
+            mp_log( "[cdda-mp] welcome: host world='" + wn + "'" );
+        }
+        const std::string hn = jo.get_string( "host_name", "" );
+        if( !hn.empty() ) {
+            mp_set_client_host_player_name( hn );
+            mp_log( "[cdda-mp] welcome: host player='" + hn + "'" );
+        }
+        // The host's OMT — start_game spawns the client here (host's area)
+        // instead of its character's scenario start_location.
+        if( jo.has_array( "host_omt" ) ) {
+            JsonArray ho = jo.get_array( "host_omt" );
+            if( ho.size() >= 3 ) {
+                g_client_host_spawn_omt = tripoint_abs_omt(
+                                              ho.get_int( 0 ), ho.get_int( 1 ), ho.get_int( 2 ) );
+                mp_log( "[cdda-mp] welcome: host_omt=" + g_client_host_spawn_omt.to_string() );
+            }
+        }
+    } catch( const JsonError & ) {}
+    const auto spos = msg.find( "\"seed\":" );
+    if( spos != std::string::npos ) {
+        // Seed is an unsigned int serialized as a bare JSON number.
+        const unsigned long parsed = std::strtoul( msg.c_str() + spos + 7, nullptr, 10 );
+        g_client_host_seed = static_cast<unsigned int>( parsed );
+        mp_log( "[cdda-mp] SEED: welcome " + std::string( apply_seed_now ? "received" : "stored" ) +
+                " host seed " + std::to_string( g_client_host_seed ) + " (local was " +
+                std::to_string( g->get_seed() ) + ")" );
+        if( apply_seed_now ) {
+            mp_client_apply_host_seed();
+        }
+    } else {
+        mp_log( "[cdda-mp] SEED: welcome had no seed field" );
+    }
+}
+
+// Client: stash the join 'welcome' at connect time and pre-parse its fields
+// (seed value, spawn OMT, names) WITHOUT applying the seed yet — start_game()
+// resets the engine seed via rng_bits(), so adoption is deferred to
+// mp_client_prepare_spawn(), called from start_game right after that reset.
+void mp_store_pending_welcome( const std::string &msg )
+{
+    g_pending_welcome = msg;
+    parse_welcome_fields( msg, /*apply_seed_now=*/false );
+}
+
+// Client: called from game::start_game() right after seed = rng_bits() and
+// before the host-area overmap is generated. Adopts the host's stashed seed so
+// the client's base terrain matches the host's. The spawn OMT was already set by
+// mp_store_pending_welcome() (read via mp_client_spawn_omt()). No-op on the host
+// or when no welcome has been stashed.
+void mp_client_prepare_spawn()
+{
+    if( !is_client_mode() || g_pending_welcome.empty() ) {
+        return;
+    }
+    mp_client_apply_host_seed();
 }
 
 // Server: per-tile baseline (ter + furn + item fingerprint) for dirty-tile tracking.
@@ -6108,45 +6187,11 @@ static bool apply_one_state_message( const std::string &msg )
     // seed in start_game() and renders a different map outside the tile-synced
     // bubble (the "different map until I got close" report, 2026-06-02).
     if( msg.find( "\"type\":\"welcome\"" ) != std::string::npos ) {
-        // Parse world name — shown in the join UI so the client knows which
-        // world they're joining before character selection.
-        try {
-            JsonValue jv = json_loader::from_string( msg );
-            JsonObject jo = jv.get_object();
-            jo.allow_omitted_members();
-            const std::string wn = jo.get_string( "world", "" );
-            if( !wn.empty() && wn != "default" ) {
-                g_client_host_world_name = wn;
-                mp_log( "[cdda-mp] welcome: host world='" + wn + "'" );
-            }
-            const std::string hn = jo.get_string( "host_name", "" );
-            if( !hn.empty() ) {
-                mp_set_client_host_player_name( hn );
-                mp_log( "[cdda-mp] welcome: host player='" + hn + "'" );
-            }
-            // The host's OMT — start_game spawns the client here (host's area)
-            // instead of its character's scenario start_location.
-            if( jo.has_array( "host_omt" ) ) {
-                JsonArray ho = jo.get_array( "host_omt" );
-                if( ho.size() >= 3 ) {
-                    g_client_host_spawn_omt = tripoint_abs_omt(
-                                                  ho.get_int( 0 ), ho.get_int( 1 ), ho.get_int( 2 ) );
-                    mp_log( "[cdda-mp] welcome: host_omt=" + g_client_host_spawn_omt.to_string() );
-                }
-            }
-        } catch( const JsonError & ) {}
-        const auto spos = msg.find( "\"seed\":" );
-        if( spos != std::string::npos ) {
-            // Seed is an unsigned int serialized as a bare JSON number.
-            const unsigned long parsed = std::strtoul( msg.c_str() + spos + 7, nullptr, 10 );
-            g_client_host_seed = static_cast<unsigned int>( parsed );
-            mp_log( "[cdda-mp] SEED: welcome received host seed " +
-                    std::to_string( g_client_host_seed ) + " (local was " +
-                    std::to_string( g->get_seed() ) + ")" );
-            mp_client_apply_host_seed();
-        } else {
-            mp_log( "[cdda-mp] SEED: welcome had no seed field" );
-        }
+        // Game-loop replay path (first do_turn): the engine seed is already
+        // finalized, so adopt the host seed now. The connect-time path stashes
+        // the same welcome earlier via mp_store_pending_welcome() so start_game
+        // can act on it before worldgen.
+        parse_welcome_fields( msg, /*apply_seed_now=*/true );
         return true;
     }
 

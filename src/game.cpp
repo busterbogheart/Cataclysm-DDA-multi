@@ -779,6 +779,10 @@ bool game::start_game()
     }
 
     seed = rng_bits();
+    // MP client: override the random seed above with the host's (stashed from the
+    // join 'welcome' at connect time) BEFORE the host-area overmap is generated,
+    // so the client's base terrain matches the host's. No-op on host / non-join.
+    cata_mp::mp_client_prepare_spawn();
     new_game = true;
     start_calendar();
     weather.nextweather = calendar::turn;

@@ -222,6 +222,14 @@ std::string mp_host_omt_welcome_field();
 // Client: the host's OMT from the welcome — start_game spawns here in client mode
 // instead of the character's scenario start_location (invalid if not a client join).
 tripoint_abs_omt mp_client_spawn_omt();
+// Client: stash + pre-parse the join 'welcome' at connect time (seed/omt/names),
+// then adopt the seed at start_game time (after its rng_bits() reset) so worldgen
+// matches the host. Without this the welcome is only processed on the first
+// do_turn — after start_game already built the overmap with a random seed and
+// spawned at the character's own scenario start (ocean-spawn / "different
+// overmap" co-op join regression, 2026-06-21).
+void mp_store_pending_welcome( const std::string &msg );
+void mp_client_prepare_spawn();
 // Client: world name received from the host's 'welcome' message.  Empty until
 // after mp_menu_join_session() returns successfully.
 std::string mp_client_host_world_name();
