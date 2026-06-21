@@ -149,7 +149,7 @@ You need one of these to route your partner's traffic to your machine:
 
 <!-- SYNC:reporting-bugs section="Getting help / reporting bugs" -->
 - Discord: <https://discord.gg/MzBD4v3xAU>
-- GitHub issues: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
+- GitHub issues & feature requests: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
 
 **Co-op bugs need logs from both players.** Most sync issues (desync,
 resurrecting monsters, connection failures) only make sense when the host's and
