@@ -84,8 +84,13 @@ void PATH_INFO::init_user_dir( std::string dir )
         const char *user_dir;
 #if defined(_WIN32)
         user_dir = getenv_or_abort( "LOCALAPPDATA" );
-        // On Windows userdir without dot
-        dir = std::string( user_dir ) + "/cataclysm-dda/";
+        // Co-op: own userdir so it never shares saves/config/tilesets with a
+        // single-player CDDA install. The Windows package ships a bare .exe (no
+        // launcher to pass --userdir like macOS/Linux do), so without this the
+        // build read %LOCALAPPDATA%\cataclysm-dda and SP config bled in — e.g. a
+        // stale tileset (MShockXotto+) the co-op package lacks, on a player's
+        // host-chargen crash (2026-06-21). Mirrors macOS .../Cddacoop.
+        dir = std::string( user_dir ) + "/Cddacoop/";
 #elif defined(MACOSX)
         user_dir = getenv_or_abort( "HOME" );
         dir = std::string( user_dir ) + "/Library/Application Support/Cataclysm/";
