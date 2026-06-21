@@ -1,9 +1,12 @@
 name: Release
 
-# Run name shown in the Actions tab: "<summary> [<platforms> <sha>]" for a
-# dispatch, or just "Release [<sha>]" if no summary was given / on a tag push.
+# Run name shown in the Actions tab: "[<platforms>] <summary>" for a dispatch,
+# or "[<platforms>] Release" if no summary / "[] Release" on a tag push.
+# Platforms are front-loaded so they survive the list-view truncation; the full
+# SHA is dropped (it bloated the title and pushed platforms off-screen — the
+# commit is shown in the run details, and the release title carries the short SHA).
 # Uses github.event.inputs.* (strings) to match the if:-condition style below.
-run-name: "${{ github.event.inputs.summary || 'Release' }} [${{ github.event.inputs.mac == 'true' && 'mac ' || '' }}${{ github.event.inputs.windows == 'true' && 'win ' || '' }}${{ github.event.inputs.linux == 'true' && 'linux ' || '' }}${{ github.sha }}]"
+run-name: "[${{ github.event.inputs.mac == 'true' && 'mac ' || '' }}${{ github.event.inputs.windows == 'true' && 'win ' || '' }}${{ github.event.inputs.linux == 'true' && 'linux' || '' }}] ${{ github.event.inputs.summary || 'Release' }}"
 
 # Build selected platforms, then optionally upload to a per-build release on
 # GitHub. Triggered by tag push (all platforms) or manual dispatch with
