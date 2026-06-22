@@ -207,6 +207,23 @@ large scripted-effect/teleport power sets fall outside that model.
 ## Changelog
 
 
+### 2026-06-21
+
+- **Aiming and firing fixed for co-op** — the joining player can aim and shoot
+  again: no more missing aim panel, dropped keys ("deaf" aiming), the client
+  locking up when entering aim mode, or a crash on a careful aimed shot.  And the
+  host no longer freezes while their partner is lining up a shot.
+- **Joining drops you into your host's world** — a joining player could spawn in
+  a separate, mismatched world (sometimes out in open water with a different-looking
+  overmap) instead of next to the host.  Now you arrive in the host's area, on the
+  same map.
+- **The host's game survives a partner leaving** — when a co-op partner quit or
+  disconnected, the host could get stuck or throw an error.  Now it just notes the
+  other player left and keeps going — and the host can save & quit, or toggle safe
+  mode, even while it's the other player's turn.
+- **macOS: the co-op sound pack downloads reliably** — the optional pack now
+  resolves correctly instead of failing to find the download.
+
 ### 2026-06-17
 
 - **Z-level fixes** — when you and your partner are on different z-levels, the ground should sync correctly and
