@@ -108,6 +108,7 @@
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
 #include "npc.h"
+#include "line.h" // TEMP diag: trigdist global for CLI-MOVE-COST logging
 
 enum class direction : unsigned int;
 
@@ -2760,8 +2761,23 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                     const int mcost   = here.combined_movecost( cur_pos, next_pos );
                     const int ap_cost = player_character.run_cost( mcost, diag );
                     const int pre_moves = player_character.get_moves();
+                    const int pre_stam = player_character.get_stamina();
                     player_character.mod_moves( -ap_cost );
                     player_character.burn_move_stamina( pre_moves - player_character.get_moves() );
+                    // TEMP diag (#2 diagonal / #3 terrain move-cost on client): shows whether
+                    // trigdist is actually on here, what combined_movecost returns for this
+                    // tile, and whether moves/stamina actually drop.  Remove once diagnosed.
+                    cata_mp::mp_log( "[cdda-mp] CLI-MOVE-COST dir=" + dir +
+                                     " trigdist=" + std::to_string( trigdist ) +
+                                     " circ_opt=" + std::to_string( get_option<bool>( "CIRCLEDIST" ) ) +
+                                     " diag=" + std::to_string( diag ) +
+                                     " mcost=" + std::to_string( mcost ) +
+                                     " ap_cost=" + std::to_string( ap_cost ) +
+                                     " moves=" + std::to_string( pre_moves ) + "->" +
+                                     std::to_string( player_character.get_moves() ) +
+                                     " stam=" + std::to_string( pre_stam ) + "->" +
+                                     std::to_string( player_character.get_stamina() ) +
+                                     " ter=" + here.ter( next_pos ).id().str() );
                     player_character.set_activity_level(
                         player_character.current_movement_mode()->exertion_level() );
                     if( player_character.is_running() && !player_character.can_run() ) {
@@ -2855,6 +2871,17 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ",\"y\":" + std::to_string( abs_target.y() ) +
                 ",\"z\":" + std::to_string( abs_target.z() ) +
                 ",\"bash\":" + std::to_string( total_bash ) + "}";
+            // FIX #4 (smash stamina): mirror SP avatar::smash (handle_action.cpp ~1203) —
+            // a successful bash burns 2 * standard stamina via the arms.  The client doesn't
+            // run here.bash() locally (the host does), so gate on the client map's bashability
+            // instead of did_bash — the same optimistic local-apply the move block uses.
+            if( get_map().is_bashable( *smashp ) ) {
+                player_character.burn_energy_arms( 2 * player_character.get_standard_stamina_cost() );
+            }
+            // TEMP diag (#4): post-fix this should now DROP across repeated smashes.
+            cata_mp::mp_log( "[cdda-mp] CLI-SMASH-STAM stam=" +
+                             std::to_string( player_character.get_stamina() ) +
+                             " bash=" + std::to_string( total_bash ) );
             // Save the smash JSON so the client can re-queue it for "keep smashing".
             cata_mp::client_set_autosmash_json( json );
             mp_dispatch( json );

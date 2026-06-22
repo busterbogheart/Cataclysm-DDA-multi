@@ -342,6 +342,12 @@ static std::unordered_map<uint32_t, tripoint_abs_ms> g_client_veh_pos;
 // Server: cumulative AP for the remote player (replaces the NPC's own moves which
 // are skipped by monmove since is_remote_player() returns true).
 static int g_remote_moves = 0;
+// Server: true if grant_client_turn() issued a real grant this turn (the client's
+// carried move budget was positive).  False on a "deficit turn" — the client is
+// still paying off an expensive move's AP debt — and wait_for_client_action()
+// skips its blocking wait so the host advances monmove() solo while the client
+// stays locked, mirroring SP where an expensive move costs several turns.
+static bool g_granted_this_turn = true;
 
 // Server: true while wait_for_client_action() is blocking.  Used by the HUD
 // strip so it shows red (can't act) even when host moves > 0.
@@ -3889,8 +3895,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     if( acted ) {
         g_client_acted_this_turn = true;
-        g_remote_moves = 0;  // lock client; grant_client_turn() restores on next turn
-        mp_log( "[cdda-mp] SRV-ACK: sending moves=0 ack to client, grant_seq=" + std::to_string( g_grant_seq ) );
+        // FIX #2/#3: carry an expensive move's AP debt instead of wiping it.
+        // g_remote_moves here is (granted budget - real ap_cost).  If the move
+        // overspent (cost > budget) it's negative — KEEP that debt so
+        // grant_client_turn()'s "+= speed" makes the client skip turns until it's
+        // paid off (the SP move economy).  Cap surplus at 0 so a cheap move can't
+        // bank budget across turns (preserves one-action-per-grant).
+        g_remote_moves = std::min( 0, g_remote_moves );
+        mp_log( "[cdda-mp] SRV-ACK: moves=" + std::to_string( g_remote_moves ) +
+                " (debt-carry) ack to client, grant_seq=" + std::to_string( g_grant_seq ) );
     } else {
         mp_log( "[cdda-mp] SRV-FREE: no-op move (wall/bump), sending free=true, moves=" + std::to_string( g_remote_moves ) );
     }
@@ -4409,8 +4422,17 @@ void grant_client_turn()
     }
     g_proxy_was_alive = true;
     g_client_acted_this_turn = false;
-    g_remote_moves = remote->get_speed();
-    ++g_grant_seq;
+    // FIX #2/#3: accumulate this turn's speed onto any carried AP debt instead of
+    // resetting to full speed.  Only issue a real grant (advance grant_seq, unlock
+    // the client) when the budget comes out positive; while still negative this is
+    // a "deficit turn" — no grant — and wait_for_client_action() advances the
+    // host's monmove() solo so the world keeps moving while the client pays off the
+    // expensive move (SP-faithful: a costly step burns several turns).
+    g_remote_moves += remote->get_speed();
+    g_granted_this_turn = ( g_remote_moves > 0 );
+    if( g_granted_this_turn ) {
+        ++g_grant_seq;
+    }
     const player_activity &ha = get_avatar().activity;
     // turn= is the shared game clock (the client logs calendar_turn in its state
     // packets) — use it to align the host and client logs by game turn, immune to
@@ -4496,6 +4518,20 @@ void wait_for_client_action()
     }
     if( ff_now ) {
         process_mp_events();
+        return;
+    }
+
+    // FIX #2/#3: deficit turn — the client is still paying off an expensive move's
+    // AP debt, so grant_client_turn() issued no grant this turn.  Don't block on a
+    // client ack that won't come; pump events and let the host advance monmove()
+    // solo, exactly as SP advances turns while a slow character's moves are
+    // negative.  The next grant_client_turn() adds another speed's worth; once the
+    // budget goes positive the client is granted again and strict lockstep resumes.
+    if( !g_granted_this_turn ) {
+        process_mp_events();
+        static int s_debt_skips = 0;
+        mp_log( "[cdda-mp] lockstep-skip: client in move-debt, g_remote_moves=" +
+                std::to_string( g_remote_moves ) + " skip#" + std::to_string( ++s_debt_skips ) );
         return;
     }
 
@@ -7392,10 +7428,16 @@ void client_process_incoming()
     // Auto-fire pending autosmash when a grant arrives and no ack is outstanding.
     if( g_autosmash_pending && !g_client_autosmash_json.empty() &&
         get_avatar().get_moves() > 0 && !g_client_waiting_for_ack ) {
-        mp_log( "[cdda-mp] CLI-AUTOSMASH: sending smash, moves=" +
-                std::to_string( get_avatar().get_moves() ) );
         g_autosmash_pending = false;
         client_send( g_client_autosmash_json );
+        // FIX #4 (smash stamina): mirror SP avatar::smash on each continued swing.
+        // Autosmash only re-fires while the target is still bashable, so every re-fire
+        // is a successful swing — burn unconditionally here (manual smash burns in
+        // handle_action.cpp's ACTION_SMASH block, gated on is_bashable).
+        get_avatar().burn_energy_arms( 2 * get_avatar().get_standard_stamina_cost() );
+        mp_log( "[cdda-mp] CLI-AUTOSMASH: sending smash, moves=" +
+                std::to_string( get_avatar().get_moves() ) +
+                " stam=" + std::to_string( get_avatar().get_stamina() ) );
         get_avatar().set_moves( 0 );
         g_client_waiting_for_ack = true;
         g_ack_set_time = std::chrono::steady_clock::now();
