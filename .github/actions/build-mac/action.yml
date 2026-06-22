@@ -252,6 +252,13 @@ runs:
       run: |
         # The launcher prompts to download the sound pack from the release
         # on first launch. Keeps the DMG ~25-50 MB instead of ~155 MB.
+        # CC-Sounds is TRACKED (724 files). Hide it from git's dirty check
+        # BEFORE deleting, or the `make app` step below re-runs the Makefile
+        # version target, sees the deletion, and stamps the binary
+        # "-dirty.<HHMMSS>" (mac-only: Win/Linux package via cp with no second
+        # make, so they stay clean). Mirrors the Info.plist assume-unchanged
+        # above. (fixes fef2c8e0de mac title-bar showing -dirty, 2026-06-21)
+        git ls-files data/sound/CC-Sounds | xargs -r git update-index --assume-unchanged
         rm -rf data/sound/CC-Sounds data/sound/CC-Sounds.zip
 
     - name: Package .app bundle
