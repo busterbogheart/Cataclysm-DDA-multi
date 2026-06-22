@@ -1342,6 +1342,17 @@ static std::unordered_map<uint32_t, int> g_last_monster_hp;
 // Client: last known HP per bodypart string ID — used to synthesise "you were hit" messages.
 static std::unordered_map<std::string, int> g_last_bodypart_hp;
 
+// Client: net_ids of synced monsters the client just killed locally, awaiting the
+// host's authoritative confirmation. Value = remaining syncs to suppress a
+// host-rebroadcast respawn. The host hasn't processed the forwarded kill yet, so
+// it keeps broadcasting the monster alive; without this, apply_monster_sync
+// respawns it ("killed the zed, it rose again, dropped 2-3 corpses" — GH#1). The
+// loop repeats, each iteration leaving a host-side corpse that syncs back.
+// Bounded: a kill the host REJECTS (HP desync) reappears after the window
+// instead of vanishing forever.
+static std::unordered_map<uint32_t, int> g_client_pending_kill;
+static constexpr int CLIENT_PENDING_KILL_SYNCS = 3;
+
 // Client: fingerprint of the last host_worn list applied — avoids re-dressing every tick.
 static std::string g_client_host_worn_sig;
 
@@ -7678,6 +7689,12 @@ static std::string build_client_monster_hits()
         if( client_hp >= it->second ) {
             continue;
         }
+        if( client_hp <= 0 ) {
+            // Client killed this synced monster locally. Mark it so the next few
+            // host broadcasts (still showing it alive, kill not yet processed)
+            // don't respawn it — see apply_monster_sync's spawn guard (GH#1).
+            g_client_pending_kill[mon->mp_net_id] = CLIENT_PENDING_KILL_SYNCS;
+        }
         if( !first ) { hits += ','; }
         first = false;
         hits += "{\"nid\":" + std::to_string( mon->mp_net_id )
@@ -9134,6 +9151,13 @@ static void apply_monster_sync( JsonObject &jo )
             mo.get_int( "x" ), mo.get_int( "y" ), mo.get_int( "z" )
         };
 
+        // Host confirmed this monster dead — drop the pending-kill suppress. The
+        // corpse arrives via the host's authoritative kill (item/tile sync), so
+        // the client never spawns a local one (GH#1: no duplicate corpse).
+        if( nid != 0 && server_hp <= 0 ) {
+            g_client_pending_kill.erase( nid );
+        }
+
         monster *best = nullptr;
 
         // --- Primary lookup: stable network ID ---
@@ -9173,6 +9197,27 @@ static void apply_monster_sync( JsonObject &jo )
                     best->mp_net_id = nid;
                     g_net_id_map[nid] = best;
                 }
+            }
+        }
+
+        // --- Suppress respawn of a monster the client just killed locally ---
+        // The host hasn't processed the forwarded kill yet, so it's still
+        // broadcasting this monster alive. Respawning it now is the GH#1
+        // "killed zed rose again + extra corpses" loop. Skip for a bounded
+        // window; if the host keeps reporting it alive past that, the kill was
+        // rejected (HP desync) — fall through and respawn rather than leave an
+        // invisible-but-alive monster.
+        if( best == nullptr && nid != 0 ) {
+            auto pk = g_client_pending_kill.find( nid );
+            if( pk != g_client_pending_kill.end() ) {
+                if( pk->second > 0 ) {
+                    --pk->second;
+                    mp_log( "[cdda-mp] MON-KILL-SUPPRESS: nid=" + std::to_string( nid ) +
+                            " server_hp=" + std::to_string( server_hp ) +
+                            " syncs_left=" + std::to_string( pk->second ) );
+                    continue;
+                }
+                g_client_pending_kill.erase( pk );
             }
         }
 
@@ -9274,6 +9319,7 @@ static void apply_monster_sync( JsonObject &jo )
             if( rnid == 0 ) {
                 continue;
             }
+            g_client_pending_kill.erase( rnid );  // host confirmed gone (GH#1)
             auto it = g_net_id_map.find( rnid );
             if( it != g_net_id_map.end() && it->second && !it->second->is_dead() ) {
                 culled_log += it->second->type->id.str() + "(nid=" +
