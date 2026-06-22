@@ -4415,48 +4415,30 @@ void grant_client_turn()
     check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
     server *srv = get_active_server();
     if( srv ) {
-        // During host fast-forward (a long activity advancing hundreds of turns/
-        // sec with no per-turn client wait), broadcasting a full map_sync + state
-        // every turn floods the WAN client: it can't drain that fast, so a
-        // backlog builds, the client's calendar lags hundreds-to-thousands of
-        // turns behind, the co-op panel stops updating, and the "finished"
-        // message lands seconds late (2026-06-21 WAN: ~2460-turn drift, ~9s
-        // backlog). The client is LOCKED during FF and can't act on per-turn
-        // state, so throttle the broadcast to a wall-clock cadence while
-        // fast-forwarding. The first normal (non-FF) grant after FF exits is
-        // unthrottled, so it sends the full catch-up state immediately. Skipped
-        // map/state deltas aren't lost — build_map_sync accumulates dirty tiles
-        // and serialize_remote_player_state flushes queued msgs on the next send.
-        bool do_broadcast = true;
-        if( should_fast_forward() ) {
-            static auto last_ff_broadcast = std::chrono::steady_clock::now();
-            const auto now = std::chrono::steady_clock::now();
-            if( std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now - last_ff_broadcast ).count() < 200 ) {
-                do_broadcast = false;
-            } else {
-                last_ff_broadcast = now;
-            }
+        // NOTE: do NOT throttle this broadcast during fast-forward. The grant
+        // itself (g_remote_moves / g_grant_seq) is delivered to the client INSIDE
+        // serialize_remote_player_state — skipping the broadcast skips the grant,
+        // which starved the client of grants and deadlocked both sides (client
+        // waits for a grant that never comes; host waits for its ack). The FF
+        // wire-flood/drift needs a fix that throttles only the heavy map/state
+        // delta while still delivering every grant — reverted 2026-06-21.
+        // Send map terrain BEFORE the position update so the client's
+        // MAPBUFFER already has correct tiles (e.g. bridge deck at z=1)
+        // by the time client_teleport_avatar fires update_map.  If map_sync
+        // arrives after remote_player_state the client loads stale disk tiles
+        // (t_open_air) first, gravity_check fires, and the client falls.
+        const std::string mapm = build_map_sync();
+        if( !mapm.empty() ) {
+            srv->post_broadcast( mapm + "\n" );
         }
-        if( do_broadcast ) {
-            // Send map terrain BEFORE the position update so the client's
-            // MAPBUFFER already has correct tiles (e.g. bridge deck at z=1)
-            // by the time client_teleport_avatar fires update_map.  If map_sync
-            // arrives after remote_player_state the client loads stale disk tiles
-            // (t_open_air) first, gravity_check fires, and the client falls.
-            const std::string mapm = build_map_sync();
-            if( !mapm.empty() ) {
-                srv->post_broadcast( mapm + "\n" );
-            }
-            srv->post_broadcast( serialize_remote_player_state() + "\n" );
-            // Stream the host's overmap region so the client's far-map (cities/
-            // roads/biomes) matches instead of its own non-deterministic regen.
-            // Returns "" unless this is the first sync or the host moved a step,
-            // so it's cheap on the steady-state path.
-            const std::string om = build_overmap_sync();
-            if( !om.empty() ) {
-                srv->post_broadcast( om + "\n" );
-            }
+        srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        // Stream the host's overmap region so the client's far-map (cities/
+        // roads/biomes) matches instead of its own non-deterministic regen.
+        // Returns "" unless this is the first sync or the host moved a step,
+        // so it's cheap on the steady-state path.
+        const std::string om = build_overmap_sync();
+        if( !om.empty() ) {
+            srv->post_broadcast( om + "\n" );
         }
     }
 }
