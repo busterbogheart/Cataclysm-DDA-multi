@@ -111,6 +111,9 @@ runs:
         mkdir -p Cddacoop/lib
         cp cataclysm-tiles Cddacoop/
         bash build-data/md-to-readme-txt.sh build-data/README-cddacoop.md > Cddacoop/README.txt
+        # CC-BY-SA: ship the full license text (+ third-party sub-licenses)
+        # alongside the binary, not just the README's license link.
+        cp LICENSE.txt Cddacoop/
         cp -r data gfx Cddacoop/
         # SOUND=1 still wants the sound/ tree for menu sounds; the CC-Sounds
         # pack proper is downloaded by the user later.

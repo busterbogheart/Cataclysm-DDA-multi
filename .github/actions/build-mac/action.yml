@@ -369,6 +369,9 @@ runs:
         mkdir -p /tmp/cddacoop-stage
         cp -R Cddacoop.app /tmp/cddacoop-stage/
         bash build-data/md-to-readme-txt.sh build-data/README-cddacoop.md > /tmp/cddacoop-stage/README.txt
+        # CC-BY-SA: ship the full license text (+ third-party sub-licenses)
+        # alongside the .app, not just the README's license link.
+        cp LICENSE.txt /tmp/cddacoop-stage/
 
     - name: Build DMG and .zip
       id: package
