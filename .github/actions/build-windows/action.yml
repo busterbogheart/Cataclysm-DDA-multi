@@ -125,6 +125,24 @@ runs:
           echo "--- $f ---"; cat "$f"; echo
         done
 
+    - name: Split debug symbols + strip (shrink public binary)
+      shell: msys2 {0}
+      run: |
+        # RELEASE=1 normally strips, but BACKTRACE=1 tells the Makefile to KEEP
+        # symbols (Makefile:1280-1287) so the dbghelp crash handler can resolve
+        # them — that's the ~3x size jump vs the old MSVC build, whose symbols
+        # lived in an unbundled .pdb. Split the symbols into a sidecar we archive
+        # for server-side symbolization (addr2line on crash.log addresses) and
+        # ship a stripped binary: the "ship stripped, symbolize server-side"
+        # model. Player crash.logs carry raw addresses we resolve against the
+        # sidecar. before/after sizes are printed so the win is visible in CI.
+        ls -lh cataclysm-tiles.exe | awk '{print "STRIP before:", $5}'
+        objcopy --only-keep-debug cataclysm-tiles.exe cataclysm-tiles.exe.debug
+        strip --strip-all cataclysm-tiles.exe
+        objcopy --add-gnu-debuglink=cataclysm-tiles.exe.debug cataclysm-tiles.exe
+        ls -lh cataclysm-tiles.exe       | awk '{print "STRIP after: ", $5}'
+        ls -lh cataclysm-tiles.exe.debug | awk '{print "STRIP debug: ", $5}'
+
     - name: Package ZIP
       id: package
       shell: msys2 {0}
@@ -168,3 +186,14 @@ runs:
         path: ${{ steps.package.outputs.zip-path }}
         retention-days: 30
         if-no-files-found: error
+
+    # The split-off debug symbols — archived, NOT shipped in the release zip.
+    # Pair with a player's crash.log addresses (addr2line / gdb) to recover
+    # function + line. Keep these for every public build you symbolize against.
+    - name: Upload debug symbols (archived for crash symbolization)
+      uses: actions/upload-artifact@v4
+      with:
+        name: cddacoop-windows-x64-debug
+        path: cataclysm-tiles.exe.debug
+        retention-days: 90
+        if-no-files-found: warn
