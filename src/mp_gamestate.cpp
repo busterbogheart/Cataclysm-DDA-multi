@@ -4415,23 +4415,48 @@ void grant_client_turn()
     check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
     server *srv = get_active_server();
     if( srv ) {
-        // Send map terrain BEFORE the position update so the client's
-        // MAPBUFFER already has correct tiles (e.g. bridge deck at z=1)
-        // by the time client_teleport_avatar fires update_map.  If map_sync
-        // arrives after remote_player_state the client loads stale disk tiles
-        // (t_open_air) first, gravity_check fires, and the client falls.
-        const std::string mapm = build_map_sync();
-        if( !mapm.empty() ) {
-            srv->post_broadcast( mapm + "\n" );
+        // During host fast-forward (a long activity advancing hundreds of turns/
+        // sec with no per-turn client wait), broadcasting a full map_sync + state
+        // every turn floods the WAN client: it can't drain that fast, so a
+        // backlog builds, the client's calendar lags hundreds-to-thousands of
+        // turns behind, the co-op panel stops updating, and the "finished"
+        // message lands seconds late (2026-06-21 WAN: ~2460-turn drift, ~9s
+        // backlog). The client is LOCKED during FF and can't act on per-turn
+        // state, so throttle the broadcast to a wall-clock cadence while
+        // fast-forwarding. The first normal (non-FF) grant after FF exits is
+        // unthrottled, so it sends the full catch-up state immediately. Skipped
+        // map/state deltas aren't lost — build_map_sync accumulates dirty tiles
+        // and serialize_remote_player_state flushes queued msgs on the next send.
+        bool do_broadcast = true;
+        if( should_fast_forward() ) {
+            static auto last_ff_broadcast = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
+            if( std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - last_ff_broadcast ).count() < 200 ) {
+                do_broadcast = false;
+            } else {
+                last_ff_broadcast = now;
+            }
         }
-        srv->post_broadcast( serialize_remote_player_state() + "\n" );
-        // Stream the host's overmap region so the client's far-map (cities/
-        // roads/biomes) matches instead of its own non-deterministic regen.
-        // Returns "" unless this is the first sync or the host moved a step,
-        // so it's cheap on the steady-state path.
-        const std::string om = build_overmap_sync();
-        if( !om.empty() ) {
-            srv->post_broadcast( om + "\n" );
+        if( do_broadcast ) {
+            // Send map terrain BEFORE the position update so the client's
+            // MAPBUFFER already has correct tiles (e.g. bridge deck at z=1)
+            // by the time client_teleport_avatar fires update_map.  If map_sync
+            // arrives after remote_player_state the client loads stale disk tiles
+            // (t_open_air) first, gravity_check fires, and the client falls.
+            const std::string mapm = build_map_sync();
+            if( !mapm.empty() ) {
+                srv->post_broadcast( mapm + "\n" );
+            }
+            srv->post_broadcast( serialize_remote_player_state() + "\n" );
+            // Stream the host's overmap region so the client's far-map (cities/
+            // roads/biomes) matches instead of its own non-deterministic regen.
+            // Returns "" unless this is the first sync or the host moved a step,
+            // so it's cheap on the steady-state path.
+            const std::string om = build_overmap_sync();
+            if( !om.empty() ) {
+                srv->post_broadcast( om + "\n" );
+            }
         }
     }
 }
@@ -6930,7 +6955,11 @@ static bool apply_one_state_message( const std::string &msg )
                     const int hp = ho.get_int( "hp", -1 );
                     if( bp_str.empty() || hp < 0 ) { continue; }
                     const bodypart_str_id bpsid( bp_str );
-                    if( bpsid.is_valid() ) {
+                    // has_part guard: the host proxy can lag the host's real body
+                    // when a mutation that grants a bodypart hasn't been applied to
+                    // the proxy yet (or the two bodies differ). set_part_hp_cur on a
+                    // part this body lacks debugmsgs in get_part and can SIGSEGV.
+                    if( bpsid.is_valid() && host_npc->has_part( bpsid.id() ) ) {
                         host_npc->set_part_hp_cur( bpsid.id(), hp );
                     }
                 }
@@ -6964,6 +6993,14 @@ static bool apply_one_state_message( const std::string &msg )
                 const std::string bp_str = bpo.get_string( "id" );
                 const bodypart_id bp = bodypart_str_id( bp_str ).id();
                 const int new_hp = bpo.get_int( "hp" );
+                // Skip bodyparts this avatar doesn't have. The host serializes its
+                // proxy's parts; if a mutation that grants a part (e.g. tail_fluffy)
+                // is on one body but not yet the other, get_part_hp_max/set_part_hp_cur
+                // below would debugmsg and can SIGSEGV. A later sync after mutations
+                // sync carries the part. (host-chargen crash, 2026-06-21.)
+                if( !bp.is_valid() || !av.has_part( bp ) ) {
+                    continue;
+                }
                 const auto prev_it = g_last_bodypart_hp.find( bp_str );
                 ++n_parts;
                 // Synthesise a "you were hit" message from HP deltas — but only
