@@ -158,7 +158,7 @@ void mp_log( const std::string &msg )
         // unbounded across dozens of launches.  Only fires at the start of a new
         // launch, never mid-session, so it never pulls live data out from under
         // a debugging run.
-        constexpr std::uintmax_t LOG_CAP_BYTES = 50ull * 1024 * 1024;  // 50 MB
+        constexpr std::uintmax_t LOG_CAP_BYTES = 10ull * 1024 * 1024;  // 10 MB — keeps logs attachable to Discord (10MB free) / GitHub (25MB)
         std::error_code ec;
         const std::uintmax_t sz =
             std::filesystem::exists( desired_path, ec )
@@ -8494,6 +8494,25 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
                     " EXCLUDED-NEAR (in bubble, not synced to client): " + excluded_near );
         }
     }
+    // Diagnostic: monsters actually broadcast this tick vs the host's full live
+    // tracker count. A persistent gap (host holds many, sends few) means monsters
+    // sit outside the 84-radius window centered on the client proxy — the band the
+    // client can fill with its own divergent local-mapgen monsters that the host
+    // has no copy of ("client sees enemies the host can't kill" report). Pair this
+    // with the client's MON-PHANTOM line. Logged on change to avoid per-tick spam.
+    static int s_last_n_sent = -1;
+    if( n_sent != s_last_n_sent ) {
+        s_last_n_sent = n_sent;
+        int n_tracker = 0;
+        for( const auto &t_ptr : get_creature_tracker().get_monsters_list() ) {
+            if( t_ptr && !t_ptr->is_dead() ) {
+                ++n_tracker;
+            }
+        }
+        mp_log( "[cdda-mp] MON-BROADCAST-COUNT: sent=" + std::to_string( n_sent ) +
+                " radius=" + std::to_string( radius ) +
+                " host_tracker_alive=" + std::to_string( n_tracker ) );
+    }
     return out;
 }
 
@@ -9346,6 +9365,47 @@ static void apply_monster_sync( JsonObject &jo )
             culled_log += mon->type->id.str() + "(local) ";
             ++n_culled;
             g->remove_zombie( *mon );
+        }
+    }
+
+    // Diagnostic: client-local monsters (mp_net_id==0, unmatched, alive) that the
+    // cull pass did NOT touch because they sit OUTSIDE the host's broadcast/cull
+    // region (>84 of region_center). These never corresponded to a host monster
+    // and the host isn't broadcasting over them, so they linger as inert "phantom"
+    // enemies the client sees but the host has no copy of — the host can't kill
+    // them; only a client-side debug kill drops a corpse (the playtest report).
+    // region_center is g_mp_remote_pos (the host/other player), which can drift far
+    // from this client's avatar — when it does, the cull window misses these. Pair
+    // with the host's MON-BROADCAST-COUNT. Logged on change to avoid per-tick spam.
+    {
+        int n_phantom = 0;
+        std::string phantom_log;
+        const tripoint_abs_ms av = get_avatar().pos_abs();
+        for( const auto &ptr : mons ) {
+            monster *mon = ptr.get();
+            if( !mon || mon->mp_net_id != 0 || matched.count( mon ) || mon->is_dead() ) {
+                continue;
+            }
+            if( in_region.count( mon ) ) {
+                continue;  // inside cull region — already handled above
+            }
+            ++n_phantom;
+            const tripoint_abs_ms mp = mon->pos_abs();
+            phantom_log += mon->type->id.str() + "@dAvatar" +
+                           std::to_string( std::max( std::abs( mp.x() - av.x() ),
+                                           std::abs( mp.y() - av.y() ) ) ) + " ";
+        }
+        static int s_last_phantom = -1;
+        if( n_phantom != s_last_phantom ) {
+            s_last_phantom = n_phantom;
+            if( n_phantom > 0 ) {
+                mp_log( "[cdda-mp] MON-PHANTOM: " + std::to_string( n_phantom ) +
+                        " client-local monster(s) outside cull region (host has no copy)"
+                        " region_center=" + std::to_string( region_center.x() ) + "," +
+                        std::to_string( region_center.y() ) +
+                        " avatar=" + std::to_string( av.x() ) + "," +
+                        std::to_string( av.y() ) + " [" + phantom_log + "]" );
+            }
         }
     }
 

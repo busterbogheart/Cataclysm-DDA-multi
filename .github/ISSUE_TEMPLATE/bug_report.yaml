@@ -76,7 +76,7 @@ body:
     attributes:
       label: Multiplayer logs (most important)
       description: |
-        **This is the single most useful thing in the report.** Attach or paste BOTH logs:
+        **This is the single most useful thing in the report.** Attach or paste both logs:
 
         - **Host** the player hosting:
           - macOS / Linux: `/tmp/cdda-mp-server.log`
@@ -85,8 +85,11 @@ body:
           - macOS / Linux: `/tmp/cdda-mp-client.log`
           - Windows: `C:\Users\<name>\cdda-mp-client.log`
 
-        You can drag-and-drop the files directly into this box. If a player only has one of the
+        Drag-and-drop the files directly into this box. If a player only has one of the
         two logs, that's fine, paste what you have and say which side it's from.
+
+        **If logs are too big,** try zipping. For Windows: right-click > Send to > Compressed (zipped) folder.
+        For macOS / Linux run: `gzip cdda-mp-server.log` or right-click > Compress
     validations:
       required: true
 
