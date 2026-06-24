@@ -5510,7 +5510,10 @@ bool game::npc_menu( npc &who )
         const int partner_total = cata_mp::partner_activity_moves_total();
         const int duration = partner_total > 0 ? partner_total : help_fallback_moves;
         u.assign_activity( ACT_HELP_PARTNER, duration );
-        add_msg( m_info, _( "You join %s to help with their task." ), who.get_name() );
+        // who.name (raw npc name) not who.get_name(): the partner proxy's
+        // get_name() resolves to "You" on the client ("You join You..."), while
+        // .name holds the real character name on both sides.
+        add_msg( m_info, _( "You join %s to help with their task." ), who.name );
     } else if( choice == pass_item ) {
         cata_mp::mp_handle_pass_item();
     } else if( choice == high_five ) {
