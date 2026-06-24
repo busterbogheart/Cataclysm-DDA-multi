@@ -2446,7 +2446,14 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_PICKUP, ACTION_PICKUP_ALL,
                 ACTION_BUTCHER, ACTION_LOOT,
                 ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
-                ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
+                ACTION_DISASSEMBLE,
+                // NOTE: ACTION_CONSTRUCT is intentionally NOT here. Unlike the
+                // others (deferred activities / own-inventory mutations gated by
+                // the next grant), confirming a construction immediately writes
+                // host-authoritative MAP state — place_construction() calls
+                // partial_con_set() + assign_activity(ACT_BUILD) with no moves
+                // check (construction.cpp). At 0 AP that mutates the shared world
+                // out of lockstep, so it's blocked below instead.
             };
             // Actions that mutate state or cost AP immediately.  Block all
             // of these while the client has no grant.
@@ -2471,6 +2478,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_CAST_SPELL, ACTION_RECAST_SPELL,
                 ACTION_SMASH,
                 // World interaction
+                ACTION_CONSTRUCT,   // creates partial_con (map state) up-front, no moves gate
                 ACTION_GRAB, ACTION_HAUL, ACTION_HAUL_TOGGLE,
                 ACTION_OPEN, ACTION_CLOSE, ACTION_PEEK,
                 ACTION_EXAMINE, ACTION_EXAMINE_AND_PICKUP,
@@ -3192,8 +3200,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             // Menu → activity (needs moves to execute, safe to browse)
             ACTION_PICKUP, ACTION_PICKUP_ALL, ACTION_LOOT,
             ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
-            ACTION_CONSTRUCT, ACTION_DISASSEMBLE,
+            ACTION_DISASSEMBLE,
             ACTION_BUTCHER,
+            // ACTION_CONSTRUCT intentionally excluded (mirrors the client gate):
+            // confirming a build immediately writes map state via
+            // partial_con_set() with no moves check, so at 0 AP it mutates the
+            // shared world out of lockstep. Blocked here, allowed on a real turn.
             // Move-mode toggles are zero-AP and just flip flags.
             ACTION_TOGGLE_RUN, ACTION_TOGGLE_CROUCH, ACTION_TOGGLE_PRONE,
             ACTION_CYCLE_MOVE, ACTION_CYCLE_MOVE_REVERSE,

@@ -2741,6 +2741,13 @@ class build_construction_activity_actor : public activity_actor
         void complete_construction( player_activity &act, Character &you );
         std::string get_progress_message( const player_activity & ) const override;
 
+        // MP: expose the build tile so co-op progress sync can read the
+        // partial_con counter (construction tracks progress there, not in
+        // moves_total). Read by cata_mp::mp_compute_activity_pct.
+        const tripoint_abs_ms &get_construction_location() const {
+            return construction_location;
+        }
+
         std::unique_ptr<activity_actor> clone() const override {
             return std::make_unique<build_construction_activity_actor>( *this );
         }

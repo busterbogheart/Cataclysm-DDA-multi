@@ -13,6 +13,7 @@
 #include "cata_utility.h"
 #include "character_id.h"
 #include "color.h"
+#include "construction.h"
 #include "coordinates.h"
 #include "creature_tracker.h"
 #include "cursesdef.h"
@@ -5081,6 +5082,19 @@ static int mp_compute_activity_pct( const player_activity &act )
             }
         }
     }
+    // Construction: progress lives in the partial_con counter at the build tile
+    // (same 10,000,000 = 100% scale as crafting), held in the build actor, not in
+    // moves_total — which the actor pins to 1, so the moves_total branch reads 0%.
+    static const activity_id ACT_BUILD_ID( "ACT_BUILD" );
+    if( act.id() == ACT_BUILD_ID && act.actor ) {
+        if( const build_construction_activity_actor *bca =
+                dynamic_cast<const build_construction_activity_actor *>( act.actor.get() ) ) {
+            map &m = get_map();
+            if( partial_con *pc = m.partial_con_at( m.get_bub( bca->get_construction_location() ) ) ) {
+                return std::clamp( pc->counter / 100000, 0, 100 );
+            }
+        }
+    }
     return 0;
 }
 
@@ -6128,6 +6142,15 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
 
     const tripoint_bub_ms new_pos = m.get_bub( abs_pos );
     if( new_pos != u.pos_bub() ) {
+        // DIAGNOSTIC (resurrection #2): count live synced monsters before/after the
+        // map reload to prove whether update_map silently unloads them (the suspected
+        // source of MON-RESPAWN-DROPPED). Logs only when the count drops.
+        int mons_before = 0;
+        for( const auto &p : get_creature_tracker().get_monsters_list() ) {
+            if( p && p->mp_net_id != 0 && !p->is_dead() ) {
+                ++mons_before;
+            }
+        }
         if( new_pos.z() != u.pos_bub().z() ) {
             // Z-level change (ramp / bridge crossing).
             // 1. Place avatar on the destination tile FIRST (no gravity check
@@ -6143,6 +6166,17 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
             u.setpos( m, new_pos );
         }
         g->update_map( u );
+        int mons_after = 0;
+        for( const auto &p : get_creature_tracker().get_monsters_list() ) {
+            if( p && p->mp_net_id != 0 && !p->is_dead() ) {
+                ++mons_after;
+            }
+        }
+        if( mons_after < mons_before ) {
+            mp_log( "[cdda-mp] TELE-MON-DROP: synced monsters " + std::to_string( mons_before ) +
+                    " -> " + std::to_string( mons_after ) + " across update_map (delta=" +
+                    std::to_string( mons_before - mons_after ) + ")" );
+        }
     } else {
         mp_log( "[cdda-mp] teleport: -> already at target" );
     }
@@ -9216,6 +9250,14 @@ static void apply_monster_sync( JsonObject &jo )
     const std::vector<shared_ptr_fast<monster>> &mons = ct.get_monsters_list();
     map &m = get_map();
 
+    // DIAGNOSTIC (resurrection #2): track every net_id we've ever held a live copy
+    // of, erased only when the host EXPLICITLY removes it (removed_monsters below).
+    // If we then spawn an nid still in this set, the client lost it WITHOUT a host
+    // removal — a silent drop (suspected client update_map/teleport unload), the
+    // resurrection flicker. Distinct from legit re-entry (host removed it first, so
+    // the nid was erased and a re-spawn is expected, not flagged).
+    static std::unordered_set<uint32_t> s_ever_seen_nids;
+
     // Rebuild net_id → monster* map from current creature_tracker state.
     g_net_id_map.clear();
     for( const auto &ptr : mons ) {
@@ -9345,10 +9387,16 @@ static void apply_monster_sync( JsonObject &jo )
                 }
                 if( best != nullptr ) {
                     ++n_spawned;
+                    const bool silently_dropped = nid != 0 && s_ever_seen_nids.count( nid );
                     mp_log( "[cdda-mp] MON-SPAWN: " + id_str + " nid=" +
                             std::to_string( nid ) + " @ " + std::to_string( target.x() ) +
                             "," + std::to_string( target.y() ) + " hp=" +
                             std::to_string( server_hp ) );
+                    if( silently_dropped ) {
+                        mp_log( "[cdda-mp] MON-RESPAWN-DROPPED: nid=" + std::to_string( nid ) +
+                                " (" + id_str + ") re-spawned but host never removed it — "
+                                "client silently lost & re-added it (resurrection flicker)" );
+                    }
                 }
             }
         }
@@ -9358,6 +9406,16 @@ static void apply_monster_sync( JsonObject &jo )
         }
 
         matched.insert( best );
+
+        // Silent-drop diagnostic: remember live nids; forget ones the host reports
+        // dead (server_hp<=0) so a later revival re-spawn isn't mis-flagged.
+        if( nid != 0 ) {
+            if( server_hp > 0 ) {
+                s_ever_seen_nids.insert( nid );
+            } else {
+                s_ever_seen_nids.erase( nid );
+            }
+        }
 
         // Correct position if the server disagrees.
         if( best->pos_abs() != target && m.inbounds( target ) ) {
@@ -9497,6 +9555,7 @@ static void apply_monster_sync( JsonObject &jo )
                 continue;
             }
             g_client_pending_kill.erase( rnid );  // host confirmed gone (GH#1)
+            s_ever_seen_nids.erase( rnid );        // host-confirmed removal → not a silent drop
             auto it = g_net_id_map.find( rnid );
             if( it != g_net_id_map.end() && it->second && !it->second->is_dead() ) {
                 culled_log += it->second->type->id.str() + "(nid=" +
