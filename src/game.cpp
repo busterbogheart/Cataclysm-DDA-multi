@@ -4069,6 +4069,9 @@ void game::mon_info_update( )
         set_safe_mode( SAFE_MODE_ON );
     }
 
+    // DIAGNOSTIC (#5 assist-distraction): no-op outside MP, throttled internally.
+    cata_mp::mp_log_safemode_check( newseen, mostseen, static_cast<int>( safe_mode ) );
+
     previous_turn = calendar::turn;
     mostseen = newseen;
 }

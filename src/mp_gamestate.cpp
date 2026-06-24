@@ -4889,6 +4889,53 @@ bool should_fast_forward()
     return true;
 }
 
+void mp_log_safemode_check( int newseen, int mostseen, int safe_mode )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    avatar &u = get_avatar();
+    const tripoint_abs_ms apos = u.pos_abs();
+    int nearest = 9999;
+    bool nearest_synced = false;
+    std::string nearest_id;
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        monster *mon = ptr.get();
+        if( !mon || mon->is_dead() ) {
+            continue;
+        }
+        if( u.attitude_to( *mon ) != Creature::Attitude::HOSTILE ) {
+            continue;
+        }
+        const tripoint_abs_ms mp = mon->pos_abs();
+        const int d = std::max( std::abs( mp.x() - apos.x() ), std::abs( mp.y() - apos.y() ) );
+        if( d < nearest ) {
+            nearest = d;
+            nearest_synced = mon->mp_net_id != 0;
+            nearest_id = mon->type->id.str();
+        }
+    }
+    // Throttle: only emit when something meaningful changed, else FF (200 turns/sec)
+    // floods the 10MB log.
+    static int s_last_newseen = -2;
+    static int s_last_nearest = -2;
+    static int s_last_safe = -2;
+    if( newseen == s_last_newseen && nearest == s_last_nearest && safe_mode == s_last_safe ) {
+        return;
+    }
+    s_last_newseen = newseen;
+    s_last_nearest = nearest;
+    s_last_safe = safe_mode;
+    mp_log( "[cdda-mp] SAFEMODE-CHK side=" + std::string( is_client_mode() ? "client" : "host" ) +
+            " act=" + ( u.activity ? u.activity.id().str() : std::string( "none" ) ) +
+            " newseen=" + std::to_string( newseen ) +
+            " mostseen=" + std::to_string( mostseen ) +
+            " safe_mode=" + std::to_string( safe_mode ) +
+            " nearest_hostile=" + ( nearest == 9999 ? std::string( "none" ) :
+                                    ( nearest_id + "@d" + std::to_string( nearest ) +
+                                      ( nearest_synced ? "(synced)" : "(PHANTOM)" ) ) ) );
+}
+
 void set_last_monmove_ms( int ms )
 {
     g_last_monmove_ms = ms;
@@ -9368,16 +9415,26 @@ static void apply_monster_sync( JsonObject &jo )
         }
     }
 
-    // Diagnostic: client-local monsters (mp_net_id==0, unmatched, alive) that the
-    // cull pass did NOT touch because they sit OUTSIDE the host's broadcast/cull
-    // region (>84 of region_center). These never corresponded to a host monster
-    // and the host isn't broadcasting over them, so they linger as inert "phantom"
-    // enemies the client sees but the host has no copy of — the host can't kill
-    // them; only a client-side debug kill drops a corpse (the playtest report).
-    // region_center is g_mp_remote_pos (the host/other player), which can drift far
-    // from this client's avatar — when it does, the cull window misses these. Pair
-    // with the host's MON-BROADCAST-COUNT. Logged on change to avoid per-tick spam.
+    // Client-local monsters (mp_net_id==0, unmatched, alive) OUTSIDE the host's
+    // broadcast/cull region (>84 of region_center). These were never broadcast by
+    // the host — a host monster gets a net_id the first time it enters sync range
+    // (build_monster_list), so net_id==0 here means the host has NO synced copy.
+    // They're local-mapgen phantoms: the "killed a zed, it rose again" report is
+    // the host-synced twin dying authoritatively while this local copy lingers,
+    // since the in-region cull above can't reach them (region_center = the lagging
+    // proxy g_mp_remote_pos, which drifts off this client's avatar).
+    // CULL them — but only after they persist unclaimed for PHANTOM_CULL_SYNCS
+    // consecutive syncs. A *real* host monster at the leading edge of client
+    // movement is briefly net_id==0 (client mapgen spawned it before the host's
+    // broadcast reached it), but the proximity-adoption pass assigns it a net_id
+    // within a sync or two — which removes it from this set and resets its strike
+    // count. A phantom is never adopted, so only phantoms reach the threshold.
+    // Phantoms are inert on the client (no local monmove) → stable position key.
     {
+        constexpr int PHANTOM_CULL_SYNCS = 3;
+        static std::unordered_map<std::string, int> s_phantom_strikes;
+        std::unordered_map<std::string, int> seen_now;
+        std::vector<monster *> phantom_cull;
         int n_phantom = 0;
         std::string phantom_log;
         const tripoint_abs_ms av = get_avatar().pos_abs();
@@ -9391,16 +9448,34 @@ static void apply_monster_sync( JsonObject &jo )
             }
             ++n_phantom;
             const tripoint_abs_ms mp = mon->pos_abs();
+            const std::string key = mon->type->id.str() + "@" +
+                                    std::to_string( mp.x() ) + "," +
+                                    std::to_string( mp.y() ) + "," +
+                                    std::to_string( mp.z() );
+            const auto prev = s_phantom_strikes.find( key );
+            const int strikes = ( prev != s_phantom_strikes.end() ? prev->second : 0 ) + 1;
+            seen_now[key] = strikes;
             phantom_log += mon->type->id.str() + "@dAvatar" +
                            std::to_string( std::max( std::abs( mp.x() - av.x() ),
-                                           std::abs( mp.y() - av.y() ) ) ) + " ";
+                                           std::abs( mp.y() - av.y() ) ) ) +
+                           "(s" + std::to_string( strikes ) + ") ";
+            if( strikes >= PHANTOM_CULL_SYNCS ) {
+                phantom_cull.push_back( mon );
+            }
+        }
+        s_phantom_strikes.swap( seen_now );   // drop keys not seen this sync
+        for( monster *mon : phantom_cull ) {
+            culled_log += mon->type->id.str() + "(phantom) ";
+            ++n_culled;
+            g->remove_zombie( *mon );          // clean despawn, no corpse
         }
         static int s_last_phantom = -1;
-        if( n_phantom != s_last_phantom ) {
+        if( n_phantom != s_last_phantom || !phantom_cull.empty() ) {
             s_last_phantom = n_phantom;
             if( n_phantom > 0 ) {
                 mp_log( "[cdda-mp] MON-PHANTOM: " + std::to_string( n_phantom ) +
                         " client-local monster(s) outside cull region (host has no copy)"
+                        " culled=" + std::to_string( phantom_cull.size() ) +
                         " region_center=" + std::to_string( region_center.x() ) + "," +
                         std::to_string( region_center.y() ) +
                         " avatar=" + std::to_string( av.x() ) + "," +

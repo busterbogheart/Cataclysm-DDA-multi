@@ -457,6 +457,14 @@ const std::string &get_client_turn_activity();
 // should be readable after a session without stopping the process.
 void mp_log( const std::string &msg );
 
+// DIAGNOSTIC (temporary, 2026-06-23, for #5 assist-distraction / client safe-mode):
+// log the safe-mode / hostile decision so we can see whether the client actually
+// reacts to an approaching hostile during fast-forward. Named callout (rule 4) so
+// the SP site in game.cpp::mon_info_update carries only a one-line MP-guarded call.
+// No-op outside MP. Throttled internally (emits only when newseen / nearest-hostile
+// distance / safe_mode change) so it never floods the log during 200-turn/sec FF.
+void mp_log_safemode_check( int newseen, int mostseen, int safe_mode );
+
 // Per-turn callouts invoked from do_turn.cpp (an SP file) so the MP per-turn
 // catch-up/gating logic lives here, not inline in the SP loop (rule 4, minimize
 // upstream merge conflicts). Non-client (SP/host) path = a single plain update.

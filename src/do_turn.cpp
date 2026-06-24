@@ -1172,8 +1172,19 @@ bool game::do_turn()
             // and monster can reach to the player or it has some sort of a ranged attack,
             // warn them regardless of previous safemode warnings
             if( u.activity ) {
-                for( std::pair<const distraction_type, std::string> &dist : u.activity.get_distractions() ) {
+                const std::map<distraction_type, std::string> dists = u.activity.get_distractions();
+                // DIAGNOSTIC (#5 assist-distraction): does the activity see a hostile,
+                // and does the cancel actually fire? MP-only, only logs when non-empty.
+                if( !dists.empty() && ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) ) {
+                    cata_mp::mp_log( "[cdda-mp] ACT-DISTRACT: act=" + u.activity.id().str() +
+                                     " n=" + std::to_string( dists.size() ) +
+                                     " moves_left=" + std::to_string( u.activity.moves_left ) );
+                }
+                for( const std::pair<const distraction_type, std::string> &dist : dists ) {
                     if( cancel_activity_or_ignore_query( dist.first, dist.second ) ) {
+                        if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
+                            cata_mp::mp_log( "[cdda-mp] ACT-DISTRACT-CANCEL: " + dist.second );
+                        }
                         break;
                     }
                 }
