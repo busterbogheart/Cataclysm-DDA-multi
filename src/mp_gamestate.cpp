@@ -1298,9 +1298,15 @@ struct mp_tile_state {
     std::string fields_sig;   // "type:intensity,..." — empty when no fields
     std::string trap_sig;     // trap id string, empty = tr_null (no placed trap)
     std::string graffiti_sig; // empty = no graffiti
+    std::string partial_con_sig; // "construction:counter:ncomponents", empty = no build site
 };
 static std::unordered_map<tripoint_abs_ms, mp_tile_state> g_tile_baseline;
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs );
+// Partial-construction (in-progress build site) sync helpers — defined near
+// compute_tile_state, forward-declared here for the client_tile_changes applier.
+static std::string mp_partial_con_sig( const tripoint_bub_ms &bub );
+static std::string mp_partial_con_obj_json( const tripoint_bub_ms &bub );
+static void mp_apply_partial_con_obj( const tripoint_bub_ms &bub, JsonObject po );
 
 // Client→server tile baselines: track what was last sent so we only send diffs.
 // Fields are host-authoritative — the host generates the dust/blood/etc. that
@@ -1313,6 +1319,7 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_client_terfurn_baselin
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_trap_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_graffiti_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_field_baseline;
+static std::unordered_map<tripoint_abs_ms, std::string> g_client_partial_con_baseline;
 // Client→server vehicle cargo baseline.  Keyed by the absolute tile position
 // of the cargo vpart so the host can find the vehicle + part by tile lookup.
 // Mirrors the item baseline but for items stored inside vehicle cargo parts
@@ -2842,6 +2849,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             m.delete_graffiti( bub );
                         } else {
                             m.set_graffiti( bub, gtext );
+                        }
+                        touched = true;
+                    }
+                    // Partial construction (the client's in-progress build site).
+                    if( to.has_object( "partial_con" ) ) {
+                        mp_apply_partial_con_obj( bub, to.get_object( "partial_con" ) );
+                        touched = true;
+                    } else if( to.get_bool( "partial_con_remove", false ) ) {
+                        if( m.partial_con_at( bub ) ) {
+                            m.partial_con_remove( bub );
                         }
                         touched = true;
                     }
@@ -5061,6 +5078,14 @@ static int mp_compute_activity_pct( const player_activity &act )
     // the moves_total branch.
     static const activity_id ACT_HELP_PARTNER_ID( "ACT_HELP_PARTNER" );
     if( act.id() == ACT_HELP_PARTNER_ID ) {
+        // ASSIST-DISPLAY diag (case 2: I help, partner builds): I mirror the
+        // partner's reported pct.  Change-gated.
+        static int s_last_help_pct = -1;
+        if( g_partner_activity_pct != s_last_help_pct ) {
+            s_last_help_pct = g_partner_activity_pct;
+            mp_log( "[cdda-mp] ASSIST-PCT help(mirror): partner pct=" +
+                    std::to_string( g_partner_activity_pct ) );
+        }
         return g_partner_activity_pct;
     }
     // Standard path — works for ACT_WAIT and any other actor that sets
@@ -5091,7 +5116,16 @@ static int mp_compute_activity_pct( const player_activity &act )
                 dynamic_cast<const build_construction_activity_actor *>( act.actor.get() ) ) {
             map &m = get_map();
             if( partial_con *pc = m.partial_con_at( m.get_bub( bca->get_construction_location() ) ) ) {
-                return std::clamp( pc->counter / 100000, 0, 100 );
+                const int pct = std::clamp( pc->counter / 100000, 0, 100 );
+                // ASSIST-DISPLAY diag (case 1: I build, partner assists): does my
+                // own build pct advance each turn?  Change-gated to avoid spam.
+                static int s_last_build_pct = -1;
+                if( pct != s_last_build_pct ) {
+                    s_last_build_pct = pct;
+                    mp_log( "[cdda-mp] ASSIST-PCT build(local): pct=" + std::to_string( pct ) +
+                            " counter=" + std::to_string( pc->counter ) );
+                }
+                return pct;
             }
         }
     }
@@ -6789,7 +6823,14 @@ static bool apply_one_state_message( const std::string &msg )
             mp_partner_activity_transition_check();
         }
         if( jo.has_int( "host_activity_pct" ) ) {
-            g_partner_activity_pct = jo.get_int( "host_activity_pct" );
+            const int new_pct = jo.get_int( "host_activity_pct" );
+            // ASSIST-DISPLAY diag: when does the client actually receive a fresh
+            // host pct vs. when its screen redraws?  Change-gated.
+            if( new_pct != g_partner_activity_pct ) {
+                mp_log( "[cdda-mp] ASSIST-PCT: client recv host_activity_pct=" +
+                        std::to_string( new_pct ) );
+            }
+            g_partner_activity_pct = new_pct;
         }
         if( jo.has_int( "host_activity_moves_total" ) ) {
             g_partner_activity_moves_total = jo.get_int( "host_activity_moves_total" );
@@ -7682,8 +7723,20 @@ static std::string build_client_tile_changes( int radius = 10 )
                 graffiti_baseline = graffiti_sig_c;
             }
 
+            // Partial construction — baseline-gated.  The counter changes each
+            // turn during a build, so this re-sends the build tile every turn
+            // (one tile, cheap) until the construction completes.
+            const std::string partial_con_sig_c = mp_partial_con_sig( bub );
+            const bool has_pc_c = m.partial_con_at( bub ) != nullptr;
+            auto &pc_baseline = g_client_partial_con_baseline[abs];
+            const bool pc_changed = ( pc_baseline != partial_con_sig_c );
+            const bool had_pc_c = !pc_baseline.empty();
+            if( pc_changed ) {
+                pc_baseline = partial_con_sig_c;
+            }
+
             if( !terfurn_changed && !items_changed && !fields_changed &&
-                !trap_changed && !graffiti_changed ) {
+                !trap_changed && !graffiti_changed && !pc_changed ) {
                 continue;
             }
 
@@ -7708,6 +7761,13 @@ static std::string build_client_tile_changes( int radius = 10 )
             }
             if( graffiti_changed ) {
                 out += ",\"graffiti\":\"" + json_escape_str( graffiti_sig_c ) + "\"";
+            }
+            if( pc_changed ) {
+                if( has_pc_c ) {
+                    out += ",\"partial_con\":" + mp_partial_con_obj_json( bub );
+                } else if( had_pc_c ) {
+                    out += ",\"partial_con_remove\":true";
+                }
             }
             out += "}";
         }
@@ -8365,6 +8425,81 @@ void client_send_activity_end( const std::string &activity_id_str )
 // would re-broadcast the same state back, causing an item/field round-trip
 // loop with the client (uids drift through deserialize → broadcast → apply,
 // fueling a per-turn 80 KB ping-pong while the partner sits in ACT_WAIT).
+// MP construction sync.  A partial construction (in-progress build site: frame +
+// consumed components + a progress counter) lives in the submap's
+// partial_constructions map, NOT in the per-tile snapshot — so before this it was
+// invisible to the other player even though the % rode the activity packet.  These
+// helpers serialize/apply it alongside the tile snapshot in BOTH directions
+// (host map_sync + client_tile_changes), since construction runs on both sides.
+
+// Stable fingerprint: construction id + counter (drives per-turn % updates) +
+// component count (covers start/finish).  Empty when no build site here.
+static std::string mp_partial_con_sig( const tripoint_bub_ms &bub )
+{
+    const partial_con *pc = get_map().partial_con_at( bub );
+    if( !pc ) {
+        return std::string();
+    }
+    return pc->id.obj().id.str() + ':' + std::to_string( pc->counter ) + ':' +
+           std::to_string( pc->components.size() );
+}
+
+// Serialize the tile's partial_con to a JSON object.  Caller must confirm one
+// exists (partial_con_at != nullptr) before calling.
+static std::string mp_partial_con_obj_json( const tripoint_bub_ms &bub )
+{
+    const partial_con *pc = get_map().partial_con_at( bub );
+    std::string comp_json = "[";
+    bool cfirst = true;
+    for( const item &it : pc->components ) {
+        if( !cfirst ) {
+            comp_json += ',';
+        }
+        cfirst = false;
+        comp_json += serialize( it );
+    }
+    comp_json += "]";
+    return "{\"con\":\"" + pc->id.obj().id.str() + "\",\"counter\":" +
+           std::to_string( pc->counter ) + ",\"components\":" + comp_json + "}";
+}
+
+// Apply a received "partial_con" object to a tile.  Updates the counter/id in
+// place when a build site already exists here (the common per-turn case — avoids
+// re-deserializing components and the partial_con_set "already has a partial con"
+// debugmsg); otherwise creates a fresh one with its component pile.
+static void mp_apply_partial_con_obj( const tripoint_bub_ms &bub, JsonObject po )
+{
+    po.allow_omitted_members();
+    const construction_str_id con_sid( po.get_string( "con", "" ) );
+    if( !con_sid.is_valid() ) {
+        return;
+    }
+    const int counter = po.get_int( "counter", 0 );
+    map &m = get_map();
+    if( partial_con *existing = m.partial_con_at( bub ) ) {
+        existing->counter = counter;
+        existing->id = con_sid.id();
+        return;
+    }
+    partial_con pc;
+    pc.id = con_sid.id();
+    pc.counter = counter;
+    if( po.has_array( "components" ) ) {
+        for( const JsonValue &iv : po.get_array( "components" ) ) {
+            try {
+                item comp;
+                JsonObject io = iv.get_object();
+                io.allow_omitted_members();
+                comp.deserialize( io );
+                if( !comp.typeId().is_empty() && comp.typeId().is_valid() ) {
+                    pc.components.push_back( std::move( comp ) );
+                }
+            } catch( const JsonError & ) {}
+        }
+    }
+    m.partial_con_set( bub, pc );
+}
+
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
 {
     mp_tile_state st;
@@ -8398,6 +8533,8 @@ static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
     st.trap_sig = ( tr.is_null() || is_builtin ) ? "" : tr.id.str();
 
     st.graffiti_sig = m.has_graffiti_at( bub ) ? m.graffiti_at( bub ) : "";
+
+    st.partial_con_sig = mp_partial_con_sig( bub );
 
     return st;
 }
@@ -8473,18 +8610,27 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             // Graffiti.
             const std::string graffiti_sig = m.has_graffiti_at( bub ) ? m.graffiti_at( bub ) : "";
 
+            // Partial construction (in-progress build site).  Its counter changes
+            // every turn during a build, so it must enter the diff or the build
+            // tile would be skipped once ter/furn/items settle.
+            const std::string partial_con_sig = mp_partial_con_sig( bub );
+            const bool has_pc = m.partial_con_at( bub ) != nullptr;
+
             auto &baseline = g_tile_baseline[abs];
             if( baseline.ter == ter_str && baseline.furn == furn_str &&
                 baseline.items_sig == items_sig && baseline.fields_sig == fields_sig &&
-                baseline.trap_sig == trap_sig && baseline.graffiti_sig == graffiti_sig ) {
+                baseline.trap_sig == trap_sig && baseline.graffiti_sig == graffiti_sig &&
+                baseline.partial_con_sig == partial_con_sig ) {
                 continue; // Nothing changed — skip this tile.
             }
+            const bool had_pc = !baseline.partial_con_sig.empty();
             baseline.ter          = ter_str;
             baseline.furn         = furn_str;
             baseline.items_sig    = items_sig;
             baseline.fields_sig   = fields_sig;
             baseline.trap_sig     = trap_sig;
             baseline.graffiti_sig = graffiti_sig;
+            baseline.partial_con_sig = partial_con_sig;
 
             if( !items_sig.empty() ) {
                 mp_log( "tile_delta items @ " +
@@ -8511,8 +8657,13 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                    + ",\"items\":" + items_json
                    + ",\"fields\":" + fields_json
                    + ",\"trap\":\"" + ( trap_sig.empty() ? "tr_null" : trap_sig ) + "\""
-                   + ",\"graffiti\":\"" + json_escape_str( graffiti_sig ) + "\""
-                   + "}";
+                   + ",\"graffiti\":\"" + json_escape_str( graffiti_sig ) + "\"";
+            if( has_pc ) {
+                out += ",\"partial_con\":" + mp_partial_con_obj_json( bub );
+            } else if( had_pc ) {
+                out += ",\"partial_con_remove\":true";
+            }
+            out += "}";
         }
     }
     out += ']';
@@ -8736,6 +8887,20 @@ static void apply_tile_changes( JsonObject &jo )
             } else {
                 m.set_graffiti( bub, gtext );
             }
+        }
+
+        // Partial construction (the host's in-progress build site).  An object
+        // creates/updates it; partial_con_remove clears it (build finished or
+        // cancelled).  Keeps the client's g_client_partial_con_baseline in step so
+        // it doesn't echo the host's construction straight back.
+        if( to.has_object( "partial_con" ) ) {
+            mp_apply_partial_con_obj( bub, to.get_object( "partial_con" ) );
+            g_client_partial_con_baseline[abs] = mp_partial_con_sig( bub );
+        } else if( to.get_bool( "partial_con_remove", false ) ) {
+            if( m.partial_con_at( bub ) ) {
+                m.partial_con_remove( bub );
+            }
+            g_client_partial_con_baseline[abs] = std::string();
         }
 
         // Refresh client→server baselines to match the state we just installed
