@@ -602,8 +602,15 @@ void monster::plan()
             }
         }
         // Switch targets if closer and hostile or scarier than current target
+        // MP: the remote-player proxy is force-stamped MFA_HATE above (so monsters
+        // don't avoid it as a friendly follower). Without the `is_remote` guard here
+        // the unconditional MFA_HATE switch makes EVERY monster that sees the proxy
+        // re-target it, overriding the host avatar even when the host is closer/
+        // shooting (client = monster-magnet). Distance-gate the remote case so the
+        // proxy competes for aggro by distance like any other target; genuine
+        // MFA_HATE factions keep their upstream unconditional switch (!is_remote).
         if( ( rating < mon_plan.dist && mon_plan.fleeing ) ||
-            ( faction_att == MFA_HATE ) ||
+            ( faction_att == MFA_HATE && ( !is_remote || rating < mon_plan.dist ) ) ||
             ( rating < mon_plan.dist && attitude( &who ) == MATT_ATTACK ) ||
             ( !mon_plan.fleeing && fleeing_from ) ) {
             mon_plan.target = &who;
