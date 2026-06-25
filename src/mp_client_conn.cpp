@@ -9,7 +9,11 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <string_view>
 #include <thread>
+
+#include <zstd/zstd.h>
+#include "catacharset.h"   // base64_decode — only pulls std headers, asio-safe
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
@@ -71,6 +75,39 @@ class string_queue
 
 static string_queue g_recv_queue;
 
+// Reverse of the host's mp_compress_frame (mp_server.cpp): a line of the form
+// {"z":"<base64 zstd>"} is a compressed state broadcast — base64-decode then
+// zstd-decompress back to the original JSON line.  Any other line is returned
+// unchanged (grants/acks/control messages stay plaintext).  Both ends are the
+// same build (version handshake), so the format is guaranteed to match.
+static std::string mp_decompress_frame( std::string line )
+{
+    static const std::string prefix = "{\"z\":\"";
+    if( line.size() <= prefix.size() + 2 ||
+        line.compare( 0, prefix.size(), prefix ) != 0 ||
+        line.compare( line.size() - 2, 2, "\"}" ) != 0 ) {
+        return line;
+    }
+    const std::string b64 = line.substr( prefix.size(),
+                                          line.size() - prefix.size() - 2 );
+    const std::string comp = base64_decode( b64 );
+    const unsigned long long orig =
+        ZSTD_getFrameContentSize( comp.data(), comp.size() );
+    if( orig == ZSTD_CONTENTSIZE_UNKNOWN || orig == ZSTD_CONTENTSIZE_ERROR ) {
+        mp_log( "[cdda-mp] decompress: bad zstd frame; dropping" );
+        return std::string();
+    }
+    std::string out;
+    out.resize( static_cast<size_t>( orig ) );
+    const size_t n = ZSTD_decompress( &out[0], out.size(), comp.data(), comp.size() );
+    if( ZSTD_isError( n ) ) {
+        mp_log( std::string( "[cdda-mp] decompress error: " ) + ZSTD_getErrorName( n ) );
+        return std::string();
+    }
+    out.resize( n );
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Connection impl
 // ---------------------------------------------------------------------------
@@ -105,7 +142,10 @@ struct client_impl {
             std::string line;
             std::getline( is, line );
             if( !line.empty() ) {
-                g_recv_queue.push( std::move( line ) );
+                std::string msg = mp_decompress_frame( std::move( line ) );
+                if( !msg.empty() ) {
+                    g_recv_queue.push( std::move( msg ) );
+                }
             }
             start_read();
         } );

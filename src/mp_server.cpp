@@ -4,6 +4,10 @@
 #include <atomic>
 #include <iostream>
 #include <algorithm>
+#include <string_view>
+
+#include <zstd/zstd.h>
+#include "catacharset.h"   // base64_encode — only pulls std headers, asio-safe
 
 // Standalone Asio — no Boost dependency
 #define ASIO_STANDALONE
@@ -58,6 +62,39 @@ static std::string mp_version_commit_id( const std::string &v )
     return s;
 }
 
+// Host→client wire compression.  The per-turn state broadcast (monster/map
+// snapshot) is large, repetitive JSON; zstd shrinks it ~5-10×.  We keep the
+// newline-delimited framing by wrapping the compressed bytes in a tiny JSON
+// envelope {"z":"<base64 zstd>"} — base64 contains no JSON-special or newline
+// chars, so it rides the existing reader AND the write-queue coalescing
+// unchanged.  The client (mp_client_conn.cpp mp_decompress_frame) recognizes the
+// {"z": prefix and reverses this.  Messages below the threshold (grants, acks)
+// stay plain — the envelope overhead isn't worth it and tiny payloads don't
+// compress.  The version handshake guarantees both ends run this same build, so
+// there is no cross-version compatibility risk.
+static constexpr size_t MP_COMPRESS_THRESHOLD = 512;
+
+static std::string mp_compress_frame( const std::string &msg )
+{
+    if( msg.size() < MP_COMPRESS_THRESHOLD ) {
+        return msg;
+    }
+    // Compress the payload without its trailing newline; the envelope adds its own.
+    size_t body_len = msg.size();
+    if( body_len > 0 && msg.back() == '\n' ) {
+        --body_len;
+    }
+    const size_t bound = ZSTD_compressBound( body_len );
+    std::string comp;
+    comp.resize( bound );
+    const size_t n = ZSTD_compress( &comp[0], bound, msg.data(), body_len, 3 );
+    if( ZSTD_isError( n ) || n >= body_len ) {
+        // Compression failed or didn't help — send the original plaintext.
+        return msg;
+    }
+    return "{\"z\":\"" + base64_encode( std::string_view( comp.data(), n ) ) + "\"}\n";
+}
+
 // ---------------------------------------------------------------------------
 // client_session — owns one TCP connection
 // ---------------------------------------------------------------------------
@@ -90,7 +127,7 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     }
 
     void send( const std::string &msg ) {
-        write_queue_.push_back( msg );
+        write_queue_.push_back( mp_compress_frame( msg ) );
         if( !writing_ ) {
             do_write();
         }
