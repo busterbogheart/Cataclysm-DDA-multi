@@ -8,6 +8,8 @@
 #include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "character_martial_arts.h"
+#include "display.h"
+#include "mood_face.h"
 #include "martialarts.h"
 #include "calendar.h"
 #include "cata_utility.h"
@@ -461,6 +463,65 @@ static int g_partner_activity_pct = 0;
 // Read by the bump-menu predicate to decide whether the "Help with task"
 // option should appear (gate: >= HELPER_MIN_MOVES_TOTAL).  Zero when idle.
 static int g_partner_activity_moves_total = 0;
+// Partner's morale level (Character::get_morale_level()).  Forwarded on the
+// same state packet as the activity fields; read by the Co-op panel to show a
+// mood indicator.  Piggybacks the existing packet so it costs no extra traffic
+// and updates whenever that packet fires (no per-frame work).
+static int g_partner_morale = 0;
+
+// Partner's worst-hurt body part, real current/max HP, synced from the partner's
+// OWN character (not read off the local proxy, whose max HP is derived from proxy
+// stats and so disagrees with the partner's real max — which threw off the bar's
+// length and color). Fed straight into get_hp_bar() so the Co-op panel bar is
+// pixel-identical to the partner's sidebar limb bar. max<=0 = not yet received.
+static int g_partner_hp_cur = 0;
+static int g_partner_hp_max = 0;
+
+// Round-trip latency to the partner, in milliseconds; -1 until first measured.
+// Measured on the CLIENT via a stamp/echo on the existing packets (no clock
+// sync needed), then mirrored back to the host so both panels show the same
+// number.  Replaces the old dev-only calendar-drift indicator in the Co-op
+// panel.
+static int g_partner_ping_ms = -1;
+// Host-side: last client_ping stamp we received, to echo back next broadcast.
+static int64_t g_last_client_ping_stamp = -1;
+// Client-side: the stamp we're currently awaiting an echo for. RTT is measured
+// exactly once per round trip (when its echo returns), then this is cleared so
+// a host re-echoing the same stale stamp during idle can't keep inflating the
+// number. -1 = nothing outstanding (hold the last measured value).
+static int64_t g_pending_ping_stamp = -1;
+// Monotonic millisecond clock shared by the ping stamp/echo. Process-relative;
+// only differences on the SAME machine are used, so no cross-host clock sync.
+static int64_t mp_mono_ms()
+{
+    static const std::chrono::steady_clock::time_point start =
+        std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start ).count();
+}
+// Worst-hurt body part's real (current, max) HP for a character — the limb the
+// Co-op panel bar represents. Worst by fraction so one shredded limb still shows.
+// Computed on each side from its OWN avatar (real max), then synced.
+static std::pair<int, int> mp_worst_limb_hp( const Character &c )
+{
+    int worst_cur = 0;
+    int worst_max = 0;
+    float worst = 2.0f;
+    for( const bodypart_id &bp : c.get_all_body_parts() ) {
+        const int hpm = c.get_hp_max( bp );
+        if( hpm <= 0 ) {
+            continue;
+        }
+        const int hp = c.get_hp( bp );
+        const float f = static_cast<float>( hp ) / hpm;
+        if( f < worst ) {
+            worst = f;
+            worst_cur = hp;
+            worst_max = hpm;
+        }
+    }
+    return { worst_cur, worst_max };
+}
 // Last calendar turn the partner reported.  Used to display sync drift in the
 // Co-op panel: drift = local calendar - partner calendar.  Under lockstep
 // both sides should always advance together; nonzero drift is a useful sanity
@@ -648,7 +709,10 @@ struct mp_hud_t {
     catacurses::window win;
     ui_adaptor ui;
 
-    static constexpr int W = 56;
+    // Width is recomputed on resize to span the whole map viewport (left edge up
+    // to just before the right sidebar). Full TERMX would overdraw the sidebar's
+    // bottom rows, so we stop at panel_manager's right boundary.
+    int W = 56;
     static constexpr int H = 3;   // top border + status row + bottom border
 
     mp_hud_t() {
@@ -657,6 +721,8 @@ struct mp_hud_t {
             // box, above the status row.  One stable window/area — the earlier
             // two-window overlay churned the ui_adaptor stack and made the panel
             // flicker / vanish on unrelated redraws (focus changes, turn-waits).
+            panel_manager &pm = panel_manager::get_manager();
+            W = std::max( 40, TERMX - pm.get_width_right() );
             const int ch = mp_chat_overlay_count();
             // border + chat lines + separator + status row + border
             const int height = ch > 0 ? ch + 4 : H;
@@ -735,12 +801,12 @@ struct mp_hud_t {
         if( pname_sp != std::string::npos ) {
             pname = pname.substr( 0, pname_sp );
         }
-        if( pname.size() > 10 ) {
-            pname = pname.substr( 0, 10 );
+        if( pname.size() > 8 ) {
+            pname = pname.substr( 0, 8 );
         }
         int x = 1;
-        mvwprintz( win, point( x, crow ), c_white, "%-10s", pname.c_str() );
-        x += 11;
+        mvwprintz( win, point( x, crow ), c_white, "%-8s", pname.c_str() );
+        x += 9;
 
         // Move mode in square brackets — first char only (w/r/c/p) for compactness.
         // Requires the proxy NPC; show a placeholder when it isn't available.
@@ -754,40 +820,39 @@ struct mp_hud_t {
         mvwprintz( win, point( x, crow ), partner ? c_white : c_dark_gray, "[%c]", mm );
         x += 4;
 
-        // HP bar — 6 chars colored by the WORST body part's HP fraction.
-        // Summing across all parts hid critical damage: a half-shredded
-        // torso gets averaged out by full limbs and the bar stays in the
-        // green band even when the partner is one hit from going down.
-        // The min-across-parts metric answers "is my partner in trouble?"
-        // which is what the player actually wants to glance at.
-        const int bar_w = 6;
-        int filled = 0;
+        // Mood: CDDA's own morale face + color (display::morale_emotion), so it
+        // matches the player's sidebar mood widget exactly. The partner proxy is
+        // an npc (no character_mood_face(), which is avatar-only), so we feed the
+        // synced morale level through the DEFAULT mood face's value table.
+        {
+            static const mood_face_id mood_face_DEFAULT( "DEFAULT" );
+            const std::pair<std::string, nc_color> mf =
+                display::morale_emotion( g_partner_morale, mood_face_DEFAULT.obj() );
+            const nc_color col = partner ? mf.second : c_dark_gray;
+            mvwprintz( win, point( x, crow ), col, "%s", mf.first.c_str() );
+            // Advance by the actual face width + 1 so the HP bar sits right up
+            // against the mood emoji instead of after a fixed reserved slot.
+            x += static_cast<int>( utf8_width( mf.first ) ) + 1;
+        }
+
+        // HP bar — the partner's WORST body part rendered with the game's native
+        // get_hp_bar (same glyphs + coloring as the sidebar limb bars). cur/max
+        // come synced from the partner's real character (g_partner_hp_*), NOT the
+        // local proxy, whose proxy-derived max HP gave the wrong length/color.
+        std::string hpbar = "-----";
         nc_color hp_color = c_dark_gray;
-        if( partner ) {
-            float worst = 1.0f;
-            for( const bodypart_id &bp : partner->get_all_body_parts() ) {
-                const int hpm = partner->get_hp_max( bp );
-                if( hpm <= 0 ) {
-                    continue;
-                }
-                const float f = std::clamp(
-                                    static_cast<float>( partner->get_hp( bp ) ) / hpm,
-                                    0.0f, 1.0f );
-                if( f < worst ) {
-                    worst = f;
-                }
-            }
-            hp_color = worst > 0.66f ? c_green
-                       : worst > 0.33f ? c_yellow : c_red;
-            filled = static_cast<int>( std::round( worst * bar_w ) );
+        if( partner && g_partner_hp_max > 0 ) {
+            const std::pair<std::string, nc_color> bar =
+                get_hp_bar( g_partner_hp_cur, g_partner_hp_max );
+            hpbar = bar.first;
+            hp_color = bar.second;
         }
+        // Fixed 5-wide slot inside the brackets so the columns after it stay put;
+        // get_hp_bar returns a variable-length string (empty..5 chars).
         mvwprintz( win, point( x, crow ), c_white, "[" );
-        for( int i = 0; i < bar_w; ++i ) {
-            mvwprintz( win, point( x + 1 + i, crow ),
-                       i < filled ? hp_color : c_dark_gray, "#" );
-        }
-        mvwprintz( win, point( x + 1 + bar_w, crow ), c_white, "]" );
-        x += bar_w + 3;
+        mvwprintz( win, point( x + 1, crow ), hp_color, "%s", hpbar.c_str() );
+        mvwprintz( win, point( x + 6, crow ), c_white, "]" );
+        x += 9;
 
         // Activity + progress %.  Use the verb phrase (e.g. "reading",
         // "constructing a vehicle") so the panel matches the begin/finish
@@ -807,17 +872,22 @@ struct mp_hud_t {
             x += 5;
         }
 
-        // Calendar drift indicator on the right edge.  Δ followed by signed
-        // turn count.  Green when 0 (in sync), yellow nonzero, red large.
-        // Always-on so it's a visible sanity light, not just an error popup.
-        if( g_partner_calendar_turn != 0 ) {
-            const int local_turn = to_turn<int>( calendar::turn );
-            const int drift = local_turn - g_partner_calendar_turn;
-            const nc_color dc = drift == 0 ? c_green
-                                : std::abs( drift ) <= 1 ? c_yellow : c_red;
-            const std::string ds = "Δ" + std::to_string( drift );
-            mvwprintz( win, point( W - static_cast<int>( ds.size() ) - 1, crow ),
-                       dc, "%s", ds.c_str() );
+        // Latency to the partner on the right edge — the player-facing replacement
+        // for the old dev calendar-drift indicator. Round-trip ms, colored
+        // green/yellow/red by how laggy the link feels. "--" until first measured.
+        {
+            std::string ps;
+            nc_color pc;
+            if( g_partner_ping_ms < 0 ) {
+                ps = "--";
+                pc = c_dark_gray;
+            } else {
+                pc = g_partner_ping_ms < 120 ? c_green
+                     : g_partner_ping_ms < 300 ? c_yellow : c_red;
+                ps = std::to_string( g_partner_ping_ms ) + "ms";
+            }
+            mvwprintz( win, point( W - static_cast<int>( ps.size() ) - 1, crow ),
+                       pc, "%s", ps.c_str() );
         }
 
         wnoutrefresh( win );
@@ -2340,6 +2410,23 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     }
     if( jo.has_int( "client_activity_moves_total" ) ) {
         g_partner_activity_moves_total = jo.get_int( "client_activity_moves_total" );
+    }
+    if( jo.has_int( "client_morale" ) ) {
+        g_partner_morale = jo.get_int( "client_morale" );
+    }
+    if( jo.has_int( "client_hp_cur" ) ) {
+        g_partner_hp_cur = jo.get_int( "client_hp_cur" );
+    }
+    if( jo.has_int( "client_hp_max" ) ) {
+        g_partner_hp_max = jo.get_int( "client_hp_max" );
+    }
+    // Ping: remember the client's stamp to echo back; adopt the client-measured
+    // RTT so the host panel shows the same latency the client computed.
+    if( jo.has_int( "client_ping" ) ) {
+        g_last_client_ping_stamp = jo.get_int( "client_ping" );
+    }
+    if( is_hosting() && jo.has_int( "client_rtt" ) ) {
+        g_partner_ping_ms = jo.get_int( "client_rtt" );
     }
     if( jo.has_int( "client_calendar_turn" ) ) {
         g_partner_calendar_turn = jo.get_int( "client_calendar_turn" );
@@ -6835,6 +6922,27 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_int( "host_activity_moves_total" ) ) {
             g_partner_activity_moves_total = jo.get_int( "host_activity_moves_total" );
         }
+        if( jo.has_int( "host_morale" ) ) {
+            g_partner_morale = jo.get_int( "host_morale" );
+        }
+        if( jo.has_int( "host_hp_cur" ) ) {
+            g_partner_hp_cur = jo.get_int( "host_hp_cur" );
+        }
+        if( jo.has_int( "host_hp_max" ) ) {
+            g_partner_hp_max = jo.get_int( "host_hp_max" );
+        }
+        // Ping (CLIENT ONLY — the host adopts the mirrored client_rtt instead,
+        // since subtracting our stamp against the host's clock would be garbage).
+        // Measure RTT only when the echo matches the stamp we're currently
+        // awaiting, then clear it: a host re-echoing the same stamp during idle
+        // must not keep growing the number against an ever-advancing clock.
+        if( is_client_mode() && jo.has_int( "host_ping_echo" ) ) {
+            const int64_t stamp = jo.get_int( "host_ping_echo" );
+            if( stamp >= 0 && stamp == g_pending_ping_stamp ) {
+                g_partner_ping_ms = static_cast<int>( mp_mono_ms() - stamp );
+                g_pending_ping_stamp = -1; // consumed; hold this value until next send
+            }
+        }
         // Snapshot host's calendar BEFORE the local sync above overwrites it,
         // so the panel can show drift = local - last_received_partner.  Since
         // the client sets local = host on every state packet, drift here is
@@ -8100,6 +8208,23 @@ std::string client_enrich_action( const std::string &json )
         // Local calendar turn so the host can show a sync-drift indicator.
         enriched += ",\"client_calendar_turn\":" + std::to_string(
                         to_turn<int>( calendar::turn ) );
+        // Morale level for the host's Co-op panel mood indicator.
+        enriched += ",\"client_morale\":" + std::to_string( av.get_morale_level() );
+        // Worst-limb real cur/max HP so the host's panel bar matches our sidebar.
+        {
+            const std::pair<int, int> wl = mp_worst_limb_hp( av );
+            enriched += ",\"client_hp_cur\":" + std::to_string( wl.first );
+            enriched += ",\"client_hp_max\":" + std::to_string( wl.second );
+        }
+        // Ping: stamp now (client clock) for the host to echo, and remember it
+        // as the outstanding round-trip we're timing. Mirror the last RTT we
+        // measured so the host's panel shows the same latency number.
+        {
+            const int64_t stamp = mp_mono_ms();
+            g_pending_ping_stamp = stamp;
+            enriched += ",\"client_ping\":" + std::to_string( stamp );
+            enriched += ",\"client_rtt\":" + std::to_string( g_partner_ping_ms );
+        }
         if( !g_client_msgs_pending.empty() ) {
             std::string msgs = "[";
             bool first_m = true;
@@ -10724,6 +10849,10 @@ std::string serialize_remote_player_state()
                mp_compute_activity_pct( host.activity ) ) + ","
            "\"host_activity_moves_total\":" + std::to_string(
                host.activity ? host.activity.moves_total : 0 ) + ","
+           "\"host_morale\":" + std::to_string( host.get_morale_level() ) + ","
+           "\"host_hp_cur\":" + std::to_string( mp_worst_limb_hp( host ).first ) + ","
+           "\"host_hp_max\":" + std::to_string( mp_worst_limb_hp( host ).second ) + ","
+           "\"host_ping_echo\":" + std::to_string( g_last_client_ping_stamp ) + ","
            "\"host_effects\":" + host_effects_json + ","
            "\"host_hp\":" + host_hp_json + ","
            + ( []() -> std::string {

@@ -240,6 +240,10 @@ class user_turn
             return false;
         }
 
+        void restart() {
+            user_turn_start = std::chrono::steady_clock::now();
+        }
+
 };
 } // namespace
 
@@ -2395,6 +2399,52 @@ static std::vector<action_id> get_actions_move_mode()
     };
 }
 
+// Actions the host may take while locked (moves <= 0, waiting for client).
+// File-scope so both do_regular_action's early gate and handle_action's
+// post-main-menu re-gate can reference it.
+static const std::set<action_id> host_ui_actions = {
+    // Pure UI (read-only)
+    ACTION_ZOOM_IN, ACTION_ZOOM_OUT,
+    ACTION_MAP, ACTION_LIST_ITEMS,
+    ACTION_INVENTORY, ACTION_COMPARE, ACTION_ORGANIZE,
+    ACTION_LOOK,
+    ACTION_HELP, ACTION_MESSAGES,
+    ACTION_PL_INFO, ACTION_MORALE,
+    ACTION_FACTIONS, ACTION_MISSIONS, ACTION_MEDICAL,
+    ACTION_MUTATIONS, ACTION_BIONICS,
+    ACTION_DIARY,
+    // Menu → activity (needs moves to execute, safe to browse)
+    ACTION_PICKUP, ACTION_PICKUP_ALL, ACTION_LOOT,
+    ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
+    ACTION_DISASSEMBLE,
+    ACTION_BUTCHER,
+    // ACTION_CONSTRUCT intentionally excluded (mirrors the client gate):
+    // confirming a build immediately writes map state via
+    // partial_con_set() with no moves check, so at 0 AP it mutates the
+    // shared world out of lockstep. Blocked here, allowed on a real turn.
+    // Move-mode toggles are zero-AP and just flip flags.
+    ACTION_TOGGLE_RUN, ACTION_TOGGLE_CROUCH, ACTION_TOGGLE_PRONE,
+    ACTION_CYCLE_MOVE, ACTION_CYCLE_MOVE_REVERSE,
+    // Main-menu entries: all pure UI/config, safe while waiting for client.
+    ACTION_OPTIONS, ACTION_TOGGLE_PANEL_ADM,
+    ACTION_AUTOPICKUP, ACTION_AUTONOTES,
+    ACTION_SAFEMODE, ACTION_DISTRACTION_MANAGER,
+    // Safe-mode toggles/flags are zero-AP — allow while locked so the host
+    // can flip safe mode while waiting for the client (mirrors the client,
+    // which already falls through to these). Without them the host's
+    // default-deny gate blocked ACTION_TOGGLE_SAFEMODE (2026-06-21).
+    ACTION_TOGGLE_SAFEMODE, ACTION_TOGGLE_AUTOSAFE,
+    ACTION_IGNORE_ENEMY, ACTION_WHITELIST_ENEMY,
+    ACTION_COLOR, ACTION_WORLD_MODS,
+    ACTION_QUICKSAVE, ACTION_SAVE,
+    ACTION_KEYBINDINGS,
+    ACTION_MAIN_MENU,
+    ACTION_EXPORT_BUG_REPORT_ARCHIVE,
+    // Co-op chat: zero-AP, opens a popup and sends a message, never
+    // mutates world state — safe to use while waiting for the client.
+    ACTION_COOP_CHAT,
+};
+
 bool game::do_regular_action( action_id &act, avatar &player_character,
                               const std::optional<tripoint_bub_ms> &mouse_target )
 {
@@ -3186,47 +3236,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
     // Moves are 0 after the host's turn; calling handle_action() in this state must
     // not mutate world state or advance the simulation.
     if( cata_mp::is_hosting() && player_character.get_moves() <= 0 ) {
-        static const std::set<action_id> host_ui_actions = {
-            // Pure UI (read-only)
-            ACTION_ZOOM_IN, ACTION_ZOOM_OUT,
-            ACTION_MAP, ACTION_LIST_ITEMS,
-            ACTION_INVENTORY, ACTION_COMPARE, ACTION_ORGANIZE,
-            ACTION_LOOK,
-            ACTION_HELP, ACTION_MESSAGES,
-            ACTION_PL_INFO, ACTION_MORALE,
-            ACTION_FACTIONS, ACTION_MISSIONS, ACTION_MEDICAL,
-            ACTION_MUTATIONS, ACTION_BIONICS,
-            ACTION_DIARY,
-            // Menu → activity (needs moves to execute, safe to browse)
-            ACTION_PICKUP, ACTION_PICKUP_ALL, ACTION_LOOT,
-            ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
-            ACTION_DISASSEMBLE,
-            ACTION_BUTCHER,
-            // ACTION_CONSTRUCT intentionally excluded (mirrors the client gate):
-            // confirming a build immediately writes map state via
-            // partial_con_set() with no moves check, so at 0 AP it mutates the
-            // shared world out of lockstep. Blocked here, allowed on a real turn.
-            // Move-mode toggles are zero-AP and just flip flags.
-            ACTION_TOGGLE_RUN, ACTION_TOGGLE_CROUCH, ACTION_TOGGLE_PRONE,
-            ACTION_CYCLE_MOVE, ACTION_CYCLE_MOVE_REVERSE,
-            // Main-menu entries: all pure UI/config, safe while waiting for client.
-            ACTION_OPTIONS, ACTION_TOGGLE_PANEL_ADM,
-            ACTION_AUTOPICKUP, ACTION_AUTONOTES,
-            ACTION_SAFEMODE, ACTION_DISTRACTION_MANAGER,
-            // Safe-mode toggles/flags are zero-AP — allow while locked so the host
-            // can flip safe mode while waiting for the client (mirrors the client,
-            // which already falls through to these). Without them the host's
-            // default-deny gate blocked ACTION_TOGGLE_SAFEMODE (2026-06-21).
-            ACTION_TOGGLE_SAFEMODE, ACTION_TOGGLE_AUTOSAFE,
-            ACTION_IGNORE_ENEMY, ACTION_WHITELIST_ENEMY,
-            ACTION_COLOR, ACTION_WORLD_MODS,
-            ACTION_QUICKSAVE, ACTION_SAVE,
-            ACTION_KEYBINDINGS,
-            ACTION_EXPORT_BUG_REPORT_ARCHIVE,
-            // Co-op chat: zero-AP, opens a popup and sends a message, never
-            // mutates world state — safe to use while waiting for the client.
-            ACTION_COOP_CHAT,
-        };
         if( !host_ui_actions.count( act ) ) {
             cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-BLOCK: act=" + std::to_string( act ) );
             return false;
@@ -4351,6 +4360,14 @@ bool game::handle_action()
             cata_mp::mp_log( "[cdda-mp] MAIN-MENU: exit, act=" + std::to_string( static_cast<int>( act ) ) );
             if( act == ACTION_NULL ) {
                 cata_mp::mp_log( "[cdda-mp] MAIN-MENU: dismissed (ACTION_NULL), returning false" );
+                return false;
+            }
+            // Re-gate: handle_main_menu may return an AP-costing action (e.g.
+            // ACTION_ACTIONMENU).  If the host is locked, block it with a brief
+            // message rather than silently executing it out of lockstep.
+            if( cata_mp::is_hosting() && player_character.get_moves() <= 0 &&
+                !host_ui_actions.count( act ) ) {
+                add_msg( m_info, _( "Waiting for partner — can't do that yet." ) );
                 return false;
             }
         }
