@@ -1,3 +1,26 @@
+<!-- ============================================================
+     SECTION SYNC MAP — this file is the single source of truth.
+     Surfaces each `## ` section is published to:
+       [zip]  bundled verbatim in the release readme (EVERY section)
+       [git]  injected into GitHub README.md  (scripts/sync-readme.mjs, SYNC: markers)
+       [site] rendered on cddacoop.com         (build-time fetch of master)
+
+       First launch ...................... [zip][site]
+       Playing co-op / Host / Join ....... [zip]
+       Connecting ........................ [zip][git]
+       Where things live ................. [zip]
+       Sound ............................. [zip]
+       What works ........................ [zip][git][site]
+       Known limits ...................... [zip][git][site]
+       FAQ ............................... [zip][git][site]
+       Mods .............................. [zip]
+       Changelog ......................... [zip][site]
+       Getting help / reporting bugs ..... [zip][git]
+       Credits ........................... [zip]
+
+     Editing a [git]/[site] section here propagates on the next
+     README sync (run scripts/sync-readme.mjs) / site build.
+     ============================================================ -->
 # CDDA CO-OP
 
 Why die alone when you can die together?
