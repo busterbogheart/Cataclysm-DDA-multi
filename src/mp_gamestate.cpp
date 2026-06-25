@@ -338,6 +338,18 @@ static std::unordered_set<uint32_t> g_server_veh_live_nids;
 // transient short broadcast can't kill a live monster (the woodpecker bug).
 static std::unordered_set<uint32_t> g_server_mon_known_nids;
 
+// Host: per-nid last-broadcast monster record (the emitted JSON object). The
+// monster snapshot resent every monster, every turn — large and ~95% redundant
+// (most monsters don't move/change between turns). build_monster_list now emits
+// only monsters whose record CHANGED since last send (new nid, or moved / HP /
+// facing differs); unchanged ones are omitted. This is safe because the client
+// NEVER culls a synced monster by absence — it merges present records and
+// removes only via removed_monsters (apply_monster_sync). Cleared on client
+// (re)connect and on a periodic keyframe so a fresh/recovering client gets the
+// full set. Pruned of nids that leave the broadcast radius (forces a re-send on
+// re-entry, since their state may have changed while away).
+static std::unordered_map<uint32_t, std::string> g_server_mon_last_sent;
+
 // Client: maps server vehicle network IDs to the last-known absolute tile position.
 // Used to look up the vehicle object before moving it to the server-authoritative position.
 static std::unordered_map<uint32_t, tripoint_abs_ms> g_client_veh_pos;
@@ -1828,6 +1840,7 @@ static void spawn_remote_player( const std::string &name )
     g_client_known_veh_nids.clear();  // re-snapshot every visible vehicle for the fresh client
     g_server_veh_parts_count.clear();
     g_server_veh_live_nids.clear();
+    g_server_mon_last_sent.clear();   // force full monster snapshot to the fresh client (delta cache)
     g_separation_tier = 0;
     g_separation_settled = false;
     g_last_forwarded_msg_count = Messages::appended_total();  // don't forward pre-connect history
@@ -8797,9 +8810,22 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
 
 static std::string build_monster_list( const tripoint_abs_ms &center, int radius )
 {
+    // Periodic keyframe: every KEYFRAME_INTERVAL broadcasts, drop the delta cache
+    // so the full snapshot goes out. Self-heals any drift (a fresh joiner that
+    // missed the on-connect clear, a dropped packet) without per-turn cost the
+    // rest of the time. Cheap: monsters that haven't changed simply re-serialize.
+    constexpr int KEYFRAME_INTERVAL = 120;
+    static int s_keyframe_ctr = 0;
+    const bool keyframe = ( s_keyframe_ctr++ % KEYFRAME_INTERVAL ) == 0;
+    if( keyframe ) {
+        g_server_mon_last_sent.clear();
+    }
+
     std::string out = "[";
     bool first = true;
-    int n_sent = 0;
+    int n_sent = 0;        // monsters actually written to the wire this call
+    int n_skipped = 0;     // in-radius but unchanged → omitted (the delta win)
+    std::unordered_set<uint32_t> seen_nids;  // in-radius nids this call (for pruning)
     std::string excluded_near;  // in reality bubble but outside broadcast radius
     for( const auto &mon_ptr : get_creature_tracker().get_monsters_list() ) {
         if( !mon_ptr ) {
@@ -8822,24 +8848,47 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
             continue;
         }
         // Assign a stable network ID the first time this monster enters sync range.
+        // Done for EVERY in-radius monster (even ones we delta-omit below) so the
+        // removed_monsters diff (g_server_mon_known_nids) stays accurate.
         if( mon_ptr->mp_net_id == 0 ) {
             mon_ptr->mp_net_id = ++g_next_net_id;
         }
-        if( !first ) {
-            out += ',';
-        }
-        first = false;
+        const uint32_t nid = mon_ptr->mp_net_id;
+        seen_nids.insert( nid );
         const int mon_facing = ( mon_ptr->facing == FacingDirection::LEFT ) ? 0 : 1;
-        out += "{\"nid\":" + std::to_string( mon_ptr->mp_net_id )
+        std::string rec = "{\"nid\":" + std::to_string( nid )
                + ",\"id\":\"" + mon_ptr->type->id.str() + "\""
                + ",\"x\":" + std::to_string( mp.x() )
                + ",\"y\":" + std::to_string( mp.y() )
                + ",\"z\":" + std::to_string( mp.z() )
                + ",\"hp\":" + std::to_string( mon_ptr->get_hp() )
                + ",\"facing\":" + std::to_string( mon_facing ) + "}";
+        // Delta gate: emit only if new or changed since last broadcast. nid + id
+        // are stable, so an identical record string means x/y/z/hp/facing are all
+        // unchanged → the client already holds this exact state, omit it.
+        auto cached = g_server_mon_last_sent.find( nid );
+        if( cached != g_server_mon_last_sent.end() && cached->second == rec ) {
+            ++n_skipped;
+            continue;
+        }
+        g_server_mon_last_sent[nid] = rec;
+        if( !first ) {
+            out += ',';
+        }
+        first = false;
+        out += rec;
         ++n_sent;
     }
     out += ']';
+    // Prune cache entries for nids no longer in radius so a monster that leaves
+    // and later re-enters is re-sent in full (its state may have changed while
+    // out of range, and the client removed it via removed_monsters on exit).
+    if( g_server_mon_last_sent.size() > seen_nids.size() ) {
+        for( auto it = g_server_mon_last_sent.begin(); it != g_server_mon_last_sent.end(); ) {
+            it = seen_nids.count( it->first ) ? std::next( it )
+                 : g_server_mon_last_sent.erase( it );
+        }
+    }
     // Log only when the excluded-near set changes — this fires every broadcast
     // while a distant monster lingers in the 40–84 band and would otherwise spam.
     static std::string s_last_excluded_near;
@@ -8867,6 +8916,7 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
             }
         }
         mp_log( "[cdda-mp] MON-BROADCAST-COUNT: sent=" + std::to_string( n_sent ) +
+                " skipped(delta)=" + std::to_string( n_skipped ) +
                 " radius=" + std::to_string( radius ) +
                 " host_tracker_alive=" + std::to_string( n_tracker ) );
     }
