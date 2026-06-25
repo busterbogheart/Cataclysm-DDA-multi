@@ -136,11 +136,9 @@ You need one of these to route your partner's traffic to your machine:
 - **Same reality bubble**, centered on the host. A client more than
   about 65 tiles from the host falls outside the simulated area; entities
   there don't tick.
-- **Sleep** runs but two-player sleep dynamics aren't fully validated.
+- **Sleep** runs but two-player sleep dynamics aren’t fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
-- **Z levels (stairs, basements, etc)** aren’t fully synced yet; moving
-  between floors can desync what each player sees
 <!-- /SYNC:known-limits -->
 
 ---
@@ -227,7 +225,37 @@ make -j$(nproc) TILES=1 SOUND=1 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles
 
 ## Frequently Asked Questions
 
+<!-- SYNC:faq section="FAQ" -->
+### Does CO-OP change hardware requirements?
 
+It's about the same as single-player CDDA. The simulation is CPU-bound and single-threaded, RAM is modest (~0.5 to 2 GB), and the tiles renderer barely touches the GPU.
+
+Co-op does not double the CPU cost. There is one shared simulation area centered on the host, not one per player, so the host runs roughly single-player plus a little overhead, not 2x.
+
+Obviously the new requirement is the network; the host streams world updates to the client every turn, so a faster connection and hardware helps here.
+
+### So the better computer/connection should be the host?
+
+Yes. The host runs the full world simulation, serializes the changed state every turn, and uploads it to the client, so it does the heavy lifting.
+
+The client mostly renders what the host sends and waits its turn, so it is lighter on CPU; and memory use is similar to single-player.
+
+### How does it work under the hood?
+
+One machine is the host: it runs the real game. The client sends actions over a TCP connection and gets back the world state to draw, tiles, monsters, the other player.
+
+The second player is wired in as a special NPC on the host (like a proxy), so existing systems like combat, driving and melee already treat them as a real character. The client's input is intercepted at the same point the game already routes keypresses, then run on the host.
+
+There is one shared simulation bubble centered on the host, and a per-turn grant/wait handshake keeps both players in lockstep so the world does not desync.
+
+### Is it free?
+
+Free and open source. It's a fork of the experimental branch of CDDA.
+
+### What version of CDDA is this based on?
+
+It's a fork of CDDA experimental, kept current with the upstream code. This means everything in the 0.I release plus current experimental (June 2026 and any future updates).
+<!-- /SYNC:faq -->
 
 ---
 
