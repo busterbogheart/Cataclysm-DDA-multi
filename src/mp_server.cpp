@@ -103,9 +103,19 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         }
         writing_ = true;
         auto self = shared_from_this();
-        // Move the front message into a shared_ptr so it stays alive across the async op.
-        auto buf = std::make_shared<std::string>( std::move( write_queue_.front() ) );
-        write_queue_.pop_front();
+        // Coalesce EVERY queued message into one buffer so N messages enqueued in
+        // a single turn become one write() / one batch of back-to-back segments,
+        // instead of N separate writes (with Nagle off, N tiny packets — the
+        // small-packet storm).  Each queued message already ends in '\n', so the
+        // client's newline-framed reader still splits them apart correctly, and an
+        // older non-coalescing client is unaffected (wire-compatible).  Messages
+        // posted during this async_write land back in write_queue_ and coalesce on
+        // the next pass.
+        auto buf = std::make_shared<std::string>();
+        for( const std::string &m : write_queue_ ) {
+            buf->append( m );
+        }
+        write_queue_.clear();
         asio::async_write( socket, asio::buffer( *buf ),
         [self, buf]( std::error_code ec, std::size_t ) {
             if( ec ) {
