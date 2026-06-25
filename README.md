@@ -31,7 +31,7 @@ This fork adds experimental co-op multiplayer. One player hosts; a second player
 
 ### Download a release
 
-Prebuilt binaries are on the [Releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases): **macOS (universal — Apple Silicon + Intel)** and **Windows x64**.
+Prebuilt binaries are on the [Releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases): **macOS (universal — Apple Silicon + Intel)**, **Windows x64**, and **Linux x64**.
 
 **macOS first launch:** unzip, then right-click `Cddacoop.app` → **Open**. Gatekeeper blocks unsigned apps on a normal double-click, so this dance is required once per machine.
 
@@ -133,9 +133,10 @@ You need one of these to route your partner's traffic to your machine:
 ### Current limitations
 
 <!-- SYNC:known-limits section="Known limits" -->
-- **Same reality bubble**, centered on the host. A client more than
-  about 65 tiles from the host falls outside the simulated area; entities
-  there don't tick.
+- **Same reality bubble**, centered on the host. There's only one simulated
+  area (not one per player), so both of you have to stay near each other —
+  roughly within 65 tiles. You'll be warned as you approach the limit, and if
+  you drift too far the world automatically pauses until you close the gap.
 - **Sleep** runs but two-player sleep dynamics aren’t fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
@@ -175,26 +176,28 @@ When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plu
 
 ## Building from source
 
+> **`SDL3=0` is required.** The released binaries (and the commands below) build against **SDL2**. The Makefile otherwise defaults to SDL3, which this fork doesn't ship yet — and the SDL2 prerequisites listed here won't satisfy an SDL3 build — so pass `SDL3=0` exactly as shown. (Switching SDL major version requires a `make clean` first.)
+
 ### macOS
 
 Prerequisites (via Homebrew): `sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache`
 
 **macOS 12+ (Monterey and newer):**
 ```sh
-make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 cataclysm-tiles
 ```
 
 **macOS 11 (Big Sur) and older / Intel** — Homebrew bottles on newer macOS may reference symbols not available on 11.x, so build natively on the target machine. Apple clang 12 doesn't recognize some GCC warning flags in the Makefile; silence them with `CXXFLAGS="-Wno-unknown-warning-option"`:
 ```sh
 brew install sdl2 sdl2_image sdl2_mixer sdl2_ttf freetype gettext ccache
-CXXFLAGS="-Wno-unknown-warning-option" make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 LINTJSON=0 PCH=0 cataclysm-tiles
+CXXFLAGS="-Wno-unknown-warning-option" make -j$(sysctl -n hw.logicalcpu) TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 cataclysm-tiles
 ```
 
 Or, with MacPorts SDL via `pkg-config` and Clang:
 
 ```sh
 export PKG_CONFIG_PATH="/opt/local/lib/pkgconfig"
-make -j$(sysctl -n hw.logicalcpu) NATIVE=osx CLANG=1 TILES=1 SOUND=1 PCH=0 LINTJSON=0 cataclysm-tiles
+make -j$(sysctl -n hw.logicalcpu) NATIVE=osx CLANG=1 TILES=1 SOUND=1 SDL3=0 PCH=0 LINTJSON=0 cataclysm-tiles
 ```
 
 ### Windows
@@ -202,7 +205,7 @@ make -j$(sysctl -n hw.logicalcpu) NATIVE=osx CLANG=1 TILES=1 SOUND=1 PCH=0 LINTJ
 Builds via MSYS2 / MinGW-w64. See [`.github/actions/build-windows/action.yml`](./.github/actions/build-windows/action.yml) for the full toolchain list used by the release workflow. From an MSYS2 MINGW64 shell with those packages installed:
 
 ```sh
-make -j$(nproc) MSYS2=1 STATIC=1 TILES=1 SOUND=1 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles.exe
+make -j$(nproc) MSYS2=1 STATIC=1 TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles.exe
 ```
 
 ### Linux
@@ -213,7 +216,7 @@ CDDA's native platform — the simplest build. On Debian/Ubuntu:
 sudo apt install g++ make git pkg-config ccache \
   libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
   libfreetype6-dev gettext libncursesw5-dev zlib1g-dev
-make -j$(nproc) TILES=1 SOUND=1 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles
+make -j$(nproc) TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 RELEASE=1 cataclysm-tiles
 ./cataclysm-tiles
 ```
 

@@ -187,9 +187,10 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 
 ## Known limits
 
-- **Same reality bubble**, centered on the host. A client more than
-  about 65 tiles from the host falls outside the simulated area; entities
-  there don't tick.
+- **Same reality bubble**, centered on the host. There's only one simulated
+  area (not one per player), so both of you have to stay near each other —
+  roughly within 65 tiles. You'll be warned as you approach the limit, and if
+  you drift too far the world automatically pauses until you close the gap.
 - **Sleep** runs but two-player sleep dynamics aren’t fully validated.
   Coordinate with your partner or expect rough edges around
   partner-status messages.
