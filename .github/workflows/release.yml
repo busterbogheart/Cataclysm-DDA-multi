@@ -31,11 +31,11 @@ on:
       windows:
         description: 'Build Windows x64'
         type: boolean
-        default: false
+        default: true
       linux:
         description: 'Build Linux x64'
         type: boolean
-        default: false
+        default: true
       upload:
         description: 'Upload to preview release on site'
         type: boolean
@@ -365,3 +365,38 @@ jobs:
           gh workflow run deploy.yml \
             --repo busterbogheart/catacoop-site \
             --ref main
+
+  prune-caches:
+    name: Prune stale ccaches
+    # GitHub caps the repo's Actions-cache at 10 GB and LRU-evicts when over.
+    # The mac ccache is ~1.77 GB and accrued one-per-SHA (5 retained = ~8.8 GB),
+    # crowding out the tiny (0.1-0.15 GB) win/linux caches — which is what made
+    # the next Windows build a 53-min cold compile (0% ccache hits, 2026-06-26).
+    # Keep only the newest ccache per platform; the restore-key prefix always
+    # restores the newest and each build re-saves it, so older ones are dead
+    # weight. Runs after every build regardless of outcome; never fails the run.
+    needs: [build-mac, build-windows, build-linux]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write   # gh cache delete
+      contents: read
+    steps:
+      - name: Delete superseded ccaches (keep newest per platform)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for prefix in ccache-mac-universal- ccache-win-x64-v2- ccache-linux-x64-; do
+            echo "=== $prefix ==="
+            ids=$(gh cache list -R "$REPO" --limit 100 --json id,key,createdAt \
+              -q "[.[] | select(.key|startswith(\"$prefix\"))] | sort_by(.createdAt) | reverse | .[1:] | .[].id")
+            for id in $ids; do
+              echo "deleting superseded cache id=$id"
+              gh cache delete "$id" -R "$REPO" || true
+            done
+          done
+          echo "=== remaining cache budget (GB) ==="
+          gh cache list -R "$REPO" --limit 100 --json sizeInBytes \
+            -q '[.[].sizeInBytes]|add // 0 | ./1e9'
