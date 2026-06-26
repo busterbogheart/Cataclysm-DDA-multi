@@ -6367,7 +6367,14 @@ std::vector<Creature *> Character::get_targetable_creatures( const int range, bo
         {
             in_range = false;
         }
-        bool valid_target = this != &critter && pos_abs() != critter.pos_abs() && attitude_to( critter ) != Creature::Attitude::FRIENDLY;
+        // MP: the human partner's proxy NPC is a player, never a target — exclude
+        // it from all targeting (tab-cycle, autoattack, reach) regardless of the
+        // proxy's NPC attitude, which is vestigial here (see mp_gamestate). Without
+        // this it shows up as a valid target when tabbing through the aim panel.
+        const npc *critter_npc = critter.as_npc();
+        const bool is_partner = critter_npc && cata_mp::is_partner_npc( critter_npc->getID() );
+        bool valid_target = this != &critter && pos_abs() != critter.pos_abs() &&
+                            attitude_to( critter ) != Creature::Attitude::FRIENDLY && !is_partner;
         return valid_target && in_range && can_see;
     } );
 }
