@@ -183,6 +183,96 @@ void mp_log( const std::string &msg )
     }
 }
 
+// ----------------------------------------------------------------------------
+// Client main-thread apply watchdog + breadcrumbs.
+//
+// A host "state" broadcast is applied on the client's MAIN thread (parse →
+// teleport → host-NPC → monster → tile → vehicle → bodyparts).  A bug that
+// spins or blocks in any of those steps hard-hangs the whole client — Windows
+// shows "not responding" — and until now left NO trace: the old breadcrumbs
+// went to std::cout, which never reaches the log file, so the log simply
+// stopped mid-apply with nothing naming the step (the 2026-06-26 Parallels
+// hang).  mp_apply_step records the active step + a heartbeat and logs a
+// START/DONE pair through mp_log (which flushes every line, so the START
+// survives a hang).  A background watchdog — started lazily on the first apply
+// step — reads the heartbeat and, if any step stays active past a threshold,
+// logs a line NAMING the stalled step.  That converts a silent beachball into a
+// labeled, attributable event, for this bug and any future one.  Critical
+// sections are tiny (label assignment only); the apply work runs with no lock
+// held, so the watchdog can always read and log even while the main thread
+// spins on a separate core.
+static std::mutex g_apply_step_mtx;
+static std::string g_apply_step_label;       // active step, "" when idle
+static std::chrono::steady_clock::time_point g_apply_step_started;
+
+static void mp_start_apply_watchdog()
+{
+    static std::once_flag once;
+    std::call_once( once, [] {
+        std::thread( [] {
+            std::chrono::steady_clock::time_point warned_for{};
+            int last_warned_s = 0;
+            for( ;; ) {
+                std::this_thread::sleep_for( std::chrono::seconds( 1 ) );
+                std::string label;
+                std::chrono::steady_clock::time_point started;
+                {
+                    std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+                    label = g_apply_step_label;
+                    started = g_apply_step_started;
+                }
+                if( label.empty() ) {
+                    warned_for = {};
+                    last_warned_s = 0;
+                    continue;
+                }
+                if( started != warned_for ) {
+                    // A new step began since the last warning — reset.
+                    warned_for = {};
+                    last_warned_s = 0;
+                }
+                const int active_s = static_cast<int>(
+                                         std::chrono::duration_cast<std::chrono::seconds>(
+                                             std::chrono::steady_clock::now() - started ).count() );
+                // Warn first at >=3s, then re-warn every 5s so the log shows the
+                // stall never recovered.
+                if( active_s >= 3 && active_s - last_warned_s >= ( last_warned_s ? 5 : 1 ) ) {
+                    mp_log( "[cdda-mp] WATCHDOG: main thread stalled " +
+                            std::to_string( active_s ) + "s in apply-step=" + label +
+                            " (client likely hung — Windows 'not responding')" );
+                    last_warned_s = active_s;
+                    warned_for = started;
+                }
+            }
+        } ).detach();
+    } );
+}
+
+// RAII breadcrumb: marks one client apply step active for its lifetime.
+struct mp_apply_step {
+    std::string label_;
+    std::chrono::steady_clock::time_point t0_;
+    explicit mp_apply_step( std::string label )
+        : label_( std::move( label ) ), t0_( std::chrono::steady_clock::now() ) {
+        mp_start_apply_watchdog();
+        {
+            std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+            g_apply_step_label = label_;
+            g_apply_step_started = t0_;
+        }
+        mp_log( "[cdda-mp] STATE-APPLY: " + label_ + " start" );
+    }
+    ~mp_apply_step() {
+        const long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0_ ).count();
+        {
+            std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+            g_apply_step_label.clear();
+        }
+        mp_log( "[cdda-mp] STATE-APPLY: " + label_ + " done dur=" + std::to_string( ms ) + "ms" );
+    }
+};
+
 // Per-turn body update, called from do_turn.cpp. SP/host: one plain update.
 // Client: the host-driven calendar advances in JUMPS and do_turn spins while
 // locked, so the no-arg update_body() (always exactly one turn) starved stamina
@@ -6876,11 +6966,11 @@ static bool apply_one_state_message( const std::string &msg )
     }
 
     try {
-        std::cout << "[cdda-mp] parsing state (" << msg.size() << " bytes)..." << std::flush;
+        mp_log( "[cdda-mp] STATE-APPLY: parse (" + std::to_string( msg.size() ) + " bytes) start" );
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
         jo.allow_omitted_members();
-        std::cout << " ok" << std::endl;
+        mp_log( "[cdda-mp] STATE-APPLY: parse done" );
 
         // Sync host's calendar turn so the client sees the correct time, lighting, and weather.
         if( jo.has_int( "calendar_turn" ) ) {
@@ -6888,14 +6978,13 @@ static bool apply_one_state_message( const std::string &msg )
         }
 
         if( jo.has_object( "pos" ) ) {
-            std::cout << "[cdda-mp] teleporting avatar..." << std::flush;
+            mp_apply_step _s( "teleport" );
             JsonObject pos = jo.get_object( "pos" );
             pos.allow_omitted_members();
             g_mp_remote_pos = tripoint_abs_ms{
                 pos.get_int( "x" ), pos.get_int( "y" ), pos.get_int( "z" )
             };
             client_teleport_avatar( g_mp_remote_pos );
-            std::cout << " ok" << std::endl;
         }
 
         std::string host_name;
@@ -7047,7 +7136,7 @@ static bool apply_one_state_message( const std::string &msg )
             }
 
             if( sig != g_client_host_worn_sig && client_host_npc_spawned ) {
-                std::cout << "[cdda-mp] dressing host NPC..." << std::flush;
+                mp_apply_step _dress( "dress-host-npc" );
                 g_client_host_worn_sig = sig;
                 npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
                 if( host_npc ) {
@@ -7162,7 +7251,6 @@ static bool apply_one_state_message( const std::string &msg )
                         }
                     }
                 }
-                std::cout << " ok" << std::endl;
             }
         }
 
@@ -7238,17 +7326,9 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
-        std::cout << "[cdda-mp] monster sync..." << std::flush;
-        apply_monster_sync( jo );
-        std::cout << " ok" << std::endl;
-
-        std::cout << "[cdda-mp] tile sync..." << std::flush;
-        apply_tile_changes( jo );
-        std::cout << " ok" << std::endl;
-
-        std::cout << "[cdda-mp] vehicle sync..." << std::flush;
-        apply_vehicle_sync( jo );
-        std::cout << " ok" << std::endl;
+        { mp_apply_step _s( "monster" ); apply_monster_sync( jo ); }
+        { mp_apply_step _s( "tile" ); apply_tile_changes( jo ); }
+        { mp_apply_step _s( "vehicle" ); apply_vehicle_sync( jo ); }
 
         // Apply per-bodypart HP to the client avatar so the sidebar stays accurate.
         // Also synthesise "you were hit" messages from HP deltas.
@@ -8815,8 +8895,16 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
     // missed the on-connect clear, a dropped packet) without per-turn cost the
     // rest of the time. Cheap: monsters that haven't changed simply re-serialize.
     constexpr int KEYFRAME_INTERVAL = 120;
+    // MP diagnostic toggle: CDDA_MP_NO_DELTA=1 forces a full monster snapshot
+    // every broadcast (disables delta-encoding). Lets us isolate the client
+    // load-in hard-hang (2026-06-26) to the delta path without rebuilding
+    // between test runs — set the env on the host and restart.
+    static const bool s_force_keyframe = [] {
+        const char *e = std::getenv( "CDDA_MP_NO_DELTA" );
+        return e && *e && *e != '0';
+    }();
     static int s_keyframe_ctr = 0;
-    const bool keyframe = ( s_keyframe_ctr++ % KEYFRAME_INTERVAL ) == 0;
+    const bool keyframe = s_force_keyframe || ( s_keyframe_ctr++ % KEYFRAME_INTERVAL ) == 0;
     if( keyframe ) {
         g_server_mon_last_sent.clear();
     }
