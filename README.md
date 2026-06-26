@@ -122,24 +122,33 @@ You need one of these to route your partner's traffic to your machine:
 - Vehicle construction — install and remove parts
 - Drop-into-vehicle (drop items into the storage of a vehicle you're
   standing on)
-- **Co-op HUD** — bottom-left panel showing partner name, movement
-  mode, worst-body-part HP bar, current activity + progress, and
-  calendar drift
-- **Partner menu co-op special actions** — bump into your partner to open it; "*Tap on shoulder*"
+- In-game text chat: bind `Co-op chat` to a key to message your
+  partner... yelling still works too
+- Trading: full trade menu between players (in addition to the new "Pass item" action, below)
+- Different z-levels — ground and overmap stay in sync when players are
+  on different levels; ramps and bridges work now as expected
+- Separate vehicles — both players can drive their own vehicles
+- Fast-forward — turns skip ahead when both players are in long waits or long activities
+- Co-op HUD — bottom-left panel showing partner name, movement mode, mood, worst-body-part HP bar, 
+  current activity + progress, and ping in ms
+- Partner menu co-op special actions — bump into your partner to open i: "*Tap on shoulder*"
  interrupts their wait, "*Help with task*" works like single-player NPC help, 
- "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus!
+ "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus (just like real life)
 <!-- /SYNC:what-works -->
 
 ### Current limitations
 
 <!-- SYNC:known-limits section="Known limits" -->
-- **Same reality bubble**, centered on the host. There's only one simulated
-  area (not one per player), so both of you have to stay near each other —
-  roughly within 65 tiles. You'll be warned as you approach the limit, and if
-  you drift too far the world automatically pauses until you close the gap.
-- **Sleep** runs but two-player sleep dynamics aren’t fully validated.
-  Coordinate with your partner or expect rough edges around
-  partner-status messages.
+- **Same reality bubble** (for now), centered on the host. There's only one simulated
+  area (not one per player), so you have to stay near each other, within
+  about 60 tiles. You'll get escalating warnings as you drift apart, and past
+  about 68 tiles you leave the host's simulated zone and things break (vehicle
+  physics especially). The world does **not** auto-pause... so try and close the gap when
+  the warning shows. 
+- **The host has to stay running.** It's a listen server, not a dedicated one:
+  if the host quits or loses connection, the session ends for both players.
+- **Sleep** should work, but isn't fully developed yet. Coordinate sleep times 
+  with your partner or expect the occasional issue.
 <!-- /SYNC:known-limits -->
 
 ---
