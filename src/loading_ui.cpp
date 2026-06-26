@@ -1,5 +1,7 @@
 #include "loading_ui.h"
 
+#include <chrono>
+
 #include "cached_options.h"
 #include "input.h"
 #include "options.h"
@@ -47,6 +49,10 @@ struct ui_state {
     std::string tip;
     std::string context;
     std::string step;
+#ifdef TILES
+    // when the current tip was rolled, used to cycle it on a timer
+    std::chrono::steady_clock::time_point last_tip_roll;
+#endif
 };
 } // namespace
 
@@ -121,6 +127,34 @@ static void resize()
 {
 }
 
+#ifdef TILES
+// Pick a fresh tip and (re)compute its layout heights.  Factored out of the
+// one-time init below so the tip can also be re-rolled on a timer for slow loads.
+static void roll_loading_tip()
+{
+    const ImVec2 screen_size = ImGui::GetMainViewport()->Size * 0.98f;
+    // Reject an immediate repeat of the tip we're already showing (capped retry,
+    // in case only one tip exists).  prev is empty on the first roll.
+    const std::string prev = gLUI->tip;
+    std::string next = prev;
+    for( int tries = 0; tries < 8 && next == prev; ++tries ) {
+        next = SNIPPET.random_from_category( "tip" ).value_or( translation() ).translated();
+    }
+    gLUI->tip = next;
+    // if our screen space is at least twice as large as minimal, use 1.5x font
+    gLUI->large_hint_size = cataimgui::min_screen_res_y * 2.f < screen_size.y;
+    if( gLUI->large_hint_size ) {
+        gLUI->hint_height = cataimgui::get_string_height( gLUI->tip, screen_size.x ) * 1.6f;
+    } else {
+        gLUI->hint_height = cataimgui::get_string_height( gLUI->tip, screen_size.x );
+    }
+    // loading message always fits in 1 line; use a dummy line for its height
+    gLUI->loading_msg_height = cataimgui::get_string_height( " ", 0 );
+    gLUI->text_height = gLUI->hint_height + gLUI->loading_msg_height;
+    gLUI->last_tip_roll = std::chrono::steady_clock::now();
+}
+#endif
+
 static void update_state( const std::string &context, const std::string &step )
 {
     if( gLUI == nullptr ) {
@@ -140,27 +174,9 @@ static void update_state( const std::string &context, const std::string &step )
         // so eyeball a bit off the main viewport to compensate
         const ImVec2 screen_size = ImGui::GetMainViewport()->Size * 0.98f;
 
-        // get snippet text and calculate it's size ahead of time
-        gLUI->tip = SNIPPET.random_from_category( "tip" ).value_or(
-                        translation() ).translated();
-
-        // if our screen space is at least twice as large as minimal, we will use 1.5x font size
-        gLUI->large_hint_size = cataimgui::min_screen_res_y * 2.f < screen_size.y;
-
-        // calculate hint_height maybe with increased font
-        // ideally it would use proper ImGui::PopFont(), but it requires imgui window, which we do not have here
-        // so we just eyeball it to be 1.6x bigger than normal-sized string
-        if( gLUI->large_hint_size ) {
-            gLUI->hint_height = cataimgui::get_string_height( gLUI->tip, screen_size.x ) * 1.6f;
-        } else {
-            gLUI->hint_height = cataimgui::get_string_height( gLUI->tip, screen_size.x );
-        }
-
-        // no matter the size, loading message always fit in 1 line,
-        // so just use dummy line to calculate it's height
-        gLUI->loading_msg_height = cataimgui::get_string_height( " ", 0 );
-
-        gLUI->text_height = gLUI->hint_height + gLUI->loading_msg_height;
+        // get snippet text and calculate its size ahead of time (also seeds the
+        // re-roll timer; see the cycle check after this init block)
+        roll_loading_tip();
 
         // get image
         std::vector<cata_path> imgs;
@@ -232,6 +248,14 @@ static void update_state( const std::string &context, const std::string &step )
         }
 #endif
     }
+#ifdef TILES
+    // Cycle the tip every ~5s so slow loads show several hints.  Only advances
+    // between loading steps (show() calls); a single step that blocks longer
+    // than this won't re-roll mid-step.
+    else if( std::chrono::steady_clock::now() - gLUI->last_tip_roll > std::chrono::seconds( 5 ) ) {
+        roll_loading_tip();
+    }
+#endif
     gLUI->context = std::string( context );
     gLUI->step = std::string( step );
 }

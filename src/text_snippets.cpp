@@ -32,6 +32,30 @@ void snippet_library::load_snippet( const JsonObject &jsobj, const std::string &
     } else {
         add_snippet_from_json( category, jsobj, src );
     }
+    // MP (co-op fork): an optional "cooptext" sibling array lets co-op tips be
+    // authored separately while merging into the SAME weighted pool as vanilla
+    // tips, so both the main menu and loading screen pick them up with no UI
+    // changes.  Each entry is wrapped in a colored "CO-OP:" prefix at load so it
+    // stands out.  (i18n caveat: the prefix is baked into the source string, so
+    // co-op tip bodies aren't independently translatable -- fine for new
+    // fork-only English tips.)  Entries may be bare strings or { "text", "weight" }.
+    if( jsobj.has_array( "cooptext" ) ) {
+        static const std::string coop_prefix = "<color_pink>CO-OP:</color> ";
+        std::vector<weighted_translation> &no_id = snippets_by_category[category].no_id;
+        for( const JsonValue entry : jsobj.get_array( "cooptext" ) ) {
+            std::string body;
+            uint64_t weight = 1;
+            if( entry.test_string() ) {
+                body = entry.get_string();
+            } else {
+                JsonObject jo = entry.get_object();
+                body = jo.get_string( "text" );
+                weight = jo.get_int( "weight", 1 );
+            }
+            const uint64_t weight_acc = no_id.empty() ? weight : no_id.back().weight_acc + weight;
+            no_id.emplace_back( weighted_translation{ weight_acc, to_translation( coop_prefix + body ) } );
+        }
+    }
 }
 
 void snippet_library::add_snippets_from_json( const std::string &category, const JsonArray &jarr,

@@ -176,24 +176,33 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 - Vehicle construction — install and remove parts
 - Drop-into-vehicle (drop items into the storage of a vehicle you're
   standing on)
-- **Co-op HUD** — bottom-left panel showing partner name, movement
-  mode, worst-body-part HP bar, current activity + progress, and
-  calendar drift
-- **Partner menu co-op special actions** — bump into your partner to open it; "*Tap on shoulder*"
+- In-game text chat: bind `Co-op chat` to a key to message your
+  partner... yelling still works too
+- Trading: full trade menu between players (in addition to the new "Pass item" action, below)
+- Different z-levels — ground and overmap stay in sync when players are
+  on different levels; ramps and bridges work now as expected
+- Separate vehicles — both players can drive their own vehicles
+- Fast-forward — turns skip ahead when both players are in long waits or long activities
+- Co-op HUD — bottom-left panel showing partner name, movement mode, mood, worst-body-part HP bar, 
+  current activity + progress, and ping in ms
+- Partner menu co-op special actions — bump into your partner to open i: "*Tap on shoulder*"
  interrupts their wait, "*Help with task*" works like single-player NPC help, 
- "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus!
+ "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus (just like real life)
 
 ---
 
 ## Known limits
 
-- **Same reality bubble**, centered on the host. There's only one simulated
-  area (not one per player), so both of you have to stay near each other —
-  roughly within 65 tiles. You'll be warned as you approach the limit, and if
-  you drift too far the world automatically pauses until you close the gap.
-- **Sleep** runs but two-player sleep dynamics aren’t fully validated.
-  Coordinate with your partner or expect rough edges around
-  partner-status messages.
+- **Same reality bubble** (for now), centered on the host. There's only one simulated
+  area (not one per player), so you have to stay near each other, within
+  about 60 tiles. You'll get escalating warnings as you drift apart, and past
+  about 68 tiles you leave the host's simulated zone and things break (vehicle
+  physics especially). The world does **not** auto-pause... so try and close the gap when
+  the warning shows. 
+- **The host has to stay running.** It's a listen server, not a dedicated one:
+  if the host quits or loses connection, the session ends for both players.
+- **Sleep** should work, but isn't fully developed yet. Coordinate sleep times 
+  with your partner or expect the occasional issue.
 
 ---
 
@@ -261,6 +270,24 @@ large scripted-effect/teleport power sets fall outside that model.
 ---
 
 ## Changelog
+
+
+### 2026-06-26
+
+- **Better partner stats + ping** — the co-op panel now
+  shows your partner's **mood**, **health** (worst-hurt body part), and **ping** in ms.
+- **Killing monsters as the client is fixed** — monsters you kill as the joining
+  player no longer resurrect or drop duplicate corpses, hopefully.
+- **Monsters aggro on both players fairly** — monsters used to prefer the
+  client instead of whoever's actually closer... they should no longer pile onto the
+  client player.
+- **Construction works in co-op** — small changes to make construction mostly usable.  In-progress
+  tiles now sync both directions, and build progress stays in sync.
+- **Fewer co-op crashes & lockups** — fixed a crash when a mutated character
+  (e.g. with a tail) joined; the host can now save & quit and toggle safe mode
+  even while waiting on a locked turn; the host survives the client disconnecting.
+- **Movement & stamina match the host** — client move costs and the stamina
+  burned from smashing now behave the same as on the host.
 
 
 ### 2026-06-21

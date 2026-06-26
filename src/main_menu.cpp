@@ -716,8 +716,21 @@ bool main_menu::opening_screen()
 
     while( !start ) {
         ui_manager::redraw();
-        std::string action = ctxt.handle_input();
+        std::string action = ctxt.handle_input( 5000 );
         input_event sInput = ctxt.get_raw_input();
+
+        if( action == "TIMEOUT" ) {
+            // Cycle the tip-of-the-day on idle (~5s) so it rotates instead of
+            // sitting on one tip while the player reads the menu.  Reject an
+            // immediate repeat (capped retry, in case only one tip exists).
+            std::string next = vdaytip;
+            for( int tries = 0; tries < 8 && next == vdaytip; ++tries ) {
+                next = SNIPPET.random_from_category( "tip" ).value_or( translation() ).translated();
+            }
+            vdaytip = next;
+            ui.invalidate_ui();
+            continue;
+        }
 
         // check automatic menu shortcuts
         bool match = false;

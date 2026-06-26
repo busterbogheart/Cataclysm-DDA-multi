@@ -270,3 +270,6 @@ MP_SAVE_AND_TEMPLATES_TEST_PLAN.md
 
 # Generated at build time by CI (or local dev with --version):
 src/cata_version_generated.h
+
+# fork design notes — keep local, not public
+ARCHITECTURE.md
