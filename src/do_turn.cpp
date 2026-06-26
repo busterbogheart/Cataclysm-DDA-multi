@@ -264,6 +264,13 @@ void handle_key_blocking_activity( int timeout )
             !action.empty() && action != "ANY_INPUT" && action != "TIMEOUT" ) {
             cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-INPUT: action=\"" + action + "\"" );
         }
+        // Diagnostic: does the LOCKED CLIENT route input through this blocking-activity
+        // filter (vs handle_action)?  If a swallowed key (e.g. "morale") shows up here,
+        // this filter — not the handle_action gates — is the one blocking it.
+        if( cata_mp::is_client_mode() &&
+            !action.empty() && action != "ANY_INPUT" && action != "TIMEOUT" ) {
+            cata_mp::mp_log( "[cdda-mp] CLI-LOCKED-INPUT: action=\"" + action + "\"" );
+        }
         bool refresh = true;
         if( action == "pause" ) {
             if( u.activity.is_interruptible_with_kb() ) {
@@ -291,6 +298,11 @@ void handle_key_blocking_activity( int timeout )
             ui::omap::display();
         } else if( action == "player_data" ) {
             u.disp_info( true );
+        } else if( action == "morale" ) {
+            // Read-only morale view — was swallowed here while locked (the key
+            // never reached handle_action's allow at do_regular_action), so the
+            // client couldn't open it. Mirrors the host_ui_actions allow.
+            u.disp_morale();
         } else if( action == "messages" ) {
             Messages::display_messages();
         } else if( action == "help" ) {
