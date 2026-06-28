@@ -271,20 +271,23 @@ large scripted-effect/teleport power sets fall outside that model.
 
 ## Changelog
 
+<!-- Stage the NEXT release's notes under "### Unreleased". The site filters out any
+     non-dated heading, so Unreleased notes do NOT publish. At release, rename the
+     heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
-### 2026-06-26
+### Unreleased
 
-- **Better partner stats + ping** — the co-op panel now
-  shows your partner's **mood**, **health** (worst-hurt body part), and **ping** in ms.
 - **Killing monsters as the client is fixed** — monsters you kill as the joining
   player no longer resurrect or drop duplicate corpses, hopefully.
+- **Better partner stats + ping** — the co-op panel now
+  shows your partner's **mood**, **health** (worst-hurt body part), and **ping** in ms.
 - **Monsters aggro on both players fairly** — monsters used to prefer the
   client instead of whoever's actually closer... they should no longer pile onto the
   client player.
 - **Construction works in co-op** — small changes to make construction mostly usable.  In-progress
   tiles now sync both directions, and build progress stays in sync.
 - **Fewer co-op crashes & lockups** — fixed a crash when a mutated character
-  (e.g. with a tail) joined; the host can now save & quit and toggle safe mode
+  (e.g. with a tail) joined; the host can now save & quit and toggle Safe Mode
   even while waiting on a locked turn; the host survives the client disconnecting.
 - **Movement & stamina match the host** — client move costs and the stamina
   burned from smashing now behave the same as on the host.
