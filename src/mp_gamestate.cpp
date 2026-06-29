@@ -779,6 +779,7 @@ static float g_mp_host_luminance = 0.0f;
 static float g_mp_remote_player_luminance = 0.0f;
 
 static const efftype_id effect_bleed( "bleed" );
+static const efftype_id effect_ridden( "ridden" );
 
 // ---------------------------------------------------------------------------
 // Info panel (bottom-left corner)
@@ -8928,13 +8929,22 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
         const uint32_t nid = mon_ptr->mp_net_id;
         seen_nids.insert( nid );
         const int mon_facing = ( mon_ptr->facing == FacingDirection::LEFT ) ? 0 : 1;
+        // Ridden-mount sync: tag who rides so the client can re-establish the
+        // effect_ridden + mounted_player link and drive the SP rid_ draw path.
+        // "host" = the host avatar rides (client links it to the host proxy NPC);
+        // "client" = the client proxy rides (already linked locally client-side).
+        std::string rider_field;
+        if( mon_ptr->has_effect( effect_ridden ) && mon_ptr->mounted_player ) {
+            rider_field = mon_ptr->mounted_player->is_avatar()
+                          ? ",\"rider\":\"host\"" : ",\"rider\":\"client\"";
+        }
         std::string rec = "{\"nid\":" + std::to_string( nid )
                + ",\"id\":\"" + mon_ptr->type->id.str() + "\""
                + ",\"x\":" + std::to_string( mp.x() )
                + ",\"y\":" + std::to_string( mp.y() )
                + ",\"z\":" + std::to_string( mp.z() )
                + ",\"hp\":" + std::to_string( mon_ptr->get_hp() )
-               + ",\"facing\":" + std::to_string( mon_facing ) + "}";
+               + ",\"facing\":" + std::to_string( mon_facing ) + rider_field + "}";
         // Delta gate: emit only if new or changed since last broadcast. nid + id
         // are stable, so an identical record string means x/y/z/hp/facing are all
         // unchanged → the client already holds this exact state, omit it.
@@ -9858,6 +9868,40 @@ static void apply_monster_sync( JsonObject &jo )
         if( mo.has_int( "facing" ) ) {
             best->facing = mo.get_int( "facing" ) == 0
                            ? FacingDirection::LEFT : FacingDirection::RIGHT;
+        }
+
+        // Ridden-mount sync: re-establish SP's mount link so cata_tiles' rid_
+        // path hides the rider and draws it on the mount (mirrors SP
+        // Character::mount_creature / forced_dismount). effect_ridden is
+        // permanent (the delta gate skips a stationary mount, so a timed effect
+        // would expire mid-ride). Only the "host" direction is applied here; a
+        // client-ridden mount is already linked locally (the client ran its own
+        // mount action), so we leave its own avatar link untouched.
+        std::string rider;
+        mo.read( "rider", rider );
+        if( rider == "host" ) {
+            // get_partner_npc() resolves the host proxy on the client and handles
+            // the negative-proxy-id case that character_id::is_valid() rejects.
+            npc *proxy = get_partner_npc();
+            if( proxy ) {
+                if( !best->has_effect( effect_ridden ) ) {
+                    best->add_effect( effect_ridden, 1_turns, true );
+                    mp_log( "[cdda-mp] MOUNT-APPLY: nid=" + std::to_string( nid ) +
+                            " host rider -> proxy '" + proxy->get_name() + "' on " +
+                            best->type->id.str() );
+                }
+                best->mounted_player = proxy;
+                proxy->mounted_creature = ct.find( best->pos_abs() );
+            }
+        } else if( rider.empty() && best->has_effect( effect_ridden ) &&
+                   best->mounted_player && !best->mounted_player->is_avatar() ) {
+            // Host dismounted: tear down the proxy link both ways. Guard on the
+            // rider being the proxy (non-avatar) so we never disturb a mount the
+            // client's own avatar is riding.
+            best->mounted_player->mounted_creature = nullptr;
+            best->mounted_player = nullptr;
+            best->remove_effect( effect_ridden );
+            mp_log( "[cdda-mp] MOUNT-APPLY: nid=" + std::to_string( nid ) + " host dismount" );
         }
     }
 
