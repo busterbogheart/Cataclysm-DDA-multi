@@ -62,6 +62,23 @@ static std::string mp_version_commit_id( const std::string &v )
     return s;
 }
 
+// True if two version strings name the same commit, tolerant of different hash
+// abbreviation LENGTHS. A full clone and a shallow clone of the SAME commit
+// abbreviate the short hash differently (e.g. host "648cb8a6f9" vs client
+// "648cb8a"), so a plain != on the stripped ids falsely rejects them (the
+// 2026-06-28 M4↔Linux-VM mismatch). git abbreviations are unambiguous within
+// each repo, so comparing the shorter id as a prefix of the longer is safe.
+static bool mp_version_commit_match( const std::string &a, const std::string &b )
+{
+    const std::string ca = mp_version_commit_id( a );
+    const std::string cb = mp_version_commit_id( b );
+    if( ca.empty() || cb.empty() ) {
+        return ca == cb;
+    }
+    const std::string::size_type n = std::min( ca.size(), cb.size() );
+    return ca.compare( 0, n, cb, 0, n ) == 0;
+}
+
 // Host→client wire compression.  The per-turn state broadcast (monster/map
 // snapshot) is large, repetitive JSON; zstd shrinks it ~5-10×.  We keep the
 // newline-delimited framing by wrapping the compressed bytes in a tiny JSON
@@ -322,7 +339,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                 mp_version_commit_id( version_ ) );
         if( !version_.empty() ) {
             const std::string client_ver = json_get_str( msg, "version" );
-            if( mp_version_commit_id( client_ver ) != mp_version_commit_id( version_ ) ) {
+            if( !mp_version_commit_match( client_ver, version_ ) ) {
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
                 session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
@@ -372,7 +389,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // different time / uses a different render backend.
         if( !version_.empty() ) {
             const std::string client_ver = json_get_str( msg, "version" );
-            if( mp_version_commit_id( client_ver ) != mp_version_commit_id( version_ ) ) {
+            if( !mp_version_commit_match( client_ver, version_ ) ) {
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
                 session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );

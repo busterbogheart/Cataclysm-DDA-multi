@@ -1067,8 +1067,13 @@ else
 endif
 
 ifeq ($(TARGETSYSTEM),LINUX)
-  CFLAGS += -mcx16
-  CXXFLAGS += -mcx16
+  # -mcx16 (128-bit CMPXCHG16B) is x86-only; native aarch64 Linux builds fail on
+  # the unrecognized flag. Gate it on x86 so arm64 Linux (e.g. a Pi / ARM laptop /
+  # an Apple-Silicon test VM) builds clean while x86_64/CI keep the flag.
+  ifneq ($(filter x86_64 i686 i386,$(shell uname -m)),)
+    CFLAGS += -mcx16
+    CXXFLAGS += -mcx16
+  endif
   BINDIST_EXTRAS += cataclysm-launcher
   ifeq ($(SDL3),1)
     # bundle-sdl3-linux.sh fills bindist/lib/; RUNPATH=$$ORIGIN/lib lets

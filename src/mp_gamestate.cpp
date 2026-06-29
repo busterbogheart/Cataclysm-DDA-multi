@@ -124,17 +124,20 @@ void mp_log( const std::string &msg )
                              std::to_string( delta_ms ) + "ms] " + msg;
     std::cout << line << std::endl;
 
-    // Also append to /tmp/cdda-mp-{server,client}.log so log capture doesn't
+    // Also append to ~/cdda-mp-{server,client}.log so log capture doesn't
     // require launching via start-mp.sh's stdout-tee.  Opens lazily on the
     // first call once the mode is known; truncates on first open so each
     // session's log starts fresh.  Re-opens with truncation if the mode
     // changes (e.g. SP→host via the in-game menu).
     static std::ofstream log_file;
     static std::string current_path;
-    // Log directory: /tmp on unix (the stable path our tooling reads). Windows
-    // has no /tmp — an ofstream open on a nonexistent C:\tmp\ silently fails, so
-    // the client never wrote a log there. Use %USERPROFILE% (always present and
-    // writable): C:\Users\<name>\cdda-mp-client.log.
+    // Log directory: the user's HOME on every platform, so the log PERSISTS
+    // across reboots and the OS's temp-cleanup. The old /tmp location is wiped
+    // on every boot on Linux (systemd clears /tmp) — a real player who reboots
+    // to recover from a crash loses the log before they can attach it to a bug
+    // report. HOME matches Windows' %USERPROFILE% behaviour (which already
+    // worked: C:\Users\<name>\cdda-mp-client.log). Falls back to /tmp only if
+    // HOME/USERPROFILE is somehow unset.
     std::string log_dir = "/tmp/";
 #if defined(_WIN32)
     if( const char *home = std::getenv( "USERPROFILE" ) ) {
@@ -143,6 +146,10 @@ void mp_log( const std::string &msg )
         log_dir = std::string( tmp ) + "\\";
     } else {
         log_dir.clear();
+    }
+#else
+    if( const char *home = std::getenv( "HOME" ) ) {
+        log_dir = std::string( home ) + "/";
     }
 #endif
     std::string desired_path;
@@ -192,9 +199,10 @@ void mp_log( const std::string &msg )
 // shows "not responding" — and until now left NO trace: the old breadcrumbs
 // went to std::cout, which never reaches the log file, so the log simply
 // stopped mid-apply with nothing naming the step (the 2026-06-26 Parallels
-// hang).  mp_apply_step records the active step + a heartbeat and logs a
-// START/DONE pair through mp_log (which flushes every line, so the START
-// survives a hang).  A background watchdog — started lazily on the first apply
+// hang).  mp_apply_step records the active step + a heartbeat for the watchdog.
+// (The per-step START/DONE breadcrumbs it used to log were trimmed 2026-06-28 —
+// ~10 flushed writes/turn of noise the watchdog makes redundant; only a stall is
+// worth a line.)  A background watchdog — started lazily on the first apply
 // step — reads the heartbeat and, if any step stays active past a threshold,
 // logs a line NAMING the stalled step.  That converts a silent beachball into a
 // labeled, attributable event, for this bug and any future one.  Critical
@@ -255,21 +263,13 @@ struct mp_apply_step {
     explicit mp_apply_step( std::string label )
         : label_( std::move( label ) ), t0_( std::chrono::steady_clock::now() ) {
         mp_start_apply_watchdog();
-        {
-            std::lock_guard<std::mutex> lk( g_apply_step_mtx );
-            g_apply_step_label = label_;
-            g_apply_step_started = t0_;
-        }
-        mp_log( "[cdda-mp] STATE-APPLY: " + label_ + " start" );
+        std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+        g_apply_step_label = label_;
+        g_apply_step_started = t0_;
     }
     ~mp_apply_step() {
-        const long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - t0_ ).count();
-        {
-            std::lock_guard<std::mutex> lk( g_apply_step_mtx );
-            g_apply_step_label.clear();
-        }
-        mp_log( "[cdda-mp] STATE-APPLY: " + label_ + " done dur=" + std::to_string( ms ) + "ms" );
+        std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+        g_apply_step_label.clear();
     }
 };
 
@@ -5790,8 +5790,8 @@ std::string mp_game_report_section()
     s += "- Co-op Logs (attach to bug reports): %USERPROFILE%\\cdda-mp-server.log (host) / "
          "%USERPROFILE%\\cdda-mp-client.log (client)\n";
 #else
-    s += "- Co-op Logs (attach to bug reports): /tmp/cdda-mp-server.log (host) / "
-         "/tmp/cdda-mp-client.log (client)\n";
+    s += "- Co-op Logs (attach to bug reports): ~/cdda-mp-server.log (host) / "
+         "~/cdda-mp-client.log (client)\n";
 #endif
     s += "- Co-op Note: both players must run the SAME Game Version listed above; "
          "mismatched builds are rejected at join.\n";
@@ -6966,11 +6966,9 @@ static bool apply_one_state_message( const std::string &msg )
     }
 
     try {
-        mp_log( "[cdda-mp] STATE-APPLY: parse (" + std::to_string( msg.size() ) + " bytes) start" );
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
         jo.allow_omitted_members();
-        mp_log( "[cdda-mp] STATE-APPLY: parse done" );
 
         // Sync host's calendar turn so the client sees the correct time, lighting, and weather.
         if( jo.has_int( "calendar_turn" ) ) {

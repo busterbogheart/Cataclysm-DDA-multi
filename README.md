@@ -166,8 +166,9 @@ The co-op logs are the important ones:
 
 - **Host player:** `cdda-mp-server.log`
 - **Joining player:** `cdda-mp-client.log`
-- Locations:
-  - **macOS/Linux:** `/tmp/cdda-mp-server.log` or `/tmp/cdda-mp-client.log`
+- Locations (all in your home folder):
+  - **macOS/Linux:** `~/cdda-mp-server.log` or `~/cdda-mp-client.log` (your home
+    directory — e.g. `/home/<you>/` on Linux, `/Users/<you>/` on macOS)
   - **Windows:** in your user folder — `C:\Users\<you>\cdda-mp-server.log` or
     `cdda-mp-client.log` (paste `%USERPROFILE%` into Explorer's address bar)
 
