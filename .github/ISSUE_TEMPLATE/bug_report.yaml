@@ -79,10 +79,10 @@ body:
         **This is the single most useful thing in the report.** Attach or paste both logs:
 
         - **Host** the player hosting:
-          - macOS / Linux: `/tmp/cdda-mp-server.log`
+          - macOS / Linux: `~/cdda-mp-server.log` (your home folder)
           - Windows: `C:\Users\<name>\cdda-mp-server.log`
         - **Client** the player joining:
-          - macOS / Linux: `/tmp/cdda-mp-client.log`
+          - macOS / Linux: `~/cdda-mp-client.log` (your home folder)
           - Windows: `C:\Users\<name>\cdda-mp-client.log`
 
         Drag-and-drop the files directly into this box. If a player only has one of the
