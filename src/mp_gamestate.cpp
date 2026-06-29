@@ -3186,8 +3186,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         const tripoint_bub_ms proxy_pre = remote->pos_bub();
         mp_log( "[cdda-mp] SRV-SWAP-PRE: host=" + host_pre.to_string() +
                 " proxy=" + proxy_pre.to_string() );
-        mp_log( "[cdda-mp] DIAG swap-handler: remote.get_name()='" + remote->get_name() +
-                "' av='" + get_avatar().name + "'" );
         add_msg( _( "%s swaps places with you." ), remote->get_name() );
         g->swap_critters( host_av, *remote );
         mp_log( "[cdda-mp] SRV-SWAP-POST: host=" + host_av.pos_bub().to_string() +
@@ -3211,8 +3209,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         const int dy = ( host_pos.y() > proxy_pos.y() ) ? 1
                        : ( host_pos.y() < proxy_pos.y() ) ? -1 : 0;
         const tripoint_bub_ms target = host_pos + tripoint_rel_ms( dx, dy, 0 );
-        mp_log( "[cdda-mp] DIAG push-handler: remote.get_name()='" + remote->get_name() +
-                "' av='" + get_avatar().name + "'" );
         if( ( dx != 0 || dy != 0 ) && !m.impassable( target ) ) {
             host_av.setpos( m, target );
             add_msg( _( "%s pushes you out of the way." ), remote->get_name() );
@@ -7093,8 +7089,6 @@ static bool apply_one_state_message( const std::string &msg )
                     host_name = hnpc->get_name();
                 }
             }
-            mp_log( "[cdda-mp] DIAG cli-render: proxy='" + host_name + "' own_av='" +
-                    get_avatar().name + "'" );
             if( jo.has_bool( "partner_swapped" ) && jo.get_bool( "partner_swapped" ) ) {
                 add_msg( _( "%s swaps places with you." ), host_name );
             }
@@ -8893,16 +8887,8 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
     // missed the on-connect clear, a dropped packet) without per-turn cost the
     // rest of the time. Cheap: monsters that haven't changed simply re-serialize.
     constexpr int KEYFRAME_INTERVAL = 120;
-    // MP diagnostic toggle: CDDA_MP_NO_DELTA=1 forces a full monster snapshot
-    // every broadcast (disables delta-encoding). Lets us isolate the client
-    // load-in hard-hang (2026-06-26) to the delta path without rebuilding
-    // between test runs — set the env on the host and restart.
-    static const bool s_force_keyframe = [] {
-        const char *e = std::getenv( "CDDA_MP_NO_DELTA" );
-        return e && *e && *e != '0';
-    }();
     static int s_keyframe_ctr = 0;
-    const bool keyframe = s_force_keyframe || ( s_keyframe_ctr++ % KEYFRAME_INTERVAL ) == 0;
+    const bool keyframe = ( s_keyframe_ctr++ % KEYFRAME_INTERVAL ) == 0;
     if( keyframe ) {
         g_server_mon_last_sent.clear();
     }
