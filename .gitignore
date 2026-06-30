@@ -54,6 +54,16 @@
 !/gfx/loading_screens
 !/gfx/Larwick_Overmap
 !/gfx/tile_config_template.json
+# Graphical tilesets bundled in every release (draft + public), 2026-06-30.
+# Track the unpacked composed dirs only — NOT the redundant *.zip sources in
+# gfx/ (those stay ignored via /gfx/* above) and not gfx/.DS_Store.
+!/gfx/Altica
+!/gfx/ChibiUltica
+!/gfx/UltimateCataclysm
+!/gfx/MshockXotto+
+!/gfx/HollowMoon
+!/gfx/GiantDays
+!/gfx/SurveyorsMap
 /graveyard/
 /memorial/
 /mods/

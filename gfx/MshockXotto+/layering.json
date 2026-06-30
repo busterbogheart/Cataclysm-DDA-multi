@@ -1,0 +1,208 @@
+{
+  "variants": [
+    {
+      "context": "f_flagpole",
+      "item_variants": [
+        {
+          "item": "state_flag",
+          "sprite": [ { "id": "state_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        },
+        {
+          "item": "pride_flag",
+          "sprite": [ { "id": "pride_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        },
+        {
+          "item": "american_flag",
+          "sprite": [ { "id": "american_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        },
+        {
+          "item": "national_flag",
+          "sprite": [ { "id": "national_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        }
+      ]
+    },
+    {
+      "context": "f_indoor_flagpole",
+      "item_variants": [
+        {
+          "item": "state_flag",
+          "sprite": [ { "id": "state_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        },
+        {
+          "item": "pride_flag",
+          "sprite": [ { "id": "pride_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        },
+        {
+          "item": "american_flag",
+          "sprite": [ { "id": "american_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        },
+        {
+          "item": "national_flag",
+          "sprite": [ { "id": "national_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        }
+      ]
+    },
+    {
+      "context": "f_indoor_flagpole_wooden",
+      "item_variants": [
+        {
+          "item": "state_flag",
+          "sprite": [ { "id": "state_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        },
+        {
+          "item": "pride_flag",
+          "sprite": [ { "id": "pride_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        },
+        {
+          "item": "american_flag",
+          "sprite": [ { "id": "american_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        },
+        {
+          "item": "national_flag",
+          "sprite": [ { "id": "national_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -25
+        }
+      ]
+    },
+    {
+      "context": "f_wooden_flagpole",
+      "item_variants": [
+        {
+          "item": "state_flag",
+          "sprite": [ { "id": "state_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        },
+        {
+          "item": "pride_flag",
+          "sprite": [ { "id": "pride_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        },
+        {
+          "item": "american_flag",
+          "sprite": [ { "id": "american_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        },
+        {
+          "item": "national_flag",
+          "sprite": [ { "id": "national_flag", "weight": 1 } ],
+          "layer": 90,
+          "offset_x": 18,
+          "offset_y": -47
+        }
+      ]
+    },
+    {
+      "context": "f_brazier",
+      "item_variants": [
+        { "item": "log", "sprite": [ { "id": "brazier_wood", "weight": 1 } ], "layer": 90 },
+        { "item": "2x4", "sprite": [ { "id": "brazier_wood", "weight": 1 } ], "layer": 90 },
+        { "item": "stick", "sprite": [ { "id": "brazier_wood", "weight": 1 } ], "layer": 90 },
+        { "item": "stick_long", "sprite": [ { "id": "brazier_wood", "weight": 1 } ], "layer": 90 },
+        { "item": "splinter", "sprite": [ { "id": "brazier_wood", "weight": 1 } ], "layer": 90 },
+        { "item": "tinder", "sprite": [ { "id": "brazier_wood", "weight": 1 } ], "layer": 90 },
+        { "item": "ash", "sprite": [ { "id": "brazier_ashes", "weight": 1 } ], "layer": 80 },
+        { "item": "corpse_ash", "sprite": [ { "id": "brazier_ashes", "weight": 1 } ], "layer": 80 }
+      ],
+      "field_variants": [ { "field": "fd_fire", "sprite": [ { "id": "f_brazier_fire", "weight": 3 } ] } ]
+    },
+    {
+      "context": "f_planter_mature",
+      "item_variants": [
+        { "item": "seed_carrot", "sprite": [ { "id": "f_planter_carrot_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_raw_bamboo", "sprite": [ { "id": "f_planter_bamboo_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "buckwheat", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_buckwheat", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "barley", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_barley", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "wheat", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_wheat", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        { "item": "winter_wheat", "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ], "layer": 90 },
+        {
+          "item": "seed_red_winter_wheat",
+          "sprite": [ { "id": "f_planter_cereal_mature", "weight": 1 } ],
+          "layer": 90
+        },
+        { "item": "seed_mushroom_morel", "sprite": [ { "id": "f_planter_morel_mature", "weight": 1 } ], "layer": 90 }
+      ]
+    },
+    {
+      "context": "f_planter_harvest",
+      "item_variants": [
+        { "item": "seed_carrot", "sprite": [ { "id": "f_planter_carrot_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_raw_bamboo", "sprite": [ { "id": "f_planter_bamboo_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "buckwheat", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_buckwheat", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "barley", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_barley", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "wheat", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "seed_wheat", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        { "item": "winter_wheat", "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ], "layer": 90 },
+        {
+          "item": "seed_red_winter_wheat",
+          "sprite": [ { "id": "f_planter_cereal_harvest", "weight": 1 } ],
+          "layer": 90
+        },
+        { "item": "seed_mushroom_morel", "sprite": [ { "id": "f_planter_morel_harvest", "weight": 1 } ], "layer": 90 }
+      ]
+    },
+    {
+      "context": "f_planter_seedling",
+      "item_variants": [ { "item": "seed_mushroom_morel", "sprite": [ { "id": "f_planter_morel_seedling", "weight": 1 } ], "layer": 90 } ]
+    },
+    {
+      "context": "f_planter_seed",
+      "item_variants": [ { "item": "seed_mushroom_morel", "sprite": [ { "id": "f_planter_morel_seed", "weight": 1 } ], "layer": 90 } ]
+    },
+    {
+      "context": "f_planter_unharvested_overgrown",
+      "item_variants": [
+        {
+          "item": "seed_mushroom_morel",
+          "sprite": [ { "id": "f_planter_morel_unharvested_overgrown", "weight": 1 } ],
+          "layer": 90
+        }
+      ]
+    }
+  ]
+}
