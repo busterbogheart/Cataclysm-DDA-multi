@@ -123,6 +123,35 @@ static std::atomic<bool> g_rc_enabled{ false };
 static std::atomic<bool> g_rc_in_progress{ false };
 static void reconnect_worker();
 
+// Heartbeat + stall detection (Increment 1.5).  The read-error path only fires
+// when there's outstanding SENT data for TCP's RTO to time out on; a link that
+// dies while the client is idle/locked WAITING for a grant is invisible to it
+// (no traffic -> no RTO -> no error).  So we send a periodic heartbeat (keeps
+// liveness traffic on the wire) and, if we hear nothing back for MP_STALL_MS,
+// declare the link dead and start the reconnect sweep ourselves.  Runs on the
+// io thread (a steady_timer) so it's immune to the game thread blocking in
+// handle_action (observed blocking up to 37s waiting for input).
+static constexpr int64_t MP_HB_INTERVAL_MS = 1500;  // heartbeat cadence
+static constexpr int64_t MP_STALL_MS = 8000;        // peer silence -> drop (~5 missed beats)
+static std::atomic<int64_t> g_last_recv_ms{ 0 };    // last time ANY host msg arrived
+
+static int64_t mp_now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch() ).count();
+}
+
+// Kick off a reconnect sweep iff enabled and not already running.  Shared by the
+// read-error path and the heartbeat stall path so only one sweep ever runs.
+static void start_reconnect_sweep( const char *why )
+{
+    if( g_rc_enabled.load() && !g_rc_in_progress.exchange( true ) ) {
+        mp_log( std::string( "[cdda-mp] RECONNECT: " ) + why + " — starting reconnect sweep" );
+        g_recv_queue.push( "{\"type\":\"state\",\"reconnecting\":true}" );
+        std::thread( reconnect_worker ).detach();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Connection impl
 // ---------------------------------------------------------------------------
@@ -132,12 +161,37 @@ struct client_impl {
     tcp::socket sock{ io_ctx };
     asio::streambuf read_buf;
     std::thread io_thread;
+    asio::steady_timer hb_timer{ io_ctx };
 
     ~client_impl() {
         io_ctx.stop();
         if( io_thread.joinable() ) {
             io_thread.join();
         }
+    }
+
+    // Periodic heartbeat + stall watchdog, on the io thread.  Sends a tiny
+    // heartbeat every MP_HB_INTERVAL_MS so the link carries traffic even when
+    // the client is idle/locked, and triggers a reconnect if the host has gone
+    // silent for MP_STALL_MS.
+    void arm_heartbeat() {
+        hb_timer.expires_after( std::chrono::milliseconds( MP_HB_INTERVAL_MS ) );
+        hb_timer.async_wait( [this]( const asio::error_code & ec ) {
+            if( ec ) {
+                return;   // cancelled — client_impl is being torn down
+            }
+            static const std::string hb = "{\"type\":\"heartbeat\"}\n";
+            asio::error_code wec;
+            asio::write( sock, asio::buffer( hb ), wec );   // io-thread write (same as client_send)
+            const int64_t last = g_last_recv_ms.load();
+            if( last > 0 && mp_now_ms() - last > MP_STALL_MS ) {
+                mp_log( "[cdda-mp] HEARTBEAT: host silent >" + std::to_string( MP_STALL_MS ) +
+                        "ms — treating link as dropped" );
+                start_reconnect_sweep( "stall (no host msg)" );
+                return;   // sweep rebuilds g_client; don't re-arm on the dying one
+            }
+            arm_heartbeat();
+        } );
     }
 
     void start_read() {
@@ -150,19 +204,21 @@ struct client_impl {
                         "(version mismatch / wrong password) or is on a different build — "
                         "check the host's cdda-mp-server.log for a PROBE/JOIN REJECTED line." );
                 // Ungraceful drop (tunnel blip / RTO timeout): try to silently
-                // re-dial the same host instead of ending the session.  Only the
-                // FIRST drop kicks off a sweep (g_rc_in_progress guards re-entry).
-                if( g_rc_enabled.load() && !g_rc_in_progress.exchange( true ) ) {
-                    mp_log( "[cdda-mp] RECONNECT: link dropped — starting reconnect sweep" );
-                    g_recv_queue.push( "{\"type\":\"state\",\"reconnecting\":true}" );
-                    std::thread( reconnect_worker ).detach();
-                } else if( !g_rc_enabled.load() ) {
+                // re-dial the same host instead of ending the session.  (The
+                // stall watchdog above is the primary trigger when idle; this
+                // catches the mid-send RTO case.)
+                if( g_rc_enabled.load() ) {
+                    start_reconnect_sweep( "link dropped (read error)" );
+                } else {
                     // Reconnect disabled (intentional teardown / host goodbye): the
                     // game thread cleans up the host NPC via the synthetic message.
                     g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
                 }
                 return;
             }
+            // Liveness: any inbound byte means the host is alive — feeds the stall
+            // watchdog so a real silence is distinguishable from normal idle.
+            g_last_recv_ms.store( mp_now_ms() );
             std::istream is( &read_buf );
             std::string line;
             std::getline( is, line );
@@ -261,9 +317,17 @@ bool client_connect( const std::string &host, uint16_t port,
         asio::error_code nd_ec;
         g_client->sock.set_option( tcp::no_delay( true ), nd_ec );
         mp_log( "[cdda-mp] client TCP_NODELAY ec=" + nd_ec.message() );
+        // SO_KEEPALIVE backstop: lets the OS eventually reap a dead idle socket
+        // even if the app-level heartbeat/stall path somehow misses it.
+        asio::error_code ka_ec;
+        g_client->sock.set_option( asio::socket_base::keep_alive( true ), ka_ec );
     }
 
+    // Reset the liveness clock so the stall watchdog doesn't fire on a fresh/
+    // reconnected socket before the first inbound message.
+    g_last_recv_ms.store( mp_now_ms() );
     g_client->start_read();
+    g_client->arm_heartbeat();
     g_client->io_thread = std::thread( []() {
         g_client->io_ctx.run();
     } );

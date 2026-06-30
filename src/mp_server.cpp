@@ -139,6 +139,10 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         // turn cycle wedges (works on LAN, hangs over the internet).
         std::error_code nd_ec;
         socket.set_option( tcp::no_delay( true ), nd_ec );
+        // SO_KEEPALIVE backstop (see client_connect) — reaps a dead idle peer
+        // socket even if the app-level heartbeat/stall path misses it.
+        std::error_code ka_ec;
+        socket.set_option( asio::socket_base::keep_alive( true ), ka_ec );
         send( "{\"type\":\"hello\",\"protocol\":\"cdda-mp\",\"version\":\"0.1\"}\n" );
         do_read();
     }

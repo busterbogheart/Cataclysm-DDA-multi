@@ -402,10 +402,45 @@ static std::string mp_json_num( double v )
     return os.str();
 }
 
+// Heartbeat + stall detection (Increment 1.5), host side.  The client sends a
+// heartbeat every ~1.5s even while idle/locked; the host echoes its own.  Each
+// side tracks "time since last peer message" so a link that dies WHILE WAITING
+// (no traffic -> no TCP error) is still detected.  3s of no player action is
+// normal, so the threshold (8s) sits well above that and detection rides the
+// action-independent heartbeat, never player activity.
+static constexpr int64_t MP_HB_INTERVAL_MS = 1500;   // host heartbeat cadence
+static constexpr int64_t MP_CLIENT_STALL_MS = 8000;  // client silence -> disconnect
+static int64_t g_last_client_msg_ms = 0;             // last time any client msg arrived
+static int64_t g_last_host_hb_ms = 0;                // last heartbeat the host sent
+
+static int64_t mp_now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch() ).count();
+}
+
 // The character_id of the remote player's NPC. Invalid when no remote player is connected.
 static character_id remote_player_npc_id;
 static bool remote_player_connected = false;
 static std::string remote_player_name_;
+
+// Host: send a heartbeat to the client if the cadence has elapsed.  No-op unless
+// actively hosting a connected client.  Keeps liveness traffic flowing so the
+// client's stall watchdog can tell a dead link from a quiet one.  (Defined here,
+// after remote_player_connected, which it reads.)
+static void mp_host_heartbeat_maybe_send()
+{
+    if( !remote_player_connected ) {
+        return;
+    }
+    const int64_t now = mp_now_ms();
+    if( now - g_last_host_hb_ms >= MP_HB_INTERVAL_MS ) {
+        g_last_host_hb_ms = now;
+        if( server *srv = get_active_server() ) {
+            srv->post_broadcast( "{\"type\":\"heartbeat\"}\n" );
+        }
+    }
+}
 
 // Client-side: NPC representing the host player in the client's local world.
 static character_id client_host_npc_id;
@@ -1969,6 +2004,7 @@ static void spawn_remote_player( const std::string &name )
     g_separation_tier = 0;
     g_separation_settled = false;
     g_last_forwarded_msg_count = Messages::appended_total();  // don't forward pre-connect history
+    g_last_client_msg_ms = mp_now_ms();  // arm the stall watchdog from connect, not 0
     mp_save_npc_ids();  // persist ID so next session can clean it up
 
     // Don't announce the join here — at spawn the only name we have is the
@@ -2445,6 +2481,15 @@ static void mp_handle_shout_recv( const std::string &msg );
 
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
+    // Liveness: ANY message from the client (action, wait, or heartbeat) proves
+    // the link is alive — feeds the client-stall watchdog.  Stamp it before the
+    // guards so a heartbeat still counts even mid-respawn.
+    g_last_client_msg_ms = mp_now_ms();
+    // Heartbeat carries no body — it exists only to keep the link measurable.
+    if( msg.find( "\"type\":\"heartbeat\"" ) != std::string::npos ) {
+        return;
+    }
+
     if( !remote_player_connected ) {
         return;
     }
@@ -6413,6 +6458,7 @@ void process_mp_events()
                || data.find( "\"type\":\"chat\"" ) != std::string::npos
                || data.find( "\"type\":\"templates_list\"" ) != std::string::npos
                || data.find( "\"type\":\"resync_request\"" ) != std::string::npos
+               || data.find( "\"type\":\"heartbeat\"" ) != std::string::npos
                || data.find( "\"client_tile_changes\":" ) != std::string::npos;
     };
     mp_event event;
@@ -6425,7 +6471,10 @@ void process_mp_events()
                         event.data.substr( 0, 60 ) );
                 continue;
             }
-            mp_log( "[cdda-mp] process_mp_events: " + event.data.substr( 0, 60 ) );
+            // Heartbeats arrive every ~1.5s — don't spam the log with them.
+            if( event.data.find( "\"type\":\"heartbeat\"" ) == std::string::npos ) {
+                mp_log( "[cdda-mp] process_mp_events: " + event.data.substr( 0, 60 ) );
+            }
         }
         switch( event.evt_type ) {
             case mp_event::type::connect:
@@ -6441,6 +6490,21 @@ void process_mp_events()
                 }
                 break;
         }
+    }
+
+    // Heartbeat out + client-stall watchdog (host).  Runs every host do_turn AND
+    // every SRV-WAIT iteration (both call process_mp_events), so a link that dies
+    // while the host is blocked waiting for the client is caught in ~MP_CLIENT_
+    // STALL_MS instead of hanging RED indefinitely (observed 108s, 2026-06-30).
+    // remove_remote_player() clears remote_player_connected, which the SRV-WAIT
+    // loop's `while( remote_player_connected )` checks — so the host drops the
+    // wait, shows "the other player has disconnected", and continues solo.
+    mp_host_heartbeat_maybe_send();
+    if( remote_player_connected && g_last_client_msg_ms > 0 &&
+        mp_now_ms() - g_last_client_msg_ms > MP_CLIENT_STALL_MS ) {
+        mp_log( "[cdda-mp] HOST-STALL: client silent >" +
+                std::to_string( MP_CLIENT_STALL_MS ) + "ms — treating as disconnected" );
+        remove_remote_player();
     }
 }
 
@@ -6655,6 +6719,12 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
 
 static bool apply_one_state_message( const std::string &msg )
 {
+    // Heartbeat from the host — liveness only (mp_client_conn already stamped its
+    // recv clock for the stall watchdog).  Drop it first, before the per-packet
+    // log, so the ~1.5s cadence doesn't spam the log or get parsed as state.
+    if( msg.find( "\"type\":\"heartbeat\"" ) != std::string::npos ) {
+        return true;
+    }
     // Log a preview of every received packet so we can confirm moves=90 packets arrive.
     {
         const size_t preview_len = std::min( msg.size(), static_cast<size_t>( 120 ) );
