@@ -26,6 +26,16 @@ sed -E \
   # multi-line; the README keeps `<!--`/`-->` on their own lines.
   /<!--/ { in_comment = 1 }
   in_comment { if ( /-->/ ) { in_comment = 0 } next }
+  # Drop the staged "### Unreleased" changelog section — those are notes for the
+  # NEXT release and must not appear in a shipped zip (mirrors the site, which
+  # filters non-dated changelog headings). Skip from the Unreleased heading until
+  # the next heading at level 1-3 (the first dated "### YYYY-..." entry, or the
+  # following "## " section); deeper "####" lines inside it are skipped too.
+  /^###[[:space:]]+[Uu]nreleased[[:space:]]*$/ { in_unreleased = 1; next }
+  in_unreleased {
+    if ( /^#{1,3}[[:space:]]+/ ) { in_unreleased = 0 }   # next heading ends the skip; fall through to print it
+    else { next }
+  }
   # Headings: drop the leading #s, UPPERCASE for emphasis, and underline h1/h2.
   /^#{1,6}[[:space:]]+/ {
     hashes = $0
