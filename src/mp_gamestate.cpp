@@ -954,10 +954,9 @@ struct mp_hud_t {
                     }
                     joined += ips[i] + ":" + std::to_string( port );
                 }
-                line = string_format( _( "Partner not connected   hosting at: %s" ),
-                                      joined.c_str() );
+                line = string_format( _( "Partner not connected   %s" ), joined.c_str() );
             } else {
-                line = string_format( _( "Partner not connected   hosting on port %d" ), port );
+                line = string_format( _( "Partner not connected   port %d" ), port );
             }
             mvwprintz( win, point( 2, crow ), c_dark_gray, "%s",
                        line.substr( 0, std::max( 0, W - 4 ) ).c_str() );
