@@ -31,7 +31,6 @@
 #include "mapdata.h"
 #include "messages.h"
 #include "monster.h"
-#include "mp_client_conn.h"
 #include "mtype.h"
 #include "output.h"
 #include "pathfinding.h"
@@ -636,14 +635,6 @@ void insert_battery( monster &z )
 
 bool Character::can_mount( const monster &critter ) const
 {
-    // MP: the joining player can't authoritatively ride a host-owned mount yet
-    // (no mount/ride action in the client->host protocol — see ROADMAP). Block
-    // it here so the client never locally mounts a host-authoritative creature
-    // and diverges (stuck horse + duplicated avatar). Gates both the examine
-    // menu and the path-then-mount activity, which both check can_mount().
-    if( cata_mp::is_client_mode() ) {
-        return false;
-    }
     auto route = get_map().route( *this, pathfinding_target::point( critter.pos_bub() ) );
     if( route.empty() ) {
         return false;
