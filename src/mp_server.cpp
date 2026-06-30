@@ -4,7 +4,9 @@
 #include <atomic>
 #include <iostream>
 #include <algorithm>
+#include <cstdio>
 #include <string_view>
+#include <vector>
 
 #include <zstd/zstd.h>
 #include "catacharset.h"   // base64_encode — only pulls std headers, asio-safe
@@ -12,6 +14,18 @@
 // Standalone Asio — no Boost dependency
 #define ASIO_STANDALONE
 #include <asio.hpp>
+
+// Local-interface enumeration for the host "hosting at:" hint (mp_local_ipv4s).
+// MUST follow asio.hpp on Windows (it pulls in winsock2.h; iphlpapi.h has to come
+// after that, not before, or the legacy winsock1 ordering trips a redefinition).
+#ifdef _WIN32
+#include <iphlpapi.h>   // GetAdaptersAddresses — links -liphlpapi (see Makefile)
+#else
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 
 using asio::ip::tcp;
 
@@ -475,32 +489,91 @@ bool is_server_thread_running()
     return server_thread_running_.load();
 }
 
-std::string mp_local_ipv4()
+// True for address ranges commonly handed out by mesh/VPN software — Tailscale
+// (100.64.0.0/10 CGNAT), Radmin (26/8), Hamachi (25/8).  Surfaced FIRST in the
+// host hint because that's usually the address a remote partner actually uses;
+// the physical-LAN address only helps a same-network partner.  Best-effort sort
+// key, not exhaustive (ZeroTier etc. vary) — we never DROP an address, only order.
+static bool mp_ip_is_vpn_like( const std::string &ip )
 {
-    // Cache: interface address doesn't change within a session, and we don't
-    // want to re-resolve on every HUD redraw (~10x/sec while waiting).
-    static std::string cached;
+    int a = 0, b = 0;
+    if( std::sscanf( ip.c_str(), "%d.%d", &a, &b ) < 2 ) {
+        return false;
+    }
+    if( a == 26 || a == 25 ) {
+        return true;                          // Radmin / Hamachi
+    }
+    if( a == 100 && b >= 64 && b <= 127 ) {
+        return true;                          // Tailscale CGNAT 100.64.0.0/10
+    }
+    return false;
+}
+
+std::vector<std::string> mp_local_ipv4s()
+{
+    // Cache: interfaces don't change within a session and the HUD asks ~10x/sec.
+    static std::vector<std::string> cached;
     static bool resolved = false;
     if( resolved ) {
         return cached;
     }
     resolved = true;
-    try {
-        // UDP-connect trick: "connecting" a UDP socket sends no packets — it
-        // just picks the egress interface the kernel would use to reach the
-        // target, so local_endpoint() then reports this machine's primary LAN
-        // IPv4.  8.8.8.8 need not be reachable; we never send anything.
-        asio::io_context ioc;
-        asio::ip::udp::socket sock( ioc );
-        sock.connect( asio::ip::udp::endpoint(
-                          asio::ip::make_address_v4( "8.8.8.8" ), 53 ) );
-        const asio::ip::address addr = sock.local_endpoint().address();
-        if( !addr.is_loopback() && addr.is_v4() ) {
-            cached = addr.to_string();
+
+    auto add = [&]( const std::string & ip ) {
+        if( ip.empty() || ip == "0.0.0.0" ) {
+            return;
         }
-    } catch( const std::exception & ) {
-        // No network / no route — leave cached empty; HUD falls back to port-only.
+        if( ip.rfind( "127.", 0 ) == 0 || ip.rfind( "169.254.", 0 ) == 0 ) {
+            return;                            // loopback / link-local APIPA — useless to share
+        }
+        if( std::find( cached.begin(), cached.end(), ip ) == cached.end() ) {
+            cached.push_back( ip );
+        }
+    };
+
+#ifdef _WIN32
+    ULONG buf_len = 16384;
+    std::vector<char> buf( buf_len );
+    auto *addrs = reinterpret_cast<IP_ADAPTER_ADDRESSES *>( buf.data() );
+    if( GetAdaptersAddresses( AF_INET,
+                              GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                              nullptr, addrs, &buf_len ) == NO_ERROR ) {
+        for( auto *a = addrs; a; a = a->Next ) {
+            if( a->OperStatus != IfOperStatusUp ) {
+                continue;
+            }
+            for( auto *u = a->FirstUnicastAddress; u; u = u->Next ) {
+                auto *sa = reinterpret_cast<sockaddr_in *>( u->Address.lpSockaddr );
+                char ipbuf[INET_ADDRSTRLEN] = { 0 };
+                inet_ntop( AF_INET, &sa->sin_addr, ipbuf, sizeof( ipbuf ) );
+                add( ipbuf );
+            }
+        }
     }
+#else
+    ifaddrs *ifs = nullptr;
+    if( getifaddrs( &ifs ) == 0 ) {
+        for( ifaddrs *ifa = ifs; ifa; ifa = ifa->ifa_next ) {
+            if( !ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET ) {
+                continue;
+            }
+            if( !( ifa->ifa_flags & IFF_UP ) || ( ifa->ifa_flags & IFF_LOOPBACK ) ) {
+                continue;
+            }
+            auto *sa = reinterpret_cast<sockaddr_in *>( ifa->ifa_addr );
+            char ipbuf[INET_ADDRSTRLEN] = { 0 };
+            inet_ntop( AF_INET, &sa->sin_addr, ipbuf, sizeof( ipbuf ) );
+            add( ipbuf );
+        }
+        freeifaddrs( ifs );
+    }
+#endif
+
+    // VPN-like addresses first (most likely the share target); stable otherwise.
+    std::stable_sort( cached.begin(), cached.end(),
+    []( const std::string & x, const std::string & y ) {
+        return mp_ip_is_vpn_like( x ) && !mp_ip_is_vpn_like( y );
+    } );
     return cached;
 }
 

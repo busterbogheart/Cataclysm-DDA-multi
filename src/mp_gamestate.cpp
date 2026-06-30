@@ -938,18 +938,26 @@ struct mp_hud_t {
         }
 
         if( !remote_player_connected && is_hosting() ) {
-            // Show what the partner needs to type on the Join screen: the host's
-            // address and the (now configurable) listen port.  The process can
-            // only know its LAN IPv4 — public IP / DDNS is external router config
-            // the partner already has — so label it "LAN" to set expectations.
-            const std::string lan = mp_local_ipv4();
+            // Show what the partner needs to type on the Join screen: every local
+            // address (physical LAN + each VPN — Tailscale 100.x, Radmin 26.x, …)
+            // with the listen port, VPN-range ones first.  We can't know which the
+            // partner will use, so list them all; public IP / DDNS is external
+            // config the partner already has.
+            const std::vector<std::string> ips = mp_local_ipv4s();
             const int port = static_cast<int>( mp_host_port() );
             std::string line;
-            if( !lan.empty() ) {
-                line = string_format( _( "Partner not connected — LAN %s:%d" ),
-                                      lan, port );
+            if( !ips.empty() ) {
+                std::string joined;
+                for( size_t i = 0; i < ips.size(); ++i ) {
+                    if( i ) {
+                        joined += " · ";
+                    }
+                    joined += ips[i] + ":" + std::to_string( port );
+                }
+                line = string_format( _( "Partner not connected   hosting at: %s" ),
+                                      joined.c_str() );
             } else {
-                line = string_format( _( "Partner not connected — port %d" ), port );
+                line = string_format( _( "Partner not connected   hosting on port %d" ), port );
             }
             mvwprintz( win, point( 2, crow ), c_dark_gray, "%s",
                        line.substr( 0, std::max( 0, W - 4 ) ).c_str() );
