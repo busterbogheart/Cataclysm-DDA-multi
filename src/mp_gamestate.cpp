@@ -5658,6 +5658,63 @@ static void mp_handle_template_data( const std::string &msg )
 static bool g_pending_host_start = false;
 static bool g_host_thread_actually_started = false;
 
+// --- Host listen port (custom-port feature) -------------------------------
+// Three sites used to hardcode 8080 (the run_server() call, the arm-log, and
+// the status text) and could drift.  They now all route through mp_host_port().
+// Precedence (decided 2026-06-29): CDDA_MP_PORT env (Option A) → menu/persisted
+// field (Option B) → 8080 floor.  Env wins because exporting it is deliberate
+// work, so it outranks a GUI value that may have been typed once and forgotten.
+// The port is a pure transport detail — it never enters the JSON protocol.
+static uint16_t g_host_port_menu = 0;       // 0 = unset (no menu/persisted value)
+static bool g_host_port_loaded = false;     // disk-load happens lazily, once
+
+static cata_path mp_host_port_path()
+{
+    return PATH_INFO::config_dir_path() / "mp_host_port.json";
+}
+
+static uint16_t mp_host_port_load_disk()
+{
+    uint16_t out = 0;
+    read_from_file_optional_json( mp_host_port_path(), [&]( const JsonValue & jv ) {
+        JsonObject jo = jv.get_object();
+        int v = jo.get_int( "port", 0 );
+        if( v > 0 && v < 65536 ) {
+            out = static_cast<uint16_t>( v );
+        }
+    } );
+    return out;
+}
+
+static void mp_host_port_save_disk( uint16_t port )
+{
+    write_to_file( mp_host_port_path(), [&]( std::ostream & fout ) {
+        JsonOut jo( fout );
+        jo.start_object();
+        jo.member( "port", static_cast<int>( port ) );
+        jo.end_object();
+    }, "mp host port" );
+}
+
+uint16_t mp_host_port()
+{
+    if( const char *e = std::getenv( "CDDA_MP_PORT" ) ) {
+        int v = atoi( e );
+        if( v > 0 && v < 65536 ) {
+            return static_cast<uint16_t>( v );
+        }
+        // Invalid env value: ignore and fall through to the menu/default.
+    }
+    if( !g_host_port_loaded ) {
+        g_host_port_menu = mp_host_port_load_disk();
+        g_host_port_loaded = true;
+    }
+    if( g_host_port_menu != 0 ) {
+        return g_host_port_menu;
+    }
+    return 8080;
+}
+
 // Called from process_mp_events() on the host's first turn after the world
 // has loaded.  Spawns the listen-server thread iff the menu armed it and we
 // haven't already started it.  No-op when the server was started via the
@@ -5676,8 +5733,9 @@ static void mp_start_pending_host_thread()
     mp_log( "[cdda-mp] HOST-THREAD-CHECK: pending=" + std::to_string( g_pending_host_start ) +
             " already_started=" + std::to_string( g_host_thread_actually_started ) +
             " host_mode=" + std::to_string( is_host_mode() ) );
-    std::thread( []() {
-        run_server( 8080, std::string(), getVersionString() );
+    const uint16_t listen_port = mp_host_port();
+    std::thread( [listen_port]() {
+        run_server( listen_port, std::string(), getVersionString() );
     } ).detach();
     g_host_thread_actually_started = true;
     mp_log( "[cdda-mp] MENU: host thread started (post-world-load)" );
@@ -5703,13 +5761,42 @@ bool mp_menu_start_host_session()
     mp_log( "[cdda-mp] HOST-ARM: arming (host_mode was " +
             std::to_string( is_host_mode() ) + ", live_server=" +
             std::to_string( is_hosting() ) + ") — re-arm restarts the thread" );
+    // Option B: let the host pick a listen port (mirrors the client's :port
+    // suffix on the Join side).  Default shown is the *effective* port
+    // (mp_host_port(): env override → last persisted/menu value → 8080), so the
+    // field never silently disagrees with what will bind.  When CDDA_MP_PORT is
+    // set (Option A) it wins by precedence, so we show it but don't let a typed
+    // value override it — flagging that in the title to avoid confusion.
+    {
+        const bool env_pinned = std::getenv( "CDDA_MP_PORT" ) != nullptr;
+        const std::string def = std::to_string( mp_host_port() );
+        const std::string title = env_pinned
+                                   ? _( "Listen port (CDDA_MP_PORT env override active)" )
+                                   : _( "Listen port (default 8080)" );
+        const std::string in = string_input_popup()
+                               .title( title )
+                               .width( 8 )
+                               .text( def )
+                               .query_string();
+        if( !in.empty() && !env_pinned ) {
+            const int v = atoi( in.c_str() );
+            if( v > 0 && v < 65536 ) {
+                g_host_port_menu = static_cast<uint16_t>( v );
+                g_host_port_loaded = true;
+                mp_host_port_save_disk( g_host_port_menu );
+            } else {
+                popup( _( "Invalid port \"%s\" — keeping %s." ), in, def );
+            }
+        }
+    }
     set_host_mode( true );
     // Server thread starts on the host's first do_turn (see
     // mp_start_pending_host_thread) so we don't end up listening before
     // there's a world for incoming clients to spawn into.
     g_pending_host_start = true;
     g_host_thread_actually_started = false;
-    mp_log( "[cdda-mp] MENU: host armed on port 8080 (thread deferred to do_turn)" );
+    mp_log( "[cdda-mp] MENU: host armed on port " + std::to_string( mp_host_port() ) +
+            " (thread deferred to do_turn)" );
     mp_update_window_title();
     return true;
 }
@@ -6198,7 +6285,8 @@ std::string mp_menu_coop_status_text()
         if( g_pending_host_start && !g_host_thread_actually_started ) {
             return std::string( _( "Co-op: armed — re-enter Host to pick world / character" ) );
         }
-        return std::string( _( "Co-op: hosting on port 8080 — waiting for partner" ) );
+        return string_format( _( "Co-op: hosting on port %d — waiting for partner" ),
+                              static_cast<int>( mp_host_port() ) );
     }
     if( is_client_mode() ) {
         return std::string( _( "Co-op: connected to host — re-enter Join to pick character" ) );

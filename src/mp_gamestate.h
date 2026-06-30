@@ -315,6 +315,11 @@ void mp_templates_sync_on_join();
 // Returns true if host mode is armed (including the no-op "already armed").
 bool mp_menu_start_host_session();
 
+// Effective host listen port.  Precedence: CDDA_MP_PORT env (Option A) →
+// menu/persisted field (Option B) → 8080 floor.  Single source for the
+// run_server() bind, the arm-log, and the co-op status text so they can't drift.
+uint16_t mp_host_port();
+
 // Main-menu integration: prompts for a host address (with optional :port),
 // probes, connects, sets client mode.  Silent on success; pops an error
 // and returns false on cancel or connection failure.
