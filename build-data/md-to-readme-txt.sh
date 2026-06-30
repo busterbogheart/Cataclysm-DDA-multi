@@ -21,6 +21,11 @@ sed -E \
   -e 's/&lt;/</g' \
   -e 's/&amp;/\&/g' \
   "$1" | awk '
+  # Strip HTML comment blocks (dev-only SECTION SYNC MAP, release-staging notes)
+  # so they never leak into the player-facing zip README. Handles single-line and
+  # multi-line; the README keeps `<!--`/`-->` on their own lines.
+  /<!--/ { in_comment = 1 }
+  in_comment { if ( /-->/ ) { in_comment = 0 } next }
   # Headings: drop the leading #s, UPPERCASE for emphasis, and underline h1/h2.
   /^#{1,6}[[:space:]]+/ {
     hashes = $0

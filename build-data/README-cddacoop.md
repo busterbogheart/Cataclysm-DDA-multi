@@ -29,7 +29,7 @@ Why die alone when you can die together?
 **Repo:** [busterbogheart/Cataclysm-DDA-multi](https://github.com/busterbogheart/Cataclysm-DDA-multi) &middot;
 **Upstream:** [CleverRaven/Cataclysm-DDA](https://github.com/CleverRaven/Cataclysm-DDA)
 
-This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoop.com Discord (<https://discord.gg/MzBD4v3xAU>).
+This is a fan-made fork... issues belong on this fork's GitHub or in the cddacoop.com Discord (<https://cddacoop.com/discord>).
 
 ---
 
@@ -277,6 +277,9 @@ large scripted-effect/teleport power sets fall outside that model.
 
 ### Unreleased
 
+
+### 2026-06-29
+
 - **Killing monsters as the client is fixed** — monsters you kill as the joining
   player no longer resurrect or drop duplicate corpses, hopefully.
 - **Better partner stats + ping** — the co-op panel now
@@ -419,7 +422,7 @@ multiple.  melee and ranged damage forwarded and applied server-side w/ proper k
 
 ## Getting help / reporting bugs
 
-- Discord: <https://discord.gg/MzBD4v3xAU>
+- Discord: <https://cddacoop.com/discord>
 - GitHub issues & feature requests: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
 
 **Co-op bugs need logs from both players.** Most sync issues (desync,

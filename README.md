@@ -156,7 +156,7 @@ You need one of these to route your partner's traffic to your machine:
 ### Reporting bugs
 
 <!-- SYNC:reporting-bugs section="Getting help / reporting bugs" -->
-- Discord: <https://discord.gg/MzBD4v3xAU>
+- Discord: <https://cddacoop.com/discord>
 - GitHub issues & feature requests: <https://github.com/busterbogheart/Cataclysm-DDA-multi/issues>
 
 **Co-op bugs need logs from both players.** Most sync issues (desync,
