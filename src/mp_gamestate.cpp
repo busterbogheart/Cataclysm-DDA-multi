@@ -83,6 +83,8 @@
 #include <cstdlib>
 #include <thread>
 #include <set>
+#include <sstream>
+#include <locale>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -382,6 +384,22 @@ void host_queue_sfx( const std::string &id, const std::string &variant, int vol 
         return;
     }
     g_host_sfx_queue.push_back( {id, variant, vol} );
+}
+
+// Locale-independent number→string for the JSON wire protocol.  std::to_string
+// (and sprintf "%f") honor the C locale set by setlocale() — CDDA sets it for
+// translations, so on a comma-decimal locale (EU: German/French/…) they emit
+// "0,000000", which is malformed JSON and CRASHES the receiver's parser
+// (log-confirmed 2026-06-30, "Break Me Polnostew").  Any float that goes on the
+// wire MUST route through this instead.  Imbuing classic() forces a '.' decimal
+// without touching the global locale, so the player's UI/translations are
+// unaffected — only the protocol changes.  See [[ROADMAP locale crash]].
+static std::string mp_json_num( double v )
+{
+    std::ostringstream os;
+    os.imbue( std::locale::classic() );
+    os << v;
+    return os.str();
 }
 
 // The character_id of the remote player's NPC. Invalid when no remote player is connected.
@@ -8376,7 +8394,7 @@ std::string client_enrich_action( const std::string &json )
     std::string enriched = json;
     if( !enriched.empty() && enriched.back() == '}' ) {
         enriched.pop_back();
-        enriched += ",\"client_light\":" + std::to_string( cl );
+        enriched += ",\"client_light\":" + mp_json_num( cl );
         enriched += ",\"client_bleed\":" + bleed_json;
         enriched += ",\"client_tile_changes\":" + tile_changes;
         if( veh_cargo_changes != "[]" ) {
@@ -11127,7 +11145,7 @@ std::string serialize_remote_player_state()
            "\"host_appearance\":" + host_appearance_json + ","
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
            "\"host_facing\":" + std::to_string( host.facing == FacingDirection::LEFT ? 0 : 1 ) + ","
-           "\"host_light\":" + std::to_string( host.active_light() ) + ","
+           "\"host_light\":" + mp_json_num( host.active_light() ) + ","
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
