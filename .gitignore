@@ -65,6 +65,14 @@
 !/gfx/GiantDays
 !/gfx/SurveyorsMap
 !/gfx/PenAndPaper
+# Remaining experimental tilesets, pulled from I-am-Erk/CDDA-Tilesets composed
+# packs (2026-06-28) to match the base experimental set, 2026-06-30.
+!/gfx/ASCII_Overmap
+!/gfx/BrownLikeBears
+!/gfx/NeoDaysTileset
+!/gfx/RetroDaysTileset
+!/gfx/SmashButton_iso
+!/gfx/Ultica_iso
 /graveyard/
 /memorial/
 /mods/
