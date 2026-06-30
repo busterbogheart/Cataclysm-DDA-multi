@@ -41,6 +41,20 @@ void client_send( const std::string &json );
 // Used by mp_gamestate::client_process_incoming() to apply server state.
 bool client_recv_pop( std::string &out );
 
+// --- Auto-reconnect ------------------------------------------------------
+// When the TCP link drops UNGRACEFULLY (tunnel blip / RTO timeout — no FIN),
+// the client tries to silently re-dial the same host (re-PROBE + re-JOIN, no
+// char-creation) instead of ending the session.  A transient direct-VPN blip
+// then self-heals.  Suppressed on an intentional host goodbye/session_ending.
+
+// True while a reconnect sweep is in progress (for the HUD "reconnecting…").
+bool client_is_reconnecting();
+
+// Disable auto-reconnect (call on intentional teardown / host goodbye so a
+// quit doesn't trigger a pointless re-dial loop).  Cleared by the next
+// successful client_connect().
+void client_disable_reconnect();
+
 } // namespace cata_mp
 
 #endif // CATA_SRC_MP_CLIENT_CONN_H

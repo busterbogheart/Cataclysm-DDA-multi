@@ -1785,6 +1785,9 @@ void mp_on_world_exit()
         mp_log( "[cdda-mp] WORLD-EXIT: clearing session mode (client=" +
                 std::to_string( is_client_mode() ) + " host=" +
                 std::to_string( is_host_mode() ) + ")" );
+        // Leaving the world is an intentional end — stop any auto-reconnect so a
+        // quit-to-menu doesn't trigger a pointless re-dial loop.
+        client_disable_reconnect();
         set_client_mode( false );
         set_host_mode( false );
     }
@@ -6942,6 +6945,8 @@ static bool apply_one_state_message( const std::string &msg )
     // disconnect handler takes over from there.
     if( msg.find( "\"type\":\"session_ending\"" ) != std::string::npos ) {
         mp_log( "[cdda-mp] SESSION-END RECV: host is leaving" );
+        // Intentional end — don't auto-reconnect when the socket closes next.
+        client_disable_reconnect();
         add_msg( m_warning, _( "Your partner is leaving.  The session will end shortly." ) );
         return true;
     }
@@ -7053,6 +7058,20 @@ static bool apply_one_state_message( const std::string &msg )
     if( !is_state ) {
         std::cout << "[cdda-mp] " << msg << std::endl;
         return false;
+    }
+    // Auto-reconnect status (from mp_client_conn's reconnect sweep).  NOT
+    // terminal — do not set g_server_died; the avatar/world stay loaded and the
+    // grant/wait loop simply waits until the host re-grants after a successful
+    // re-dial.  Tells the player why they're briefly frozen.
+    if( msg.find( "\"reconnecting\":true" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] RECONNECT: link dropped — reconnecting (client)" );
+        add_msg( m_warning, _( "Connection lost — reconnecting…" ) );
+        return true;
+    }
+    if( msg.find( "\"reconnected\":true" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] RECONNECT: re-joined host — resuming (client)" );
+        add_msg( m_good, _( "Reconnected to the host." ) );
+        return true;
     }
     if( msg.find( "\"connected\":false" ) != std::string::npos ) {
         if( !g_server_died ) {

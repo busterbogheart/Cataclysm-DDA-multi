@@ -3,6 +3,7 @@
 #include "mp_client_conn.h"
 #include "mp_queue.h"
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -108,6 +109,20 @@ static std::string mp_decompress_frame( std::string line )
     return out;
 }
 
+// --- Auto-reconnect state ------------------------------------------------
+// Declared before client_impl because client_impl::start_read() reads these on
+// an ungraceful drop.  Last successful connect params, remembered so a dropped
+// link can re-dial the same host without going back through menu/char-creation.
+// g_rc_enabled gates the feature (cleared on intentional teardown / goodbye).
+static std::string g_rc_host;
+static uint16_t g_rc_port = 0;
+static std::string g_rc_name;
+static std::string g_rc_password;
+static std::string g_rc_version;
+static std::atomic<bool> g_rc_enabled{ false };
+static std::atomic<bool> g_rc_in_progress{ false };
+static void reconnect_worker();
+
 // ---------------------------------------------------------------------------
 // Connection impl
 // ---------------------------------------------------------------------------
@@ -134,8 +149,18 @@ struct client_impl {
                         "). If this fired during join, the host rejected the handshake "
                         "(version mismatch / wrong password) or is on a different build — "
                         "check the host's cdda-mp-server.log for a PROBE/JOIN REJECTED line." );
-                // Synthetic disconnect message — game thread will clean up the host NPC.
-                g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
+                // Ungraceful drop (tunnel blip / RTO timeout): try to silently
+                // re-dial the same host instead of ending the session.  Only the
+                // FIRST drop kicks off a sweep (g_rc_in_progress guards re-entry).
+                if( g_rc_enabled.load() && !g_rc_in_progress.exchange( true ) ) {
+                    mp_log( "[cdda-mp] RECONNECT: link dropped — starting reconnect sweep" );
+                    g_recv_queue.push( "{\"type\":\"state\",\"reconnecting\":true}" );
+                    std::thread( reconnect_worker ).detach();
+                } else if( !g_rc_enabled.load() ) {
+                    // Reconnect disabled (intentional teardown / host goodbye): the
+                    // game thread cleans up the host NPC via the synthetic message.
+                    g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
+                }
                 return;
             }
             std::istream is( &read_buf );
@@ -144,6 +169,13 @@ struct client_impl {
             if( !line.empty() ) {
                 std::string msg = mp_decompress_frame( std::move( line ) );
                 if( !msg.empty() ) {
+                    // An intentional end from the host (goodbye / session_ending)
+                    // means DON'T auto-reconnect when the socket closes next.
+                    if( msg.find( "\"type\":\"goodbye\"" ) != std::string::npos ||
+                        msg.find( "\"type\":\"session_ending\"" ) != std::string::npos ) {
+                        g_rc_enabled.store( false );
+                        mp_log( "[cdda-mp] RECONNECT: disabled (host goodbye/session_ending)" );
+                    }
                     g_recv_queue.push( std::move( msg ) );
                 }
             }
@@ -333,6 +365,14 @@ bool client_connect( const std::string &host, uint16_t port,
                           << " as '" << name << "' — version accepted." << std::endl;
                 mp_log( "[cdda-mp] HANDSHAKE: host accepted our version — connected to " +
                         host + ":" + std::to_string( port ) + " as '" + name + "'" );
+                // Remember params + (re)enable auto-reconnect for this session so
+                // a later ungraceful drop can re-dial the same host silently.
+                g_rc_host = host;
+                g_rc_port = port;
+                g_rc_name = name;
+                g_rc_password = password;
+                g_rc_version = version;
+                g_rc_enabled.store( true );
                 return true;
             }
             // Any other packet (e.g. hello) — keep waiting.
@@ -395,6 +435,53 @@ void client_send( const std::string &json )
             std::cerr << "[cdda-mp] Send error: " << ec.message() << std::endl;
         }
     } );
+}
+
+// Runs on its own detached thread (NOT the io thread — client_connect() tears
+// down and re-creates g_client, which joins the old io thread).  Re-dials the
+// last host with backoff; on success re-sends the stored join (no char
+// creation — the avatar/world are still loaded) and the host's spawn path does
+// the full resync.  Surfaces the real disconnect only after exhausting tries.
+static void reconnect_worker()
+{
+    // Backoff schedule (ms) — ~15s of trying before giving up.  Generous enough
+    // to ride out a several-second tunnel blip, short enough not to strand the
+    // player if the host is truly gone.
+    static const int delays_ms[] = { 500, 1000, 2000, 3000, 4000, 5000 };
+    const int attempts = static_cast<int>( sizeof( delays_ms ) / sizeof( delays_ms[0] ) );
+    for( int i = 0; i < attempts && g_rc_enabled.load(); ++i ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( delays_ms[i] ) );
+        if( !g_rc_enabled.load() ) {
+            break;
+        }
+        mp_log( "[cdda-mp] RECONNECT: attempt " + std::to_string( i + 1 ) + "/" +
+                std::to_string( attempts ) + " -> " + g_rc_host + ":" +
+                std::to_string( g_rc_port ) );
+        // client_connect() rebuilds g_client + re-PROBEs; on success it leaves
+        // g_pending_join armed with g_join_sent=false.
+        if( client_connect( g_rc_host, g_rc_port, g_rc_name, g_rc_password, g_rc_version ) ) {
+            client_send_join();   // resume in-game; host re-spawns + full-resyncs us
+            g_recv_queue.push( "{\"type\":\"state\",\"reconnected\":true}" );
+            mp_log( "[cdda-mp] RECONNECT: success on attempt " + std::to_string( i + 1 ) );
+            g_rc_in_progress.store( false );
+            return;
+        }
+        mp_log( "[cdda-mp] RECONNECT: attempt " + std::to_string( i + 1 ) +
+                " failed (" + client_connect_error() + ")" );
+    }
+    mp_log( "[cdda-mp] RECONNECT: giving up — surfacing disconnect" );
+    g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
+    g_rc_in_progress.store( false );
+}
+
+bool client_is_reconnecting()
+{
+    return g_rc_in_progress.load();
+}
+
+void client_disable_reconnect()
+{
+    g_rc_enabled.store( false );
 }
 
 } // namespace cata_mp
