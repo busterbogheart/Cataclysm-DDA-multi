@@ -67,6 +67,14 @@ void run_server( uint16_t port, const std::string &password,
 // Thread-safe: broadcast() on the returned pointer is mutex-protected.
 server *get_active_server();
 
+// Best-effort primary LAN IPv4 of this machine (e.g. "192.168.1.5"), for the
+// host HUD's "share this address" line.  Uses the UDP-connect trick (no packets
+// sent) to find the egress interface; result is cached after the first call.
+// Returns "" if it can't be determined.  This is the LAN address only — the
+// process cannot know its public IP or DDNS name (those are external/router
+// config), so WAN partners still need the host's known public address.
+std::string mp_local_ipv4();
+
 // True from the moment the (detached) listen thread enters run_server() until
 // it fully returns — i.e. until the server object has destructed and its
 // listen socket (the port) is released. Session-end waits on this going false

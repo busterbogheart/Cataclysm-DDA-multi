@@ -471,6 +471,35 @@ bool is_server_thread_running()
     return server_thread_running_.load();
 }
 
+std::string mp_local_ipv4()
+{
+    // Cache: interface address doesn't change within a session, and we don't
+    // want to re-resolve on every HUD redraw (~10x/sec while waiting).
+    static std::string cached;
+    static bool resolved = false;
+    if( resolved ) {
+        return cached;
+    }
+    resolved = true;
+    try {
+        // UDP-connect trick: "connecting" a UDP socket sends no packets — it
+        // just picks the egress interface the kernel would use to reach the
+        // target, so local_endpoint() then reports this machine's primary LAN
+        // IPv4.  8.8.8.8 need not be reachable; we never send anything.
+        asio::io_context ioc;
+        asio::ip::udp::socket sock( ioc );
+        sock.connect( asio::ip::udp::endpoint(
+                          asio::ip::make_address_v4( "8.8.8.8" ), 53 ) );
+        const asio::ip::address addr = sock.local_endpoint().address();
+        if( !addr.is_loopback() && addr.is_v4() ) {
+            cached = addr.to_string();
+        }
+    } catch( const std::exception & ) {
+        // No network / no route — leave cached empty; HUD falls back to port-only.
+    }
+    return cached;
+}
+
 void run_server( uint16_t port, const std::string &password, const std::string &version ) {
     server_thread_running_.store( true );
     try {
