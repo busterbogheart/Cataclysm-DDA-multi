@@ -273,3 +273,8 @@ src/cata_version_generated.h
 
 # fork design notes — keep local, not public
 ARCHITECTURE.md
+
+# local secrets + build artifacts — never commit (public repo)
+*.pem
+cataclysm-tiles-host
+run-asan-client.sh
