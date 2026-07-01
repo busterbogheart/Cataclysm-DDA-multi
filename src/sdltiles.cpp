@@ -112,6 +112,7 @@ std::unique_ptr<cataimgui::client> imclient;
 #include "worldfactory.h"
 #endif
 #include "mp_client_conn.h"  // cata_mp::is_client_mode (client keychar->keycode fallback)
+#include "mp_gamestate.h"    // cata_mp::is_hosting / process_mp_events (modal-UI MP pump)
 
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
@@ -6421,12 +6422,35 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
         try_sdl_update();
     }
 
+    // Host: while blocked here waiting for a key inside ANY modal UI (overmap,
+    // inventory, morale, diary, message log, crafting, …), keep servicing the
+    // client.  These menus run their own input loop that never pumps MP, so
+    // without this a client trying to JOIN (or already-in-game and sending
+    // actions) is frozen out until the host closes the menu — the client shows
+    // red/locked and neither player appears on the other's screen (2026-07-01,
+    // reproduced with the host's inventory open: handle_action blocked 11.8s and
+    // process_mp_events never ran).  Throttled so the ~1ms input spin doesn't
+    // hammer the MP queue.  is_hosting() is false for client/SP so they are
+    // unaffected.  Mirrors the main game loop's per-frame pump in handle_action.
+    uint32_t mp_last_pump = 0;
+    const auto mp_pump_if_host = [&mp_last_pump]() {
+        if( !cata_mp::is_hosting() ) {
+            return;
+        }
+        const uint32_t now = GetTicks();
+        if( now - mp_last_pump >= 50 ) {
+            mp_last_pump = now;
+            cata_mp::process_mp_events();
+        }
+    };
+
     if( inputdelay < 0 ) {
         do {
             CheckMessages();
             if( last_input.type != input_event_t::error ) {
                 break;
             }
+            mp_pump_if_host();
             SDL_Delay( 1 );
         } while( last_input.type == input_event_t::error );
     } else if( inputdelay > 0 ) {
@@ -6439,6 +6463,7 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
             if( last_input.type != input_event_t::error ) {
                 break;
             }
+            mp_pump_if_host();
             SDL_Delay( 1 );
             timedout = endtime >= starttime + inputdelay;
             if( timedout ) {
