@@ -446,6 +446,8 @@ struct mp_kill_counter : event_subscriber {
         if( e.type() != event_type::character_kills_monster ) {
             return;
         }
+        // Attribute to host avatar or the client's proxy.  Client kills reach here
+        // now that client_monster_hits credits the proxy via die(&m, proxy).
         const character_id killer = e.get<character_id>( "killer" );
         if( killer == get_avatar().getID() ) {
             g_host_kills++;
@@ -2778,6 +2780,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     } else {
                         add_msg( m_good, _( "%s has connected and joined the game." ), cname );
                     }
+                    // Self-identifying log so who's-who is never ambiguous in a
+                    // dump: this machine is the HOST; state its own char + the
+                    // client's char + proxy id (which the KILL log keys on).
+                    mp_log( "[cdda-mp] IDENTITY: role=HOST self='" + get_avatar().name +
+                            "' (id=" + std::to_string( get_avatar().getID().get_value() ) +
+                            ") partner=CLIENT '" + cname + "' (proxy_id=" +
+                            std::to_string( remote_player_npc_id.get_value() ) + ")" );
                 }
             }
         }
@@ -3317,7 +3326,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         continue;
                     }
                     if( new_hp <= 0 ) {
-                        mon->die( &m, nullptr );
+                        // Credit the client's proxy NPC as the killer (not nullptr)
+                        // so the kill is ATTRIBUTED: character_kills_monster fires
+                        // with killer=proxy -> the co-op tally counts it as the
+                        // client's, and the host's kill-tracker/achievements record
+                        // the follower's kill (standard CDDA follower semantics).
+                        npc *proxy = remote_player_npc_id.is_valid()
+                                     ? g->critter_by_id<npc>( remote_player_npc_id )
+                                     : nullptr;
+                        mon->die( &m, proxy );
                         any_killed = true;
                     } else {
                         mon->set_hp( new_hp );
@@ -8002,6 +8019,19 @@ void client_process_incoming()
         std::string msg;
         while( client_recv_pop( msg ) ) {}
         return;
+    }
+
+    // Self-identifying log (mirrors the host's IDENTITY line) so a client-log dump
+    // plainly states who's who.  Fires once, once we're joined and know the host's
+    // name (which only arrives after they've picked a real char, not "player2").
+    static bool s_client_identity_logged = false;
+    if( !s_client_identity_logged && is_client_mode() && client_join_is_sent() ) {
+        const std::string hostname = mp_client_host_player_name();
+        if( !hostname.empty() ) {
+            mp_log( "[cdda-mp] IDENTITY: role=CLIENT self='" + get_avatar().name +
+                    "' partner=HOST '" + hostname + "'" );
+            s_client_identity_logged = true;
+        }
     }
 
     mp_cleanup_stale_npcs();
