@@ -43,6 +43,11 @@ class server {
 
     private:
         void do_accept();
+        // Periodic host->client heartbeat, driven by the io thread (NOT the game
+        // thread) so it keeps beating even while the host is blocked in a modal
+        // (inventory/crafting/…) — a game-thread heartbeat would stall there and
+        // trip the client's stall watchdog into a spurious reconnect.
+        void arm_heartbeat();
         void on_client_connected( std::shared_ptr<client_session> session );
         void on_client_disconnected( std::shared_ptr<client_session> session );
         void on_message( std::shared_ptr<client_session> session, const std::string &msg );

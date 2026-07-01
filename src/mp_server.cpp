@@ -2,6 +2,7 @@
 #include "mp_queue.h"
 
 #include <atomic>
+#include <chrono>
 #include <iostream>
 #include <algorithm>
 #include <cstdio>
@@ -233,6 +234,7 @@ struct client_session : public std::enable_shared_from_this<client_session> {
 struct server::impl {
     asio::io_context io_ctx;
     tcp::acceptor acceptor;
+    asio::steady_timer hb_timer{ io_ctx };   // host->client heartbeat cadence
 
     impl( uint16_t port )
         : acceptor( io_ctx, tcp::endpoint( tcp::v4(), port ) ) {}
@@ -250,9 +252,31 @@ server::server( uint16_t port, std::string password, std::string version )
 
 server::~server() = default;
 
+void server::arm_heartbeat() {
+    impl_->hb_timer.expires_after( std::chrono::milliseconds( 1500 ) );
+    impl_->hb_timer.async_wait( [this]( const std::error_code & ec ) {
+        if( ec ) {
+            return;   // cancelled (server stopping)
+        }
+        // Beat to every authenticated client.  On the io thread, so it fires even
+        // when the host's game thread is parked in a modal.  Clients drop it after
+        // stamping their liveness clock; pre-JOIN sessions aren't sent one.
+        {
+            std::lock_guard<std::mutex> lock( clients_mutex_ );
+            for( auto &c : clients_ ) {
+                if( c->authenticated ) {
+                    c->send( "{\"type\":\"heartbeat\"}\n" );
+                }
+            }
+        }
+        arm_heartbeat();
+    } );
+}
+
 void server::run() {
     std::cout << "[cdda-mp] Server listening on port " << port_ << std::endl;
     do_accept();
+    arm_heartbeat();
     impl_->io_ctx.run();
 }
 
