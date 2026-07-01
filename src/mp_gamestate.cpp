@@ -439,6 +439,10 @@ static int g_host_kills = 0;
 static int g_client_kills = 0;
 
 struct mp_kill_counter : event_subscriber {
+    // Un-hide the base's 3-arg notify() overload — we only override the 1-arg one,
+    // which otherwise hides the other overload and trips GCC's -Werror=overloaded-
+    // virtual on the Linux CI build (clang on mac/win doesn't flag it).
+    using event_subscriber::notify;
     void notify( const cata::event &e ) override {
         if( !is_hosting() ) {
             return;   // client displays wired counts; only the host attributes
