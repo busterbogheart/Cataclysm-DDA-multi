@@ -408,10 +408,8 @@ static std::string mp_json_num( double v )
 // (no traffic -> no TCP error) is still detected.  3s of no player action is
 // normal, so the threshold (8s) sits well above that and detection rides the
 // action-independent heartbeat, never player activity.
-static constexpr int64_t MP_HB_INTERVAL_MS = 1500;   // host heartbeat cadence
 static constexpr int64_t MP_CLIENT_STALL_MS = 8000;  // client silence -> disconnect
 static int64_t g_last_client_msg_ms = 0;             // last time any client msg arrived
-static int64_t g_last_host_hb_ms = 0;                // last heartbeat the host sent
 
 static int64_t mp_now_ms()
 {
@@ -423,24 +421,6 @@ static int64_t mp_now_ms()
 static character_id remote_player_npc_id;
 static bool remote_player_connected = false;
 static std::string remote_player_name_;
-
-// Host: send a heartbeat to the client if the cadence has elapsed.  No-op unless
-// actively hosting a connected client.  Keeps liveness traffic flowing so the
-// client's stall watchdog can tell a dead link from a quiet one.  (Defined here,
-// after remote_player_connected, which it reads.)
-static void mp_host_heartbeat_maybe_send()
-{
-    if( !remote_player_connected ) {
-        return;
-    }
-    const int64_t now = mp_now_ms();
-    if( now - g_last_host_hb_ms >= MP_HB_INTERVAL_MS ) {
-        g_last_host_hb_ms = now;
-        if( server *srv = get_active_server() ) {
-            srv->post_broadcast( "{\"type\":\"heartbeat\"}\n" );
-        }
-    }
-}
 
 // Client-side: NPC representing the host player in the client's local world.
 static character_id client_host_npc_id;
@@ -6332,7 +6312,19 @@ bool mp_menu_join_session()
     // on macOS's 75 s default SYN retry.  Only on success do we commit to
     // setting client_mode and running the real connect handshake.
     if( !tcp_probe( host, port, 3000 ) ) {
-        popup( _( "Could not reach %s:%d.\n\nCheck the address, the host is running, and the port (default 8080) isn't blocked." ),
+        // Couldn't even open a TCP connection — a network/route/firewall problem,
+        // NOT a version/password one (that surfaces later with its own message).
+        // Name the VPN-route gotcha explicitly: a "Connected" status in the VPN
+        // app does NOT mean apps can route to the peer, and the host now shows
+        // both its LAN and VPN addresses so the partner can try the other one.
+        popup( _( "Could not reach %s:%d.\n\n"
+                  "• Make sure the host is IN-GAME and hosting — the host only starts "
+                  "listening once it's in a world.\n"
+                  "• Both machines must be on the same network or VPN.  A \"Connected\" "
+                  "status in Tailscale/Radmin does NOT guarantee routing — try the host's "
+                  "OTHER listed address (the host screen shows both its LAN and VPN IPs), or "
+                  "toggle the VPN off/on to reset its route.\n"
+                  "• Check the address and that the port isn't firewalled." ),
                host.c_str(), static_cast<int>( port ) );
         return false;
     }
@@ -6499,14 +6491,15 @@ void process_mp_events()
         }
     }
 
-    // Heartbeat out + client-stall watchdog (host).  Runs every host do_turn AND
-    // every SRV-WAIT iteration (both call process_mp_events), so a link that dies
-    // while the host is blocked waiting for the client is caught in ~MP_CLIENT_
-    // STALL_MS instead of hanging RED indefinitely (observed 108s, 2026-06-30).
-    // remove_remote_player() clears remote_player_connected, which the SRV-WAIT
-    // loop's `while( remote_player_connected )` checks — so the host drops the
-    // wait, shows "the other player has disconnected", and continues solo.
-    mp_host_heartbeat_maybe_send();
+    // Client-stall watchdog (host).  Runs every host do_turn AND every SRV-WAIT
+    // iteration (both call process_mp_events), so a link that dies while the host
+    // is blocked waiting for the client is caught in ~MP_CLIENT_STALL_MS instead
+    // of hanging RED indefinitely (observed 108s, 2026-06-30).  remove_remote_
+    // player() clears remote_player_connected, which the SRV-WAIT loop's
+    // `while( remote_player_connected )` checks — so the host drops the wait, shows
+    // "the other player has disconnected", and continues solo.  (The host->client
+    // heartbeat itself is sent by the server's io-thread timer, not here, so it
+    // keeps beating through host modals — see mp_server::arm_heartbeat.)
     if( remote_player_connected && g_last_client_msg_ms > 0 &&
         mp_now_ms() - g_last_client_msg_ms > MP_CLIENT_STALL_MS ) {
         mp_log( "[cdda-mp] HOST-STALL: client silent >" +
