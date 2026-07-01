@@ -509,6 +509,19 @@ void client_send_join()
         return;
     }
     g_join_sent = true;
+    // Arm the stall timer FROM JOIN.  g_last_recv_ms was last set at connect
+    // (PROBE) time, but char creation can take tens of seconds during which the
+    // client isn't in the game loop and never refreshes it.  The heartbeat/stall
+    // detector is gated on g_client_joined (below) and starts running the instant
+    // it flips true — if we leave g_last_recv_ms at the stale connect timestamp,
+    // that first check sees ">8000ms silence" and instantly false-drops the
+    // brand-new connection, tearing it down before the join even lands on the
+    // host (no JOIN accepted, client bounces into an endless reconnect sweep —
+    // observed joining after a 51s char creation with the host briefly in a modal
+    // UI, 2026-07-01).  Reset it here so the client gives the host a full
+    // MP_STALL_MS to send its first post-join state (which the host's modal-UI MP
+    // pump delivers even while a menu is open).
+    g_last_recv_ms.store( mp_now_ms() );
     // Now authenticated + in-game: enable auto-reconnect and let the heartbeat
     // start flowing.  Doing this here (not at PROBE) keeps the char-creation
     // phase silent so the host never disconnects us for a pre-auth message.
