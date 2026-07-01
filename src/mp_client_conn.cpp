@@ -121,6 +121,14 @@ static std::string g_rc_password;
 static std::string g_rc_version;
 static std::atomic<bool> g_rc_enabled{ false };
 static std::atomic<bool> g_rc_in_progress{ false };
+// True only once the client has actually JOINED (is in-game).  Between PROBE and
+// JOIN the client sits in character creation and must stay SILENT — the host's
+// server disconnects any pre-auth session that sends a non-handshake message, so
+// sending heartbeats (or reconnecting) during char creation triggers a
+// disconnect->reconnect->premature-JOIN cascade that spawns the proxy and locks
+// the host while the client is still on the char screen (2026-06-30).  Heartbeat
+// send + stall-detect + reconnect are all gated on this.
+static std::atomic<bool> g_client_joined{ false };
 static void reconnect_worker();
 
 // Heartbeat + stall detection (Increment 1.5).  The read-error path only fires
@@ -179,6 +187,12 @@ struct client_impl {
         hb_timer.async_wait( [this]( const asio::error_code & ec ) {
             if( ec ) {
                 return;   // cancelled — client_impl is being torn down
+            }
+            // Stay silent until we've JOINED — during char creation the host would
+            // disconnect us for sending a pre-auth message (see g_client_joined).
+            if( !g_client_joined.load() ) {
+                arm_heartbeat();
+                return;
             }
             static const std::string hb = "{\"type\":\"heartbeat\"}\n";
             asio::error_code wec;
@@ -429,14 +443,17 @@ bool client_connect( const std::string &host, uint16_t port,
                           << " as '" << name << "' — version accepted." << std::endl;
                 mp_log( "[cdda-mp] HANDSHAKE: host accepted our version — connected to " +
                         host + ":" + std::to_string( port ) + " as '" + name + "'" );
-                // Remember params + (re)enable auto-reconnect for this session so
-                // a later ungraceful drop can re-dial the same host silently.
+                // Remember params for a later reconnect.  Do NOT enable reconnect
+                // or heartbeats yet — the client is about to enter char creation
+                // (pre-auth); both are armed in client_send_join() once JOINED, so
+                // the char-creation phase stays silent and the host doesn't
+                // disconnect us for a pre-auth message.
                 g_rc_host = host;
                 g_rc_port = port;
                 g_rc_name = name;
                 g_rc_password = password;
                 g_rc_version = version;
-                g_rc_enabled.store( true );
+                g_client_joined.store( false );
                 return true;
             }
             // Any other packet (e.g. hello) — keep waiting.
@@ -470,6 +487,11 @@ void client_send_join()
         return;
     }
     g_join_sent = true;
+    // Now authenticated + in-game: enable auto-reconnect and let the heartbeat
+    // start flowing.  Doing this here (not at PROBE) keeps the char-creation
+    // phase silent so the host never disconnects us for a pre-auth message.
+    g_client_joined.store( true );
+    g_rc_enabled.store( true );
     std::cout << "[cdda-mp] Join sent — now in-game." << std::endl;
 }
 
@@ -546,6 +568,7 @@ bool client_is_reconnecting()
 void client_disable_reconnect()
 {
     g_rc_enabled.store( false );
+    g_client_joined.store( false );   // also silences the heartbeat on intentional end
 }
 
 } // namespace cata_mp

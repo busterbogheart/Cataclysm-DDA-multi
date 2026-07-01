@@ -460,11 +460,17 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // Route action to game loop
         get_mp_queue().push( { cata_mp::mp_event::type::action, session->name, msg } );
 
+    } else if( type == "heartbeat" ) {
+        // A heartbeat before JOIN (client still in char creation).  The client is
+        // fixed to not send these pre-auth, but tolerate it defensively — ignoring
+        // it (vs. disconnecting) avoids the disconnect->reconnect->premature-JOIN
+        // cascade that spawned the proxy and locked the host (2026-06-30).
+
     } else {
         // Unauthenticated session sent something that isn't version_probe / join /
-        // quit. Almost always a protocol/version skew (e.g. a client on a build
-        // that predates the version_probe handshake). Log it instead of silently
-        // dropping the message, then close so the client doesn't hang.
+        // quit / heartbeat. Almost always a protocol/version skew (e.g. a client on
+        // a build that predates the version_probe handshake). Log it instead of
+        // silently dropping the message, then close so the client doesn't hang.
         mp_log( "[cdda-mp] HANDSHAKE: unexpected pre-auth message type='" +
                 ( type.empty() ? std::string( "(none)" ) : type ) +
                 "' — likely a different/old client build. Closing." );
