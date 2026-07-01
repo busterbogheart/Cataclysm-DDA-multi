@@ -7,6 +7,9 @@
 
 #include "activity_actor_definitions.h"
 #include "avatar.h"
+#include "event.h"
+#include "event_bus.h"
+#include "event_subscriber.h"
 #include "character_martial_arts.h"
 #include "display.h"
 #include "mood_face.h"
@@ -425,6 +428,55 @@ static std::string remote_player_name_;
 // reconnected.") rather than a first join.  Set in remove_remote_player, cleared
 // when the reconnect message shows.
 static bool g_partner_pending_reconnect = false;
+
+// --- Co-op kill tally -----------------------------------------------------
+// Per-player kill counts shown in the co-op HUD — a little friendly rivalry.
+// HOST is authoritative: it subscribes to character_kills_monster, attributes
+// each kill to itself or the client's proxy, and wires both counts to the client
+// (which only DISPLAYS — never counts locally, to avoid double-counting).
+// Anticipates the kill-feed messages (ROADMAP) but is just the tally for now.
+static int g_host_kills = 0;
+static int g_client_kills = 0;
+
+struct mp_kill_counter : event_subscriber {
+    void notify( const cata::event &e ) override {
+        if( !is_hosting() ) {
+            return;   // client displays wired counts; only the host attributes
+        }
+        if( e.type() != event_type::character_kills_monster ) {
+            return;
+        }
+        const character_id killer = e.get<character_id>( "killer" );
+        if( killer == get_avatar().getID() ) {
+            g_host_kills++;
+        } else if( remote_player_connected && killer == remote_player_npc_id ) {
+            g_client_kills++;
+        }
+    }
+};
+static mp_kill_counter g_kill_counter;
+static bool g_kill_counter_subscribed = false;
+
+// Subscribe once the host session is live; reset the tally on first subscribe so
+// each co-op session starts fresh.  Idempotent — safe to call every turn.
+static void mp_kill_tally_subscribe()
+{
+    if( g_kill_counter_subscribed ) {
+        return;
+    }
+    g_host_kills = 0;
+    g_client_kills = 0;
+    get_event_bus().subscribe( &g_kill_counter );
+    g_kill_counter_subscribed = true;
+}
+static void mp_kill_tally_unsubscribe()
+{
+    if( !g_kill_counter_subscribed ) {
+        return;
+    }
+    get_event_bus().unsubscribe( &g_kill_counter );
+    g_kill_counter_subscribed = false;
+}
 
 // Client-side: NPC representing the host player in the client's local world.
 static character_id client_host_npc_id;
@@ -1043,9 +1095,9 @@ struct mp_hud_t {
             x += 5;
         }
 
-        // Latency to the partner on the right edge — the player-facing replacement
-        // for the old dev calendar-drift indicator. Round-trip ms, colored
-        // green/yellow/red by how laggy the link feels. "--" until first measured.
+        // Right edge: latency + the co-op kill tally.  Ping is the round-trip ms
+        // colored green/yellow/red; tally is "☠ <you>·<partner>", perspective-
+        // correct (my kills first), a little friendly rivalry counter.
         {
             std::string ps;
             nc_color pc;
@@ -1057,8 +1109,17 @@ struct mp_hud_t {
                      : g_partner_ping_ms < 300 ? c_yellow : c_red;
                 ps = std::to_string( g_partner_ping_ms ) + "ms";
             }
-            mvwprintz( win, point( W - static_cast<int>( ps.size() ) - 1, crow ),
-                       pc, "%s", ps.c_str() );
+            const int ping_x = W - static_cast<int>( ps.size() ) - 1;
+            mvwprintz( win, point( ping_x, crow ), pc, "%s", ps.c_str() );
+
+            const int my_kills = is_hosting() ? g_host_kills : g_client_kills;
+            const int partner_kills = is_hosting() ? g_client_kills : g_host_kills;
+            const std::string tally = "☠ " + std::to_string( my_kills ) + "·" +
+                                      std::to_string( partner_kills );
+            const int tally_x = ping_x - 2 - utf8_width( tally );
+            if( tally_x > x ) {   // draw only if it doesn't overrun the left content
+                mvwprintz( win, point( tally_x, crow ), c_light_red, "%s", tally.c_str() );
+            }
         }
 
         wnoutrefresh( win );
@@ -1843,6 +1904,7 @@ void mp_on_world_exit()
         // Leaving the world is an intentional end — stop any auto-reconnect so a
         // quit-to-menu doesn't trigger a pointless re-dial loop.
         client_disable_reconnect();
+        mp_kill_tally_unsubscribe();   // stop counting; next host session resets
         set_client_mode( false );
         set_host_mode( false );
     }
@@ -5831,6 +5893,7 @@ static void mp_start_pending_host_thread()
         run_server( listen_port, std::string(), getVersionString() );
     } ).detach();
     g_host_thread_actually_started = true;
+    mp_kill_tally_subscribe();   // start counting kills for the co-op tally
     mp_log( "[cdda-mp] MENU: host thread started (post-world-load)" );
 }
 
@@ -7345,6 +7408,14 @@ static bool apply_one_state_message( const std::string &msg )
 
         if( jo.has_float( "host_light" ) || jo.has_int( "host_light" ) ) {
             g_mp_host_luminance = static_cast<float>( jo.get_float( "host_light" ) );
+        }
+        // Co-op kill tally — host is authoritative; client just stores the counts
+        // for the HUD (both mapped to "You"/partner perspective at draw time).
+        if( jo.has_int( "host_kills" ) ) {
+            g_host_kills = jo.get_int( "host_kills" );
+        }
+        if( jo.has_int( "client_kills" ) ) {
+            g_client_kills = jo.get_int( "client_kills" );
         }
 
         // Dress the host NPC with the items the host player is wearing and apply
@@ -11253,6 +11324,8 @@ std::string serialize_remote_player_state()
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
            "\"host_facing\":" + std::to_string( host.facing == FacingDirection::LEFT ? 0 : 1 ) + ","
            "\"host_light\":" + mp_json_num( host.active_light() ) + ","
+           "\"host_kills\":" + std::to_string( g_host_kills ) + ","
+           "\"client_kills\":" + std::to_string( g_client_kills ) + ","
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
