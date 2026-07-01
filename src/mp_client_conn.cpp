@@ -75,6 +75,16 @@ class string_queue
 };
 
 static string_queue g_recv_queue;
+// Dedicated channel for handshake responses (welcome/error) during a MID-GAME
+// reconnect.  reconnect_worker() runs client_connect() on its own thread and
+// waits for the welcome, but the main game loop keeps draining g_recv_queue via
+// client_recv_pop() the whole time — a two-thread race the game loop usually
+// wins, so the handshake never sees the welcome, times out at 5s, and after 6
+// tries gives up (host-blip: client can NEVER auto-reconnect, 2026-07-01).
+// While reconnecting, client_recv_pop() routes welcome/error here so the worker
+// is their sole consumer; ordinary state messages still flow to the game loop so
+// the "connection lost — reconnecting" UI shows.
+static string_queue g_handshake_queue;
 
 // Reverse of the host's mp_compress_frame (mp_server.cpp): a line of the form
 // {"z":"<base64 zstd>"} is a compressed state broadcast — base64-decode then
@@ -358,6 +368,9 @@ bool client_connect( const std::string &host, uint16_t port,
     }
     join_msg += "}\n";
 
+    // Discard any welcome/error routed here by a prior (failed) reconnect attempt
+    // so we only accept a response to THIS probe, not a stale one.
+    { std::string stale; while( g_handshake_queue.pop( stale ) ) {} }
     mp_log( "[cdda-mp] HANDSHAKE: sent version_probe to " + host + ":" +
             std::to_string( port ) + " (our version='" +
             ( version.empty() ? std::string( "(none)" ) : version ) + "'" +
@@ -375,7 +388,10 @@ bool client_connect( const std::string &host, uint16_t port,
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 5 );
     while( std::chrono::steady_clock::now() < deadline ) {
         std::string msg;
-        if( g_recv_queue.pop( msg ) ) {
+        // On a mid-game reconnect the response is routed to g_handshake_queue by
+        // client_recv_pop(); on an initial connect the game loop isn't running so
+        // it arrives on g_recv_queue.  Check both.
+        if( g_handshake_queue.pop( msg ) || g_recv_queue.pop( msg ) ) {
             if( msg.find( "\"type\":\"error\"" ) != std::string::npos ) {
                 // Extract human-readable error for the caller.
                 g_connect_error = "Server rejected connection.";
@@ -437,8 +453,14 @@ bool client_connect( const std::string &host, uint16_t port,
                 g_pending_join += "}\n";
                 g_join_sent = false;
                 // Replay the probe welcome so seed/world-name adoption fires
-                // from the normal incoming-packet path on first do_turn.
-                g_recv_queue.push( msg );
+                // from the normal incoming-packet path on first do_turn.  Only on
+                // an INITIAL connect: during a reconnect the game loop is running,
+                // the seed/world are already adopted, and re-queuing here would
+                // just be re-routed back to g_handshake_queue by client_recv_pop()
+                // (g_rc_in_progress is still set) — an endless hand-off loop.
+                if( !g_rc_in_progress.load() ) {
+                    g_recv_queue.push( msg );
+                }
                 std::cout << "[cdda-mp] Connected to " << host << ":" << port
                           << " as '" << name << "' — version accepted." << std::endl;
                 mp_log( "[cdda-mp] HANDSHAKE: host accepted our version — connected to " +
@@ -502,7 +524,22 @@ bool client_join_is_sent()
 
 bool client_recv_pop( std::string &out )
 {
-    return g_recv_queue.pop( out );
+    while( g_recv_queue.pop( out ) ) {
+        // During a reconnect handshake, welcome/error responses belong to
+        // reconnect_worker's wait (on its own thread), not the game loop.  Hand
+        // them off so the worker is their sole consumer — otherwise the game loop
+        // drains the welcome first and the handshake times out (the reconnect
+        // race, 2026-07-01).  All other messages (state: reconnecting/reconnected/
+        // connected, etc.) still flow to the game loop.
+        if( g_rc_in_progress.load() &&
+            ( out.find( "\"type\":\"welcome\"" ) != std::string::npos ||
+              out.find( "\"type\":\"error\"" ) != std::string::npos ) ) {
+            g_handshake_queue.push( std::move( out ) );
+            continue;
+        }
+        return true;
+    }
+    return false;
 }
 
 void client_send( const std::string &json )

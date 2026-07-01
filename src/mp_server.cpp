@@ -499,21 +499,20 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // Route action to game loop
         get_mp_queue().push( { cata_mp::mp_event::type::action, session->name, msg } );
 
-    } else if( type == "heartbeat" ) {
-        // A heartbeat before JOIN (client still in char creation).  The client is
-        // fixed to not send these pre-auth, but tolerate it defensively — ignoring
-        // it (vs. disconnecting) avoids the disconnect->reconnect->premature-JOIN
-        // cascade that spawned the proxy and locked the host (2026-06-30).
-
     } else {
         // Unauthenticated session sent something that isn't version_probe / join /
-        // quit / heartbeat. Almost always a protocol/version skew (e.g. a client on
-        // a build that predates the version_probe handshake). Log it instead of
-        // silently dropping the message, then close so the client doesn't hang.
-        mp_log( "[cdda-mp] HANDSHAKE: unexpected pre-auth message type='" +
+        // quit — e.g. a heartbeat, or a straggler (chat/state/action) still in the
+        // client's send queue when it reconnects mid-game.  IGNORE it (do NOT
+        // close): the version_probe handshake already validated the build, so an
+        // unexpected type here is a buffered/interleaved message on a reconnect,
+        // not an incompatible client.  Closing here dropped the reconnecting
+        // socket the instant a buffered 'chat' arrived, forcing the client to
+        // sweep again — the reconnect-flapping half of the 2026-07-01 bug.  (An
+        // older client that truly predates version_probe simply never gets a
+        // welcome and times out on its own end; we don't need to force-close it.)
+        mp_log( "[cdda-mp] HANDSHAKE: ignoring stray pre-auth message type='" +
                 ( type.empty() ? std::string( "(none)" ) : type ) +
-                "' — likely a different/old client build. Closing." );
-        session->disconnect();
+                "' (pre-JOIN) — waiting for join." );
     }
 }
 
