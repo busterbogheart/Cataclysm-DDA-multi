@@ -421,6 +421,10 @@ static int64_t mp_now_ms()
 static character_id remote_player_npc_id;
 static bool remote_player_connected = false;
 static std::string remote_player_name_;
+// True after a removal so the next spawn is announced as a RECONNECT ("X
+// reconnected.") rather than a first join.  Set in remove_remote_player, cleared
+// when the reconnect message shows.
+static bool g_partner_pending_reconnect = false;
 
 // Client-side: NPC representing the host player in the client's local world.
 static character_id client_host_npc_id;
@@ -940,6 +944,17 @@ struct mp_hud_t {
             }
             mvwprintz( win, point( 2, crow ), c_dark_gray, "%s",
                        line.substr( 0, std::max( 0, W - 4 ) ).c_str() );
+            wnoutrefresh( win );
+            return;
+        }
+
+        // Client: a reconnect sweep is in progress — show a persistent status
+        // (the "Connection lost — reconnecting…" log/message is a one-shot; this
+        // stays up for the whole multi-second sweep so the player knows why the
+        // game is frozen and that it's recovering, not dead).
+        if( is_client_mode() && client_is_reconnecting() ) {
+            mvwprintz( win, point( 2, crow ), c_yellow, "%s",
+                       _( "Reconnecting to host…" ) );
             wnoutrefresh( win );
             return;
         }
@@ -2057,6 +2072,9 @@ static void remove_remote_player( bool announce = true )
     if( announce ) {
         add_msg( m_bad, "The other player has disconnected." );
     }
+    // Whether announced or not, a removal means a following spawn is a comeback —
+    // so the join announcement says "reconnected" instead of "joined".
+    g_partner_pending_reconnect = true;
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
 }
 
@@ -2692,7 +2710,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 // relayed "Niesha swaps places with Jeff" never converts Jeff→you.
                 g_partner_name_cached = cname;
                 if( was_placeholder ) {
-                    add_msg( m_good, _( "%s has connected and joined the game." ), cname );
+                    if( g_partner_pending_reconnect ) {
+                        add_msg( m_good, _( "%s reconnected." ), cname );
+                        g_partner_pending_reconnect = false;
+                    } else {
+                        add_msg( m_good, _( "%s has connected and joined the game." ), cname );
+                    }
                 }
             }
         }
