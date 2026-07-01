@@ -341,8 +341,19 @@ void server::on_client_disconnected( std::shared_ptr<client_session> session ) {
               clients_.size() << std::endl;
 
     if( session->authenticated ) {
-        broadcast( "{\"type\":\"player_left\",\"name\":\"" + name + "\"}\n" );
-        get_mp_queue().push( { cata_mp::mp_event::type::disconnect, name, "" } );
+        // Only the CURRENT active session ending is a real disconnect.  If this is
+        // a superseded/stale session (an old socket dying after the client already
+        // reconnected on a new one), do NOT push a disconnect — that would evict
+        // the reconnected player.  Order-independent: the active session is whoever
+        // JOINed most recently.
+        if( active_session_.lock() == session ) {
+            active_session_.reset();
+            broadcast( "{\"type\":\"player_left\",\"name\":\"" + name + "\"}\n" );
+            get_mp_queue().push( { cata_mp::mp_event::type::disconnect, name, "" } );
+        } else {
+            mp_log( "[cdda-mp] disconnect: superseded/stale session for '" + name +
+                    "' closed — not ending the co-op session (reconnect in progress)" );
+        }
     }
 }
 
@@ -456,6 +467,10 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
 
         session->name = name;
         session->authenticated = true;
+        // This session is now the active one.  A prior session for the same player
+        // (a reconnect's old socket) is hereby superseded — its later close won't
+        // end the co-op session (see on_client_disconnected).
+        active_session_ = session;
 
         // Include the host's worldgen seed so the client adopts it before
         // generating the host-area overmap — otherwise it renders its own

@@ -61,6 +61,12 @@ class server {
 
         std::vector<std::shared_ptr<client_session>> clients_;
         std::mutex clients_mutex_;
+
+        // The currently-active authenticated session (Increment 2).  Set on JOIN;
+        // only THIS session's disconnect ends the co-op session.  A superseded
+        // session (the old socket lingering after a reconnect) dying must NOT
+        // push a disconnect event, or it would evict the just-reconnected player.
+        std::weak_ptr<client_session> active_session_;
 };
 
 // Start the server on the given port. Called from main() when --server flag is set.

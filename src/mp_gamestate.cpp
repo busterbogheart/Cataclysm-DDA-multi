@@ -2015,7 +2015,9 @@ static void spawn_remote_player( const std::string &name )
     mp_templates_sync_on_join();
 }
 
-static void remove_remote_player()
+// announce=false suppresses the "other player has disconnected" message — used on
+// the reconnect re-admit path, where the player didn't leave, they came back.
+static void remove_remote_player( bool announce = true )
 {
     if( !remote_player_connected ) {
         return;
@@ -2052,7 +2054,9 @@ static void remove_remote_player()
     // to 0 here caused a deadlock: client last_seq=N, server restarts at seq=1..N
     // which were all skipped as "old seq".
     mp_save_npc_ids();  // ID is now invalid — clears the cleanup file entry
-    add_msg( m_bad, "The other player has disconnected." );
+    if( announce ) {
+        add_msg( m_bad, "The other player has disconnected." );
+    }
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
 }
 
@@ -6477,6 +6481,16 @@ void process_mp_events()
         }
         switch( event.evt_type ) {
             case mp_event::type::connect:
+                // Reconnect that beat the stall watchdog: we still think the old
+                // session is live, so spawn_remote_player() would early-return and
+                // the fresh client would get no re-spawn/resync.  Tear the stale
+                // proxy down first (quietly — they didn't leave), so the JOIN gets
+                // a clean spawn + full resync.  (Server-side active-session
+                // tracking already stops the old socket's death from evicting us.)
+                if( remote_player_connected ) {
+                    mp_log( "[cdda-mp] connect: already connected — reconnect, re-admitting with fresh resync" );
+                    remove_remote_player( false );
+                }
                 spawn_remote_player( event.session_id );
                 break;
             case mp_event::type::disconnect:
