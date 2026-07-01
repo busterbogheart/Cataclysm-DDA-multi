@@ -129,12 +129,12 @@
       "Want a more populated and urbanized map?  Go South or East!  The map gets more urban the further you go that way."
     ],
     "cooptext":[
-      { "text": "Bump into your partner to trade, pass an item, assist, or high-five.", "weight": 30 },
-      { "text": "In-game chat is available: bind the `Co-op chat` action to message your partner… or you can yell…", "weight": 30 },
-      { "text": "\"Pause\"` ('5' or '.') is crucial for co-op.  It gives your partner moves/AP. And vice versa.", "weight": 30 },
-      { "text": "The host runs the entire world simulation… So host with the faster machine w/ the better connection.", "weight": 30 },
-      { "text": "If you're both asleep or in long activities, the game will fast-forward so you're not stuck waiting in real time.", "weight": 30 },
-      { "text": "Feature requests? Bugs? Want to donate? Visit CDDACOOP.com (Discord invite @ CDDACOOP.com/discord)", "weight": 50 }
+      { "text": "Bump into your partner to trade, pass an item, assist, or high-five.", "weight": 20 },
+      { "text": "In-game chat is available: bind the `Co-op chat` action to message your partner… or you can yell…", "weight": 20 },
+      { "text": "\"Pause\"` ('5' or '.') is crucial for co-op.  It gives your partner moves/AP. And vice versa.", "weight": 20 },
+      { "text": "The host runs the entire world simulation… So host with the faster machine w/ the better connection.", "weight": 20 },
+      { "text": "If you're both asleep or in long activities, the game will fast-forward so you're not stuck waiting in real time.", "weight": 20 },
+      { "text": "Feature requests? Bugs? Want to donate? Visit CDDACOOP.com (Discord invite @ CDDACOOP.com/discord)", "weight": 40 }
     ]
   }
 ]
