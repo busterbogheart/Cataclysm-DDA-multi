@@ -2106,6 +2106,16 @@ static void remove_remote_player( bool announce = true )
 
     npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
     if( remote ) {
+        // Purge the proxy from the avatar's seen-monster cache BEFORE deleting it.
+        // The partner is a follower, so it lives in mon_visible.unique_types[] as a
+        // green '@' in the compass widget. g->remove_npc() only erases the active_npc
+        // shared_ptr (destroying the npc) — it does NOT touch mon_visible, so the
+        // cached raw npc* dangles.  The host redraws its panels while blocked in
+        // wait_for_client_action(), and the compass then derefs the freed pointer
+        // -> use-after-free crash on disconnect (host hard-crash during a WAN blip,
+        // 2026-07-01).  SP does this exact purge in game::mon_info_update()'s dead-
+        // npc sweep (game.cpp:4104) — mirror it here.
+        get_avatar().get_mon_visible().remove_npc( remote );
         // Clean despawn — the partner quit/disconnected, they are NOT dead.
         // die() drops a corpse carrying all their gear (a pickup-able loot dupe).
         g->remove_npc( remote_player_npc_id );
