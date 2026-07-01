@@ -7290,6 +7290,17 @@ static bool apply_one_state_message( const std::string &msg )
     if( msg.find( "\"reconnected\":true" ) != std::string::npos ) {
         mp_log( "[cdda-mp] RECONNECT: re-joined host — resuming (client)" );
         add_msg( m_good, _( "Reconnected to the host." ) );
+        // Clear stale grant/ack state so the host's re-sent grant is accepted.
+        // reconnect_worker() calls client_send_join() directly, bypassing the
+        // game loop's join reset (which only fires on the not-sent->sent
+        // transition at first join), so g_client_last_grant_seq still holds the
+        // pre-disconnect value.  The host re-sends the grant with the SAME seq
+        // (it doesn't bump on re-admit), so `grant_seq > g_client_last_grant_seq`
+        // is false, the grant is dropped as a stale replay, the client's moves
+        // stay negative, and both ends deadlock (2026-07-01).  Mirror the initial
+        // join reset here — the reconnected client is a fresh grant consumer.
+        g_client_waiting_for_ack = false;
+        g_client_last_grant_seq = 0;
         return true;
     }
     if( msg.find( "\"connected\":false" ) != std::string::npos ) {
