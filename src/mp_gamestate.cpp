@@ -3618,36 +3618,59 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 } else {
                     target_name = m.tername( bub );
                 }
-                auto bash_map = remote->smash_ability();
-                if( jo.has_int( "bash" ) ) {
-                    const int client_bash = jo.get_int( "bash" );
-                    const damage_type_id bash_type( "bash" );
-                    bash_map[bash_type] = client_bash;
+                // Corpse pulping isn't wired up for the co-op proxy yet (SP's
+                // avatar::smash checks this same i_at/can_revive and routes to
+                // pulp_activity_actor INSTEAD of bashing terrain — see ROADMAP.md
+                // "Co-op corpse pulping" for the real fix). Bypassing that check
+                // meant the tile's corpse was silently ignored and whatever
+                // terrain/furniture happened to be under it got bashed instead —
+                // reported 2026-07-02 as "can't pulp corpses with a partner, it
+                // just smashes the floor." Block it explicitly with a clear
+                // message instead of that confusing silent wrong-target bash.
+                bool has_pulpable_corpse = false;
+                for( const item &maybe_corpse : m.i_at( bub ) ) {
+                    if( maybe_corpse.can_revive() ) {
+                        has_pulpable_corpse = true;
+                        break;
+                    }
                 }
-                // destroy=false so normal bash strength checks apply.
-                const bash_params result = m.bash( bub, bash_map, false, false );
-                if( result.success ) {
-                    smash_result_str = "destroyed";
-                } else if( result.did_bash ) {
-                    smash_result_str = result.can_bash ? "hit" : "impossible";
+                if( has_pulpable_corpse ) {
+                    smash_result_str = "no_pulp";
+                    add_msg( m_info,
+                             _( "%s can't pulp corpses in co-op yet — not supported over the "
+                                "network.  The corpse is untouched." ), remote->get_name() );
+                } else {
+                    auto bash_map = remote->smash_ability();
+                    if( jo.has_int( "bash" ) ) {
+                        const int client_bash = jo.get_int( "bash" );
+                        const damage_type_id bash_type( "bash" );
+                        bash_map[bash_type] = client_bash;
+                    }
+                    // destroy=false so normal bash strength checks apply.
+                    const bash_params result = m.bash( bub, bash_map, false, false );
+                    if( result.success ) {
+                        smash_result_str = "destroyed";
+                    } else if( result.did_bash ) {
+                        smash_result_str = result.can_bash ? "hit" : "impossible";
+                    }
+                    // Generate a message so flush_action_msgs forwards it to the client.
+                    if( !target_name.empty() ) {
+                        if( smash_result_str == "destroyed" ) {
+                            add_msg( m_good, _( "%s smashes the %s to pieces!" ),
+                                     remote->get_name(), target_name );
+                        } else if( smash_result_str == "hit" ) {
+                            add_msg( _( "%s strikes the %s." ),
+                                     remote->get_name(), target_name );
+                        } else if( smash_result_str == "impossible" ) {
+                            add_msg( m_info, _( "%s can't damage the %s." ),
+                                     remote->get_name(), target_name );
+                        }
+                    }
                 }
                 mp_log( "[cdda-mp] smash @ " +
                         std::to_string( abs_target.x() ) + "," +
                         std::to_string( abs_target.y() ) +
                         " result=" + smash_result_str );
-                // Generate a message so flush_action_msgs forwards it to the client.
-                if( !target_name.empty() ) {
-                    if( smash_result_str == "destroyed" ) {
-                        add_msg( m_good, _( "%s smashes the %s to pieces!" ),
-                                 remote->get_name(), target_name );
-                    } else if( smash_result_str == "hit" ) {
-                        add_msg( _( "%s strikes the %s." ),
-                                 remote->get_name(), target_name );
-                    } else if( smash_result_str == "impossible" ) {
-                        add_msg( m_info, _( "%s can't damage the %s." ),
-                                 remote->get_name(), target_name );
-                    }
-                }
             }
         } catch( const JsonError &e ) {
             std::cout << "[cdda-mp] smash parse error: " << e.what() << std::endl;
