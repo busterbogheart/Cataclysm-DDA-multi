@@ -124,6 +124,13 @@ static std::string mp_compress_frame( const std::string &msg )
         // Compression failed or didn't help — send the original plaintext.
         return msg;
     }
+    // DIAG (temporary, strip before public release): actual per-message compression
+    // ratio on real payloads — raw JSON vs zstd bytes (pre-base64).  base64 re-inflates
+    // ~4/3, so the on-wire size is ~n*4/3; we log the raw zstd win as the honest number.
+    mp_log( "[cdda-mp] COMPRESS raw=" + std::to_string( body_len ) +
+            " zstd=" + std::to_string( n ) +
+            " wire=" + std::to_string( ( n * 4 + 2 ) / 3 ) +
+            " ratio=" + std::to_string( static_cast<double>( body_len ) / static_cast<double>( n ) ) );
     return "{\"z\":\"" + base64_encode( std::string_view( comp.data(), n ) ) + "\"}\n";
 }
 
@@ -185,8 +192,17 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         // posted during this async_write land back in write_queue_ and coalesce on
         // the next pass.
         auto buf = std::make_shared<std::string>();
+        size_t msg_count = 0;
         for( const std::string &m : write_queue_ ) {
             buf->append( m );
+            ++msg_count;
+        }
+        // DIAG (temporary, strip before public release): coalescing effectiveness —
+        // how many queued messages this single write() batched together, and the
+        // total byte size of the batch.  msgs>1 proves the coalesce win is live.
+        if( msg_count > 1 ) {
+            mp_log( "[cdda-mp] COALESCE msgs=" + std::to_string( msg_count ) +
+                    " bytes=" + std::to_string( buf->size() ) );
         }
         write_queue_.clear();
         asio::async_write( socket, asio::buffer( *buf ),
