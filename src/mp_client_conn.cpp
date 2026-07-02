@@ -593,6 +593,13 @@ static void reconnect_worker()
         mp_log( "[cdda-mp] RECONNECT: attempt " + std::to_string( i + 1 ) + "/" +
                 std::to_string( attempts ) + " -> " + g_rc_host + ":" +
                 std::to_string( g_rc_port ) );
+        // Surface per-attempt progress to the player via the game thread (this
+        // worker runs off-thread and can't add_msg directly).  client_recv_pop()
+        // passes state messages through to the game loop (only welcome/error are
+        // routed to the handshake queue during a reconnect).
+        g_recv_queue.push( "{\"type\":\"state\",\"reconnect_attempt\":" +
+                           std::to_string( i + 1 ) + ",\"reconnect_total\":" +
+                           std::to_string( attempts ) + "}" );
         // client_connect() rebuilds g_client + re-PROBEs; on success it leaves
         // g_pending_join armed with g_join_sent=false.
         if( client_connect( g_rc_host, g_rc_port, g_rc_name, g_rc_password, g_rc_version ) ) {
@@ -606,6 +613,10 @@ static void reconnect_worker()
                 " failed (" + client_connect_error() + ")" );
     }
     mp_log( "[cdda-mp] RECONNECT: giving up — surfacing disconnect" );
+    // Distinct "reconnect failed" narration before the generic connected:false
+    // (which the game thread also uses for host-death) so the player learns the
+    // sweep exhausted rather than seeing only a bare "Lost connection".
+    g_recv_queue.push( "{\"type\":\"state\",\"reconnect_failed\":true}" );
     g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
     g_rc_in_progress.store( false );
 }

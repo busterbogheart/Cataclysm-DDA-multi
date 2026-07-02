@@ -2148,7 +2148,7 @@ static void remove_remote_player( bool announce = true )
     // which were all skipped as "old seq".
     mp_save_npc_ids();  // ID is now invalid — clears the cleanup file entry
     if( announce ) {
-        add_msg( m_bad, "The other player has disconnected." );
+        add_msg( m_bad, _( "Your partner disconnected." ) );
     }
     // Whether announced or not, a removal means a following spawn is a comeback —
     // so the join announcement says "reconnected" instead of "joined".
@@ -6635,7 +6635,11 @@ void process_mp_events()
         mp_now_ms() - g_last_client_msg_ms > MP_CLIENT_STALL_MS ) {
         mp_log( "[cdda-mp] HOST-STALL: client silent >" +
                 std::to_string( MP_CLIENT_STALL_MS ) + "ms — treating as disconnected" );
-        remove_remote_player();
+        // Tailored message for the silent-watchdog case; suppress remove_remote_
+        // player()'s generic "Your partner disconnected." to avoid a double line.
+        add_msg( m_bad, _( "Your partner went silent (>%d s) — connection lost.  They'll rejoin automatically if they reconnect." ),
+                 static_cast<int>( MP_CLIENT_STALL_MS / 1000 ) );
+        remove_remote_player( false );
     }
 }
 
@@ -7284,12 +7288,32 @@ static bool apply_one_state_message( const std::string &msg )
     // re-dial.  Tells the player why they're briefly frozen.
     if( msg.find( "\"reconnecting\":true" ) != std::string::npos ) {
         mp_log( "[cdda-mp] RECONNECT: link dropped — reconnecting (client)" );
-        add_msg( m_warning, _( "Connection lost — reconnecting…" ) );
+        add_msg( m_warning, _( "Connection to host lost — reconnecting… (up to ~15s)" ) );
+        return true;
+    }
+    // Per-attempt progress from reconnect_worker (on its own thread) so the sweep
+    // isn't a silent gap between "reconnecting…" and the outcome.
+    if( msg.find( "\"reconnect_attempt\":" ) != std::string::npos ) {
+        const auto grab = [&msg]( const char *key ) -> int {
+            const std::string k = key;
+            const auto p = msg.find( k );
+            return p == std::string::npos ? 0 : atoi( msg.c_str() + p + k.size() );
+        };
+        const int n = grab( "\"reconnect_attempt\":" );
+        const int tot = grab( "\"reconnect_total\":" );
+        mp_log( "[cdda-mp] RECONNECT: narrate attempt " + std::to_string( n ) + "/" +
+                std::to_string( tot ) );
+        add_msg( m_warning, _( "Reconnecting to host… (try %d/%d)" ), n, tot );
+        return true;
+    }
+    if( msg.find( "\"reconnect_failed\":true" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] RECONNECT: gave up — narrating to player" );
+        add_msg( m_bad, _( "Couldn't reconnect to the host after several tries — connection lost." ) );
         return true;
     }
     if( msg.find( "\"reconnected\":true" ) != std::string::npos ) {
         mp_log( "[cdda-mp] RECONNECT: re-joined host — resuming (client)" );
-        add_msg( m_good, _( "Reconnected to the host." ) );
+        add_msg( m_good, _( "Reconnected to the host — resuming." ) );
         // Clear stale grant/ack state so the host's re-sent grant is accepted.
         // reconnect_worker() calls client_send_join() directly, bypassing the
         // game loop's join reset (which only fires on the not-sent->sent
