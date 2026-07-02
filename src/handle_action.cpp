@@ -4038,7 +4038,9 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
 
         case ACTION_SAVE:
             if( cata_mp::is_client_mode() ) {
-                if( query_yn( _( "Save and disconnect? Your character will be saved locally so you can load it on rejoin." ) ) ) {
+                if( query_yn( _( "Save and disconnect?  Your character is saved locally for next "
+                                 "time.  The host will also save the shared world when you leave, "
+                                 "so your progress there stays in sync." ) ) ) {
                     if( save() ) {
                         cata_mp::mp_notify_session_ending();
                         player_character.set_moves( 0 );
@@ -4049,7 +4051,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                         uquit = QUIT_NOSAVED;
                     }
                 }
-            } else if( query_yn( _( "Save and quit?" ) ) ) {
+            } else if( query_yn( cata_mp::is_host_mode() && cata_mp::is_hosting()
+                                  ? _( "Save and quit?  This is the authoritative co-op save — the "
+                                       "shared world will be saved.  Your partner will be "
+                                       "disconnected." )
+                                  : _( "Save and quit?" ) ) ) {
                 if( save() ) {
                     cata_mp::mp_notify_session_ending();
                     player_character.set_moves( 0 );
