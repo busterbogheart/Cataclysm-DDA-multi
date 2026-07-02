@@ -6757,6 +6757,24 @@ static void remove_client_host_npc()
     mp_save_npc_ids();
 }
 
+// DIAG (temporary, 2026-07-02) — see declaration in mp_gamestate.h. No-op unless
+// target is specifically the client's host-overlay proxy.
+void mp_diag_damage_dealt( Creature *source, Creature *target, int amount )
+{
+    if( !is_client_mode() || !client_host_npc_spawned || !client_host_npc_id.is_valid() ) {
+        return;
+    }
+    npc *proxy = g->critter_by_id<npc>( client_host_npc_id );
+    if( !proxy || target != static_cast<Creature *>( proxy ) ) {
+        return;
+    }
+    const std::string src_desc = source ? source->get_name() : std::string( "<null source>" );
+    mp_log( "[cdda-mp] HOST-PROXY-DAMAGE: source='" + src_desc +
+            "' amount=" + std::to_string( amount ) +
+            " hp_after=" + std::to_string( proxy->get_hp() ) +
+            "/" + std::to_string( proxy->get_hp_max() ) );
+}
+
 static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::string &name,
                                     bool host_in_vehicle, bool host_ctrl_veh )
 {

@@ -10,6 +10,7 @@
 
 class npc;
 class Character;
+class Creature;
 struct WORLD;
 
 namespace cata_mp {
@@ -469,6 +470,15 @@ void mp_log( const std::string &msg );
 // No-op outside MP. Throttled internally (emits only when newseen / nearest-hostile
 // distance / safe_mode change) so it never floods the log during 200-turn/sec FF.
 void mp_log_safemode_check( int newseen, int mostseen, int safe_mode );
+
+// DIAGNOSTIC (temporary, 2026-07-02, for the "host proxy vanished from client
+// screen" bug): named callout (rule 4) from Creature::deal_damage (creature.cpp,
+// an upstream-hot SP file) so the actual damage-dealing event on the client's
+// host-overlay proxy is visible — who/what hit it and for how much — instead of
+// only seeing the HP drop after the fact via the HOST-OVERLAY polling log.
+// No-op unless target is client_host_npc_id; strip along with the other
+// temporary host-proxy diagnostics once the root cause is confirmed + fixed.
+void mp_diag_damage_dealt( Creature *source, Creature *target, int amount );
 
 // Per-turn callouts invoked from do_turn.cpp (an SP file) so the MP per-turn
 // catch-up/gating logic lives here, not inline in the SP loop (rule 4, minimize
