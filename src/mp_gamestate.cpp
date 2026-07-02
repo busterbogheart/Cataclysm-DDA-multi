@@ -1120,11 +1120,23 @@ struct mp_hud_t {
 
             const int my_kills = is_hosting() ? g_host_kills : g_client_kills;
             const int partner_kills = is_hosting() ? g_client_kills : g_host_kills;
-            const std::string tally = "☠ " + std::to_string( my_kills ) + "·" +
-                                      std::to_string( partner_kills );
+            const std::string mk = std::to_string( my_kills );
+            const std::string pk = std::to_string( partner_kills );
+            const std::string tally = "☠ " + mk + "·" + pk;
             const int tally_x = ping_x - 2 - utf8_width( tally );
             if( tally_x > x ) {   // draw only if it doesn't overrun the left content
-                mvwprintz( win, point( tally_x, crow ), c_light_red, "%s", tally.c_str() );
+                // Color the two numbers apart so it's obvious which is which at a
+                // glance: partner's count in green to match their green '@' proxy
+                // glyph on the map; yours in white (your own '@' color), skull +
+                // separator neutral gray.
+                int tx = tally_x;
+                mvwprintz( win, point( tx, crow ), c_light_gray, "☠ " );
+                tx += utf8_width( "☠ " );
+                mvwprintz( win, point( tx, crow ), c_white, "%s", mk.c_str() );
+                tx += utf8_width( mk );
+                mvwprintz( win, point( tx, crow ), c_light_gray, "·" );
+                tx += 1;
+                mvwprintz( win, point( tx, crow ), c_light_green, "%s", pk.c_str() );
             }
         }
 
@@ -6787,6 +6799,25 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
         // NPC left the reality bubble — still in overmap buffer, just not loaded.
         // Don't reset spawned state or we'll create a duplicate on the next tick.
         // If they're far enough to load, request a map reload in their direction.
+        //
+        // DIAG (temporary): the critter is gone.  find_npc() distinguishes the two
+        // causes — present in the overmap buffer means it merely left the bubble
+        // (recoverable via load_npcs); ABSENT means it was DESTROYED (killed by
+        // friendly fire, or culled), which this branch canNOT recover from (nothing
+        // to reload), so the host proxy stays gone + the HUD shows [?] forever.
+        // That's the 2026-07-02 "host vanished from client screen" bug.
+        {
+            const bool in_omb = static_cast<bool>( overmap_buffer.find_npc( client_host_npc_id ) );
+            static std::string last_null;
+            const std::string s = "in_overmap_buffer=" + std::to_string( in_omb ) +
+                                  " inbounds=" + std::to_string( m.inbounds( abs_pos ) );
+            if( s != last_null ) {
+                last_null = s;
+                mp_log( "[cdda-mp] HOST-PROXY-NULL: critter gone; " + s +
+                        ( in_omb ? " (out-of-bubble — recoverable)"
+                          : " (DESTROYED — killed/culled; no respawn path, proxy stays gone)" ) );
+            }
+        }
         if( m.inbounds( abs_pos ) ) {
             // Back in bounds — the game will load_npcs() on the next do_turn pass.
             g->load_npcs();
@@ -6814,9 +6845,15 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
         // broken; if recv_abs stops changing, the host isn't broadcasting movement;
         // if inbounds=0, the host left the client's bubble and the overlay freezes.
         static std::string last_overlay;
+        // DIAG (temporary): include the proxy's HP so friendly-fire damage on the
+        // host proxy is visible BEFORE it drops to 0 and the critter is destroyed —
+        // a falling hp here right before a HOST-PROXY-NULL(DESTROYED) confirms the
+        // friendly-fire cause of the 2026-07-02 vanish bug.
         const std::string s = "recv_abs=" + abs_pos.to_string() +
                               " inbounds=" + std::to_string( host_inb ) +
-                              " cur_bub=" + host_npc->pos_bub().to_string();
+                              " cur_bub=" + host_npc->pos_bub().to_string() +
+                              " hp=" + std::to_string( host_npc->get_hp() ) +
+                              "/" + std::to_string( host_npc->get_hp_max() );
         if( s != last_overlay ) {
             last_overlay = s;
             mp_log( "[cdda-mp] HOST-OVERLAY: " + s );

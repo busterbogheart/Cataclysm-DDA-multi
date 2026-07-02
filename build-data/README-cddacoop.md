@@ -277,6 +277,20 @@ large scripted-effect/teleport power sets fall outside that model.
 
 ### Unreleased
 
+- **Tilesets included now** — all the tilesets ship in every release, like the upstream CDDA
+- **Custom hosting port** — hosts can now set a custom listen port from the host
+  menu (or `CDDA_MP_PORT` env var for the nerds) instead of defaulting to 8080.
+- **Better reconnect logic** — Connection hiccups of different sorts should now be noticed
+  better and reconnect, eventually.  Testing shows the game surviving 5–15 second drops in both directions (client losing the
+  host, host losing the client).
+- **A 'busy' host no longer blocks client from joining** — Previously a client couldn't join
+  if the host in that moment had their inventory or morale dialog up, (other panels too caused this). 
+- **Co-op kill tally in the HUD☠** — a running count of monsters killed for both players
+- **Non-US build crash fix?** — fixed a crash in non-US builds related to float number parsing (commas vs periods)
+- **TCP optimizations** — host now compresses world updates that it sends every turn; packs its messages into fewer packets 
+  and also sends them off immediately instead of waiting around to send a batch. Should be noticeable moreso over VPNs and long 
+  distance play.s
+
 
 ### 2026-06-29
 
