@@ -301,6 +301,13 @@ void mp_notify_session_ending();
 // No-op outside MP modes.
 void mp_after_quicksave();
 
+// Silent, host-only: persists world-tied co-op state (currently the kill tally)
+// on every real save-to-disk. Called from game::save() itself (game_io.cpp) so
+// it fires regardless of which UI path triggered the save. No-op on the client
+// and outside MP modes — see "Co-op save model" in ROADMAP.md (host = single
+// source of truth; the client never persists this locally).
+void mp_after_world_save();
+
 // Templates wire-sync on join: enumerate the local ~/Library/.../templates/
 // dir, send the list to the partner, then exchange any templates the other
 // side is missing.  Symmetric — both host and client send their list on

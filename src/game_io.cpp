@@ -67,6 +67,7 @@
 #include "memorial_logger.h"
 #include "messages.h"
 #include "mod_manager.h"
+#include "mp_gamestate.h"
 #include "options.h"
 #include "output.h"
 #include "overmapbuffer.h"
@@ -777,6 +778,13 @@ bool game::save()
             // is called.
             EM_ASM( window.game_unsaved = false; );
 #endif
+            // Named MP callout (rule 4): persist world-tied co-op state (currently
+            // just the kill tally) on every real save-to-disk, regardless of which
+            // UI path triggered it (quicksave, save & quit, or a client's
+            // save_request) — game::save() is the one chokepoint all of them funnel
+            // through. Silent + host-only; the user-facing save messaging lives in
+            // mp_after_quicksave()/mp_notify_session_ending(), not here.
+            cata_mp::mp_after_world_save();
             return true;
         }
     } catch( std::ios::failure & ) {

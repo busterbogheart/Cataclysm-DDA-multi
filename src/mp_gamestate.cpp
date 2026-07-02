@@ -463,8 +463,31 @@ struct mp_kill_counter : event_subscriber {
 static mp_kill_counter g_kill_counter;
 static bool g_kill_counter_subscribed = false;
 
-// Subscribe once the host session is live; reset the tally on first subscribe so
-// each co-op session starts fresh.  Idempotent — safe to call every turn.
+// Host-side sidecar file, world-tied (same pattern as mp_npc_cleanup_path) — the
+// kill tally is co-op progress like any other stat and belongs in the save, not
+// reset every session.  Client never reads/writes this: it receives both counts
+// fresh on every state broadcast per the "host = single source of truth" save
+// model (see ROADMAP.md "Co-op save model"), so restoring the host's copy alone
+// is sufficient for both players to see the right numbers on reconnect.
+static cata_path mp_kill_tally_path()
+{
+    return PATH_INFO::world_base_save_path() / "mp_kill_tally.json";
+}
+
+static void mp_save_kill_tally()
+{
+    write_to_file( mp_kill_tally_path(), [&]( std::ostream &fout ) {
+        JsonOut jo( fout );
+        jo.start_object();
+        jo.member( "host_kills", g_host_kills );
+        jo.member( "client_kills", g_client_kills );
+        jo.end_object();
+    }, "mp kill tally" );
+}
+
+// Subscribe once the host session is live.  Idempotent — safe to call every turn.
+// Loads any previously-saved tally for this world; a brand-new world has no file
+// yet, so both counts naturally start at 0 without needing a separate new-game path.
 static void mp_kill_tally_subscribe()
 {
     if( g_kill_counter_subscribed ) {
@@ -472,6 +495,12 @@ static void mp_kill_tally_subscribe()
     }
     g_host_kills = 0;
     g_client_kills = 0;
+    read_from_file_optional_json( mp_kill_tally_path(), [&]( const JsonValue &jv ) {
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        g_host_kills = jo.get_int( "host_kills", 0 );
+        g_client_kills = jo.get_int( "client_kills", 0 );
+    } );
     get_event_bus().subscribe( &g_kill_counter );
     g_kill_counter_subscribed = true;
 }
@@ -5646,6 +5675,14 @@ void mp_after_quicksave()
                  _( "Saved your character locally.  Asking the host to save the shared world so you stay in sync…" ) );
         client_send( "{\"type\":\"action\",\"action\":\"save_request\"}" );
     }
+}
+
+void mp_after_world_save()
+{
+    if( !is_host_mode() || !is_hosting() ) {
+        return;   // host-only: see "Co-op save model" in ROADMAP.md
+    }
+    mp_save_kill_tally();
 }
 
 void mp_notify_session_ending()
