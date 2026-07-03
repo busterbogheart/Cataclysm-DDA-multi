@@ -188,9 +188,28 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         for( const std::string &m : write_queue_ ) {
             buf->append( m );
         }
+        const size_t buf_bytes = buf->size();
         write_queue_.clear();
+        // Diagnostic for the 2026-07-03 "host crafting -> server times out" report:
+        // a heartbeat enqueued behind a huge FF-broadcast buffer can't reach the
+        // wire until this async_write completes.  Only log large/slow flushes
+        // (skip the steady-state tiny-grant traffic) so this doesn't flood the log.
+        const bool track_flush = buf_bytes > 65536;
+        const auto flush_start = track_flush ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
+        if( track_flush ) {
+            mp_log( "[cdda-mp] HOST-WRITE-BEGIN: bytes=" + std::to_string( buf_bytes ) );
+        }
         asio::async_write( socket, asio::buffer( *buf ),
-        [self, buf]( std::error_code ec, std::size_t ) {
+        [self, buf, buf_bytes, track_flush, flush_start]( std::error_code ec, std::size_t ) {
+            if( track_flush ) {
+                const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now() - flush_start ).count();
+                mp_log( "[cdda-mp] HOST-WRITE-DONE: bytes=" + std::to_string( buf_bytes ) +
+                        " elapsed_ms=" + std::to_string( elapsed_ms ) +
+                        " ec=" + ec.message() +
+                        " queued_after=" + std::to_string( self->write_queue_.size() ) );
+            }
             if( ec ) {
                 self->disconnect();
                 return;

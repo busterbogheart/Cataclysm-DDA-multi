@@ -6705,8 +6705,17 @@ void process_mp_events()
     // keeps beating through host modals — see mp_server::arm_heartbeat.)
     if( remote_player_connected && g_last_client_msg_ms > 0 &&
         mp_now_ms() - g_last_client_msg_ms > MP_CLIENT_STALL_MS ) {
+        // 2026-07-03: correlate against FF/activity state so a report like "host
+        // crafting -> server times out" can be confirmed/refuted from logs instead
+        // of theorized — pairs with mp_server.cpp's HOST-WRITE-BEGIN/DONE (a
+        // heartbeat queued behind a huge in-flight FF broadcast would explain a
+        // stall that isn't a real dropped link).
+        const player_activity &host_act = get_avatar().activity;
         mp_log( "[cdda-mp] HOST-STALL: client silent >" +
-                std::to_string( MP_CLIENT_STALL_MS ) + "ms — treating as disconnected" );
+                std::to_string( MP_CLIENT_STALL_MS ) + "ms — treating as disconnected" +
+                " ff_active=" + std::to_string( should_fast_forward() ) +
+                " host_act=" + ( host_act ? host_act.id().str() : "none" ) +
+                " partner_act=" + ( g_partner_activity.empty() ? "none" : g_partner_activity ) );
         // Tailored message for the silent-watchdog case; suppress remove_remote_
         // player()'s generic "Your partner disconnected." to avoid a double line.
         add_msg( m_bad, _( "Your partner went silent (>%d s) — connection lost.  They'll rejoin automatically if they reconnect." ),
@@ -9913,17 +9922,23 @@ static void apply_vehicle_sync( JsonObject &jo )
             // No local vehicle and no snapshot in this packet (slim
             // vehicle_step before first state, or out-of-bounds).  Skip and
             // wait for the next full state broadcast which will carry one.
-            // Log once per nid — this fires every frame for an unplaceable
-            // vehicle and used to flood ~23% of the client log.
-            static std::unordered_set<uint32_t> s_logged_skip_nids;
-            if( s_logged_skip_nids.insert( nid ).second ) {
+            // Log at most once per nid per 10s (not once-ever) — this fires every
+            // frame for an unplaceable vehicle and used to flood ~23% of the
+            // client log, but a once-ever cap hid repeat/rejoin occurrences within
+            // one client process (2026-07-03 "took 4 tries for a car to appear"
+            // report needs to see EACH attempt, not just the first).
+            static std::unordered_map<uint32_t, int64_t> s_last_logged_skip_ms;
+            const int64_t now_ms = mp_now_ms();
+            auto &last_ms = s_last_logged_skip_ms[nid];
+            if( now_ms - last_ms > 10000 ) {
+                last_ms = now_ms;
                 mp_log( "[cdda-mp] CLI-VEH-SKIP-UNKNOWN: nid=" + std::to_string( nid )
                         + " new_abs=" + std::to_string( new_abs.x() )
                         + "," + std::to_string( new_abs.y() )
                         + "," + std::to_string( new_abs.z() )
                         + " name=\"" + vname + "\""
                         + " first_encounter=" + std::to_string( first_encounter )
-                        + " (further skips for this nid suppressed)" );
+                        + " (further skips for this nid suppressed 10s)" );
             }
             continue;
         }
