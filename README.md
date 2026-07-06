@@ -261,6 +261,16 @@ The second player is wired in as a special NPC on the host (like a proxy), so ex
 
 There is one shared simulation bubble centered on the host, and a per-turn grant/wait handshake keeps both players in lockstep so the world does not desync.
 
+### How does saving work?
+
+The host's save holds the shared world (map, your partner's inventory, kill count, everything simulated), and each
+player's own local save holds their character (stats, skills, appearance + mutations).  That's what "Load existing character" restores when
+you join.
+
+Quicksave: the most reliable option, both players get an on-screen confirmation once the host's copy is up to date, so you know it worked.
+Save & quit: also saves everything on both sides, just without the round-trip confirmation. 
+If you're the one joining save & quit periodically so your character carries over.  Ideally you quicksave together right before you stop for the day, so both saves are fresh and in sync.
+
 ### Is it free?
 
 Free and open source. It's a fork of the experimental branch of CDDA.
