@@ -285,9 +285,9 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
-### Unreleased
+### 2026-07-06
 
-- **Tilesets included now** — all the tilesets ship in every release, like the upstream CDDA
+- **Tilesets included now** — all the tilesets ship in every release, like the upstream CDDA download
 - **Custom hosting port** — hosts can now set a custom listen port from the host
   menu (or `CDDA_MP_PORT` env var for the nerds) instead of defaulting to 8080.
 - **Better reconnect logic** — Connection hiccups of different sorts should now be noticed
@@ -295,11 +295,18 @@ large scripted-effect/teleport power sets fall outside that model.
   host, host losing the client).
 - **A 'busy' host no longer blocks client from joining** — Previously a client couldn't join
   if the host in that moment had their inventory or morale dialog up, (other panels too caused this). 
-- **Co-op kill tally in the HUD☠** — a running count of monsters killed for both players
+- **Co-op kill tally in the HUD☠** — a running count of monsters killed for both players, now
+  saved with the game instead of resetting on reload
 - **Non-US build crash fix?** — fixed a crash in non-US builds related to float number parsing (commas vs periods)
 - **TCP optimizations** — host now compresses world updates that it sends every turn; packs its messages into fewer packets 
   and also sends them off immediately instead of waiting around to send a batch. Should be noticeable moreso over VPNs and long 
-  distance play.s
+  distance play.
+- **Corpse pulping while partnered no longer smashes the wrong thing** — trying to pulp a corpse
+  in co-op used to sometimes bash the floor/furniture instead. Now blocked with a clear message
+  until proper co-op pulping is supported.
+- **Clearer save & quit messaging** — the host and client now get accurate co-op-aware messaging
+  when using Save & Quit (previously only Quicksave explained what would happen to your partner).
+  Added a "How does saving work?" FAQ entry.
 
 
 ### 2026-06-29
