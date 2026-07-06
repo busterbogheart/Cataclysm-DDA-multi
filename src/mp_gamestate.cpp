@@ -462,6 +462,12 @@ struct mp_kill_counter : event_subscriber {
 };
 static mp_kill_counter g_kill_counter;
 static bool g_kill_counter_subscribed = false;
+static bool g_kill_tally_reset_pending = false;
+
+void mp_kill_tally_mark_new_character()
+{
+    g_kill_tally_reset_pending = true;
+}
 
 // Host-side sidecar file, world-tied (same pattern as mp_npc_cleanup_path) — the
 // kill tally is co-op progress like any other stat and belongs in the save, not
@@ -486,8 +492,9 @@ static void mp_save_kill_tally()
 }
 
 // Subscribe once the host session is live.  Idempotent — safe to call every turn.
-// Loads any previously-saved tally for this world; a brand-new world has no file
-// yet, so both counts naturally start at 0 without needing a separate new-game path.
+// Loads any previously-saved tally for this world, UNLESS a New-character start
+// requested a reset (mp_kill_tally_mark_new_character) — a reused world can
+// already have a tally file from an earlier, unrelated playthrough.
 static void mp_kill_tally_subscribe()
 {
     if( g_kill_counter_subscribed ) {
@@ -495,12 +502,19 @@ static void mp_kill_tally_subscribe()
     }
     g_host_kills = 0;
     g_client_kills = 0;
-    read_from_file_optional_json( mp_kill_tally_path(), [&]( const JsonValue &jv ) {
-        JsonObject jo = jv.get_object();
-        jo.allow_omitted_members();
-        g_host_kills = jo.get_int( "host_kills", 0 );
-        g_client_kills = jo.get_int( "client_kills", 0 );
-    } );
+    if( g_kill_tally_reset_pending ) {
+        // Fresh playthrough (New character) — ignore any leftover tally file
+        // from a previous playthrough in this world and start clean.
+        g_kill_tally_reset_pending = false;
+        mp_save_kill_tally();
+    } else {
+        read_from_file_optional_json( mp_kill_tally_path(), [&]( const JsonValue &jv ) {
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            g_host_kills = jo.get_int( "host_kills", 0 );
+            g_client_kills = jo.get_int( "client_kills", 0 );
+        } );
+    }
     get_event_bus().subscribe( &g_kill_counter );
     g_kill_counter_subscribed = true;
 }
@@ -6071,6 +6085,7 @@ bool mp_menu_start_host_session()
 
 void mp_menu_cancel_host()
 {
+    g_kill_tally_reset_pending = false;  // don't leak into a later "Load saved world"
     if( !g_pending_host_start && !is_host_mode() ) {
         return;
     }

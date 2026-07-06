@@ -308,6 +308,13 @@ void mp_after_quicksave();
 // source of truth; the client never persists this locally).
 void mp_after_world_save();
 
+// Call when the host picks "New character" (even into an existing/reused
+// world) so the co-op kill tally starts at 0 for this playthrough instead of
+// inheriting a stale mp_kill_tally.json left by a previous playthrough in the
+// same world. Does NOT fire on "Load saved world" — that path is meant to
+// resume the persisted tally.
+void mp_kill_tally_mark_new_character();
+
 // Templates wire-sync on join: enumerate the local ~/Library/.../templates/
 // dir, send the list to the partner, then exchange any templates the other
 // side is missing.  Symmetric — both host and client send their list on

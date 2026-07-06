@@ -1031,6 +1031,9 @@ bool main_menu::opening_screen()
                         hflow.entries.emplace_back( -1, true, 'q', _( "Cancel co-op" ) );
                         hflow.query();
                         if( hflow.ret == 0 ) {
+                            // New characters always start a fresh kill tally, even
+                            // into a reused world that has an old one on disk.
+                            cata_mp::mp_kill_tally_mark_new_character();
                             // Existing world / Create new world / Cancel — keeps the
                             // CO-OP path self-contained instead of bouncing through SP
                             // World > Create World.
