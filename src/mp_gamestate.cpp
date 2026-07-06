@@ -6037,7 +6037,16 @@ bool mp_menu_start_host_session()
                                .width( 8 )
                                .text( def )
                                .query_string();
-        if( !in.empty() && !env_pinned ) {
+        if( in.empty() && !env_pinned ) {
+            // Blank submission reads as "use the default" (the title says so),
+            // not "leave whatever was persisted" — force back to 8080 rather
+            // than silently keeping a stale g_host_port_menu/mp_host_port.json
+            // value from an earlier session (reported 2026-07-06: blanking the
+            // field kept port 1111 instead of defaulting).
+            g_host_port_menu = 8080;
+            g_host_port_loaded = true;
+            mp_host_port_save_disk( g_host_port_menu );
+        } else if( !in.empty() && !env_pinned ) {
             const int v = atoi( in.c_str() );
             if( v > 0 && v < 65536 ) {
                 g_host_port_menu = static_cast<uint16_t>( v );
