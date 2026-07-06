@@ -429,6 +429,15 @@ static std::string remote_player_name_;
 // when the reconnect message shows.
 static bool g_partner_pending_reconnect = false;
 
+// One-shot: true for exactly the next serialize_remote_player_state() broadcast
+// after a genuine rejoin is recognized (the char_stats/name-rename branch below,
+// NOT the client's own auto-redial "reconnected":true, which is a different
+// scenario — manual quit+rejoin via the Join menu never goes through
+// reconnect_worker()). Tells the client to force a real re-teleport instead of
+// the "OUT OF BUBBLE, skip" no-chase guard in client_teleport_avatar() — see
+// the 2026-07-06 "client stuck at old position after host moved away" report.
+static bool g_client_rejoin_pending = false;
+
 // --- Co-op kill tally -----------------------------------------------------
 // Per-player kill counts shown in the co-op HUD — a little friendly rivalry.
 // HOST is authoritative: it subscribes to character_kills_monster, attributes
@@ -2846,6 +2855,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     if( g_partner_pending_reconnect ) {
                         add_msg( m_good, _( "%s reconnected." ), cname );
                         g_partner_pending_reconnect = false;
+                        g_client_rejoin_pending = true;
                     } else {
                         add_msg( m_good, _( "%s has connected and joined the game." ), cname );
                     }
@@ -7473,6 +7483,17 @@ static bool apply_one_state_message( const std::string &msg )
         // join reset here — the reconnected client is a fresh grant consumer.
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
+        // Force a real re-teleport on the next state packet instead of the
+        // "OUT OF BUBBLE, skip" no-chase path in client_teleport_avatar(). If
+        // the host moved (or was moved) far enough while we were gone that
+        // their new position is outside our stale bubble, that guard leaves
+        // our avatar stuck at the pre-disconnect spot forever — reported
+        // 2026-07-06 (host teleported to another map tile while client was
+        // disconnected; client rejoined still showing the old location while
+        // the host's own view had the proxy correctly placed). Clearing this
+        // makes the reconnect re-run the same place_player_overmap path as an
+        // initial join, which is already proven to land correctly.
+        g_initial_teleport_done = false;
         return true;
     }
     if( msg.find( "\"connected\":false" ) != std::string::npos ) {
@@ -7492,6 +7513,27 @@ static bool apply_one_state_message( const std::string &msg )
         // Sync host's calendar turn so the client sees the correct time, lighting, and weather.
         if( jo.has_int( "calendar_turn" ) ) {
             calendar::turn = time_point( jo.get_int( "calendar_turn" ) );
+        }
+
+        if( jo.get_bool( "client_rejoin", false ) ) {
+            // Host recognized this as a genuine rejoin (manual quit + rejoin via
+            // the Join menu, not the auto-redial path) — force the next teleport
+            // below to re-run the proven initial-join placement instead of
+            // "OUT OF BUBBLE, skip" if the host moved out of our stale bubble
+            // while we were away. See g_client_rejoin_pending.
+            mp_log( "[cdda-mp] CLIENT-REJOIN: host confirms rejoin — forcing re-teleport" );
+            g_initial_teleport_done = false;
+            // Same staleness class as the "reconnected":true handler above
+            // (acb949fb77, 2026-07-01) — this client process kept running
+            // through the drop, so it can still be holding a pre-drop
+            // g_client_last_grant_seq/ack guard that blocks every input from
+            // taking effect once rejoined (reported 2026-07-06: RIGHT/DOWN
+            // keys registered and decremented moves, but the avatar never
+            // actually moved). That fix only fires on the auto-redial path;
+            // a manual quit+rejoin never set "reconnected":true, so it never
+            // got the reset. Mirror it here.
+            g_client_waiting_for_ack = false;
+            g_client_last_grant_seq = 0;
         }
 
         if( jo.has_object( "pos" ) ) {
@@ -11538,7 +11580,13 @@ std::string serialize_remote_player_state()
     }
     host_hp_json += "]";
 
+    // One-shot flag riding the very next broadcast after a recognized rejoin —
+    // consumed immediately so it doesn't leak into subsequent packets.
+    const bool client_rejoin = g_client_rejoin_pending;
+    g_client_rejoin_pending = false;
+
     return "{\"type\":\"state\","
+           "\"client_rejoin\":" + std::string( client_rejoin ? "true" : "false" ) + ","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
            "\"host_name\":\"" + host.name + "\","
            "\"pos\":{\"x\":" + std::to_string( pos.x() ) +
