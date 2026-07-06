@@ -300,6 +300,9 @@ large scripted-effect/teleport power sets fall outside that model.
 - **TCP optimizations** — host now compresses world updates that it sends every turn; packs its messages into fewer packets 
   and also sends them off immediately instead of waiting around to send a batch. Should be noticeable moreso over VPNs and long 
   distance play.
+- **Rejoining after a disconnect follows you properly now** — if the host moved around while you
+  were disconnected, rejoining used to leave you stuck at your old spot, unable to move, with your
+  partner's info blank on the HUD. Reconnecting now properly catches you back up to where they are.
 
 
 ### 2026-06-29
