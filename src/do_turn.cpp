@@ -1114,6 +1114,25 @@ bool game::do_turn()
                                          ended + " -> sending activity_end" );
                         cata_mp::set_client_turn_activity( std::string() );
                         cata_mp::client_send_activity_end( ended );
+                        // Mirror the moves>0 activity-end paths (ORPHAN-IN-LOOP /
+                        // ORPHAN-POST-LOOP): send an idle "wait" to ack the host so it
+                        // closes lockstep and grants the next turn.  Cancelling an
+                        // INTERACTIVE activity (ACT_FIRSTAID/ACT_AIM/…) here is the case
+                        // that deadlocks without this: the host is parked in strict
+                        // lockstep (wait_for_client_action), NOT fast-forward, so its
+                        // activity_end handler clearing g_partner_activity never sets
+                        // g_client_acted_this_turn — SRV-WAIT then falls into the blocking
+                        // host input poll and spins forever, never re-granting, while this
+                        // locked (moves=0) client waits for a grant that never comes.
+                        // Reported 2026-07-08: client cancels first-aid mid-activity,
+                        // both ends freeze permanently.
+                        if( !cata_mp::is_client_waiting_for_ack() ) {
+                            cata_mp::mp_log( "[cdda-mp] LOCKED-ACT-END: dispatching idle wait to ack host (id=" +
+                                             ended + ")" );
+                            u.set_moves( 0 );
+                            cata_mp::client_dispatch_wait_for_activity(
+                                activity_id(), /*force_idle=*/true );
+                        }
                     }
                     start = now;
                 }
