@@ -477,6 +477,13 @@ const std::string &get_client_turn_activity();
 // should be readable after a session without stopping the process.
 void mp_log( const std::string &msg );
 
+// DIAGNOSTIC (temporary, 2026-07-08, for issue #10 indoor-lighting divergence):
+// dumps is_outside + light level for a window around the local avatar, tagged
+// HOST/CLIENT, so a host-vs-client diff reveals whether the client's roof (z+1)
+// is unsynced (client outside=1 where host outside=0) or it's a light-compute
+// bug. Self-gated on session role; throttled + capped internally.
+void mp_log_lighting_sample();
+
 // DIAGNOSTIC (temporary, 2026-06-23, for #5 assist-distraction / client safe-mode):
 // log the safe-mode / hostile decision so we can see whether the client actually
 // reacts to an approaching hostile during fast-forward. Named callout (rule 4) so

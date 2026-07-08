@@ -35,6 +35,7 @@
 #include "mtype.h"
 #include "field.h"
 #include "field_type.h"
+#include "lightmap.h"
 #include "map.h"
 #include "map_scale_constants.h"
 #include "submap.h"
@@ -9196,6 +9197,67 @@ void client_send_activity_start( const std::string &activity_id_str )
             + " av.activity=" + ( cur ? cur.id().str() : "none" )
             + " moves=" + std::to_string( get_avatar().get_moves() ) );
     client_send( json );
+}
+
+// Diagnostic for issue #10 (client renders indoor tiles fully lit while the
+// host shows them correctly dark). Dumps, for a small window around the local
+// avatar, each tile's is_outside flag + light level, tagged HOST/CLIENT and
+// keyed by absolute coords so a host-vs-client diff is a straight line-up. The
+// discriminator: if the client reports outside=1 (open to sky → sunlit) where
+// the host reports outside=0 (roofed → dark) for the same abs tile, the
+// client's local roof (z+1) diverges and isn't being synced — that's the
+// lighting bug's root. If is_outside matches but the light level differs, it's
+// a pure client-side light-computation issue instead. Behavioral mods (the
+// only ones that differed in the report) can't cause either, so this pins it.
+// Heavily throttled + capped so a frozen/idle session can't flood the log.
+void mp_log_lighting_sample()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    static int dumps = 0;
+    if( dumps >= 20 ) {
+        return;
+    }
+    static std::chrono::steady_clock::time_point last;
+    const auto now = std::chrono::steady_clock::now();
+    if( dumps > 0 &&
+        std::chrono::duration_cast<std::chrono::seconds>( now - last ).count() < 8 ) {
+        return;
+    }
+    last = now;
+    ++dumps;
+
+    map &here = get_map();
+    const tripoint_bub_ms center = get_avatar().pos_bub();
+    const char *role = is_hosting() ? "HOST" : "CLIENT";
+    const int R = 4;
+    for( int dy = -R; dy <= R; ++dy ) {
+        std::string row;
+        for( int dx = -R; dx <= R; ++dx ) {
+            const tripoint_bub_ms p = center + point( dx, dy );
+            if( !here.inbounds( p ) ) {
+                row += " --";
+                continue;
+            }
+            // Cell = 'o' (outside/open to sky) or 'i' (inside/roofed) + light level.
+            const bool out = here.is_outside( p );
+            const int light = static_cast<int>( here.light_at( p ) );
+            row += std::string( " " ) + ( out ? "o" : "i" ) + std::to_string( light );
+        }
+        const tripoint_abs_ms left = here.get_abs( center + point( -R, dy ) );
+        mp_log( std::string( "[cdda-mp] LIGHT-SAMPLE " ) + role +
+                " x0=" + std::to_string( left.x() ) +
+                " y=" + std::to_string( left.y() ) +
+                " z=" + std::to_string( left.z() ) +
+                " |" + row );
+    }
+    const tripoint_abs_ms cabs = here.get_abs( center );
+    mp_log( std::string( "[cdda-mp] LIGHT-SAMPLE " ) + role + " dump#" +
+            std::to_string( dumps ) + " center_abs=" + std::to_string( cabs.x() ) +
+            "," + std::to_string( cabs.y() ) + "," + std::to_string( cabs.z() ) +
+            " center_outside=" + std::to_string( here.is_outside( center ) ) +
+            " center_light=" + std::to_string( static_cast<int>( here.light_at( center ) ) ) );
 }
 
 void client_send_activity_end( const std::string &activity_id_str )

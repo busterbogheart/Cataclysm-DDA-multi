@@ -701,6 +701,9 @@ bool game::do_turn()
     // Resolve any blocking UI deferred out of the recv path (e.g. the smash
     // "Keep smashing?" prompt) now that we're back in a valid top-level context.
     cata_mp::client_resolve_pending_ui();
+    // DIAGNOSTIC (#10 indoor-lighting divergence): self-gated on role, throttled
+    // and capped internally, so this is a no-op for both idle sessions and SP.
+    cata_mp::mp_log_lighting_sample();
     if( cata_mp::is_client_mode() ) {
         avatar &u_dbg = get_avatar();
         const std::string msg = "[cdda-mp] post-incoming moves=" +
