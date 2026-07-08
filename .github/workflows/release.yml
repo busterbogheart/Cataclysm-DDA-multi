@@ -281,8 +281,15 @@ jobs:
           # (releases.filter(!draft)). Set via the `draft` dispatch input; tag
           # pushes (inputs.draft empty) stay non-draft/public.
           draft: ${{ github.event.inputs.draft == 'true' }}
-          # Preview builds (dispatch) → prerelease. Tagged v* → stable.
-          prerelease: ${{ github.ref_type != 'tag' }}
+          # NEVER publish a public PRE-RELEASE. Policy (set 2026-07-08): the
+          # public /releases list must show only the currently-live site build
+          # and previously-live ones — never RC/preview. So a build is either a
+          # DRAFT (collaborator-only QA; the `draft` input) or, once published, a
+          # FULL release (which is what goes live on the site + itch). Tagged v*
+          # is likewise a full release. The old `ref_type != 'tag'` rule made
+          # every Upload-checked dispatch a public pre-release — the leak that
+          # put RC builds like d466057/30cdb72 on the public list.
+          prerelease: false
           # Auto-generated notes are appended below body for tagged
           # releases — they reflect a real cross-version changelog window.
           # Previews already list "what changed" above.
@@ -303,7 +310,14 @@ jobs:
       # builds still pass the in-game version handshake against site builds.
       # Additive and non-critical: a missing key or an itch outage no-ops and
       # never blocks the GitHub release or the site rebuild below.
+      # Skip for draft releases — same reasoning as "Trigger site rebuild"
+      # below: drafts are internal QA/preview builds, not public releases, and
+      # itch should only ever see the same public-release cadence as the site.
+      # (Previously ungated: every draft RC dispatch during a bug-fixing sprint
+      # was pushing to itch and spamming followers with a "new build" per
+      # commit — caught 2026-07-07 via a wall of itch notifications.)
       - name: Push builds to itch.io
+        if: ${{ github.event.inputs.draft != 'true' }}
         continue-on-error: true
         env:
           BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
