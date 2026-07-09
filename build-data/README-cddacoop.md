@@ -16,6 +16,7 @@
        Mods .............................. [zip]
        Changelog ......................... [zip][site]
        Getting help / reporting bugs ..... [zip][git]
+       Donate ............................ [zip][git]
        Credits ........................... [zip]
 
      Editing a [git]/[site] section here propagates on the next
@@ -246,7 +247,15 @@ Free and open source. It's a fork of the experimental branch of CDDA.
 
 ### What version of CDDA is this based on?
 
-It's a fork of CDDA experimental, kept current with the upstream code. This means everything in the 0.I release plus current experimental (June 2026 and any future updates).
+It's a fork of CDDA experimental, including all changes from 0.I (Ito).  Any specific vetted fixes or cool features are pulled in from experimental manually, instead of weekly upstream pulls which inherited potential issues and partial features.  
+
+### How does the network layer work?
+
+It's open source. The whole networking layer is public, anyone can read exactly what a connection can and can't do.  The protocol only carries game actions and state like moves, chat, tile/monster deltas, and saves. 
+
+The connection itself isn't encrypted. It's plain TCP/JSON without TLS. On a LAN this is a non-issue (traffic never leaves your network). For internet play, running it over Tailscale or playit.gg (see `Connecting`) wraps it in an encrypted tunnel, which I'd recommend over basic router port-forwarding if that matters to you.
+Password protection exists but there's no UI yet for it.  A host launched from the command line can pass `--host --password <string>` and the server will reject any join attempt with the wrong one.  On Windows you can alternatively make a shortcut and add `--host --password <string>`.  For custom port use `--port <portnumber>`.
+
 
 ---
 
@@ -476,6 +485,12 @@ When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plu
 
 ---
 
+## Donate
+
+If you'd like to support development: [GitHub Sponsors](https://github.com/sponsors/busterbogheart) &middot; [Ko-fi](https://ko-fi.com/cddacoop).  Thank you!  Sponsor reward ideas welcome...
+
+---
+
 ## Credits
 
 Forked from
@@ -485,5 +500,6 @@ experimental. All upstream contributors retain credit — see the
 
 Site hero art by my hero [Delicadeath](https://reddit.com/u/Delicadeath).
 Code and content under [CC-BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
+
 
 
