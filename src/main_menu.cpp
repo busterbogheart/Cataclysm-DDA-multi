@@ -79,7 +79,7 @@ enum class main_menu_opts : int {
     SETTINGS,
     HELP,
     CREDITS,
-    SUPPORT,      // MP fork: opens a popup with the project's support/donate link.
+    SUPPORT,      // MP fork: "Donate" — auto-shows a text panel, same pattern as CREDITS/MOTD.
     QUIT,
     NUM_MENU_OPTS,
 };
@@ -198,6 +198,9 @@ void main_menu::display_sub_menu( int sel, const point &bottom_left, int sel_lin
         case main_menu_opts::MOTD:
             //~ Message Of The Day
             display_text( mmenu_motd, _( "MOTD" ), sel_line );
+            return;
+        case main_menu_opts::SUPPORT:
+            display_text( mmenu_support, _( "Donate" ), sel_line );
             return;
         case main_menu_opts::SETTINGS:
             for( int i = 0; static_cast<size_t>( i ) < vSettingsSubItems.size(); ++i ) {
@@ -483,6 +486,15 @@ void main_menu::init_strings()
     }
     mmenu_credits_len = foldstring( mmenu_credits, FULL_SCREEN_WIDTH - 2 ).size();
 
+    // Support / Donate
+    mmenu_support = string_format(
+                         _( "CDDA CO-OP is a free, fan-made project.\n\n"
+                            "If you've enjoyed playing, donations are always appreciated but never required:\n\n"
+                            "    %s\n\n"
+                            "Thanks for playing!" ),
+                         colorize( "cddacoop.com", c_light_green ) );
+    mmenu_support_len = foldstring( mmenu_support, FULL_SCREEN_WIDTH - 2 ).size();
+
     // fill menu with translated menu items
     vMenuItems.clear();
     vMenuItems.emplace_back( pgettext( "Main Menu", "<M|m>OTD" ) );
@@ -494,7 +506,7 @@ void main_menu::init_strings()
     vMenuItems.emplace_back( pgettext( "Main Menu", "Se<t|T>tings" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "H<e|E|?>lp" ) );
     vMenuItems.emplace_back( pgettext( "Main Menu", "<C|c>redits" ) );
-    vMenuItems.emplace_back( pgettext( "Main Menu", "<S|s>upport" ) );
+    vMenuItems.emplace_back( pgettext( "Main Menu", "<D|d>onate" ) );
 #if !defined(EMSCRIPTEN)
     vMenuItems.emplace_back( pgettext( "Main Menu", "<Q|q>uit" ) );
 #endif
@@ -740,8 +752,7 @@ bool main_menu::opening_screen()
                     sel1 = i;
                     sel2 = i == getopt( main_menu_opts::LOADCHAR ) ? last_world_pos : 0;
                     sel_line = 0;
-                    if( i == getopt( main_menu_opts::HELP ) ||
-                        i == getopt( main_menu_opts::SUPPORT ) ) {
+                    if( i == getopt( main_menu_opts::HELP ) ) {
                         action = "CONFIRM";
                     } else if( i == getopt( main_menu_opts::QUIT ) ) {
                         action = "QUIT";
@@ -801,7 +812,6 @@ bool main_menu::opening_screen()
                     }
                     if( action == "SELECT" &&
                         ( sel1 == getopt( main_menu_opts::HELP ) ||
-                          sel1 == getopt( main_menu_opts::SUPPORT ) ||
                           sel1 == getopt( main_menu_opts::QUIT ) ) ) {
                         action = "CONFIRM";
                     }
@@ -851,6 +861,7 @@ bool main_menu::opening_screen()
             switch( opt ) {
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:
+                case main_menu_opts::SUPPORT:
                     if( action == "UP" || action == "PAGE_UP" || action == "SCROLL_UP" ) {
                         if( sel_line > 0 ) {
                             sel_line--;
@@ -858,7 +869,8 @@ bool main_menu::opening_screen()
                     } else if( action == "DOWN" || action == "PAGE_DOWN" || action == "SCROLL_DOWN" ) {
                         int effective_height = sel_line + FULL_SCREEN_HEIGHT - 2;
                         if( ( opt == main_menu_opts::CREDITS && effective_height < mmenu_credits_len ) ||
-                            ( opt == main_menu_opts::MOTD && effective_height < mmenu_motd_len ) ) {
+                            ( opt == main_menu_opts::MOTD && effective_height < mmenu_motd_len ) ||
+                            ( opt == main_menu_opts::SUPPORT && effective_height < mmenu_support_len ) ) {
                             sel_line++;
                         }
                     }
@@ -1264,14 +1276,9 @@ bool main_menu::opening_screen()
                     }
                     break;
                 }
-                case main_menu_opts::SUPPORT:
-                    popup( "%s", _( "CDDA CO-OP is a free, fan-made project.\n\n"
-                                    "If you'd like to support development, visit:\n\n"
-                                    "    cddacoop.com\n\n"
-                                    "Thanks for playing!" ) );
-                    break;
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:
+                case main_menu_opts::SUPPORT:
                 default:
                     break;
             }
