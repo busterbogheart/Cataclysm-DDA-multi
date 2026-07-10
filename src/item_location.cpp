@@ -28,6 +28,8 @@
 #include "item_wakeup.h"
 #include "itype.h"
 #include "json.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "line.h"
 #include "magic_enchantment.h"
 #include "map.h"
@@ -172,6 +174,14 @@ class item_location::impl
                     what = i->get_safe_reference();
                 } else {
                     debugmsg( "item_location lost its target item during a save/load cycle" );
+                    // Diagnostic for the 2026-07-10 co-op report: correlate against the
+                    // "server veh cargo WIPE/REPLACE" logs (mp_gamestate.cpp) by uid to see
+                    // if a shared vehicle cargo sync destroyed this item out from under a
+                    // host-held item_location (e.g. a backlogged craft's craft_item).
+                    if( cata_mp::is_mp_mode() || cata_mp::is_client_mode() ) {
+                        cata_mp::mp_log( "[cdda-mp] ITEM-LOC-LOST uid_hint=" +
+                                          std::to_string( uid_hint ) + " idx=" + std::to_string( idx ) );
+                    }
                 }
                 needs_unpacking = false;
             }

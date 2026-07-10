@@ -847,6 +847,15 @@ static std::string mp_activity_verb_phrase( const std::string &act_id )
         return std::string();
     }
     const activity_id aid( act_id );
+    // ACT_PULP's SP-defined verb is "smashing" (player_activities.json) — accurate
+    // for the generic activity_type, but co-op players see this label specifically
+    // for corpse-pulping and reasonably assume it means literal smashing (vehicles,
+    // furniture, etc.). Disambiguate here, MP-side only, rather than touch the
+    // upstream JSON verb used elsewhere.
+    static const activity_id ACT_PULP_ID( "ACT_PULP" );
+    if( aid == ACT_PULP_ID ) {
+        return _( "pulping" );
+    }
     if( aid.is_valid() ) {
         const std::string v = aid->verb().translated();
         if( !v.empty() ) {
@@ -1149,9 +1158,15 @@ struct mp_hud_t {
             }
             mvwprintz( win, point( x, crow ), c_yellow, "%s", vshown.c_str() );
             x += static_cast<int>( vshown.size() ) + 1;
-            mvwprintz( win, point( x, crow ), c_light_blue, "%d%%",
-                       g_partner_activity_pct );
-            x += 5;
+            // ACT_PULP has no real progress fraction (moves_total == moves_left,
+            // see mp_compute_activity_pct) — it's an open-ended activity even in
+            // SP. Showing a permanent "0%" reads as broken sync; omit it instead.
+            static const activity_id ACT_PULP_ID_HUD( "ACT_PULP" );
+            if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD ) {
+                mvwprintz( win, point( x, crow ), c_light_blue, "%d%%",
+                           g_partner_activity_pct );
+                x += 5;
+            }
         }
 
         // Right edge: latency + the co-op kill tally.  Ping is the round-trip ms
@@ -2411,6 +2426,7 @@ static void flush_action_msgs( unsigned long long pre_msg, const std::string &np
             text.find( "has nowhere to go" ) != std::string::npos ||
             text.find( "taps you on the shoulder" ) != std::string::npos ||
             text.rfind( "You tap ", 0 ) == 0 ||
+            text.rfind( "You pass ", 0 ) == 0 ||   // host-POV pass-item line; see host_capture_avatar_msgs
             text.find( "has connected and joined" ) != std::string::npos ) {
             continue;
         }
@@ -3363,12 +3379,30 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             std::to_string( vp_abs.y() ) + "," +
                             std::to_string( vp_abs.z() ) );
                     {
+                        // Diagnostic for the item_location invalidation bug (2026-07-10):
+                        // this erase+recreate destroys the original item objects, so any
+                        // host-held item_location pointing into this cargo (e.g. a queued/
+                        // backlogged craft's craft_item) goes stale even though "the same
+                        // item" logically still exists afterward. Log what's being wiped
+                        // and what replaces it so a repro can be matched against the
+                        // "item_location lost its target item" debugmsg.
                         vehicle_stack stack = veh.get_items( part );
+                        std::string wiped;
+                        for( const item &old_it : stack ) {
+                            wiped += old_it.typeId().str() + ",";
+                        }
+                        if( !wiped.empty() ) {
+                            mp_log( "[cdda-mp] server veh cargo WIPE @ " +
+                                    std::to_string( vp_abs.x() ) + "," +
+                                    std::to_string( vp_abs.y() ) + "," +
+                                    std::to_string( vp_abs.z() ) + " items=" + wiped );
+                        }
                         while( !stack.empty() ) {
                             stack.erase( stack.begin() );
                         }
                     }
                     if( co.has_array( "items" ) ) {
+                        std::string added;
                         for( const JsonValue &iv : co.get_array( "items" ) ) {
                             try {
                                 item new_item;
@@ -3378,8 +3412,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 if( !new_item.typeId().is_empty() &&
                                     new_item.typeId().is_valid() ) {
                                     veh.add_item( m, part, new_item );
+                                    added += new_item.typeId().str() + ",";
                                 }
                             } catch( const JsonError & ) {}
+                        }
+                        if( !added.empty() ) {
+                            mp_log( "[cdda-mp] server veh cargo REPLACE @ " +
+                                    std::to_string( vp_abs.x() ) + "," +
+                                    std::to_string( vp_abs.y() ) + "," +
+                                    std::to_string( vp_abs.z() ) + " items=" + added );
                         }
                     }
                 }
@@ -4088,6 +4129,82 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
         flush_action_msgs( pre_action_msg, remote->name );
         srv_emit_ack( "honk" );
+        return;
+    }
+
+    // Trigger the vehicle alarm — client selected "Trigger the alarm".
+    if( msg.find( "\"action\":\"trigger_alarm\"" ) != std::string::npos ) {
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            veh.is_alarm_on = true;
+            add_msg( _( "%s triggers the alarm!" ), remote->name );
+            g_action_msgs_pending.push_back( _( "You trigger the alarm!" ) );
+        }
+        g_last_forwarded_msg_count = Messages::appended_total();
+        srv_emit_ack( "trigger_alarm" );
+        return;
+    }
+
+    // Smash the vehicle security system — client selected "Try to smash alarm".
+    // NOTE: vehicle::smash_security_system() reads get_player_character() for
+    // the mechanics-skill check internally (an existing SP-side limitation, not
+    // introduced here), so this currently rolls against the HOST's skill rather
+    // than the proxy's — same caveat as any other unparameterized SP helper.
+    if( msg.find( "\"action\":\"smash_alarm\"" ) != std::string::npos ) {
+        map &here = get_map();
+        const tripoint_bub_ms bub = remote->pos_bub();
+        if( const optional_vpart_position vp = here.veh_at( bub ) ) {
+            vehicle &veh = vp->vehicle();
+            veh.smash_security_system( here );
+        }
+        flush_action_msgs( pre_action_msg, remote->name );
+        srv_emit_ack( "smash_alarm" );
+        return;
+    }
+
+    // Hotwire finished — client's local ACT_HOTWIRE_CAR activity completed.
+    // Re-run the same skill check from hotwire_car_activity_actor::finish()
+    // (activity_actor.cpp) against the proxy NPC's synced mechanics skill and
+    // the host's authoritative vehicle, so the real is_locked/is_alarm_on state
+    // is set here rather than only on the client's local (non-authoritative)
+    // copy. Client's own local finish() also ran; any divergence is corrected
+    // by the next vehicle snapshot, same as vehicle_construct's approach.
+    if( msg.find( "\"action\":\"hotwire_done\"" ) != std::string::npos ) {
+        static const skill_id skill_mechanics_id( "mechanics" );
+        const int hx = jo.get_int( "x", 0 );
+        const int hy = jo.get_int( "y", 0 );
+        const int hz = jo.get_int( "z", 0 );
+        map &here = get_map();
+        const tripoint_abs_ms target_abs{ hx, hy, hz };
+        if( const optional_vpart_position vp = here.veh_at( here.get_bub( target_abs ) ) ) {
+            vehicle &veh = vp->vehicle();
+            const int skill = round( remote->get_average_skill_level( skill_mechanics_id ) );
+            if( skill > rng( 1, 6 ) ) {
+                add_msg( _( "%s finds the wire that starts the engine." ), remote->name );
+                g_action_msgs_pending.push_back( _( "You found the wire that starts the engine." ) );
+                veh.is_locked = false;
+            } else if( skill > rng( 0, 4 ) ) {
+                add_msg( _( "%s finds a wire that looks like the right one." ), remote->name );
+                g_action_msgs_pending.push_back( _( "You found a wire that looks like the right one." ) );
+                veh.is_alarm_on = veh.has_security_working( here );
+                veh.is_locked = false;
+            } else if( !veh.is_alarm_on ) {
+                g_action_msgs_pending.push_back(
+                    _( "The red wire always starts the engine, doesn't it?" ) );
+                veh.is_alarm_on = veh.has_security_working( here );
+            } else {
+                g_action_msgs_pending.push_back(
+                    _( "By process of elimination, you found the wire that starts the engine." ) );
+                veh.is_locked = false;
+            }
+        } else {
+            mp_log( "[cdda-mp] hotwire_done: no vehicle at target " + std::to_string( hx ) +
+                    "," + std::to_string( hy ) + "," + std::to_string( hz ) );
+        }
+        g_last_forwarded_msg_count = Messages::appended_total();
+        srv_emit_ack( "hotwire_done" );
         return;
     }
 
