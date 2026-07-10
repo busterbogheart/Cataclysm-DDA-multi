@@ -877,13 +877,15 @@ class vehicle
         // @returns damage still left to apply
         int damage_direct( map &here, vehicle_part &vp, int dmg,
                            const damage_type_id &type = damage_type_id( "pure" ) );
+        //damages vehicle controls and security system
+        // Public (moved from private 2026-07-10) so the co-op host handler can
+        // invoke it on behalf of the client's "smash alarm" action.
+        void smash_security_system( map &here );
     private:
         // Removes the part, breaks it into pieces and possibly removes parts attached to it
         int break_off( map &here, vehicle_part &vp, int dmg );
         // Returns if it did actually explode
         bool explode_fuel( map &here, vehicle_part &vp, const damage_type_id &type );
-        //damages vehicle controls and security system
-        void smash_security_system( map &here );
         // get vpart powerinfo for part number, accounting for variable-sized parts and hps.
         units::power part_vpower_w( map &here, const vehicle_part &vp, bool at_full_hp = false ) const;
 

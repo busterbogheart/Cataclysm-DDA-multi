@@ -1236,6 +1236,19 @@ void hotwire_car_activity_actor::finish( player_activity &act, Character &who )
 {
     act.set_to_null();
 
+    // MP client: dispatch to the host so it re-runs the same skill check against
+    // the proxy NPC (synced skills) and the host's authoritative vehicle. Client
+    // still runs the local roll/mutation below too — mirrors vehicle_construct's
+    // finish(): any divergence gets corrected by the next vehicle snapshot.
+    if( cata_mp::is_client_mode() && who.is_avatar() ) {
+        const std::string action_json =
+            "{\"type\":\"action\",\"action\":\"hotwire_done\","
+            "\"x\":" + std::to_string( target.x() ) +
+            ",\"y\":" + std::to_string( target.y() ) +
+            ",\"z\":" + std::to_string( target.z() ) + "}";
+        cata_mp::client_send( cata_mp::client_enrich_action( action_json ) );
+    }
+
     map &here = get_map();
     const optional_vpart_position vp = here.veh_at( here.get_bub( target ) );
     if( !vp ) {
