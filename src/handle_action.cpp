@@ -2981,11 +2981,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return true;
         }
 
-        if( act == ACTION_SLEEP ) {
-            add_msg( m_info, "Sleep is not yet available in multiplayer." );
-            return false;
-        }
-
         if( act == ACTION_LOOK ) {
             // Run look/cursor mode (needed for drop-to-tile, examine, etc.).
             // If peek() fired inside look_around it consumed moves — send wait so the
