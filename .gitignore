@@ -297,3 +297,6 @@ ARCHITECTURE.md
 *.pem
 cataclysm-tiles-host
 run-asan-client.sh
+
+# player-submitted bug-report logs — local only, never for the repo
+/player-logs/

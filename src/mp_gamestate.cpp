@@ -2817,6 +2817,23 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Client is asking us to re-send a full snapshot for a vehicle it can't
+    // place (CLI-VEH-SKIP-UNKNOWN on its side).  The snapshot is normally only
+    // emitted once per nid per connection (see HOST-VEH-SNAPSHOT below); if
+    // that one packet is ever missed or superseded client-side before it's
+    // applied, the vehicle was invisible for the rest of the session with no
+    // recovery (2026-07-09 Discord report, Minerik: a parked SUV never
+    // appeared on the client at all).  Clearing the nid here just makes the
+    // host re-include the full snapshot on its next broadcast tick.
+    if( msg.find( "\"action\":\"veh_snapshot_req\"" ) != std::string::npos ) {
+        const auto nid = static_cast<uint32_t>( jo.get_int( "nid", 0 ) );
+        const bool was_known = g_client_known_veh_nids.erase( nid ) > 0;
+        mp_log( "[cdda-mp] HOST-VEH-SNAPSHOT-REQ RECV: nid=" + std::to_string( nid )
+                + " was_known=" + std::to_string( was_known )
+                + " — will re-snapshot next broadcast" );
+        return;
+    }
+
     // Templates wire-sync handlers (symmetric — same shape on host and client).
     if( msg.find( "\"type\":\"templates_list\"" ) != std::string::npos ) {
         mp_handle_templates_list( msg );
@@ -10021,10 +10038,28 @@ static void apply_vehicle_sync( JsonObject &jo )
                                            ? pos_it->second
                                            : new_abs;
 
+        // Position-based matches are a guess, not a confirmed identity — an
+        // independently-mapgen'd static vehicle (e.g. a parking-lot special)
+        // can coincidentally sit at the exact tile the host's vehicle
+        // occupies on both sides (shared world seed), so a bare position hit
+        // can silently glue the host's sync data onto an unrelated,
+        // differently-typed local vehicle. (2026-07-09 Discord report,
+        // Minerik: host's "Electric Sports Car" was replaced client-side by a
+        // visibly bigger, different car — this is the likely mechanism.)
+        // Require the name to agree too; a mismatch is logged and the match
+        // rejected so it falls through to the name fallback / SKIP-UNKNOWN
+        // instead of corrupting an unrelated vehicle.
         if( m.inbounds( search_abs ) ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == search_abs ) {
-                    found = wv.v;
+                    if( vname.empty() || wv.v->name == vname ) {
+                        found = wv.v;
+                    } else {
+                        mp_log( "[cdda-mp] CLI-VEH-POS-NAME-MISMATCH: nid=" + std::to_string( nid )
+                                + " abs=" + std::to_string( search_abs.x() ) + ","
+                                + std::to_string( search_abs.y() )
+                                + " expected=\"" + vname + "\" found=\"" + wv.v->name + "\"" );
+                    }
                     break;
                 }
             }
@@ -10032,18 +10067,38 @@ static void apply_vehicle_sync( JsonObject &jo )
         if( !found && m.inbounds( new_abs ) ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == new_abs ) {
-                    found = wv.v;
+                    if( vname.empty() || wv.v->name == vname ) {
+                        found = wv.v;
+                    } else {
+                        mp_log( "[cdda-mp] CLI-VEH-POS-NAME-MISMATCH: nid=" + std::to_string( nid )
+                                + " abs=" + std::to_string( new_abs.x() ) + ","
+                                + std::to_string( new_abs.y() )
+                                + " expected=\"" + vname + "\" found=\"" + wv.v->name + "\"" );
+                    }
                     break;
                 }
             }
         }
+        bool found_by_name_only = false;
         if( !found && !vname.empty() ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->name == vname ) {
                     found = wv.v;
+                    found_by_name_only = true;
                     break;
                 }
             }
+        }
+
+        // First sighting of this nid resolving to an existing local vehicle
+        // (as opposed to CLI-VEH-CREATE) was previously silent — there was no
+        // way to tell from the log which fallback matched, or whether it was
+        // a real re-acquire vs. a coincidental match.  Log it once per nid.
+        if( found && first_encounter ) {
+            mp_log( "[cdda-mp] CLI-VEH-FOUND-EXISTING: nid=" + std::to_string( nid )
+                    + " name=\"" + found->name + "\" via="
+                    + ( found_by_name_only ? "name" : "position" )
+                    + " abs=" + std::to_string( new_abs.x() ) + "," + std::to_string( new_abs.y() ) );
         }
 
         if( !found ) {
@@ -10067,6 +10122,14 @@ static void apply_vehicle_sync( JsonObject &jo )
                         + " name=\"" + vname + "\""
                         + " first_encounter=" + std::to_string( first_encounter )
                         + " (further skips for this nid suppressed 10s)" );
+                // Ask the host to re-include a full snapshot for this nid on its
+                // next broadcast — closes the "invisible forever" gap where the
+                // one-shot snapshot was missed/superseded before this client
+                // ever applied it (2026-07-09 Discord report).  Rate-limited by
+                // the same 10s window as the log line above.
+                client_send( "{\"type\":\"action\",\"action\":\"veh_snapshot_req\",\"nid\":"
+                             + std::to_string( nid ) + "}" );
+                mp_log( "[cdda-mp] CLI-VEH-SNAPSHOT-REQ SENT: nid=" + std::to_string( nid ) );
             }
             continue;
         }
