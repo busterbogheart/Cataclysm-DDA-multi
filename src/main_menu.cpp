@@ -489,7 +489,7 @@ void main_menu::init_strings()
     // Support / Donate
     mmenu_support = string_format(
                          _( "CDDA CO-OP is a free, fan-made project.\n\n"
-                            "If you've enjoyed playing, donations are always appreciated but never required:\n\n"
+                            "Please consider a donation to support future builds:\n\n"
                             "    %s\n\n"
                             "Thanks for playing!" ),
                          colorize( "cddacoop.com", c_light_green ) );
