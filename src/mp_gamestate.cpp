@@ -5472,7 +5472,7 @@ bool is_passive_activity( const std::string &activity_id_str )
         "ACT_FORAGE", "ACT_FISH",
         "ACT_FILL_LIQUID", "ACT_PICKUP", "ACT_MOVE_ITEMS",
         "ACT_WAIT", "ACT_WAIT_STAMINA", "ACT_WAIT_WEATHER", "ACT_WAIT_NPC",
-        "ACT_SLEEP",
+        "ACT_SLEEP", "ACT_TRY_SLEEP",
         "ACT_HELP_PARTNER",
     };
     return passive.count( activity_id_str ) > 0;
