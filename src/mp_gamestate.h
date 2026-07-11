@@ -618,6 +618,12 @@ void mp_relay_shout( int vol, bool order );
 // to the partner and echoes it locally; shown above the info panel + message log.
 void mp_open_chat();
 
+// MP: copy the host's join address to the clipboard (ACTION_COPY_JOIN_ADDRESS).
+// Streaming-privacy companion to the hide-IP option prompted at host-arm time —
+// the address is never drawn on screen when hide-IP is on; this is how the host
+// shares it with their partner instead (paste into a private DM/voice chat).
+void mp_copy_join_address();
+
 // Overmap note sync — call after add_note / delete_note / mark_note_dangerous
 // so the partner's overmap mirrors the change.
 void mp_sync_note_add( const tripoint_abs_omt &pos, const std::string &text );

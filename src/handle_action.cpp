@@ -3744,6 +3744,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             cata_mp::mp_open_chat();
             break;
 
+        case ACTION_COPY_JOIN_ADDRESS:
+            cata_mp::mp_copy_join_address();
+            break;
+
         case ACTION_PICK_STYLE:
             if( player_character.martial_arts_data->pick_style( player_character ) ) {
                 cata_mp::client_resync_worn();

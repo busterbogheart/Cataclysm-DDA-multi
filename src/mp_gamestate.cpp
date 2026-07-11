@@ -426,6 +426,68 @@ static int64_t g_last_client_msg_ms = 0;             // last time any client msg
 static constexpr int64_t MP_IDLE_BROADCAST_MS = 2000;
 static int64_t g_last_idle_broadcast_ms = 0;
 
+// Hide-IP option (2026-07-11, streaming-privacy request).  When set, the
+// "Partner not connected" HUD line omits the host's local addresses instead
+// of drawing them on screen every frame — a streamer sitting in the lobby
+// screen before their partner joins would otherwise broadcast their LAN/VPN
+// IP live.  The address is still available via the copy_join_address action
+// (clipboard only, never rendered), same pattern as g_host_port_menu below.
+static bool g_host_hide_ip = false;
+static bool g_host_hide_ip_loaded = false;
+
+static cata_path mp_host_hide_ip_path()
+{
+    return PATH_INFO::config_dir_path() / "mp_host_hide_ip.json";
+}
+
+static bool mp_host_hide_ip_load_disk()
+{
+    bool out = false;
+    read_from_file_optional_json( mp_host_hide_ip_path(), [&]( const JsonValue & jv ) {
+        JsonObject jo = jv.get_object();
+        out = jo.get_bool( "hide_ip", false );
+    } );
+    return out;
+}
+
+static void mp_host_hide_ip_save_disk( bool hide )
+{
+    write_to_file( mp_host_hide_ip_path(), [&]( std::ostream & fout ) {
+        JsonOut jo( fout );
+        jo.start_object();
+        jo.member( "hide_ip", hide );
+        jo.end_object();
+    }, "mp host hide ip" );
+}
+
+static bool mp_host_hide_ip()
+{
+    if( !g_host_hide_ip_loaded ) {
+        g_host_hide_ip = mp_host_hide_ip_load_disk();
+        g_host_hide_ip_loaded = true;
+    }
+    return g_host_hide_ip;
+}
+
+// Shared by the HUD "Partner not connected" line and copy_join_address —
+// the join address string a partner would type into the Join screen.
+static std::string mp_build_join_address_line()
+{
+    const std::vector<std::string> ips = mp_local_ipv4s();
+    const int port = static_cast<int>( mp_host_port() );
+    if( ips.empty() ) {
+        return string_format( _( "port %d" ), port );
+    }
+    std::string joined;
+    for( size_t i = 0; i < ips.size(); ++i ) {
+        if( i ) {
+            joined += " · ";
+        }
+        joined += ips[i] + ":" + std::to_string( port );
+    }
+    return joined;
+}
+
 static int64_t mp_now_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1058,20 +1120,17 @@ struct mp_hud_t {
             // with the listen port, VPN-range ones first.  We can't know which the
             // partner will use, so list them all; public IP / DDNS is external
             // config the partner already has.
-            const std::vector<std::string> ips = mp_local_ipv4s();
-            const int port = static_cast<int>( mp_host_port() );
+            //
+            // Hide-IP option: a streamer sitting in this screen before their
+            // partner joins would otherwise broadcast their address live.  When
+            // enabled, redact it here — the copy_join_address action still puts
+            // it on the clipboard (never rendered) for sharing out of band.
             std::string line;
-            if( !ips.empty() ) {
-                std::string joined;
-                for( size_t i = 0; i < ips.size(); ++i ) {
-                    if( i ) {
-                        joined += " · ";
-                    }
-                    joined += ips[i] + ":" + std::to_string( port );
-                }
-                line = string_format( _( "Partner not connected   %s" ), joined.c_str() );
+            if( mp_host_hide_ip() ) {
+                line = _( "Partner not connected  (join IP address hidden, use keybind \"Copy co-op join address\")" );
             } else {
-                line = string_format( _( "Partner not connected   port %d" ), port );
+                line = string_format( _( "Partner not connected   %s" ),
+                                       mp_build_join_address_line().c_str() );
             }
             mvwprintz( win, point( 2, crow ), c_dark_gray, "%s",
                        line.substr( 0, std::max( 0, W - 4 ) ).c_str() );
@@ -1457,6 +1516,33 @@ void mp_open_chat()
         client_send( js );
     }
     mp_chat_display( _( "You" ), text, host );   // local echo — own messages show as "You"
+}
+
+// Streaming-privacy hide-IP option: copy the join address to the clipboard
+// instead of ever drawing it on screen.  Works regardless of whether hide-IP
+// is currently on — a host may still prefer clipboard-to-DM over reading an
+// address off a redacted or unredacted HUD line either way.
+void mp_copy_join_address()
+{
+    if( !is_hosting() ) {
+        add_msg( m_info, _( "Only the host has a join address to share." ) );
+        return;
+    }
+    if( remote_player_connected ) {
+        add_msg( m_info, _( "Your partner is already connected." ) );
+        return;
+    }
+    const std::string line = mp_build_join_address_line();
+#if defined(TILES)
+    if( SetClipboardText( line ) ) {
+        add_msg( m_info, _( "Join IP address copied to clipboard." ) );
+    } else {
+        add_msg( m_warning, _( "Couldn't copy to clipboard." ) );
+    }
+#else
+    ( void )line;
+    add_msg( m_warning, _( "Clipboard copy isn't available in this build." ) );
+#endif
 }
 
 // Client: last confirmed position of the remote player (our avatar as seen by the server).
@@ -6387,6 +6473,22 @@ bool mp_menu_start_host_session()
             } else {
                 popup( _( "Invalid port \"%s\" — keeping %s." ), in, def );
             }
+        }
+    }
+    {
+        // Streaming-privacy option: default to the last choice (persisted), so
+        // a streamer who enables it once doesn't have to re-enable it every
+        // session — but always ask, since silently carrying "hidden" forward
+        // could also surprise a non-streaming host who can't find their address.
+        const bool prev = mp_host_hide_ip();
+        const bool hide = query_yn(
+                               prev
+                               ? _( "Hide join IP address on game screen? (was hidden last session)" )
+                               : _( "Hide join IP address on game screen?  (recommended for streaming. bindable during play as \"Copy co-op join address\" " ) );
+        if( hide != g_host_hide_ip || !g_host_hide_ip_loaded ) {
+            g_host_hide_ip = hide;
+            g_host_hide_ip_loaded = true;
+            mp_host_hide_ip_save_disk( hide );
         }
     }
     set_host_mode( true );

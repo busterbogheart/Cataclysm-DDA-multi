@@ -5606,5 +5606,12 @@
     "name": "Co-op chat",
     "category": "DEFAULTMODE",
     "bindings": [ ]
+  },
+  {
+    "type": "keybinding",
+    "id": "copy_join_address",
+    "name": "Copy join IP address to clipboard",
+    "category": "DEFAULTMODE",
+    "bindings": [ ]
   }
 ]

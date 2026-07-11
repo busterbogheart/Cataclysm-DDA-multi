@@ -409,6 +409,8 @@ std::string action_ident( action_id act )
             return "high_five";
         case ACTION_COOP_CHAT:
             return "coop_chat";
+        case ACTION_COPY_JOIN_ADDRESS:
+            return "copy_join_address";
         case ACTION_NULL:
             return "null";
         default:

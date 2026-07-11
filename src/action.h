@@ -364,6 +364,8 @@ enum action_id : int {
     ACTION_HIGH_FIVE,
     /** MP: open the co-op text-chat prompt */
     ACTION_COOP_CHAT,
+    /** MP: copy the host's join address to the clipboard (streaming-privacy hide-IP option) */
+    ACTION_COPY_JOIN_ADDRESS,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/

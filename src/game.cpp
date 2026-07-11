@@ -2622,6 +2622,7 @@ input_context get_default_mode_input_context()
         ctxt.register_action( "pass_item" );
         ctxt.register_action( "high_five" );
         ctxt.register_action( "coop_chat" );
+        ctxt.register_action( "copy_join_address" );
         ctxt.register_action( "pick_style" );
         ctxt.register_action( "reload_item" );
         ctxt.register_action( "reload_weapon" );
