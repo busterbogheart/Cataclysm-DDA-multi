@@ -294,7 +294,7 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
-### Unreleased
+### 2026-07-10
 
 - **Sleep enabled** — at your own risk... but testing shows it works for the most part.
 - **More vehicle controls enabled for the joining player** — hotwiring a locked car and triggering/smashing the alarm now actually work for the client player (previously silently did nothing). Everything else in the vehicle menus that still isn't synced (headlights and other electronics, doors/curtains, camera, bike rack) now tells you clearly it is not supported instead of pretending to work.
