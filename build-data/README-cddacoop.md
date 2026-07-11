@@ -294,6 +294,13 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### Unreleased
+
+- **Sleep enabled** — at your own risk... but testing shows it works for the most part.
+- **More vehicle controls enabled for the joining player** — hotwiring a locked car and triggering/smashing the alarm now actually work for the client player (previously silently did nothing). Everything else in the vehicle menus that still isn't synced (headlights and other electronics, doors/curtains, camera, bike rack) now tells you clearly it is not supported instead of pretending to work.
+- **Better vehicle sync** — potential fix for a case where a vehicle would be invisible to one player, and a case where an unrelated vehicle sitting in the same spot could get swapped in by mistake.
+- **New loading screen art!!** finally
+
 ### 2026-07-06
 
 - **Tilesets included now** — all the tilesets ship in every release, like the upstream CDDA download
