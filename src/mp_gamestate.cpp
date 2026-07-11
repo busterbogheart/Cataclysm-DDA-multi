@@ -1777,6 +1777,20 @@ static std::string json_escape_str( const std::string &s )
 // Client: last known HP per net ID — used to synthesise combat hit/death messages.
 static std::unordered_map<uint32_t, int> g_last_monster_hp;
 
+// Client: HP value already reported to the host via client_monster_hits, per
+// net ID.  Distinct from g_last_monster_hp above (the host-broadcast resync
+// baseline) — this tracks what we've *told* the host, so a monster whose HP
+// stays below the broadcast baseline across several action messages (normal:
+// the client only resyncs from a host broadcast, not after every report)
+// doesn't get the same damage re-sent and re-applied on every subsequent
+// message. Reset in lockstep with g_last_monster_hp wherever that's set from
+// a host broadcast (the host's told-you-so value supersedes anything we
+// thought we'd already reported). Fixes a same-target concurrent-damage race
+// (2026-07-11): the host used to apply the client's report as an absolute
+// mon->set_hp(), which could clobber damage the host's own avatar dealt to
+// the same monster in the same window instead of the two adding up.
+static std::unordered_map<uint32_t, int> g_last_reported_monster_hp;
+
 // Client: last known HP per bodypart string ID — used to synthesise "you were hit" messages.
 static std::unordered_map<std::string, int> g_last_bodypart_hp;
 
@@ -3594,8 +3608,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     JsonObject ho = hv.get_object();
                     ho.allow_omitted_members();
                     const uint32_t nid = static_cast<uint32_t>( ho.get_int( "nid", 0 ) );
-                    const int new_hp   = ho.get_int( "hp", -1 );
-                    if( nid == 0 || new_hp < 0 ) {
+                    const int dealt    = ho.get_int( "dealt", -1 );
+                    if( nid == 0 || dealt <= 0 ) {
                         continue;
                     }
                     monster *mon = nullptr;
@@ -3611,11 +3625,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         // so the host never applies it and keeps broadcasting the
                         // monster as alive.
                         mp_log( "[cdda-mp] HOST-HIT-MISS: nid=" + std::to_string( nid ) +
-                                " hp=" + std::to_string( new_hp ) +
+                                " dealt=" + std::to_string( dealt ) +
                                 ( mon ? " (host monster already dead)"
                                   : " (no host monster with this nid)" ) );
                         continue;
                     }
+                    // Subtract from the host's own CURRENT live HP, not an
+                    // absolute overwrite — so a same-target concurrent hit from
+                    // the host's own avatar (dealt via the normal SP combat
+                    // path in between broadcasts) adds up with this instead of
+                    // one side's write clobbering the other's (2026-07-11).
+                    const int new_hp = mon->get_hp() - dealt;
                     if( new_hp <= 0 ) {
                         // Credit the client's proxy NPC as the killer (not nullptr)
                         // so the kill is ATTRIBUTED: character_kills_monster fires
@@ -3631,7 +3651,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         mon->set_hp( new_hp );
                     }
                     mp_log( "[cdda-mp] client hit: nid=" + std::to_string( nid )
-                           + " hp=" + std::to_string( new_hp ) );
+                           + " dealt=" + std::to_string( dealt ) + " new_hp=" + std::to_string( new_hp ) );
                 }
                 if( any_killed ) {
                     g->cleanup_dead();
@@ -8912,8 +8932,12 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
     return out;
 }
 
-// Build JSON array of monsters the client damaged since the last server sync.
-// Uses g_last_monster_hp (last server-reported HP) as the baseline.
+// Build JSON array of damage the client has dealt, since the last report, to
+// monsters the host is authoritative for.  Reports an incremental DELTA
+// (not an absolute HP) so the host can apply it as a subtraction from its
+// own *current* live HP — see g_last_reported_monster_hp above for why: a
+// same-target concurrent hit from the host's own avatar must add up with
+// this, not get clobbered by it.
 static std::string build_client_monster_hits()
 {
     std::string hits;
@@ -8936,8 +8960,13 @@ static std::string build_client_monster_hits()
             continue;
         }
         const int client_hp = mon->is_dead() ? 0 : mon->get_hp();
-        if( client_hp >= it->second ) {
-            continue;
+        // last_reported defaults to the broadcast baseline the first time we
+        // ever report this nid (g_last_reported_monster_hp has no entry yet).
+        const auto rit = g_last_reported_monster_hp.find( mon->mp_net_id );
+        const int last_reported = rit != g_last_reported_monster_hp.end() ? rit->second : it->second;
+        const int dealt = last_reported - client_hp;
+        if( dealt <= 0 ) {
+            continue;  // no new damage since our last report
         }
         if( client_hp <= 0 ) {
             // Client killed this synced monster locally. Mark it so the next few
@@ -8945,10 +8974,11 @@ static std::string build_client_monster_hits()
             // don't respawn it — see apply_monster_sync's spawn guard (GH#1).
             g_client_pending_kill[mon->mp_net_id] = CLIENT_PENDING_KILL_SYNCS;
         }
+        g_last_reported_monster_hp[mon->mp_net_id] = client_hp;
         if( !first ) { hits += ','; }
         first = false;
         hits += "{\"nid\":" + std::to_string( mon->mp_net_id )
-             + ",\"hp\":" + std::to_string( client_hp ) + "}";
+             + ",\"dealt\":" + std::to_string( dealt ) + "}";
     }
     return first ? std::string() : ( "[" + hits + "]" );
 }
@@ -10925,6 +10955,10 @@ static void apply_monster_sync( JsonObject &jo )
         // the dumb HP-delta version creates confusing duplicates.
         if( nid != 0 && server_hp >= 0 ) {
             g_last_monster_hp[nid] = server_hp;
+            // The host's authoritative value supersedes anything we thought
+            // we'd already reported — reset in lockstep so build_client_monster_hits
+            // computes deltas against a fresh baseline, not a stale reported-to point.
+            g_last_reported_monster_hp[nid] = server_hp;
         }
 
         // Apply server HP. Kill locally if the server says it's dead.
