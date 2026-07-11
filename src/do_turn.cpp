@@ -948,6 +948,13 @@ bool game::do_turn()
                         u.action_taken();
                         cata_mp::host_capture_avatar_msgs( pre_msg );
                         cata_mp::host_broadcast_post_action();
+                    } else if( cata_mp::is_hosting() ) {
+                        // Host provided no input this poll.  Broadcasts are
+                        // otherwise gated entirely behind acted==true, so an
+                        // idle host can starve queued state (e.g. a client's
+                        // vehicle resnapshot request) indefinitely.  Flush on
+                        // a wall-clock cadence instead.
+                        cata_mp::host_broadcast_idle_tick();
                     }
                 }
 

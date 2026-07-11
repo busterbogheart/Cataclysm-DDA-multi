@@ -456,6 +456,14 @@ void host_broadcast_vehicle_step();
 // grant cycle.  No-op when not hosting or no remote player connected.
 void host_broadcast_post_action();
 
+// Call every do_turn iteration regardless of whether the host acted.  Flushes
+// a broadcast on a wall-clock cadence (MP_IDLE_BROADCAST_MS) so an idle host
+// (zero input for an extended stretch) doesn't stall queued state — e.g. a
+// client's veh_snapshot_req resend — behind host_broadcast_post_action()'s
+// acted-only gate.  No-op when not hosting, no remote player, or called again
+// before the cadence elapses.
+void host_broadcast_idle_tick();
+
 // Set by do_turn at turn start (before the activity loop runs) to the avatar's
 // current activity id, or empty if idle.  client_enrich_action reads this so
 // the value sent to the host is the activity that was active at the start of

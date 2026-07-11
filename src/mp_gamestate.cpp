@@ -415,6 +415,17 @@ static std::string mp_json_num( double v )
 static constexpr int64_t MP_CLIENT_STALL_MS = 8000;  // client silence -> disconnect
 static int64_t g_last_client_msg_ms = 0;             // last time any client msg arrived
 
+// AFK idle-flush (2026-07-11, "invisible schoolbus" GH follow-up).  The state
+// broadcast (vehicles, monsters, tiles, everything in serialize_remote_player_state)
+// normally only fires from host_broadcast_post_action() when the host's own
+// handle_action() actually consumes moves.  If the host provides zero input for
+// an extended stretch, anything queued behind that broadcast — most notably a
+// client's veh_snapshot_req resend — just sits stuck for as long as the host
+// stays idle, which is unbounded.  This ticks a flush on a wall-clock cadence
+// so idle-host broadcasts stop being starved by "did the host press anything."
+static constexpr int64_t MP_IDLE_BROADCAST_MS = 2000;
+static int64_t g_last_idle_broadcast_ms = 0;
+
 static int64_t mp_now_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2614,6 +2625,32 @@ void host_broadcast_post_action()
         return;
     }
     mp_log( "[cdda-mp] HOST-ACK: post-action broadcast grant_seq="
+            + std::to_string( g_grant_seq ) );
+    srv->post_broadcast( serialize_remote_player_state() + "\n" );
+    g_last_idle_broadcast_ms = mp_now_ms();
+}
+
+// Call every do_turn iteration whether or not the host acted.  Flushes the
+// same broadcast as host_broadcast_post_action(), but only after
+// MP_IDLE_BROADCAST_MS has elapsed since the last one — so an idle host
+// (zero input) still periodically flushes queued state (e.g. a client's
+// veh_snapshot_req resend) instead of it stalling until the host does
+// something.  No-ops immediately (cheap) once a real action resets the timer.
+void host_broadcast_idle_tick()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    const int64_t now_ms = mp_now_ms();
+    if( now_ms - g_last_idle_broadcast_ms < MP_IDLE_BROADCAST_MS ) {
+        return;
+    }
+    g_last_idle_broadcast_ms = now_ms;
+    server *srv = get_active_server();
+    if( !srv ) {
+        return;
+    }
+    mp_log( "[cdda-mp] HOST-IDLE-TICK: flush broadcast grant_seq="
             + std::to_string( g_grant_seq ) );
     srv->post_broadcast( serialize_remote_player_state() + "\n" );
 }
