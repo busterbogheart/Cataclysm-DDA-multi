@@ -1717,6 +1717,14 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_client_veh_cargo_basel
 // without this the client can't see items the host drops into trunks/seats/etc.,
 // and its stale snapshot would then overwrite the host on the next client drop.
 static std::unordered_map<tripoint_abs_ms, std::string> g_host_veh_cargo_baseline;
+// Host-side: the set of item UIDs the client most recently reported for a given
+// cargo vpart via client_veh_cargo_changes.  Used to diff incoming updates
+// against reality instead of blindly erasing the whole cargo stack (see the
+// item_location invalidation bug, 2026-07-10 / GH#15, 2026-07-11) — a client
+// echoing a stale/locally-generated view of a vehicle it isn't actually
+// modifying must never be able to destroy items the host is holding live
+// references into (e.g. an in-progress ACT_PICKUP).
+static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_client_veh_cargo_known_uids;
 // Client→server worn-list baseline.  When the worn signature changes (e.g.
 // drop_activity_actor peeled a worn garment off as part of a drop), we trigger
 // a client_resync_worn() so the host's proxy mirrors the new worn list.
@@ -3378,31 +3386,19 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             std::to_string( vp_abs.x() ) + "," +
                             std::to_string( vp_abs.y() ) + "," +
                             std::to_string( vp_abs.z() ) );
-                    {
-                        // Diagnostic for the item_location invalidation bug (2026-07-10):
-                        // this erase+recreate destroys the original item objects, so any
-                        // host-held item_location pointing into this cargo (e.g. a queued/
-                        // backlogged craft's craft_item) goes stale even though "the same
-                        // item" logically still exists afterward. Log what's being wiped
-                        // and what replaces it so a repro can be matched against the
-                        // "item_location lost its target item" debugmsg.
-                        vehicle_stack stack = veh.get_items( part );
-                        std::string wiped;
-                        for( const item &old_it : stack ) {
-                            wiped += old_it.typeId().str() + ",";
-                        }
-                        if( !wiped.empty() ) {
-                            mp_log( "[cdda-mp] server veh cargo WIPE @ " +
-                                    std::to_string( vp_abs.x() ) + "," +
-                                    std::to_string( vp_abs.y() ) + "," +
-                                    std::to_string( vp_abs.z() ) + " items=" + wiped );
-                        }
-                        while( !stack.empty() ) {
-                            stack.erase( stack.begin() );
-                        }
-                    }
+
+                    // Parse the client's incoming item list up front so we can diff
+                    // by UID instead of blindly erasing everything already here.
+                    // (Fixed 2026-07-11, GH#15: the old erase+recreate destroyed the
+                    // original item objects on every apply, including items the host
+                    // itself had just looted in — a client periodically re-echoing a
+                    // stale/locally-generated view of a vehicle it wasn't actually
+                    // touching could wipe the host's real, growing pile out from
+                    // under an in-progress ACT_PICKUP and dangle its item_location
+                    // targets, which is what crashed the host.)
+                    std::vector<item> incoming_items;
+                    std::set<int64_t> incoming_uids;
                     if( co.has_array( "items" ) ) {
-                        std::string added;
                         for( const JsonValue &iv : co.get_array( "items" ) ) {
                             try {
                                 item new_item;
@@ -3411,18 +3407,71 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() &&
                                     new_item.typeId().is_valid() ) {
-                                    veh.add_item( m, part, new_item );
-                                    added += new_item.typeId().str() + ",";
+                                    incoming_uids.insert( new_item.uid().get_value() );
+                                    incoming_items.push_back( std::move( new_item ) );
                                 }
                             } catch( const JsonError & ) {}
                         }
+                    }
+
+                    std::set<int64_t> &known_uids = g_client_veh_cargo_known_uids[vp_abs];
+
+                    // Remove only items the client previously reported for this cell
+                    // and has now stopped reporting (a genuine client-side removal).
+                    // Items the host added itself (e.g. via its own pickup/craft) were
+                    // never in known_uids, so they're never touched here.
+                    {
+                        vehicle_stack stack = veh.get_items( part );
+                        std::vector<int64_t> to_remove;
+                        for( const item &it : stack ) {
+                            const int64_t uid = it.uid().get_value();
+                            if( known_uids.count( uid ) && !incoming_uids.count( uid ) ) {
+                                to_remove.push_back( uid );
+                            }
+                        }
+                        if( !to_remove.empty() ) {
+                            std::string removed;
+                            for( int64_t uid : to_remove ) {
+                                for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
+                                    if( iter->uid().get_value() == uid ) {
+                                        removed += iter->typeId().str() + ",";
+                                        stack.erase( iter );
+                                        break;
+                                    }
+                                }
+                            }
+                            mp_log( "[cdda-mp] server veh cargo REMOVE @ " +
+                                    std::to_string( vp_abs.x() ) + "," +
+                                    std::to_string( vp_abs.y() ) + "," +
+                                    std::to_string( vp_abs.z() ) + " items=" + removed );
+                        }
+                    }
+
+                    // Add only items whose UID isn't already present — an item the
+                    // host already has (possibly with live references into it) is
+                    // left completely alone rather than replaced.
+                    {
+                        std::set<int64_t> existing_uids;
+                        for( const item &it : veh.get_items( part ) ) {
+                            existing_uids.insert( it.uid().get_value() );
+                        }
+                        std::string added;
+                        for( item &new_item : incoming_items ) {
+                            if( existing_uids.count( new_item.uid().get_value() ) ) {
+                                continue;
+                            }
+                            added += new_item.typeId().str() + ",";
+                            veh.add_item( m, part, new_item );
+                        }
                         if( !added.empty() ) {
-                            mp_log( "[cdda-mp] server veh cargo REPLACE @ " +
+                            mp_log( "[cdda-mp] server veh cargo ADD @ " +
                                     std::to_string( vp_abs.x() ) + "," +
                                     std::to_string( vp_abs.y() ) + "," +
                                     std::to_string( vp_abs.z() ) + " items=" + added );
                         }
                     }
+
+                    known_uids = std::move( incoming_uids );
                 }
             }
         } catch( const JsonError & ) {}
