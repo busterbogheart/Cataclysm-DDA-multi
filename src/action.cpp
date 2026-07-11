@@ -987,6 +987,7 @@ action_id handle_action_menu( map &here )
             REGISTER_ACTION( ACTION_DISPLAY_NPC_ATTACK_POTENTIAL );
             REGISTER_ACTION( ACTION_TOGGLE_DEBUG_MODE );
         } else if( category == _( "Interact" ) ) {
+            REGISTER_ACTION( ACTION_COOP_CHAT );
             REGISTER_ACTION( ACTION_EXAMINE );
             REGISTER_ACTION( ACTION_EXAMINE_AND_PICKUP );
             REGISTER_ACTION( ACTION_SMASH );
