@@ -1549,22 +1549,30 @@ void mp_open_chat()
 
 // Shared clipboard-copy body for the join address — used by both the manual
 // copy_join_address keybind (mp_copy_join_address(), guarded below) and the
-// hide-IP auto-copy at host-arm time (mp_menu_start_host_session()), which
-// has no is_hosting()/remote_player_connected state to check yet at that
-// point in setup.
-static void mp_copy_join_address_now()
+// hide-IP auto-copy at host-arm time (mp_menu_start_host_session()). The two
+// call sites need different feedback mechanisms: the keybind fires mid-game
+// with the message log on screen (add_msg), but the host-arm auto-copy fires
+// from the main menu before any world/avatar exists — add_msg has nothing to
+// render into there, so it needs a popup() instead, same as the port-picker
+// error a few lines below in mp_menu_start_host_session().
+static void mp_copy_join_address_now( bool notify_via_popup )
 {
     const std::string line = mp_build_join_address_line();
 #if defined(TILES)
-    if( SetClipboardText( line ) ) {
-        add_msg( m_info, _( "Join IP address copied to clipboard." ) );
-    } else {
-        add_msg( m_warning, _( "Couldn't copy to clipboard." ) );
-    }
+    const bool ok = SetClipboardText( line );
+    const std::string msg = ok
+                             ? _( "Join IP address copied to clipboard." )
+                             : _( "Couldn't copy to clipboard." );
 #else
     ( void )line;
-    add_msg( m_warning, _( "Clipboard copy isn't available in this build." ) );
+    const bool ok = false;
+    const std::string msg = _( "Clipboard copy isn't available in this build." );
 #endif
+    if( notify_via_popup ) {
+        popup( msg );
+    } else {
+        add_msg( ok ? m_info : m_warning, msg );
+    }
 }
 
 // Streaming-privacy hide-IP option: copy the join address to the clipboard
@@ -1581,7 +1589,7 @@ void mp_copy_join_address()
         add_msg( m_info, _( "Your partner is already connected." ) );
         return;
     }
-    mp_copy_join_address_now();
+    mp_copy_join_address_now( false );
 }
 
 // Client: last confirmed position of the remote player (our avatar as seen by the server).
@@ -6571,7 +6579,7 @@ bool mp_menu_start_host_session()
             // on screen, and the reveal keybind ships unbound by default, so
             // without this a host has no way to get it out at all unless they
             // already went and bound "Copy co-op join address" beforehand.
-            mp_copy_join_address_now();
+            mp_copy_join_address_now( true );
         }
     }
     set_host_mode( true );
