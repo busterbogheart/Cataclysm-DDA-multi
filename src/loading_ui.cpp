@@ -234,6 +234,7 @@ static void update_state( const std::string &context, const std::string &step )
             // texture. The splash stays absent for this load rather than uploading
             // against a renderer about to be rebuilt.
             gLUI->splash = CreateTextureFromSurface( get_sdl_renderer(), surf );
+            SetTextureScaleQuality( gLUI->splash, "linear" );
         }
         gLUI->window_size = gLUI->splash_size + ImVec2{ 0.0f, 2.0f * ImGui::GetTextLineHeightWithSpacing() };
 #else
