@@ -8159,6 +8159,15 @@ static bool apply_one_state_message( const std::string &msg )
 
         // Dress the host NPC with the items the host player is wearing and apply
         // all appearance mutations. Signature-gated to avoid redoing every tick.
+        {
+            static bool s_logged_first_worn_check = false;
+            if( !s_logged_first_worn_check ) {
+                mp_log( "[cdda-mp] FIRST host_worn check: has_array=" +
+                        std::to_string( jo.has_array( "host_worn" ) ) +
+                        " client_host_npc_spawned=" + std::to_string( client_host_npc_spawned ) );
+                s_logged_first_worn_check = true;
+            }
+        }
         if( jo.has_array( "host_worn" ) ) {
             // Fingerprint: worn list + appearance array raw string + wielded.
             std::string sig;
@@ -8181,6 +8190,16 @@ static bool apply_one_state_message( const std::string &msg )
             sig += '|' + incoming_wielded;
             if( jo.has_int( "host_weight" ) ) {
                 sig += "|w" + std::to_string( jo.get_int( "host_weight" ) );
+            }
+
+            static int s_worn_sig_log_count = 0;
+            if( s_worn_sig_log_count < 15 ) {
+                ++s_worn_sig_log_count;
+                mp_log( "[cdda-mp] host_worn sig check #" + std::to_string( s_worn_sig_log_count ) +
+                        ": sig_len=" + std::to_string( sig.size() ) + " prev_sig_len=" +
+                        std::to_string( g_client_host_worn_sig.size() ) + " changed=" +
+                        std::to_string( sig != g_client_host_worn_sig ) + " spawned=" +
+                        std::to_string( client_host_npc_spawned ) );
             }
 
             if( sig != g_client_host_worn_sig && client_host_npc_spawned ) {
