@@ -6042,7 +6042,8 @@ npc *get_partner_npc()
             result = n;
         }
     }
-    if( !result && is_client_mode() && client_host_npc_id.get_value() != 0 ) {
+    if( !result && is_client_mode() && client_host_npc_spawned &&
+        client_host_npc_id.get_value() != 0 ) {
         if( npc *n = g->critter_by_id<npc>( client_host_npc_id ) ) {
             result = n;
         }
