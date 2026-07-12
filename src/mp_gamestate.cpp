@@ -11441,6 +11441,8 @@ static bool mp_partner_is_busy()
 
 void mp_high_five()
 {
+    mp_log( "[cdda-mp] mp_high_five() called: is_hosting=" + std::to_string( is_hosting() ) +
+            " is_client_mode=" + std::to_string( is_client_mode() ) );
     if( !is_hosting() && !is_client_mode() ) {
         return;
     }
@@ -11450,6 +11452,10 @@ void mp_high_five()
         return;
     }
     avatar &av = get_avatar();
+    mp_log( "[cdda-mp] mp_high_five() identity check: partner_id=" +
+            std::to_string( partner->getID().get_value() ) + " partner->name=\"" + partner->name +
+            "\" | avatar_id=" + std::to_string( av.getID().get_value() ) + " avatar.name=\"" +
+            av.name + "\" avatar.get_name()=\"" + av.get_name() + "\"" );
     if( rl_dist( av.pos_bub().raw(), partner->pos_bub().raw() ) > 1 ) {
         add_msg( m_warning, _( "You need to be adjacent to your partner to high-five." ) );
         return;
@@ -11459,10 +11465,10 @@ void mp_high_five()
     if( mp_partner_is_busy() ) {
         const std::string verb = mp_activity_verb_phrase( g_partner_activity );
         if( verb.empty() ) {
-            add_msg( m_info, _( "%s is busy and leaves you hanging." ), partner->get_name() );
+            add_msg( m_info, _( "%s is busy and leaves you hanging." ), partner->name );
         } else {
             add_msg( m_info, _( "%s is busy %s and leaves you hanging." ),
-                     partner->get_name(), verb );
+                     partner->name, verb );
         }
         return;
     }
@@ -11474,19 +11480,25 @@ void mp_high_five()
 
     // Local effect on the initiator; the peer applies its own on receipt.
     mp_apply_high_five( av );
-    add_msg( m_good, _( "You high-five %s!" ), partner->get_name() );
+    // .name (raw), not .get_name() — the partner proxy's get_name() is not
+    // reliable for this (see the identical footgun documented at the
+    // ACT_HELP_PARTNER call site in game.cpp).
+    add_msg( m_good, _( "You high-five %s!" ), partner->name );
 
     // The name rides in the packet so the receiver renders the correct
     // attribution itself (avoids the "You"->name substitution path that the
     // yell feature mis-uses).
     const std::string payload = "{\"type\":\"high_five\",\"name\":\"" +
                                 av.get_name() + "\"}";
+    mp_log( "[cdda-mp] mp_high_five() sending payload: " + payload );
     if( is_hosting() || is_server_mode() ) {
         if( server *s = get_active_server() ) {
             s->post_broadcast( payload + "\n" );
+            mp_log( "[cdda-mp] mp_high_five() broadcast via server" );
         }
     } else if( is_client_mode() ) {
         client_send( payload );
+        mp_log( "[cdda-mp] mp_high_five() sent via client_send" );
     }
 
     if( is_client_mode() ) {
@@ -11548,7 +11560,9 @@ static void mp_handle_shout_recv( const std::string &msg )
 
 static void mp_handle_high_five_recv( const std::string &msg )
 {
+    mp_log( "[cdda-mp] mp_handle_high_five_recv() entered, raw msg: " + msg );
     std::string from = mp_partner_display_name();
+    mp_log( "[cdda-mp] mp_handle_high_five_recv() fallback from mp_partner_display_name(): " + from );
     try {
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
@@ -11559,9 +11573,10 @@ static void mp_handle_high_five_recv( const std::string &msg )
                 from = n;
             }
         }
-    } catch( const std::exception & ) {
-        // malformed packet — fall back to the looked-up partner name
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] mp_handle_high_five_recv() parse error: " ) + e.what() );
     }
+    mp_log( "[cdda-mp] mp_handle_high_five_recv() resolved from=\"" + from + "\", about to add_msg" );
     mp_apply_high_five( get_avatar() );
     add_msg( m_good, _( "%s high-fives you!" ), from );
 }
