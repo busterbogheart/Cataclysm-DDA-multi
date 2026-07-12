@@ -2049,9 +2049,34 @@ static void mp_cleanup_stale_npcs()
     // NPC is ever named after the currently-loaded player character.
     const std::string own_name = get_avatar().name;
 
+    // Never sweep the CURRENTLY active proxy. This function assumed it always
+    // runs before the current session spawns one ("the current session hasn't
+    // spawned any yet") — true on a genuine fresh launch, but mp_cleanup_done
+    // gets reset by mp_on_world_exit() on every quit-to-menu, including a
+    // rejoin of the SAME still-connected world. On that path this sweep can
+    // run again well after a live proxy already exists, indiscriminately
+    // matching it by the same mp_proxy tag / name a truly-dead one would have,
+    // and destroying the connected partner's visible NPC out from under them
+    // (log-confirmed: ORPHAN-SWEEP removed the live host-overlay proxy 92ms
+    // before HOST-PROXY-NULL reported it "gone; DESTROYED — no respawn path").
+    // NOTE: character_id()'s default/cleared sentinel is -1, which these
+    // proxies can legitimately carry as their REAL assigned id (see the
+    // "cleared/default sentinel" comment on get_partner_npc() above) — so
+    // this must guard on the liveness flag, not just compare against a
+    // possibly-still-default character_id().
+    auto is_active_proxy = [&]( const character_id & id ) {
+        return ( client_host_npc_spawned && id == client_host_npc_id ) ||
+               ( remote_player_connected && id == remote_player_npc_id );
+    };
+
     int orphans = 0;
     std::vector<character_id> orphan_ids;
     for( npc &candidate : g->all_npcs() ) {
+        if( is_active_proxy( candidate.getID() ) ) {
+            mp_log( "[cdda-mp] ORPHAN-SWEEP: spared active proxy id=" +
+                    std::to_string( candidate.getID().get_value() ) + " name=\"" + candidate.name + "\"" );
+            continue;
+        }
         if( candidate.maybe_get_value( "mp_proxy" )
             || candidate.name == "player2"
             || ( !own_name.empty() && candidate.name == own_name ) ) {
@@ -2079,8 +2104,9 @@ static void mp_cleanup_stale_npcs()
     int overmap_orphans = 0;
     std::vector<character_id> om_orphan_ids;
     for( const auto &ptr : overmap_buffer.get_npcs_near_player( 500 ) ) {
-        if( ptr && ( ptr->maybe_get_value( "mp_proxy" ) || ptr->name == "player2"
-                     || ( !own_name.empty() && ptr->name == own_name ) ) ) {
+        if( ptr && !is_active_proxy( ptr->getID() ) &&
+            ( ptr->maybe_get_value( "mp_proxy" ) || ptr->name == "player2"
+              || ( !own_name.empty() && ptr->name == own_name ) ) ) {
             om_orphan_ids.push_back( ptr->getID() );
         }
     }
