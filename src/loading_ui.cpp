@@ -74,6 +74,9 @@ static void redraw()
         const float center_x = ImGui::GetMainViewport()->Size.x / 2;
         const float image_start_pos_x = center_x - ( gLUI->splash_size.x / 2 );
         ImGui::SetCursorPosX( image_start_pos_x );
+        const float center_y = ( ImGui::GetMainViewport()->Size.y - gLUI->text_height ) / 2;
+        const float image_start_pos_y = center_y - ( gLUI->splash_size.y / 2 );
+        ImGui::SetCursorPosY( image_start_pos_y );
         if( gLUI->splash ) {
             ImGui::Image( reinterpret_cast<ImTextureID>( gLUI->splash.get() ), gLUI->splash_size );
         }
