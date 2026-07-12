@@ -11991,6 +11991,21 @@ std::string serialize_remote_player_state()
                 mp_log( "[cdda-mp] between-action: suppressed relayed-yell echo: " + text );
                 continue;
             }
+            // High-five already has its own dedicated packet (mp_high_five() /
+            // mp_handle_high_five_recv()); this independent forwarder — separate
+            // from host_capture_avatar_msgs's exclusion of the same text — was
+            // still picking up the host's local "You high-five <name>!" message
+            // (host-initiated) and substituting the remote player's name back to
+            // "You", producing "You high-five You!" on the client. The other
+            // shape — mp_handle_high_five_recv()'s "<name> high-fives you!",
+            // added to the host's own log when the CLIENT initiates — hits the
+            // exact same substitution bug from the other direction, so both
+            // shapes need excluding here.
+            if( text.rfind( "You high-five ", 0 ) == 0 ||
+                text.find( "high-fives you!" ) != std::string::npos ) {
+                mp_log( "[cdda-mp] between-action: suppressed high-five relay: " + text );
+                continue;
+            }
             const bool has_npc    = !npc_name.empty() && text.find( npc_name ) != std::string::npos;
             const bool has_vehnam = !driving_veh_name.empty() &&
                                     text.find( driving_veh_name ) != std::string::npos;
