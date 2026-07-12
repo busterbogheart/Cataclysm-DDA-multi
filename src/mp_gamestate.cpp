@@ -2720,6 +2720,14 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
             text.rfind( "You push ", 0 ) == 0 ) {
             continue;
         }
+        // High-five already has its own dedicated packet (mp_high_five() /
+        // mp_handle_high_five_recv()) that renders the correct attribution on
+        // each side; relaying the rendered text here double-displayed it (and
+        // produced "you high-fives you" once the name inside got substituted).
+        if( text.rfind( "You high-five ", 0 ) == 0 ) {
+            mp_log( "[cdda-mp] host_capture_avatar_msgs: EXCLUDED high-five text: \"" + text + "\"" );
+            continue;
+        }
         std::string out = text;
         // Convert first-person to third-person properly: subject substitution,
         // verb conjugation ("drop" → "drops"), AND possessive substitution
@@ -2728,6 +2736,8 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
         // — wrong subject.
         mp_rewrite_first_to_third( out, host_name );
         mp_addressee_to_you( out, host_name );   // partner's name → "you" (guarded)
+        mp_log( "[cdda-mp] host_capture_avatar_msgs: forwarding raw=\"" + text + "\" host_name=\"" +
+                host_name + "\" -> out=\"" + out + "\"" );
         g_host_action_msgs_pending.push_back( out );
     }
 }
@@ -9143,6 +9153,12 @@ static void client_capture_avatar_msgs()
             text.find( "You push " ) != std::string::npos ) {
             continue;
         }
+        // High-five already has its own dedicated packet; see the matching
+        // exclusion in host_capture_avatar_msgs().
+        if( text.rfind( "You high-five ", 0 ) == 0 ) {
+            mp_log( "[cdda-mp] client_capture_avatar_msgs: EXCLUDED high-five text: \"" + text + "\"" );
+            continue;
+        }
         std::string out = text;
         if( out.rfind( "You ", 0 ) == 0 ) {
             // "You finish waiting" → "finish waiting" → "finishes waiting" → "Roy finishes waiting"
@@ -9154,6 +9170,8 @@ static void client_capture_avatar_msgs()
             out = client_name + " is " + out;
         }
         mp_addressee_to_you( out, client_name );   // partner's name → "you" (guarded)
+        mp_log( "[cdda-mp] client_capture_avatar_msgs: forwarding raw=\"" + text + "\" client_name=\"" +
+                client_name + "\" -> out=\"" + out + "\"" );
         g_client_msgs_pending.push_back( out );
     }
 }
