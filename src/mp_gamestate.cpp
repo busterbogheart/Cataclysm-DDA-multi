@@ -1547,6 +1547,26 @@ void mp_open_chat()
     mp_chat_display( _( "You" ), text, host );   // local echo — own messages show as "You"
 }
 
+// Shared clipboard-copy body for the join address — used by both the manual
+// copy_join_address keybind (mp_copy_join_address(), guarded below) and the
+// hide-IP auto-copy at host-arm time (mp_menu_start_host_session()), which
+// has no is_hosting()/remote_player_connected state to check yet at that
+// point in setup.
+static void mp_copy_join_address_now()
+{
+    const std::string line = mp_build_join_address_line();
+#if defined(TILES)
+    if( SetClipboardText( line ) ) {
+        add_msg( m_info, _( "Join IP address copied to clipboard." ) );
+    } else {
+        add_msg( m_warning, _( "Couldn't copy to clipboard." ) );
+    }
+#else
+    ( void )line;
+    add_msg( m_warning, _( "Clipboard copy isn't available in this build." ) );
+#endif
+}
+
 // Streaming-privacy hide-IP option: copy the join address to the clipboard
 // instead of ever drawing it on screen.  Works regardless of whether hide-IP
 // is currently on — a host may still prefer clipboard-to-DM over reading an
@@ -1561,17 +1581,7 @@ void mp_copy_join_address()
         add_msg( m_info, _( "Your partner is already connected." ) );
         return;
     }
-    const std::string line = mp_build_join_address_line();
-#if defined(TILES)
-    if( SetClipboardText( line ) ) {
-        add_msg( m_info, _( "Join IP address copied to clipboard." ) );
-    } else {
-        add_msg( m_warning, _( "Couldn't copy to clipboard." ) );
-    }
-#else
-    ( void )line;
-    add_msg( m_warning, _( "Clipboard copy isn't available in this build." ) );
-#endif
+    mp_copy_join_address_now();
 }
 
 // Client: last confirmed position of the remote player (our avatar as seen by the server).
@@ -6555,6 +6565,13 @@ bool mp_menu_start_host_session()
             g_host_hide_ip = hide;
             g_host_hide_ip_loaded = true;
             mp_host_hide_ip_save_disk( hide );
+        }
+        if( hide ) {
+            // Auto-copy immediately: the address is about to stop being drawn
+            // on screen, and the reveal keybind ships unbound by default, so
+            // without this a host has no way to get it out at all unless they
+            // already went and bound "Copy co-op join address" beforehand.
+            mp_copy_join_address_now();
         }
     }
     set_host_mode( true );
