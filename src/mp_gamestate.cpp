@@ -8013,6 +8013,13 @@ static bool apply_one_state_message( const std::string &msg )
             const bool host_ctrl_v  = jo.has_bool( "host_ctrl_veh" )
                                       ? jo.get_bool( "host_ctrl_veh" ) : false;
             update_client_host_npc( host_pos, host_name, host_in_veh, host_ctrl_v );
+        } else {
+            static bool s_warned_missing_host_pos = false;
+            if( !s_warned_missing_host_pos ) {
+                mp_log( "[cdda-mp] STATE PACKET has no host_pos field! client_host_npc_spawned=" +
+                        std::to_string( client_host_npc_spawned ) + " host_name=\"" + host_name + "\"" );
+                s_warned_missing_host_pos = true;
+            }
         }
 
         // Track the host's current activity for HUD + partner-notice display.
