@@ -279,6 +279,24 @@ struct mp_apply_step {
     }
 };
 
+// Per-session turn-catchup trackers for mp_do_turn_update_body()/
+// mp_do_turn_process_turn() below. File-scope (not function-local) so
+// mp_reset_turn_catchup_state() can clear them on a fresh join — a
+// function-local static persists for the life of the process, so quitting to
+// the main menu and starting a brand-new world/character without relaunching
+// left a stale turn value from the PREVIOUS game in place. If the new game's
+// calendar::turn compared later than that stale leftover, the code took the
+// catch-up branch across the gap between two unrelated games' timelines —
+// potentially days of accumulated thirst/hunger applied in a single tick.
+static time_point s_last_update_body = calendar::before_time_starts;
+static time_point s_last_proc = calendar::before_time_starts;
+
+void mp_reset_turn_catchup_state()
+{
+    s_last_update_body = calendar::before_time_starts;
+    s_last_proc = calendar::before_time_starts;
+}
+
 // Per-turn body update, called from do_turn.cpp. SP/host: one plain update.
 // Client: the host-driven calendar advances in JUMPS and do_turn spins while
 // locked, so the no-arg update_body() (always exactly one turn) starved stamina
@@ -291,15 +309,27 @@ void mp_do_turn_update_body( Character &u )
         u.update_body();
         return;
     }
-    static time_point s_last_update_body = calendar::before_time_starts;
     if( calendar::turn == s_last_update_body ) {
         return;
     }
+    // Cap the catch-up span exactly like mp_do_turn_process_turn()'s
+    // MAX_CATCHUP: a stale static (fixed above) isn't the only way this gap
+    // can balloon — a transient/interim calendar value seen mid-join, before
+    // the host-synced date settles in, can *also* look like a huge same-
+    // session jump to the very next call. Regardless of cause, update_body()
+    // must never be allowed to fast-forward needs across an unbounded span.
+    constexpr int MAX_BODY_CATCHUP_TURNS = 100;
     if( s_last_update_body != calendar::before_time_starts &&
-        calendar::turn > s_last_update_body ) {
+        calendar::turn > s_last_update_body &&
+        to_turns<int>( calendar::turn - s_last_update_body ) <= MAX_BODY_CATCHUP_TURNS ) {
+        mp_log( "[cdda-mp] mp_do_turn_update_body: RANGE catch-up from=" +
+                to_string( s_last_update_body ) + " to=" + to_string( calendar::turn ) +
+                " (turns=" + std::to_string( to_turns<int>( calendar::turn - s_last_update_body ) ) + ")" );
         u.update_body( s_last_update_body, calendar::turn );
     } else {
-        u.update_body();  // first run / clock rewind — single turn
+        mp_log( "[cdda-mp] mp_do_turn_update_body: single-turn (first run/rewind/capped) turn=" +
+                to_string( calendar::turn ) + " prev_static=" + to_string( s_last_update_body ) );
+        u.update_body();  // first run / clock rewind / over-cap jump — single turn
     }
     s_last_update_body = calendar::turn;
 }
@@ -318,7 +348,6 @@ void mp_do_turn_process_turn( Character &u )
         u.process_turn();
         return;
     }
-    static time_point s_last_proc = calendar::before_time_starts;
     int dturns;
     if( s_last_proc == calendar::before_time_starts ) {
         dturns = 1;                                   // first call
@@ -8705,6 +8734,11 @@ void client_process_incoming()
         // so the server's first move grant isn't silently ignored after reconnect.
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
+        // Same reason: clear the turn-catchup trackers so a leftover calendar
+        // turn from a previous game (quit to menu, new world, same process)
+        // can't be diffed against this fresh game's turn 0 and fast-forward
+        // needs across two unrelated timelines.
+        mp_reset_turn_catchup_state();
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
         // Templates wire-sync: send local template list so the host can request
