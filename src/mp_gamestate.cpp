@@ -9802,11 +9802,22 @@ void mp_log_lighting_sample()
                 " |" + row );
     }
     const tripoint_abs_ms cabs = here.get_abs( center );
+    // Stale-vs-live discriminator: does forcing a fresh lightmap rebuild at
+    // this z-level change the reading? If light_pre != light_post, the
+    // client's cache was stale (something patched geometry in without
+    // invalidating the lightmap) — points at the map_sync apply path missing
+    // a cache invalidation. If they match, it's a live computation
+    // divergence instead (different light-source visibility), not a caching
+    // bug, and needs a different follow-up.
+    const int light_pre = static_cast<int>( here.light_at( center ) );
+    here.build_map_cache( center.z() );
+    const int light_post = static_cast<int>( here.light_at( center ) );
     mp_log( std::string( "[cdda-mp] LIGHT-SAMPLE " ) + role + " dump#" +
             std::to_string( dumps ) + " center_abs=" + std::to_string( cabs.x() ) +
             "," + std::to_string( cabs.y() ) + "," + std::to_string( cabs.z() ) +
             " center_outside=" + std::to_string( here.is_outside( center ) ) +
-            " center_light=" + std::to_string( static_cast<int>( here.light_at( center ) ) ) );
+            " center_light_pre=" + std::to_string( light_pre ) +
+            " center_light_post_rebuild=" + std::to_string( light_post ) );
 }
 
 void client_send_activity_end( const std::string &activity_id_str )
