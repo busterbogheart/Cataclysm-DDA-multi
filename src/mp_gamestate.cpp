@@ -10994,6 +10994,31 @@ static void apply_vehicle_sync( JsonObject &jo )
                                  std::max( std::abs( hp.x() - vp.x() ),
                                            std::abs( hp.y() - vp.y() ) ) );
             }
+            // Also check every nid this client has ever synced from the host,
+            // not just this tick's broadcast. vehicle_step can omit a
+            // stationary/distant vehicle on a given tick (bandwidth), and
+            // treating that single-tick omission as "doesn't exist" was
+            // destroying real host vehicles: the client re-requests a full
+            // snapshot next broadcast, recreates it, then culls it again a
+            // tick later it's dropped from the broadcast — a repeating
+            // create/destroy loop rather than a one-time miss. g_client_veh_pos
+            // is cleaned up by the removed_vehicles path above whenever the
+            // host actually says a vehicle is gone, so it's safe to treat as
+            // "still alive" here.
+            if( best > CULL_MIN_DIST ) {
+                for( const auto &kv : g_client_veh_pos ) {
+                    const tripoint_abs_ms &hp = kv.second;
+                    if( hp.z() != vp.z() ) {
+                        continue;
+                    }
+                    best = std::min( best,
+                                     std::max( std::abs( hp.x() - vp.x() ),
+                                               std::abs( hp.y() - vp.y() ) ) );
+                    if( best <= CULL_MIN_DIST ) {
+                        break;
+                    }
+                }
+            }
             if( best > CULL_MIN_DIST ) {
                 local_cull.push_back( v );
             }
