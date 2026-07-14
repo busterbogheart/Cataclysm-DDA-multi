@@ -4190,6 +4190,27 @@ bool cata_tiles::draw_critter_at( const tripoint_bub_ms &p, lit_level ll, int &h
         }
         const Character *pl = dynamic_cast<const Character *>( &critter );
         if( pl != nullptr ) {
+            // DIAG (temporary, 2026-07-13): "host on client screen looks like
+            // the client" report. get_overlay_ids() is confirmed correct at
+            // apply time (mp_gamestate.cpp's "host_npc overlays after
+            // appearance" log), so if this still renders wrong, either the
+            // wrong Character* is landing on this tile, or draw_from_id_string
+            // has a sprite/texture cache keyed coarser than the overlay list.
+            // Log only on identity change at a given tile to avoid per-frame
+            // spam, so a next repro shows exactly which entity is drawn where.
+            {
+                static std::map<tripoint_bub_ms, std::string> s_last_drawn;
+                const std::string ident = pl->get_name() + "|is_npc=" +
+                                          std::to_string( pl->is_npc() ) + "|is_avatar=" +
+                                          std::to_string( pl->is_avatar() ) + "|male=" +
+                                          std::to_string( pl->male );
+                auto it = s_last_drawn.find( p );
+                if( it == s_last_drawn.end() || it->second != ident ) {
+                    s_last_drawn[p] = ident;
+                    cata_mp::mp_log( "[cdda-mp] TILE-DRAW-IDENTITY: pos=" + p.to_string() +
+                                     " " + ident );
+                }
+            }
             draw_entity_with_overlays( *pl, p, ll, height_3d );
             result = true;
             if( pl->is_avatar() ) {
