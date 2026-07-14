@@ -670,15 +670,16 @@ bool main_menu::opening_screen()
 
     int sel_line = 0;
 
-    // Make [Load Game] the default cursor position if there's game save available
+    // MP fork: default cursor position to [Co-op] instead of upstream's [Load
+    // Game] — co-op is the fork's primary draw, so land players there instead
+    // of making them navigate away from Load every time the menu opens.
     if( !world_generator->get_all_worlds().empty() ) {
         std::vector<std::string> worlds = world_generator->all_worldnames();
         last_world_pos = world_generator->get_world_index( world_generator->last_world_name );
         if( last_world_pos >= worlds.size() ) {
             last_world_pos = 0;
         }
-        sel1 = getopt( main_menu_opts::LOADCHAR );
-        sel2 = last_world_pos;
+        sel1 = getopt( main_menu_opts::COOP );
     }
 
     background_pane background;
