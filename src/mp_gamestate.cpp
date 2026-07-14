@@ -2003,6 +2003,20 @@ static void mp_cleanup_stale_npcs()
     }
     mp_cleanup_done = true;
 
+    // DIAG (temporary, 2026-07-13): the is_active_proxy() guard added in
+    // 7b33f90bb2 isn't preventing every case of the orphan sweep destroying a
+    // still-connected partner's proxy (log-confirmed: no "spared active
+    // proxy" line before an ORPHAN-SWEEP removal, followed shortly by
+    // HOST-PROXY-NULL/DESTROYED for the SAME proxy). Log the actual flag/id
+    // state at sweep entry to tell apart "flag already false" (something
+    // resets it before this runs) from "flag true but id mismatched" (the
+    // proxy's tracked id drifted from its real one across the save/rejoin).
+    mp_log( "[cdda-mp] ORPHAN-SWEEP entry: client_host_npc_spawned=" +
+            std::to_string( client_host_npc_spawned ) + " client_host_npc_id=" +
+            std::to_string( client_host_npc_id.get_value() ) +
+            " remote_player_connected=" + std::to_string( remote_player_connected ) +
+            " remote_player_npc_id=" + std::to_string( remote_player_npc_id.get_value() ) );
+
     const cata_path path = mp_npc_cleanup_path();
     bool found_any = false;
     read_from_file_optional_json( path, [&]( const JsonValue &jv ) {
