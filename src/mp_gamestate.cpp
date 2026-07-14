@@ -7404,6 +7404,18 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
 
         shared_ptr_fast<npc> host_npc = make_shared_fast<npc>();
         host_npc->normalize();
+        // make_shared_fast<npc>() + normalize() never calls setID() — without
+        // this, getID() below returns the invalid/default sentinel (-1),
+        // which then poisons is_active_proxy()'s guard in
+        // mp_cleanup_stale_npcs(): client_host_npc_spawned reads true but
+        // client_host_npc_id stays -1 forever, and the real proxy's actual
+        // (non -1) id never equals it, so the orphan sweep's identity check
+        // silently fails to protect a genuinely live proxy. Mirrors the
+        // identical, already-fixed pattern in spawn_remote_player() (the
+        // host-side equivalent of this function).
+        if( !host_npc->getID().is_valid() ) {
+            host_npc->setID( g->assign_npc_id() );
+        }
         host_npc->name = name.empty() ? "host" : name;
         host_npc->spawn_at_precise( abs_pos );
         overmap_buffer.insert_npc( host_npc );
