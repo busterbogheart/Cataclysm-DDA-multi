@@ -2057,6 +2057,13 @@ void options_manager::add_options_interface()
 
     add_empty_line();
 
+    add( "COOP_HUD_POSITION", "interface", to_translation( "Co-op HUD panel position" ),
+         to_translation( "Which screen edge the co-op multiplayer partner HUD panel is drawn along." ),
+    { { "bottom", to_translation( "Bottom" ) }, { "top", to_translation( "Top" ) } },
+    "bottom" );
+
+    add_empty_line();
+
     add( "DIAG_MOVE_WITH_MODIFIERS_MODE", "interface",
          to_translation( "Diagonal movement with cursor keys and modifiers" ),
          /*

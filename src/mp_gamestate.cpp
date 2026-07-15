@@ -38,6 +38,7 @@
 #include "lightmap.h"
 #include "map.h"
 #include "map_scale_constants.h"
+#include "options.h"
 #include "submap.h"
 #include "move_mode.h"
 #include "memory_fast.h"
@@ -1077,24 +1078,63 @@ struct mp_hud_t {
     int W = 56;
     static constexpr int H = 3;   // top border + status row + bottom border
 
+    // Geometry the window was last built for. on_screen_resize only fires on
+    // terminal/font changes, NOT when the player flips the position option or
+    // changes the sidebar width/layout in the menu — so we watch these and force
+    // a re-resize when any of them changes (see maybe_resize()), mirroring
+    // mp_edge_t. Without this the panel keeps its old width/edge until the next
+    // terminal resize.
+    std::string last_pos;
+    int last_left = -1, last_right = -1, last_termx = -1;
+
     mp_hud_t() {
         ui.on_screen_resize( [this]( ui_adaptor &ua ) {
             // Single window: any chat lines render INSIDE the top of the co-op
             // box, above the status row.  One stable window/area — the earlier
             // two-window overlay churned the ui_adaptor stack and made the panel
             // flicker / vanish on unrelated redraws (focus changes, turn-waits).
+            //
+            // Span only the map viewport, NOT the whole terminal: the sidebar can
+            // sit on EITHER side, so subtract both edges (get_width_left when the
+            // sidebar is on the left, get_width_right when on the right).  Mirrors
+            // mp_edge_t's [left_col, right_col] math so the panel lines up with the
+            // edge stripes instead of overrunning the sidebar and shoving the map
+            // off-screen.
             panel_manager &pm = panel_manager::get_manager();
-            W = std::max( 40, TERMX - pm.get_width_right() );
+            const int left_col = pm.get_width_left();
+            const int right_col = std::max( left_col, TERMX - pm.get_width_right() - 1 );
+            W = std::max( 40, right_col - left_col + 1 );
             const int ch = mp_chat_overlay_count();
             // border + chat lines + separator + status row + border
             const int height = ch > 0 ? ch + 4 : H;
-            win = catacurses::newwin( height, W, point( 0, TERMY - height ) );
+            // Player choice: top of screen (y = 0) or the default bottom edge.
+            last_pos = get_option<std::string>( "COOP_HUD_POSITION" );
+            const int y = last_pos == "top" ? 0 : TERMY - height;
+            win = catacurses::newwin( height, W, point( left_col, y ) );
+            last_left = pm.get_width_left();
+            last_right = pm.get_width_right();
+            last_termx = TERMX;
             ua.position_from_window( win );
         } );
         ui.on_redraw( [this]( const ui_adaptor & ) {
             draw();
         } );
         ui.mark_resize();
+    }
+
+    // Re-run the resize callback when the player flipped the position option OR
+    // changed the sidebar width/layout (side flip, layout switch, width change).
+    // ui_adaptor only re-runs on_screen_resize on its own for terminal/font
+    // changes, so without this the panel keeps its old edge and old width until
+    // the next terminal resize.  Mirrors mp_edge_t::maybe_resize().
+    void maybe_resize() {
+        panel_manager &pm = panel_manager::get_manager();
+        if( get_option<std::string>( "COOP_HUD_POSITION" ) != last_pos
+            || pm.get_width_left() != last_left
+            || pm.get_width_right() != last_right
+            || TERMX != last_termx ) {
+            ui.mark_resize();
+        }
     }
 
     void draw() const {
@@ -1437,7 +1477,29 @@ void ensure_mp_hud()
         g_mp_hud = std::make_unique<mp_hud_t>();
         mp_log( "[cdda-mp] HUD: created mp_hud (fresh)" );
     }
+    g_mp_hud->maybe_resize();
     g_mp_hud->ui.invalidate_ui();
+
+    // The game's own main UI adaptor repositions w_terrain around the sidebar in
+    // its on_screen_resize (game.cpp: newwin at point(sidebar_left, 0)), but that
+    // only re-runs on a real terminal resize — NOT when the player flips
+    // SIDEBAR_POSITION or changes layout in the menu.  So after a side flip the
+    // terrain window keeps its old origin/width and a black band is left where the
+    // sidebar used to be (only a window resize fixes it).  We already poll sidebar
+    // geometry here every turn for our own panels, so feed the same change signal
+    // into the main UI resize — identical to what a terminal resize does — so the
+    // terrain window reflows too.  Fires only on an actual geometry change, so no
+    // per-turn churn and no reflow loop.
+    static int last_l = -1, last_r = -1, last_tx = -1, last_ty = -1;
+    panel_manager &pm = panel_manager::get_manager();
+    if( pm.get_width_left() != last_l || pm.get_width_right() != last_r
+        || TERMX != last_tx || TERMY != last_ty ) {
+        last_l = pm.get_width_left();
+        last_r = pm.get_width_right();
+        last_tx = TERMX;
+        last_ty = TERMY;
+        g->mark_main_ui_adaptor_resize();
+    }
 }
 
 static std::string json_escape_str( const std::string &s );   // defined below
