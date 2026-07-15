@@ -1256,13 +1256,19 @@ struct mp_hud_t {
         // synced morale level through the DEFAULT mood face's value table.
         {
             static const mood_face_id mood_face_DEFAULT( "DEFAULT" );
-            const std::pair<std::string, nc_color> mf =
-                display::morale_emotion( g_partner_morale, mood_face_DEFAULT.obj() );
-            const nc_color col = partner ? mf.second : c_dark_gray;
-            mvwprintz( win, point( x, crow ), col, "%s", mf.first.c_str() );
-            // Advance by the actual face width + 1 so the HP bar sits right up
-            // against the mood emoji instead of after a fixed reserved slot.
-            x += static_cast<int>( utf8_width( mf.first ) ) + 1;
+            // Guard with is_valid(): the HUD can redraw during the loading screen,
+            // before mood_faces.json is in the generic_factory. .obj() throws
+            // ("invalid mood_face id DEFAULT") in that window; is_valid() just
+            // returns false, so we skip the mood glyph until the data is loaded.
+            if( mood_face_DEFAULT.is_valid() ) {
+                const std::pair<std::string, nc_color> mf =
+                    display::morale_emotion( g_partner_morale, mood_face_DEFAULT.obj() );
+                const nc_color col = partner ? mf.second : c_dark_gray;
+                mvwprintz( win, point( x, crow ), col, "%s", mf.first.c_str() );
+                // Advance by the actual face width + 1 so the HP bar sits right up
+                // against the mood emoji instead of after a fixed reserved slot.
+                x += static_cast<int>( utf8_width( mf.first ) ) + 1;
+            }
         }
 
         // HP bar — the partner's WORST body part rendered with the game's native
