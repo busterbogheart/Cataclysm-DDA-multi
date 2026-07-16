@@ -4578,7 +4578,12 @@ bool game::handle_action()
     // entire turn grant just by being open for a few seconds.
     // Similarly, don't drain the host's moves while locked (moves<=0, waiting for the
     // client) — the budget is managed by the MP loop, not wall-clock time.
-    if( act != ACTION_TIMEOUT && !cata_mp::is_client_mode() &&
+    // ACTION_DEBUG covers the whole debug menu (all wish/spawn tools route
+    // through it). Its dialogs stay open for wall-clock seconds while you pick
+    // a monster/item, and moves_elapsed() would drain the host's turn by all
+    // that browsing time — debug spawns must be free. The client already skips
+    // this drain via the is_client_mode() guard.
+    if( act != ACTION_TIMEOUT && act != ACTION_DEBUG && !cata_mp::is_client_mode() &&
         !( cata_mp::is_hosting() && player_character.get_moves() <= 0 ) ) {
         player_character.mod_moves( -current_turn.moves_elapsed() );
     }
