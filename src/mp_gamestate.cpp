@@ -292,7 +292,12 @@ struct mp_apply_step {
 static time_point s_last_update_body = calendar::before_time_starts;
 static time_point s_last_proc = calendar::before_time_starts;
 
-void mp_reset_turn_catchup_state()
+// File-local: only the fresh-join reset path below (mp_gamestate.cpp) calls
+// this, and it resets the two static catch-up timers above. Marked static so
+// GCC's -Werror=missing-declarations (Linux CI) doesn't require a header decl
+// for a symbol nothing outside this TU uses; Apple Clang doesn't enforce it,
+// which is why this only failed on Linux.
+static void mp_reset_turn_catchup_state()
 {
     s_last_update_body = calendar::before_time_starts;
     s_last_proc = calendar::before_time_starts;
