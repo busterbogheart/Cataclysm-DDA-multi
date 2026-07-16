@@ -2535,6 +2535,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_CONTROL_VEHICLE,
                 // Long actions
                 ACTION_SLEEP, ACTION_WORKOUT, ACTION_WAIT,
+                // Debug menu: mirror the host, which blocks ACTION_DEBUG while
+                // locked (it's not in host_ui_actions). Debug tools commit
+                // immediate world/state mutations with no moves gate, so at 0 AP
+                // they'd bypass lockstep — same reason ACTION_CONSTRUCT is here.
+                // Stays available on a real grant, matching the host on its turn.
+                ACTION_DEBUG,
             };
             if( menu_allowed_while_locked.count( act ) ) {
                 cata_mp::mp_log( "[cdda-mp] CLI-LOCKED-ALLOW: act=" +
