@@ -1425,11 +1425,21 @@ class mapgen_value
             }
 
             Id get( const mapgendata &dat ) const override {
-                if( fallback ) {
-                    return Id( dat.get_arg_or<StringId>( param_name, *fallback ) );
-                } else {
-                    return Id( dat.get_arg<StringId>( param_name ) );
-                }
+                // MP-fork mitigation: a param reference with no JSON `fallback`
+                // used to call the loud get_arg(), which debugmsg()s WITH a full
+                // backtrace when the param isn't in scope at this OMT. Our pinned
+                // content migrates the FEMA-special anchor (fema_entrance_east ->
+                // field) on every load, breaking the overmap_special param scope,
+                // so house palettes resolve construction_palette/variant_palette
+                // out of scope and flood the log (~110k lines/session) + hitch.
+                // Route the no-fallback case through the quiet get_arg_or with an
+                // empty default — the same empty Id get_arg returned anyway. This
+                // only silences the out-of-scope RUNTIME lookup; load-time check()
+                // below still catches truly-undefined params, so real JSON typos
+                // are not hidden. This is symptom mitigation only — the migration/
+                // content root fix is tracked in ROADMAP ("110k ... mapgen flood").
+                return Id( dat.get_arg_or<StringId>( param_name,
+                                                     fallback.value_or( StringId() ) ) );
             }
 
             void check( const std::string &context, const mapgen_parameters &parameters
