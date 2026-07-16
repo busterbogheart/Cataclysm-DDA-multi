@@ -1194,9 +1194,10 @@ bool main_menu::opening_screen()
                             if( host_key != s_announced_host ) {
                                 s_announced_host = host_key;
                                 if( host_player.empty() ) {
-                                    popup( _( "Joining world \"%s\"." ), host_world );
+                                    popup( _( "Connected to world \"%s\".\nPress a key to continue." ),
+                                           host_world );
                                 } else {
-                                    popup( _( "Joining %s's game.\nWorld: \"%s\"" ),
+                                    popup( _( "Connected to %s's game.\nWorld: \"%s\"\nPress a key to continue." ),
                                            host_player, host_world );
                                 }
                             }
