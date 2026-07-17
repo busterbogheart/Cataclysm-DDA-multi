@@ -131,7 +131,7 @@
     "id": "orangeade_powder",
     "name": { "str_sp": "orangeade drink mix" },
     "copy-from": "lemonade_powder",
-    "description": " Can be mixed with water to make orange juice."
+    "description": "Can be mixed with water to make orange juice."
   },
   {
     "type": "ITEM",
@@ -139,7 +139,7 @@
     "id": "grapeade_powder",
     "name": { "str_sp": "grapeade drink mix" },
     "copy-from": "lemonade_powder",
-    "description": " Can be mixed with water to make grape juice."
+    "description": "Can be mixed with water to make grape juice."
   },
   {
     "type": "ITEM",
