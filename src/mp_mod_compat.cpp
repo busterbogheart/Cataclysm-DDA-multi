@@ -80,6 +80,11 @@ const std::map<std::string, coop_entry> &coop_table()
                 translate_marker( "CO-OP: NOT COMPATIBLE.  Paraclesian, vampire and dream powers are scripted and run only on your own client, and several mechanics teleport you to separate maps (dream realm, pocket dungeons)." )
             }
         },
+        {
+            "aftershock_exoplanet", { mod_coop::incompatible,
+                translate_marker( "CO-OP: NOT COMPATIBLE.  Aftershock's distinctive map specials (the exoplanet start pads, alien biomes) aren't streamed host->client; the joining player's world generates its own terrain at the same coordinates, so the two players stand on completely different maps." )
+            }
+        },
 
         // -- Plays, but breaks or desyncs for the client. -------------------
         {
