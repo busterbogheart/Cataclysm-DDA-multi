@@ -2443,6 +2443,12 @@ static const std::set<action_id> host_ui_actions = {
     // Co-op chat: zero-AP, opens a popup and sends a message, never
     // mutates world state — safe to use while waiting for the client.
     ACTION_COOP_CHAT,
+    // Debug menu: a developer/tester tool, deliberately reachable even while
+    // locked. It CAN mutate shared state out of lockstep (same hazard as
+    // ACTION_CONSTRUCT), but unlike construction it's not a normal-play action
+    // — gating it out of the wait state broke testing workflows with no
+    // gameplay benefit, so both sides allow it (mirrors the client gate).
+    ACTION_DEBUG,
 };
 
 bool game::do_regular_action( action_id &act, avatar &player_character,
@@ -2535,12 +2541,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_CONTROL_VEHICLE,
                 // Long actions
                 ACTION_SLEEP, ACTION_WORKOUT, ACTION_WAIT,
-                // Debug menu: mirror the host, which blocks ACTION_DEBUG while
-                // locked (it's not in host_ui_actions). Debug tools commit
-                // immediate world/state mutations with no moves gate, so at 0 AP
-                // they'd bypass lockstep — same reason ACTION_CONSTRUCT is here.
-                // Stays available on a real grant, matching the host on its turn.
-                ACTION_DEBUG,
+                // NOTE: ACTION_DEBUG is intentionally NOT blocked here. It's a
+                // developer/tester tool, deliberately reachable while locked
+                // (the host now allows it too, via host_ui_actions). It can
+                // mutate shared state out of lockstep like ACTION_CONSTRUCT,
+                // but it's not a normal-play action and gating it broke testing
+                // for no gameplay gain.
             };
             if( menu_allowed_while_locked.count( act ) ) {
                 cata_mp::mp_log( "[cdda-mp] CLI-LOCKED-ALLOW: act=" +
