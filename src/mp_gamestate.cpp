@@ -2271,6 +2271,18 @@ static void mp_cull_local_npcs()
 void mp_on_world_exit()
 {
     mp_cleanup_done = false;
+    // The host-overlay proxy is a WORLD-lifetime NPC, but these trackers are
+    // process-lifetime statics. On quit-to-menu the world (and the proxy NPC)
+    // unloads while client_host_npc_spawned stays true / client_host_npc_id
+    // keeps the old value. A rejoin in the SAME process then sees "spawned"
+    // but finds no critter, wedging update_client_host_npc() in its
+    // unrecoverable DESTROYED branch — the host renders invisible and the
+    // co-op HUD shows [?] / ---- forever (WAN-confirmed 2026-07-18: quit-to-
+    // menu then rejoin). Reset them so the next session's first state packet
+    // spawns a fresh proxy at the host's current position.
+    client_host_npc_spawned = false;
+    client_host_npc_id = character_id();
+    g_client_host_worn_sig.clear();
     // A world exit ends any co-op session.  Clear the host/client session mode so
     // the NEXT game started from the menu is treated as plain single-player.
     // set_client_mode(false) was previously only called on a *connect failure*, so
