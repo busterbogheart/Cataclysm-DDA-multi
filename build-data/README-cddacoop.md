@@ -294,6 +294,16 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### 2026-07-18
+
+- **Safer rejoining for client** — rejoining after a crash or a save-and-quit is much more solid now. No more instantly fast-forwarding 17 million turns, and your partner correctly reappears on your screen — previously the host could come back invisible with a blank `[?]` / `----` status in the co-op panel.
+- **Combat race condition fix** — players hitting the same monster in the same instant could mis-count the damage, should be more predictable now. 
+- **Streamer IP privacy** — hosts who stream can now hide their join address and the game copies it to your clipboard so you can send it privately to your partner.
+- **Co-op chat in the Interact menu** — you can now reach co-op chat straight from the Actions Menu (`G` by default).
+- **Co-op HUD is movable** — the co-op partner panel can be repositioned to the top or bottom of the game screen
+- **Faster, quieter loading** — squashed a bug that spewed ~110,000 lines of debug noise into the log on every world load, and reworded the client join popup so it no longer looks frozen while it's connecting.
+- **More new loading screen art** — additional pieces from fans & sharper (linear filter) rendering.  Thanks to Anton, Maslin and Torvie!!  Also an incredibly sick antlered horror co-op battle by deviantart.com/epsilon-shadow (and one more from them)
+
 ### 2026-07-10
 
 - **Sleep enabled** — at your own risk... but testing shows it works for the most part.
