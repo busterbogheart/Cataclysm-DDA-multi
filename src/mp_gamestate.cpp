@@ -8529,9 +8529,36 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
-        { mp_apply_step _s( "monster" ); apply_monster_sync( jo ); }
-        { mp_apply_step _s( "tile" ); apply_tile_changes( jo ); }
-        { mp_apply_step _s( "vehicle" ); apply_vehicle_sync( jo ); }
+        // Each world-state sync helper is isolated in its own try/catch: a throw
+        // in one (e.g. a malformed/large vehicle snapshot) must NOT abort the rest
+        // of this state message — most critically the moves/ack-clear HANDSHAKE
+        // below.  When they shared the outer try/catch, apply_vehicle_sync throwing
+        // on a bundled 41 KB snapshot swallowed the moves=0 ACK, left
+        // g_client_waiting_for_ack stuck true, and the next grant was CLI-SKIP'd
+        // (reason=ack-pending) -> host+client deadlocked red/red until a manual
+        // quit (grasssnek report, #16, 2026-07-18).  World-state application is
+        // best-effort; the turn handshake is the deliverable and must survive it.
+        try {
+            mp_apply_step _s( "monster" );
+            apply_monster_sync( jo );
+        } catch( const std::exception &e ) {
+            mp_log( "[cdda-mp] apply_monster_sync threw (isolated, handshake preserved): "
+                    + std::string( e.what() ) );
+        }
+        try {
+            mp_apply_step _s( "tile" );
+            apply_tile_changes( jo );
+        } catch( const std::exception &e ) {
+            mp_log( "[cdda-mp] apply_tile_changes threw (isolated, handshake preserved): "
+                    + std::string( e.what() ) );
+        }
+        try {
+            mp_apply_step _s( "vehicle" );
+            apply_vehicle_sync( jo );
+        } catch( const std::exception &e ) {
+            mp_log( "[cdda-mp] apply_vehicle_sync threw (isolated, handshake preserved): "
+                    + std::string( e.what() ) );
+        }
 
         // Apply per-bodypart HP to the client avatar so the sidebar stays accurate.
         // Also synthesise "you were hit" messages from HP deltas.
@@ -8867,9 +8894,15 @@ static bool apply_one_state_message( const std::string &msg )
         std::cout << "[cdda-mp] state applied ok" << std::endl;
 
     } catch( const std::exception &e ) {
-        std::cout << "[cdda-mp] exception in state processing: " << e.what() << std::endl;
+        // mp_log (not std::cout): this backstop firing means a state message was
+        // aborted mid-apply — potentially skipping the moves/ack-clear handshake
+        // and deadlocking the turn.  It MUST land in cdda-mp-client.log so it can
+        // be diagnosed; routing it to stdout is why the #16 vehicle-sync throw was
+        // invisible across every prior log dump.
+        mp_log( "[cdda-mp] exception in state processing (handshake may be skipped!): "
+                + std::string( e.what() ) );
     } catch( ... ) {
-        std::cout << "[cdda-mp] unknown exception in state processing" << std::endl;
+        mp_log( "[cdda-mp] unknown exception in state processing (handshake may be skipped!)" );
     }
     return true;
 }
