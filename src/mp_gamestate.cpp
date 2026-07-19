@@ -2013,19 +2013,11 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_host_veh_cargo_baselin
 // modifying must never be able to destroy items the host is holding live
 // references into (e.g. an in-progress ACT_PICKUP).
 static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_client_veh_cargo_known_uids;
-// Host-side: same as g_client_veh_cargo_known_uids above, but for plain ground
-// tiles (client_tile_changes' "items" array, applied via m.i_clear()+rebuild).
-// Same bug class, same fix: a client echoing a stale/locally-generated view of
-// a tile it isn't actually touching must never destroy items the host holds
-// live references into — e.g. a host pickup_selector open on that tile with
-// cached item_location entries (crash root-caused 2026-07-11, "crafting
-// bandages" report — SIGSEGV in inventory_entry::get_invlet() on a freed item).
-static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_client_tile_items_known_uids;
-// Client-side mirror of g_client_tile_items_known_uids: the set of item UIDs
-// the host most recently reported for a given tile via tile_changes' "items"
-// array, used by apply_tile_changes() to diff instead of i_clear()+rebuild.
-static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_host_tile_items_known_uids;
-// Client-side: same as g_host_tile_items_known_uids above, but for vehicle
+// (Ground-tile item UID-diff maps removed 2026-07-19: the plain-tile apply is
+// back to i_clear()+rebuild after the 2026-07-11 UID-diff caused the ground-item
+// duplication balloon — item_uid regenerates on add_item so the diff only ever
+// added.  Vehicle cargo below keeps the UID-diff, which is working (#15).)
+// Client-side: same as g_client_veh_cargo_known_uids above, but for vehicle
 // cargo — the client-side apply of the host's per-cargo-part item list
 // (mirrors g_client_veh_cargo_known_uids, host-side, for the opposite
 // direction of the same wire message family).
@@ -3171,10 +3163,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
     }
-    // Client is applying first aid to us (the host) → hold the host in place.
-    if( jo.has_bool( "client_treating_partner" ) ) {
-        mp_set_being_treated( jo.get_bool( "client_treating_partner", false ) );
-    }
     if( jo.has_int( "client_activity_pct" ) ) {
         g_partner_activity_pct = jo.get_int( "client_activity_pct" );
     }
@@ -3678,15 +3666,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         }
                     }
                     if( to.has_array( "items" ) ) {
-                        // UID diff instead of i_clear()+rebuild (2026-07-11, same
-                        // fix as the vehicle-cargo bug — see
-                        // g_client_tile_items_known_uids above): erasing every
-                        // item on the tile destroys the original objects, so any
-                        // host-held item_location pointing here (e.g. a
-                        // pickup_selector UI open on this tile) goes dangling
-                        // even when "the same item" logically survives.
-                        std::vector<item> incoming_items;
-                        std::set<int64_t> incoming_uids;
+                        // Ground-item apply = i_clear()+rebuild (REPLACE): the host
+                        // tile becomes exactly the client's reported set.  The
+                        // 2026-07-11 UID-diff (c8cd48032e) was a preventive
+                        // conversion that broke this path: item_uid regenerates on
+                        // add_item's internal copy, so the dedup could never match
+                        // (incoming_present=0, proven by ITEMDUP logs) → it only
+                        // ever ADDED → tiles ballooned to 5000+ items → client
+                        // main-thread stalls applying them → HOST-STALL disconnects
+                        // (issue #17/#18, the "duped by the hundreds" + "connection
+                        // unstable during busy activity").  Replace can't accumulate.
+                        // (The dangling-item_location risk the UID-diff guarded is a
+                        // rare open-pickup-UI-on-this-exact-tile case that was never
+                        // observed for ground tiles; the balloon was constant.)
+                        m.i_clear( bub );
                         for( const JsonValue &iv : to.get_array( "items" ) ) {
                             try {
                                 item new_item;
@@ -3694,86 +3687,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 io.allow_omitted_members();
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
-                                    incoming_uids.insert( new_item.uid().get_value() );
-                                    incoming_items.push_back( std::move( new_item ) );
+                                    m.add_item( bub, std::move( new_item ) );
                                 }
                             } catch( const JsonError & ) {}
                         }
-
-                        std::set<int64_t> &known_uids = g_client_tile_items_known_uids[abs];
-                        const size_t stack_before = m.i_at( bub ).size();
-                        int n_removed = 0;
-                        int n_added = 0;
-
-                        // Remove only items the client previously reported for this
-                        // tile and has now stopped reporting (a genuine removal).
-                        {
-                            map_stack stack = m.i_at( bub );
-                            std::vector<int64_t> to_remove;
-                            for( const item &it : stack ) {
-                                const int64_t uid = it.uid().get_value();
-                                if( known_uids.count( uid ) && !incoming_uids.count( uid ) ) {
-                                    to_remove.push_back( uid );
-                                }
-                            }
-                            for( int64_t uid : to_remove ) {
-                                for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
-                                    if( iter->uid().get_value() == uid ) {
-                                        stack.erase( iter );
-                                        break;
-                                    }
-                                }
-                            }
-                            n_removed = static_cast<int>( to_remove.size() );
-                        }
-
-                        // Add only items whose UID isn't already present — an item
-                        // the host already has (possibly with live references into
-                        // it) is left completely alone rather than replaced.
-                        {
-                            std::set<int64_t> existing_uids;
-                            for( const item &it : m.i_at( bub ) ) {
-                                existing_uids.insert( it.uid().get_value() );
-                            }
-                            for( item &new_item : incoming_items ) {
-                                if( existing_uids.count( new_item.uid().get_value() ) ) {
-                                    continue;
-                                }
-                                m.add_item( bub, std::move( new_item ) );
-                                ++n_added;
-                            }
-                        }
-
-                        // RC-A duplication diagnostic (issue #17/#18): one tile
-                        // ballooned to 9035 items because this UID dedup wasn't
-                        // catching re-sends.  incoming_present = how many of the
-                        // client's reported UIDs actually survive onto the host
-                        // stack after add.  If incoming_present stays ~0 while
-                        // stack_after keeps climbing on repeated applies of the
-                        // SAME tile, item_uid is being regenerated by a copy in the
-                        // pipeline (add_item / client send-side) so the dedup key
-                        // dies → re-add every cycle.  Gated to changed/large tiles
-                        // so static re-applies don't flood the log.
-                        if( n_added > 0 || n_removed > 0 || m.i_at( bub ).size() > 30 ) {
-                            int incoming_present = 0;
-                            for( const item &it : m.i_at( bub ) ) {
-                                if( incoming_uids.count( it.uid().get_value() ) ) {
-                                    ++incoming_present;
-                                }
-                            }
-                            mp_log( "[cdda-mp] ITEMDUP @ " +
-                                    std::to_string( abs.x() ) + "," +
-                                    std::to_string( abs.y() ) + "," +
-                                    std::to_string( abs.z() ) +
-                                    " incoming=" + std::to_string( incoming_items.size() ) +
-                                    " stack_before=" + std::to_string( stack_before ) +
-                                    " removed=" + std::to_string( n_removed ) +
-                                    " added=" + std::to_string( n_added ) +
-                                    " stack_after=" + std::to_string( m.i_at( bub ).size() ) +
-                                    " incoming_present=" + std::to_string( incoming_present ) );
-                        }
-
-                        known_uids = std::move( incoming_uids );
                         touched = true;
                     }
                     if( to.has_array( "fields" ) ) {
@@ -6165,70 +6082,10 @@ bool partner_in_interactive_activity()
     return !g_partner_activity.empty() && !is_passive_activity( g_partner_activity );
 }
 
-// ---- Co-op "hold the target while first aid is applied" ---------------------
-// "Use item on" → heal starts ACT_FIRSTAID on the partner.  The target is a live
-// player, so nothing normally stops them walking off mid-bandage (desync).  Since
-// first aid is short (a few turns, fast-forwarded), we simply HOLD the target in
-// place — block movement only — until treatment ends.  Bidirectional: works
-// whether the host or the client is the treater.
-//
-// Treater side: g_treating_partner is armed in game::npc_menu when a heal is
-// invoked on the partner proxy; it's only meaningful while we're actually in
-// ACT_FIRSTAID (mp_treating_partner_now self-disarms once the activity ends, so
-// the target is released automatically on completion/cancel).
-static bool g_treating_partner = false;
-// Target side: set from the wire (host_treating_partner / client_treating_partner).
-static bool g_being_treated = false;
-
-void mp_set_treating_partner( bool on )
-{
-    if( on != g_treating_partner ) {
-        mp_log( "[cdda-mp] TREAT: treating_partner " + std::to_string( g_treating_partner ) +
-                " -> " + std::to_string( on ) );
-    }
-    g_treating_partner = on;
-}
-
-bool mp_treating_partner_now()
-{
-    const player_activity &a = get_avatar().activity;
-    if( !g_treating_partner || !a || a.id().str() != "ACT_FIRSTAID" ) {
-        if( g_treating_partner ) {
-            mp_log( "[cdda-mp] TREAT: treating_partner auto-cleared (activity=" +
-                    ( a ? a.id().str() : std::string( "none" ) ) + ")" );
-        }
-        g_treating_partner = false;
-        return false;
-    }
-    return true;
-}
-
-void mp_set_being_treated( bool on )
-{
-    if( on != g_being_treated ) {
-        mp_log( "[cdda-mp] TREAT: being_treated " + std::to_string( g_being_treated ) +
-                " -> " + std::to_string( on ) );
-    }
-    g_being_treated = on;
-}
-
-bool mp_hold_move_while_treated()
-{
-    if( !g_being_treated ) {
-        return false;
-    }
-    // Nudge (throttled) so holding a movement key doesn't spam the log/messages.
-    static auto last = std::chrono::steady_clock::now() - std::chrono::seconds( 5 );
-    const auto now = std::chrono::steady_clock::now();
-    if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last ).count() > 800 ) {
-        const std::string who = is_client_mode() ? mp_client_host_player_name()
-                                : g_partner_name_cached;
-        add_msg( m_info, _( "You hold still while %s treats you." ),
-                 who.empty() ? _( "your partner" ) : who );
-        last = now;
-    }
-    return true;
-}
+// (The "hold the target during first aid" feature was removed 2026-07-19 — it was
+// scope creep found during testing that spawned an arming bug + churn.  First aid
+// stays passive + excluded from fast-forward so it completes cleanly in normal
+// lockstep; the target simply isn't held.  See ROADMAP for the design if revived.)
 
 bool is_partner_in_wait_activity()
 {
@@ -8440,10 +8297,6 @@ static bool apply_one_state_message( const std::string &msg )
             g_partner_activity = jo.get_string( "host_activity" );
             mp_partner_activity_transition_check();
         }
-        // Host is applying first aid to us (the client) → hold the client in place.
-        if( jo.has_bool( "host_treating_partner" ) ) {
-            mp_set_being_treated( jo.get_bool( "host_treating_partner", false ) );
-        }
         if( jo.has_int( "host_activity_pct" ) ) {
             const int new_pct = jo.get_int( "host_activity_pct" );
             // ASSIST-DISPLAY diag: when does the client actually receive a fresh
@@ -9816,9 +9669,6 @@ std::string client_enrich_action( const std::string &json )
         }
         const std::string client_act_id = g_client_turn_activity;
         enriched += ",\"client_activity\":\"" + client_act_id + "\"";
-        // Are we (the client) applying first aid to the host? Holds the host still.
-        enriched += ",\"client_treating_partner\":" +
-                    std::string( mp_treating_partner_now() ? "true" : "false" );
         // Progress percentage of the live activity, for the host's Co-op panel.
         // mp_compute_activity_pct handles crafting (item_counter-based) as
         // well as standard moves_total-based activities.
@@ -10667,14 +10517,13 @@ static void apply_tile_changes( JsonObject &jo )
         }
 
         if( to.has_array( "items" ) ) {
-            // UID diff instead of i_clear()+rebuild (2026-07-11, mirrors the
-            // host-side fix for the same bug — see g_client_tile_items_known_uids
-            // near that fix): erasing every item on the tile destroys the
-            // original objects, so any client-held item_location pointing here
-            // (e.g. a pickup_selector UI open on this tile) goes dangling even
-            // when "the same item" logically survives.
-            std::vector<item> incoming_items;
-            std::set<int64_t> incoming_uids;
+            // Ground-item apply = i_clear()+rebuild (REPLACE): mirror of the
+            // host-side path.  The 2026-07-11 UID-diff (c8cd48032e) broke this —
+            // item_uid regenerates on add_item's copy so the dedup never matched
+            // and only ever ADDED, ballooning tiles to thousands of items and
+            // stalling the client (issue #17/#18).  Replace can't accumulate.
+            m.i_clear( bub );
+            std::string applied;
             for( const JsonValue &iv : to.get_array( "items" ) ) {
                 try {
                     item new_item;
@@ -10682,54 +10531,11 @@ static void apply_tile_changes( JsonObject &jo )
                     io.allow_omitted_members();
                     new_item.deserialize( io );
                     if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
-                        incoming_uids.insert( new_item.uid().get_value() );
-                        incoming_items.push_back( std::move( new_item ) );
+                        applied += new_item.typeId().str() + ' ';
+                        m.add_item( bub, std::move( new_item ) );
                     }
                 } catch( const JsonError & ) {}
             }
-
-            std::set<int64_t> &known_uids = g_host_tile_items_known_uids[abs];
-
-            // Remove only items the host previously reported for this tile and
-            // has now stopped reporting (a genuine removal on the host's side).
-            {
-                map_stack stack = m.i_at( bub );
-                std::vector<int64_t> to_remove;
-                for( const item &it : stack ) {
-                    const int64_t uid = it.uid().get_value();
-                    if( known_uids.count( uid ) && !incoming_uids.count( uid ) ) {
-                        to_remove.push_back( uid );
-                    }
-                }
-                for( int64_t uid : to_remove ) {
-                    for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
-                        if( iter->uid().get_value() == uid ) {
-                            stack.erase( iter );
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Add only items whose UID isn't already present — an item the
-            // client already has (possibly with live references into it) is
-            // left completely alone rather than replaced.
-            std::string applied;
-            {
-                std::set<int64_t> existing_uids;
-                for( const item &it : m.i_at( bub ) ) {
-                    existing_uids.insert( it.uid().get_value() );
-                }
-                for( item &new_item : incoming_items ) {
-                    if( existing_uids.count( new_item.uid().get_value() ) ) {
-                        continue;
-                    }
-                    applied += new_item.typeId().str() + ' ';
-                    m.add_item( bub, std::move( new_item ) );
-                }
-            }
-
-            known_uids = std::move( incoming_uids );
             if( !applied.empty() ) {
                 mp_log( "[cdda-mp] apply_tile_changes: set items @ " +
                         std::to_string( abs.x() ) + "," +
@@ -12825,8 +12631,6 @@ std::string serialize_remote_player_state()
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
-           "\"host_treating_partner\":" +
-           std::string( mp_treating_partner_now() ? "true" : "false" ) + ","
            "\"host_activity_pct\":" + std::to_string(
                mp_compute_activity_pct( host.activity ) ) + ","
            "\"host_activity_moves_total\":" + std::to_string(

@@ -117,15 +117,6 @@ bool client_acted_this_turn();
 // responsive while the host aims).
 bool partner_in_interactive_activity();
 
-// Co-op "hold the target while first aid is applied".  mp_set_treating_partner is
-// armed by game::npc_menu when a heal is used on the partner proxy; the wire then
-// carries it so mp_hold_move_while_treated() blocks the target player's movement
-// (only) for the short treatment.  See mp_gamestate.cpp for the full note.
-void mp_set_treating_partner( bool on );
-bool mp_treating_partner_now();
-void mp_set_being_treated( bool on );
-bool mp_hold_move_while_treated();
-
 // Drain the server recv queue and apply each state message to the local avatar.
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();

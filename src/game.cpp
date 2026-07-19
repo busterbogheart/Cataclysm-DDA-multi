@@ -5572,16 +5572,6 @@ bool game::npc_menu( npc &who )
                 // Note: exiting a body part selection menu counts as use here
                 u.mod_moves( -300 );
             }
-            // MP: if the heal started a first-aid activity on the co-op partner,
-            // hold them still for the (short) treatment.  Gate on the resulting
-            // activity, NOT did_use — an activity-based heal defers charge
-            // consumption to finish, so invoke_item returns false here even
-            // though ACT_FIRSTAID was assigned (the arm was silently skipped,
-            // 2026-07-19).  Auto-disarms once we leave ACT_FIRSTAID.
-            if( cata_mp::is_partner_npc( who.getID() ) && u.activity &&
-                u.activity.id().str() == "ACT_FIRSTAID" ) {
-                cata_mp::mp_set_treating_partner( true );
-            }
         }
     } else if( choice == sort_armor ) {
         if( who.is_hallucination() ) {
