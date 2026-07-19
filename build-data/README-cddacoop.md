@@ -9,7 +9,6 @@
        Playing co-op / Host / Join ....... [zip]
        Connecting ........................ [zip][git]
        Where things live ................. [zip]
-       Upgrading (keeping saves) ......... [zip]
        Sound ............................. [zip]
        What works ........................ [zip][git][site]
        Known limits ...................... [zip][git][site]
@@ -144,20 +143,6 @@ Safe to delete the whole folder for a clean slate.
 
 ---
 
-## Keeping your save files with new releases
-
-Your saves carry over, the save format is the same across every co-op release, so there's nothing 
-to convert. 
-
-Instructions by platform:
-
-- **Windows:** The build is portable, so each download is a new folder. Just copy
-  your old `save\` (and `config\` if you want your settings) into the new folder next to the new `.exe`.
-- **macOS:** Nothing actually. Saves live in `~/Library/Application Support/Cddacoop/`,
-  outside the app, so a new `.app` finds them automatically; just replace the app.
-- **Linux:** Same as Windows — copy `save/` (and `config/`) folders into the new `Cddacoop/` folder next to the binary.
-
----
 
 ## Sound
 
@@ -256,6 +241,17 @@ you join.
 Quicksave: the most reliable option, both players get an on-screen confirmation once the host's copy is up to date, so you know it worked.
 Save & quit: also saves everything on both sides, just without the round-trip confirmation. 
 If you're the one joining save & quit periodically so your character carries over.  Ideally you quicksave together right before you stop for the day, so both saves are fresh and in sync.
+
+### What about keeping save files with new releases?
+
+Your saves carry over, the save format is the same across every co-op release, so there's nothing 
+to convert:
+
+- **Windows:** The build is portable, so each download is a new folder. Just copy
+  your old `save\` (and `config\` if you want your settings) into the new folder next to the new `.exe`.
+- **macOS:** Nothing actually. Saves live in `~/Library/Application Support/Cddacoop/`,
+  outside the app, so a new `.app` finds them automatically; just replace the app.
+- **Linux:** Same as Windows — copy `save/` (and `config/`) folders into the new `Cddacoop/` folder next to the binary.
 
 ### Is it free?
 

@@ -167,15 +167,15 @@ The co-op logs are the important ones:
 - **Host player:** `cdda-mp-server.log`
 - **Joining player:** `cdda-mp-client.log`
 - Locations (all in your home folder):
-  - **macOS/Linux:** `~/cdda-mp-server.log` or `~/cdda-mp-client.log` (your home
-    directory — e.g. `/home/<you>/` on Linux, `/Users/<you>/` on macOS)
   - **Windows:** in your user folder — `C:\Users\<you>\cdda-mp-server.log` or
     `cdda-mp-client.log` (paste `%USERPROFILE%` into Explorer's address bar)
+  - **macOS/Linux:** `~/cdda-mp-server.log` or `~/cdda-mp-client.log` (your home
+    directory — e.g. `/home/<you>/` on Linux, `/Users/<you>/` on macOS)
 
 The standard CDDA logs help too especially for crashes:
 
-- **macOS:** `~/Library/Application Support/Cddacoop/cata.log` and `debug.log`
 - **Windows:** `cata.log` and `debug.log` next to the exe
+- **macOS:** `~/Library/Application Support/Cddacoop/cata.log` and `debug.log`
 - **Linux:** `cata.log` and `debug.log` inside the `Cddacoop/` folder
 
 When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plus
@@ -276,6 +276,17 @@ you join.
 Quicksave: the most reliable option, both players get an on-screen confirmation once the host's copy is up to date, so you know it worked.
 Save & quit: also saves everything on both sides, just without the round-trip confirmation. 
 If you're the one joining save & quit periodically so your character carries over.  Ideally you quicksave together right before you stop for the day, so both saves are fresh and in sync.
+
+### What about keeping save files with new releases?
+
+Your saves carry over, the save format is the same across every co-op release, so there's nothing 
+to convert:
+
+- **Windows:** The build is portable, so each download is a new folder. Just copy
+  your old `save\` (and `config\` if you want your settings) into the new folder next to the new `.exe`.
+- **macOS:** Nothing actually. Saves live in `~/Library/Application Support/Cddacoop/`,
+  outside the app, so a new `.app` finds them automatically; just replace the app.
+- **Linux:** Same as Windows — copy `save/` (and `config/`) folders into the new `Cddacoop/` folder next to the binary.
 
 ### Is it free?
 
