@@ -8234,6 +8234,16 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_int( "calendar_turn" ) ) {
             calendar::turn = time_point( jo.get_int( "calendar_turn" ) );
         }
+        // Adopt the host's game-start anchors so survival/date-since-start math
+        // measures from the host's world, not the client's scratch world (the
+        // "survived 218 days" achievement bug, 2026-07-19).  Applied every state
+        // so it self-heals and can't be clobbered by start_game's own init.
+        if( jo.has_int( "start_of_game" ) ) {
+            calendar::start_of_game = time_point( jo.get_int( "start_of_game" ) );
+        }
+        if( jo.has_int( "start_of_cata" ) ) {
+            calendar::start_of_cataclysm = time_point( jo.get_int( "start_of_cata" ) );
+        }
 
         if( jo.get_bool( "client_rejoin", false ) ) {
             // Host recognized this as a genuine rejoin (manual quit + rejoin via
@@ -12609,6 +12619,12 @@ std::string serialize_remote_player_state()
     return "{\"type\":\"state\","
            "\"client_rejoin\":" + std::string( client_rejoin ? "true" : "false" ) + ","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
+           // Host's game-start anchors so the client's "survived N days" (and any
+           // date-since-start math) measure from the HOST's world start, not the
+           // client's throwaway scratch world — otherwise survival is inflated by
+           // the gap between the two start dates (2026-07-19: 218 days vs ~1h).
+           "\"start_of_game\":" + std::to_string( to_turn<int>( calendar::start_of_game ) ) + ","
+           "\"start_of_cata\":" + std::to_string( to_turn<int>( calendar::start_of_cataclysm ) ) + ","
            "\"host_name\":\"" + host.name + "\","
            "\"pos\":{\"x\":" + std::to_string( pos.x() ) +
            ",\"y\":" + std::to_string( pos.y() ) +
