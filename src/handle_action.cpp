@@ -2609,6 +2609,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         if( it != action_to_dir.end() ) {
             const std::string &dir = it->second;
 
+            // MP: held in place while the partner applies first aid (short). Refuse
+            // the move without consuming AP so other in-place actions (reload,
+            // inventory, …) still work this turn.
+            if( cata_mp::mp_hold_move_while_treated() ) {
+                return true;
+            }
+
             // Pre-check: if the target tile is impassable, has no creature to attack,
             // and can't be opened as a door, it's a solid wall — free action, no AP.
             static const std::map<std::string, tripoint> dir_to_offset = {
@@ -3366,6 +3373,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
         case ACTION_MOVE_BACK_LEFT:
         case ACTION_MOVE_LEFT:
         case ACTION_MOVE_FORTH_LEFT:
+            // MP: held in place while the partner applies first aid (short).
+            if( cata_mp::mp_hold_move_while_treated() ) {
+                break;
+            }
             if( player_character.maybe_get_value( "remote_controlling" ) &&
                 ( player_character.has_active_item( itype_radiocontrol ) ||
                   player_character.has_active_bionic( bio_remote ) ) ) {

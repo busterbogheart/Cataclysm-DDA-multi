@@ -5571,6 +5571,11 @@ bool game::npc_menu( npc &who )
             if( did_use ) {
                 // Note: exiting a body part selection menu counts as use here
                 u.mod_moves( -300 );
+                // MP: first aid on the co-op partner — hold them still for the
+                // (short) treatment.  Armed only while we stay in ACT_FIRSTAID.
+                if( cata_mp::is_partner_npc( who.getID() ) ) {
+                    cata_mp::mp_set_treating_partner( true );
+                }
             }
         }
     } else if( choice == sort_armor ) {

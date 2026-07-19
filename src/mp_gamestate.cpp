@@ -3171,6 +3171,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
     }
+    // Client is applying first aid to us (the host) → hold the host in place.
+    if( jo.has_bool( "client_treating_partner" ) ) {
+        mp_set_being_treated( jo.get_bool( "client_treating_partner", false ) );
+    }
     if( jo.has_int( "client_activity_pct" ) ) {
         g_partner_activity_pct = jo.get_int( "client_activity_pct" );
     }
@@ -6113,6 +6117,59 @@ bool partner_in_interactive_activity()
     return !g_partner_activity.empty() && !is_passive_activity( g_partner_activity );
 }
 
+// ---- Co-op "hold the target while first aid is applied" ---------------------
+// "Use item on" → heal starts ACT_FIRSTAID on the partner.  The target is a live
+// player, so nothing normally stops them walking off mid-bandage (desync).  Since
+// first aid is short (a few turns, fast-forwarded), we simply HOLD the target in
+// place — block movement only — until treatment ends.  Bidirectional: works
+// whether the host or the client is the treater.
+//
+// Treater side: g_treating_partner is armed in game::npc_menu when a heal is
+// invoked on the partner proxy; it's only meaningful while we're actually in
+// ACT_FIRSTAID (mp_treating_partner_now self-disarms once the activity ends, so
+// the target is released automatically on completion/cancel).
+static bool g_treating_partner = false;
+// Target side: set from the wire (host_treating_partner / client_treating_partner).
+static bool g_being_treated = false;
+
+void mp_set_treating_partner( bool on )
+{
+    g_treating_partner = on;
+}
+
+bool mp_treating_partner_now()
+{
+    const player_activity &a = get_avatar().activity;
+    if( !g_treating_partner || !a || a.id().str() != "ACT_FIRSTAID" ) {
+        g_treating_partner = false;
+        return false;
+    }
+    return true;
+}
+
+void mp_set_being_treated( bool on )
+{
+    g_being_treated = on;
+}
+
+bool mp_hold_move_while_treated()
+{
+    if( !g_being_treated ) {
+        return false;
+    }
+    // Nudge (throttled) so holding a movement key doesn't spam the log/messages.
+    static auto last = std::chrono::steady_clock::now() - std::chrono::seconds( 5 );
+    const auto now = std::chrono::steady_clock::now();
+    if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last ).count() > 800 ) {
+        const std::string who = is_client_mode() ? mp_client_host_player_name()
+                                : g_partner_name_cached;
+        add_msg( m_info, _( "You hold still while %s treats you." ),
+                 who.empty() ? _( "your partner" ) : who );
+        last = now;
+    }
+    return true;
+}
+
 bool is_partner_in_wait_activity()
 {
     // g_partner_activity is the activity id string last broadcast from the
@@ -8323,6 +8380,10 @@ static bool apply_one_state_message( const std::string &msg )
             g_partner_activity = jo.get_string( "host_activity" );
             mp_partner_activity_transition_check();
         }
+        // Host is applying first aid to us (the client) → hold the client in place.
+        if( jo.has_bool( "host_treating_partner" ) ) {
+            mp_set_being_treated( jo.get_bool( "host_treating_partner", false ) );
+        }
         if( jo.has_int( "host_activity_pct" ) ) {
             const int new_pct = jo.get_int( "host_activity_pct" );
             // ASSIST-DISPLAY diag: when does the client actually receive a fresh
@@ -9695,6 +9756,9 @@ std::string client_enrich_action( const std::string &json )
         }
         const std::string client_act_id = g_client_turn_activity;
         enriched += ",\"client_activity\":\"" + client_act_id + "\"";
+        // Are we (the client) applying first aid to the host? Holds the host still.
+        enriched += ",\"client_treating_partner\":" +
+                    std::string( mp_treating_partner_now() ? "true" : "false" );
         // Progress percentage of the live activity, for the host's Co-op panel.
         // mp_compute_activity_pct handles crafting (item_counter-based) as
         // well as standard moves_total-based activities.
@@ -12701,6 +12765,8 @@ std::string serialize_remote_player_state()
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
+           "\"host_treating_partner\":" +
+           std::string( mp_treating_partner_now() ? "true" : "false" ) + ","
            "\"host_activity_pct\":" + std::to_string(
                mp_compute_activity_pct( host.activity ) ) + ","
            "\"host_activity_moves_total\":" + std::to_string(
