@@ -11,6 +11,7 @@
 class npc;
 class Character;
 class Creature;
+class player_activity;
 struct WORLD;
 
 namespace cata_mp {
@@ -145,6 +146,14 @@ extern std::string g_mp_build_stamp;
 // they'd get on the avatar's path.
 // (class npc is already forward-declared at global scope above.)
 void mp_tick_proxy_activity( ::npc &guy );
+
+// Co-op first aid: called each turn from firstaid_activity_actor::do_turn. If the
+// patient is the co-op PARTNER proxy and it has walked out of melee reach (or is
+// gone), cancel the activity with a message. No-op in SP, for self-heals, and for
+// real companion NPCs (SP has no per-turn range check — its do_turn is empty —
+// because NPC patients hold still; a real player can walk off). 2026-07-19.
+void mp_firstaid_cancel_if_partner_out_of_range( ::player_activity &act, ::Character &who,
+        character_id patient );
 
 // Client-only: invoke from the wrapper around the SP grab() handler in
 // handle_action.cpp's ACTION_GRAB case.  Snapshot the avatar's grab state

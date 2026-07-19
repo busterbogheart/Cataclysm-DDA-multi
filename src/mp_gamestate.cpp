@@ -6087,6 +6087,28 @@ bool partner_in_interactive_activity()
 // stays passive + excluded from fast-forward so it completes cleanly in normal
 // lockstep; the target simply isn't held.  See ROADMAP for the design if revived.)
 
+// Instead of holding the patient, we cancel the heal if they walk off (SP first
+// aid has no range check — its do_turn is empty — because NPC patients hold still).
+void mp_firstaid_cancel_if_partner_out_of_range( player_activity &act, Character &who,
+        character_id patient )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;  // SP: no-op
+    }
+    // Only the co-op partner proxy.  Self-heals (patient == self) and any real
+    // companion NPC keep SP behavior (no range cancel).
+    if( !is_partner_npc( patient ) ) {
+        return;
+    }
+    npc *p = g->critter_by_id<npc>( patient );
+    if( p && rl_dist( who.pos_abs(), p->pos_abs() ) <= 1 ) {
+        return;  // still within melee reach — keep treating
+    }
+    add_msg( m_warning, _( "You can no longer reach %s and stop treating them." ),
+             p ? p->get_name() : _( "your patient" ) );
+    act.set_to_null();
+}
+
 bool is_partner_in_wait_activity()
 {
     // g_partner_activity is the activity id string last broadcast from the

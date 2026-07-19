@@ -10384,6 +10384,14 @@ void firstaid_activity_actor::start( player_activity &act, Character & )
     act.name = name;
 }
 
+void firstaid_activity_actor::do_turn( player_activity &act, Character &who )
+{
+    // SP: no-op (patient is a still NPC).  Co-op: cancel if the partner proxy
+    // walks out of reach — see the MP callout.  Passes patientID directly so
+    // the actor needn't expose it.
+    cata_mp::mp_firstaid_cancel_if_partner_out_of_range( act, who, patientID );
+}
+
 void firstaid_activity_actor::finish( player_activity &act, Character &who )
 {
     map &here = get_map();
