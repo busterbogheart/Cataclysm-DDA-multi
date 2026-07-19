@@ -6034,6 +6034,24 @@ bool is_passive_activity( const std::string &activity_id_str )
     return passive.count( activity_id_str ) > 0;
 }
 
+// Fast-forward is for genuinely LONG actions (sleep, crafting) where bursting
+// turns saves the other player minutes of waiting.  Some passive activities are
+// too SHORT to benefit — and FF-ing them is actively harmful: first aid is only
+// a few turns, and bursting ~300 grants for it built a move backlog the client
+// couldn't resync when the activity abruptly ended → permanent lockstep deadlock
+// (2026-07-19).  These stay passive (normal one-grant-per-turn lockstep) but are
+// excluded from FF.  Keeping the exclusion separate from is_passive_activity so
+// the grant handler / LOCKED-DISPATCH / partner-interactive logic still treat
+// them as the passive activities they are.
+static bool is_fast_forwardable_activity( const std::string &id )
+{
+    if( !is_passive_activity( id ) ) {
+        return false;
+    }
+    static const std::set<std::string> no_ff = { "ACT_FIRSTAID" };
+    return no_ff.count( id ) == 0;
+}
+
 bool should_fast_forward()
 {
     // Need to be in an MP session.  SP never fast-forwards — SP runs activities
@@ -6041,15 +6059,15 @@ bool should_fast_forward()
     if( !is_hosting() && !is_client_mode() ) {
         return false;
     }
-    // Local avatar must be in a passive activity.
+    // Local avatar must be in a fast-forwardable (long, passive) activity.
     const player_activity &av_act = get_avatar().activity;
-    if( !av_act || !is_passive_activity( av_act.id().str() ) ) {
+    if( !av_act || !is_fast_forwardable_activity( av_act.id().str() ) ) {
         return false;
     }
-    // Partner's reported activity must also be passive.  g_partner_activity is
-    // set by the heartbeat / per-action enrich on the other side — empty when
+    // Partner's reported activity must also be fast-forwardable.  g_partner_activity
+    // is set by the heartbeat / per-action enrich on the other side — empty when
     // partner is idle (input loop) which means strict lockstep applies.
-    if( g_partner_activity.empty() || !is_passive_activity( g_partner_activity ) ) {
+    if( g_partner_activity.empty() || !is_fast_forwardable_activity( g_partner_activity ) ) {
         return false;
     }
     // No explicit combat-mode gate here: SP's activity_actor::do_turn already
@@ -6164,6 +6182,10 @@ static bool g_being_treated = false;
 
 void mp_set_treating_partner( bool on )
 {
+    if( on != g_treating_partner ) {
+        mp_log( "[cdda-mp] TREAT: treating_partner " + std::to_string( g_treating_partner ) +
+                " -> " + std::to_string( on ) );
+    }
     g_treating_partner = on;
 }
 
@@ -6171,6 +6193,10 @@ bool mp_treating_partner_now()
 {
     const player_activity &a = get_avatar().activity;
     if( !g_treating_partner || !a || a.id().str() != "ACT_FIRSTAID" ) {
+        if( g_treating_partner ) {
+            mp_log( "[cdda-mp] TREAT: treating_partner auto-cleared (activity=" +
+                    ( a ? a.id().str() : std::string( "none" ) ) + ")" );
+        }
         g_treating_partner = false;
         return false;
     }
@@ -6179,6 +6205,10 @@ bool mp_treating_partner_now()
 
 void mp_set_being_treated( bool on )
 {
+    if( on != g_being_treated ) {
+        mp_log( "[cdda-mp] TREAT: being_treated " + std::to_string( g_being_treated ) +
+                " -> " + std::to_string( on ) );
+    }
     g_being_treated = on;
 }
 
