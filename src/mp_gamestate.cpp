@@ -5844,8 +5844,9 @@ void wait_for_client_action()
         // so it can't pace normal moves / flicker the turn signal. The in-activity
         // case is now polled non-blocking every iteration above (before the
         // drain-break), so it's not repeated here.
-        // Partner in an interactive activity (ACT_AIM/FIRSTAID/AUTOATTACK/
-        // AUTODRIVE) runs its UI locally and won't send a wait until it resolves.
+        // Partner in an interactive activity (ACT_AIM/AUTOATTACK/AUTODRIVE) runs
+        // its UI locally and won't send a wait until it resolves. (First aid is
+        // passive — see is_passive_activity — so it cycles lockstep normally.)
         // mp_poll_input() blocks until a host keypress OR client_acted_this_turn()
         // — neither happens while the partner aims, so it would sit here for the
         // ENTIRE aim (the 10s+ "input=" SRV-WAIT phases / host beachball). Skip the
@@ -5971,11 +5972,17 @@ bool is_passive_activity( const std::string &activity_id_str )
     // Activities where the avatar is committed turn-after-turn without
     // per-turn user input.  Once entered, SP's activity_actor::do_turn ticks
     // the activity on every game turn at machine speed.  Excludes:
-    //  - ACT_FIRSTAID, ACT_AIM, ACT_AUTOATTACK, ACT_AUTODRIVE — interactive
+    //  - ACT_AIM, ACT_AUTOATTACK, ACT_AUTODRIVE — interactive: their do_turn
+    //    opens a blocking local UI (target_ui via mode_fire, etc.) every turn.
     //  - ACT_NULL / empty — not in an activity
+    // ACT_FIRSTAID IS passive: its target/limb are chosen up front in iuse
+    // heal(), firstaid_activity_actor has no do_turn and no UI (heal applies in
+    // finish()), so it's a pure timer.  Classifying it interactive stranded the
+    // client at moves=0 forever (host skipped granting, client never ticked —
+    // the "using first aid stuck at 0%" deadlock, 2026-07-19).
     static const std::set<std::string> passive = {
         "ACT_CRAFT", "ACT_LONG_CRAFT", "ACT_DISASSEMBLE", "ACT_DISMEMBER",
-        "ACT_READ",
+        "ACT_READ", "ACT_FIRSTAID",
         "ACT_EAT", "ACT_DRINK", "ACT_CONSUME", "ACT_CONSUME_DRINK_MENU",
         "ACT_CONSUME_FOOD_MENU", "ACT_CONSUME_MEDS_MENU",
         "ACT_BUTCHER", "ACT_BUTCHER_FULL", "ACT_FIELD_DRESS",
@@ -8836,7 +8843,7 @@ static bool apply_one_state_message( const std::string &msg )
                 // the CLI-SKIP branch, providing proper backpressure so the
                 // host advances at the client's pace.
                 if( ca && !is_passive_activity( ca.id().str() ) ) {
-                    // Interactive activity (ACT_AIM, ACT_FIRSTAID, ACT_AUTOATTACK,
+                    // Interactive activity (ACT_AIM, ACT_AUTOATTACK,
                     // ACT_AUTODRIVE): its do_turn opens a BLOCKING UI (e.g. aiming's
                     // target_ui via mode_fire).  Ticking it here — inside
                     // client_process_incoming, during network-message processing —
