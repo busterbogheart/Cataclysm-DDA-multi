@@ -1268,8 +1268,10 @@ bool main_menu::opening_screen()
                             // char-creation flow's pick_world doesn't force the user
                             // into worldgen when they have no local worlds.  The
                             // avatar gets teleported to the host's world after spawn.
+                            // mp_ensure_client_scratch_world() shows its own
+                            // specific popup on failure (missing host mod, or a
+                            // worldgen error), so don't add a generic one here.
                             if( !cata_mp::mp_ensure_client_scratch_world() ) {
-                                popup( _( "Couldn't prepare a client scratch world." ) );
                                 break;
                             }
                             sel2 = ct;

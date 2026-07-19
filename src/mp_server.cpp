@@ -40,6 +40,7 @@ unsigned int mp_host_world_seed();
 std::string mp_get_host_world_name();
 std::string mp_get_host_player_name();
 std::string mp_host_omt_welcome_field();
+std::string mp_host_active_mods_field();
 
 // Escape a string for embedding in a JSON double-quoted value (host names can
 // contain quotes/backslashes). Minimal — covers the chars that break parsing.
@@ -444,7 +445,8 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                        ",\"host_name\":\"" + mp_json_escape( mp_get_host_player_name() ) + "\""
                        ",\"current_turn\":0,\"seed\":" +
                        std::to_string( mp_host_world_seed() ) +
-                       mp_host_omt_welcome_field() + "}\n" );
+                       mp_host_omt_welcome_field() +
+                       mp_host_active_mods_field() + "}\n" );
         return;
     }
 
@@ -500,7 +502,8 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                        "\",\"host_name\":\"" + mp_json_escape( mp_get_host_player_name() ) +
                        "\",\"current_turn\":0,\"seed\":" +
                        std::to_string( mp_host_world_seed() ) +
-                       mp_host_omt_welcome_field() + "}\n" );
+                       mp_host_omt_welcome_field() +
+                       mp_host_active_mods_field() + "}\n" );
         mp_log( "[cdda-mp] SEED: welcome sent host seed " +
                 std::to_string( mp_host_world_seed() ) + " to '" + name + "'" );
 

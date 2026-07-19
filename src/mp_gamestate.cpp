@@ -1683,6 +1683,16 @@ static std::atomic<unsigned int> g_host_world_seed{ 0 };
 static std::string g_host_world_name;
 static std::mutex g_host_world_name_mtx;
 
+// Host: the world's active mod list (ordered), captured on the game thread for
+// the network thread's welcome. The client rebuilds its local co-op world with
+// this exact set + order: mods are data definitions (recipes, professions,
+// terrain types) that can't be streamed — only loaded. Without a match the
+// client silently diverges (vanilla character, missing recipes, void terrain
+// outside the streamed bubble — issue #18). Mutex-protected (set on the game
+// thread, read on the server io thread).
+static std::vector<std::string> g_host_active_mods;
+static std::mutex g_host_active_mods_mtx;
+
 // Client: world name received from host in 'welcome'.  Empty until the first
 // welcome is processed.  Exposed via mp_client_host_world_name().
 static std::string g_client_host_world_name;
@@ -1692,6 +1702,12 @@ static std::string g_client_host_world_name;
 // generated so the client's terrain matches the host's. 0 = not yet received.
 static unsigned int g_client_host_seed = 0;
 static bool g_client_host_seed_applied = false;
+
+// Client: the host's active mod list (ordered) received in 'welcome'. The client
+// builds its co-op scratch world with this exact set so its recipes, professions
+// and terrain definitions match the host's. Empty until a welcome is parsed (or
+// the host is an older build that advertises no mods).
+static std::vector<std::string> g_client_host_mods;
 
 // Client: the raw join 'welcome' stashed at connect time so start_game() can
 // adopt the host seed + spawn-omt BEFORE worldgen. The welcome's own arrival on
@@ -1754,6 +1770,49 @@ std::string mp_host_omt_welcome_field()
 unsigned int mp_host_world_seed()
 {
     return g_host_world_seed.load();
+}
+
+// Host: capture the active world's mod list (game thread) for the welcome. Order
+// is preserved — CDDA load order is significant. Called each host turn alongside
+// the world-name capture so it tracks a host that switches worlds mid-process.
+// Static: only grant_client_turn() (same TU) sets it, so it needn't touch the
+// mod_id type in the shared header.
+static void mp_set_host_active_mods( const std::vector<mod_id> &mods )
+{
+    std::lock_guard<std::mutex> lk( g_host_active_mods_mtx );
+    g_host_active_mods.clear();
+    g_host_active_mods.reserve( mods.size() );
+    for( const mod_id &m : mods ) {
+        g_host_active_mods.push_back( m.str() );
+    }
+}
+
+// Network-thread safe: returns ",\"mods\":[\"dda\",\"innawood\",...]" (ordered)
+// for the welcome, or "" if nothing captured yet. Mod ids are [a-z0-9_] by
+// convention, so no JSON escaping is needed.
+std::string mp_host_active_mods_field()
+{
+    std::lock_guard<std::mutex> lk( g_host_active_mods_mtx );
+    if( g_host_active_mods.empty() ) {
+        return std::string();
+    }
+    std::string out = ",\"mods\":[";
+    for( size_t i = 0; i < g_host_active_mods.size(); ++i ) {
+        if( i ) {
+            out += ",";
+        }
+        out += "\"" + g_host_active_mods[i] + "\"";
+    }
+    out += "]";
+    return out;
+}
+
+// Client: the host's active mod list received in 'welcome' (ordered). Empty on an
+// older host that advertises none. Static: only consumed by
+// mp_ensure_client_scratch_world() (same TU).
+static std::vector<std::string> mp_client_host_mods()
+{
+    return g_client_host_mods;
 }
 
 void mp_set_host_world_name( const std::string &name )
@@ -1854,6 +1913,18 @@ static void parse_welcome_fields( const std::string &msg, bool apply_seed_now )
                                               ho.get_int( 0 ), ho.get_int( 1 ), ho.get_int( 2 ) );
                 mp_log( "[cdda-mp] welcome: host_omt=" + g_client_host_spawn_omt.to_string() );
             }
+        }
+        // The host's active mod list — the client rebuilds its co-op world with
+        // this exact set + order so recipes/professions/terrain match (issue #18).
+        std::vector<std::string> mods;
+        if( jo.read( "mods", mods ) ) {
+            g_client_host_mods = mods;
+            std::string joined;
+            for( const std::string &m : mods ) {
+                joined += ( joined.empty() ? "" : "," ) + m;
+            }
+            mp_log( "[cdda-mp] welcome: host mods=[" + joined + "] (" +
+                    std::to_string( mods.size() ) + ")" );
         }
     } catch( const JsonError & ) {}
     const auto spos = msg.find( "\"seed\":" );
@@ -5447,6 +5518,9 @@ void grant_client_turn()
     mp_capture_host_omt( get_avatar().pos_abs_omt() );
     if( world_generator && world_generator->active_world ) {
         mp_set_host_world_name( world_generator->active_world->world_name );
+        // Advertise the host's mod set so a joining client loads identical data
+        // (recipes/professions/terrain can't be streamed, only loaded — #18).
+        mp_set_host_active_mods( world_generator->active_world->active_mod_order );
     }
     // Cache the host's character name for the join 'welcome' so the client's
     // join dialog can show whose game it is. Runs before the connected-check so
@@ -6783,14 +6857,67 @@ WORLD *mp_ensure_client_scratch_world()
     // the host.  Named to make it obvious in the world menu that it's internal
     // and must not be hand-selected.  (ASCII only — this becomes a directory.)
     static const std::string SCRATCH_NAME = "Co-op (auto) - DO NOT SELECT";
-    if( world_generator->has_world( SCRATCH_NAME ) ) {
-        return world_generator->get_world( SCRATCH_NAME );
+
+    // Build the mod set from the host's advertised list (received in 'welcome').
+    // Mods are data definitions — recipes, professions, terrain types — that
+    // can't be streamed, only loaded. The client MUST load the host's exact set
+    // or its character/recipes/terrain silently diverge (vanilla character,
+    // missing recipes, void terrain outside the streamed bubble — issue #18).
+    // Fall back to plain dda if the host advertised nothing (older host, or the
+    // per-turn capture hasn't run yet).
+    std::vector<std::string> host_mods = mp_client_host_mods();
+    if( host_mods.empty() ) {
+        host_mods = { "dda" };
+        mp_log( "[cdda-mp] MENU: host advertised no mods — scratch world = dda only" );
     }
-    const std::vector<mod_id> default_mods = { mod_id( "dda" ) };
-    WORLD *neww = world_generator->make_new_world( SCRATCH_NAME, default_mods );
+
+    // Hard-refuse the join if the client is missing any host mod on disk.
+    // Spawning anyway is exactly the void / vanilla-nun bug (#18); tell the
+    // player precisely which mod(s) to install instead.
+    std::vector<mod_id> mods;
+    std::vector<std::string> missing;
+    for( const std::string &id : host_mods ) {
+        const mod_id m( id );
+        if( m.is_valid() ) {
+            mods.push_back( m );
+        } else {
+            missing.push_back( id );
+        }
+    }
+    if( !missing.empty() ) {
+        std::string list;
+        for( const std::string &id : missing ) {
+            list += "\n  - " + id;
+        }
+        popup( _( "Can't join: the host is running mods you don't have installed:%s\n\n"
+                  "Install the missing mod(s), then rejoin." ), list );
+        mp_log( "[cdda-mp] MENU: REFUSED join — missing host mods:" + list );
+        return nullptr;
+    }
+
+    // Reuse an existing scratch world only if its mod set already matches the
+    // host's (same ids, same order — load order is significant). A leftover
+    // world from a differently-modded host would reintroduce the mismatch, so
+    // rebuild it; it is disposable by design.
+    if( world_generator->has_world( SCRATCH_NAME ) ) {
+        WORLD *existing = world_generator->get_world( SCRATCH_NAME );
+        if( existing && existing->active_mod_order == mods ) {
+            return existing;
+        }
+        mp_log( "[cdda-mp] MENU: scratch world mods stale — rebuilding for host set" );
+        world_generator->delete_world( SCRATCH_NAME, /*delete_folder=*/true );
+    }
+
+    WORLD *neww = world_generator->make_new_world( SCRATCH_NAME, mods );
     if( neww ) {
-        mp_log( "[cdda-mp] MENU: created client scratch world '" + SCRATCH_NAME + "'" );
+        std::string ids;
+        for( const mod_id &m : mods ) {
+            ids += ( ids.empty() ? "" : "," ) + m.str();
+        }
+        mp_log( "[cdda-mp] MENU: created client scratch world '" + SCRATCH_NAME +
+                "' mods=[" + ids + "]" );
     } else {
+        popup( _( "Couldn't prepare the co-op world." ) );
         mp_log( "[cdda-mp] MENU: failed to create client scratch world" );
     }
     return neww;
