@@ -153,6 +153,21 @@ static constexpr int64_t MP_HB_INTERVAL_MS = 1500;  // heartbeat cadence
 static constexpr int64_t MP_STALL_MS = 8000;        // peer silence -> drop (~5 missed beats)
 static std::atomic<int64_t> g_last_recv_ms{ 0 };    // last time ANY host msg arrived
 
+// Heartbeat-based RTT (io thread): TRUE network round-trip, independent of the
+// game loop. Each client heartbeat carries a stamp (cp); the host echoes it back
+// immediately (pong) on its own io thread; we compute now - cp on receipt.
+// Replaces the old action->state-broadcast echo, which conflated latency with
+// turn/idle cadence (idle players saw multi-second "ping"). 2026-07-20.
+static std::atomic<int64_t> g_hb_ping_stamp{ -1 };  // outstanding heartbeat stamp
+static std::atomic<int> g_hb_rtt_ms{ -1 };          // last measured RTT ms, -1 = none
+
+// Read on the game thread by the co-op panel (mp_gamestate.cpp).
+int mp_client_measured_rtt_ms();
+int mp_client_measured_rtt_ms()
+{
+    return g_hb_rtt_ms.load();
+}
+
 static int64_t mp_now_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -204,7 +219,14 @@ struct client_impl {
                 arm_heartbeat();
                 return;
             }
-            static const std::string hb = "{\"type\":\"heartbeat\"}\n";
+            // Stamp this heartbeat for RTT measurement + mirror the last RTT we
+            // measured so the host's co-op panel shows the same number.  Sent
+            // uncompressed (raw asio::write), so the host parses cp/rtt straight
+            // off the wire line.
+            const int64_t stamp = mp_now_ms();
+            g_hb_ping_stamp.store( stamp );
+            const std::string hb = "{\"type\":\"heartbeat\",\"cp\":" + std::to_string( stamp ) +
+                                   ",\"rtt\":" + std::to_string( g_hb_rtt_ms.load() ) + "}\n";
             asio::error_code wec;
             asio::write( sock, asio::buffer( hb ), wec );   // io-thread write (same as client_send)
             const int64_t last = g_last_recv_ms.load();
@@ -249,6 +271,16 @@ struct client_impl {
             if( !line.empty() ) {
                 std::string msg = mp_decompress_frame( std::move( line ) );
                 if( !msg.empty() ) {
+                    // Heartbeat pong → true RTT, computed here on the io thread so
+                    // the reading isn't tied to the game loop.  Match against our
+                    // outstanding stamp to ignore stale/duplicate echoes.
+                    const size_t pp = msg.find( "\"pong\":" );
+                    if( pp != std::string::npos ) {
+                        const int64_t echoed = std::strtoll( msg.c_str() + pp + 7, nullptr, 10 );
+                        if( echoed == g_hb_ping_stamp.load() ) {
+                            g_hb_rtt_ms.store( static_cast<int>( mp_now_ms() - echoed ) );
+                        }
+                    }
                     // An intentional end from the host (goodbye / session_ending)
                     // means DON'T auto-reconnect when the socket closes next.
                     if( msg.find( "\"type\":\"goodbye\"" ) != std::string::npos ||

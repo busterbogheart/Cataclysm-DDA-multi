@@ -835,28 +835,11 @@ static int g_partner_morale = 0;
 static int g_partner_hp_cur = 0;
 static int g_partner_hp_max = 0;
 
-// Round-trip latency to the partner, in milliseconds; -1 until first measured.
-// Measured on the CLIENT via a stamp/echo on the existing packets (no clock
-// sync needed), then mirrored back to the host so both panels show the same
-// number.  Replaces the old dev-only calendar-drift indicator in the Co-op
-// panel.
-static int g_partner_ping_ms = -1;
-// Host-side: last client_ping stamp we received, to echo back next broadcast.
-static int64_t g_last_client_ping_stamp = -1;
-// Client-side: the stamp we're currently awaiting an echo for. RTT is measured
-// exactly once per round trip (when its echo returns), then this is cleared so
-// a host re-echoing the same stale stamp during idle can't keep inflating the
-// number. -1 = nothing outstanding (hold the last measured value).
-static int64_t g_pending_ping_stamp = -1;
-// Monotonic millisecond clock shared by the ping stamp/echo. Process-relative;
-// only differences on the SAME machine are used, so no cross-host clock sync.
-static int64_t mp_mono_ms()
-{
-    static const std::chrono::steady_clock::time_point start =
-        std::chrono::steady_clock::now();
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now() - start ).count();
-}
+// Round-trip latency to the partner is now measured on the io thread via the
+// heartbeat ping/pong (mp_client_conn.cpp / mp_server.cpp), read for display via
+// mp_client_measured_rtt_ms() / mp_host_partner_rtt_ms().  The old action->state-
+// broadcast stamp/echo was removed 2026-07-20 — it read multi-second while idle
+// because it timed the turn/broadcast cadence, not the network.
 // Worst-hurt body part's real (current, max) HP for a character — the limb the
 // Co-op panel bar represents. Worst by fraction so one shredded limb still shows.
 // Computed on each side from its OWN avatar (real max), then synced.
@@ -1323,15 +1306,21 @@ struct mp_hud_t {
         // colored green/yellow/red; tally is "☠ <you>·<partner>", perspective-
         // correct (my kills first), a little friendly rivalry counter.
         {
+            // True network RTT from the heartbeat ping/pong (io thread), not the
+            // old action->broadcast echo that read multi-second while idle. The
+            // client measures it directly; the host reads the value the client
+            // mirrors in its heartbeat.
+            const int ping = is_client_mode() ? mp_client_measured_rtt_ms()
+                             : mp_host_partner_rtt_ms();
             std::string ps;
             nc_color pc;
-            if( g_partner_ping_ms < 0 ) {
+            if( ping < 0 ) {
                 ps = "--";
                 pc = c_dark_gray;
             } else {
-                pc = g_partner_ping_ms < 120 ? c_green
-                     : g_partner_ping_ms < 300 ? c_yellow : c_red;
-                ps = std::to_string( g_partner_ping_ms ) + "ms";
+                pc = ping < 120 ? c_green
+                     : ping < 300 ? c_yellow : c_red;
+                ps = std::to_string( ping ) + "ms";
             }
             const int ping_x = W - static_cast<int>( ps.size() ) - 1;
             mvwprintz( win, point( ping_x, crow ), pc, "%s", ps.c_str() );
@@ -3178,14 +3167,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_int( "client_hp_max" ) ) {
         g_partner_hp_max = jo.get_int( "client_hp_max" );
     }
-    // Ping: remember the client's stamp to echo back; adopt the client-measured
-    // RTT so the host panel shows the same latency the client computed.
-    if( jo.has_int( "client_ping" ) ) {
-        g_last_client_ping_stamp = jo.get_int( "client_ping" );
-    }
-    if( is_hosting() && jo.has_int( "client_rtt" ) ) {
-        g_partner_ping_ms = jo.get_int( "client_rtt" );
-    }
+    // (Ping now measured on the io thread via heartbeat — see mp_server.cpp.)
     if( jo.has_int( "client_calendar_turn" ) ) {
         g_partner_calendar_turn = jo.get_int( "client_calendar_turn" );
     }
@@ -8351,18 +8333,7 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_int( "host_hp_max" ) ) {
             g_partner_hp_max = jo.get_int( "host_hp_max" );
         }
-        // Ping (CLIENT ONLY — the host adopts the mirrored client_rtt instead,
-        // since subtracting our stamp against the host's clock would be garbage).
-        // Measure RTT only when the echo matches the stamp we're currently
-        // awaiting, then clear it: a host re-echoing the same stamp during idle
-        // must not keep growing the number against an ever-advancing clock.
-        if( is_client_mode() && jo.has_int( "host_ping_echo" ) ) {
-            const int64_t stamp = jo.get_int( "host_ping_echo" );
-            if( stamp >= 0 && stamp == g_pending_ping_stamp ) {
-                g_partner_ping_ms = static_cast<int>( mp_mono_ms() - stamp );
-                g_pending_ping_stamp = -1; // consumed; hold this value until next send
-            }
-        }
+        // (Ping now measured on the io thread via heartbeat — see mp_client_conn.cpp.)
         // Snapshot host's calendar BEFORE the local sync above overwrites it,
         // so the panel can show drift = local - last_received_partner.  Since
         // the client sets local = host on every state packet, drift here is
@@ -9721,15 +9692,7 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_hp_cur\":" + std::to_string( wl.first );
             enriched += ",\"client_hp_max\":" + std::to_string( wl.second );
         }
-        // Ping: stamp now (client clock) for the host to echo, and remember it
-        // as the outstanding round-trip we're timing. Mirror the last RTT we
-        // measured so the host's panel shows the same latency number.
-        {
-            const int64_t stamp = mp_mono_ms();
-            g_pending_ping_stamp = stamp;
-            enriched += ",\"client_ping\":" + std::to_string( stamp );
-            enriched += ",\"client_rtt\":" + std::to_string( g_partner_ping_ms );
-        }
+        // (Ping now measured on the io thread via heartbeat — see mp_client_conn.cpp.)
         if( !g_client_msgs_pending.empty() ) {
             std::string msgs = "[";
             bool first_m = true;
@@ -12676,7 +12639,6 @@ std::string serialize_remote_player_state()
            "\"host_morale\":" + std::to_string( host.get_morale_level() ) + ","
            "\"host_hp_cur\":" + std::to_string( mp_worst_limb_hp( host ).first ) + ","
            "\"host_hp_max\":" + std::to_string( mp_worst_limb_hp( host ).second ) + ","
-           "\"host_ping_echo\":" + std::to_string( g_last_client_ping_stamp ) + ","
            "\"host_effects\":" + host_effects_json + ","
            "\"host_hp\":" + host_hp_json + ","
            + ( []() -> std::string {

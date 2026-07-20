@@ -24,6 +24,11 @@ void process_mp_events();
 // HP, and nearby visible tiles. Sent to the client after each action.
 std::string serialize_remote_player_state();
 
+// Heartbeat-measured network RTT for the co-op panel (io thread → game thread).
+// Client side measures it directly; host side reads the value the client mirrors.
+int mp_client_measured_rtt_ms();
+int mp_host_partner_rtt_ms();
+
 // Returns true if the given character_id belongs to a remote player NPC.
 // Used by monmove() to skip AI processing for human-controlled NPCs.
 bool is_remote_player( character_id id );

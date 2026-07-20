@@ -42,6 +42,17 @@ std::string mp_get_host_player_name();
 std::string mp_host_omt_welcome_field();
 std::string mp_host_active_mods_field();
 
+// Heartbeat-based RTT: the client measures the true network round-trip (its
+// heartbeat -> our immediate io-thread echo -> back) and mirrors that number to
+// us in each heartbeat's "rtt" field, so the host's co-op panel shows the same
+// latency.  Set on the io thread (do_read), read on the game thread.
+static std::atomic<int> g_host_partner_rtt_ms{ -1 };
+int mp_host_partner_rtt_ms();
+int mp_host_partner_rtt_ms()
+{
+    return g_host_partner_rtt_ms.load();
+}
+
 // Escape a string for embedding in a JSON double-quoted value (host names can
 // contain quotes/backslashes). Minimal — covers the chars that break parsing.
 static std::string mp_json_escape( const std::string &s )
@@ -239,8 +250,29 @@ struct client_session : public std::enable_shared_from_this<client_session> {
                 std::istream stream( &self->read_buf );
                 std::string line;
                 std::getline( stream, line );
-                if( !line.empty() && self->on_message ) {
-                    self->on_message( self, line );
+                if( !line.empty() ) {
+                    // Heartbeat RTT (io thread): echo the client's ping stamp
+                    // IMMEDIATELY so the measured round-trip is pure network
+                    // latency, not game-loop cadence; and adopt the client's
+                    // measured RTT for the host's own co-op panel.  Client
+                    // heartbeats are sent uncompressed, so parse straight off
+                    // the raw line.
+                    if( line.find( "\"type\":\"heartbeat\"" ) != std::string::npos ) {
+                        const size_t cp = line.find( "\"cp\":" );
+                        if( cp != std::string::npos ) {
+                            const long long stamp = std::strtoll( line.c_str() + cp + 5, nullptr, 10 );
+                            self->send( "{\"type\":\"heartbeat\",\"pong\":" +
+                                        std::to_string( stamp ) + "}\n" );
+                        }
+                        const size_t rp = line.find( "\"rtt\":" );
+                        if( rp != std::string::npos ) {
+                            g_host_partner_rtt_ms.store(
+                                static_cast<int>( std::strtol( line.c_str() + rp + 6, nullptr, 10 ) ) );
+                        }
+                    }
+                    if( self->on_message ) {
+                        self->on_message( self, line );
+                    }
                 }
                 self->do_read();
             } );
