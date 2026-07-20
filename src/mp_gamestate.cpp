@@ -3847,11 +3847,18 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         }
                         std::string added;
                         for( item &new_item : incoming_items ) {
-                            if( existing_uids.count( new_item.uid().get_value() ) ) {
+                            const int64_t iu = new_item.uid().get_value();
+                            if( existing_uids.count( iu ) ) {
                                 continue;
                             }
                             added += new_item.typeId().str() + ",";
-                            veh.add_item( m, part, new_item );
+                            // Preserve the client's UID across add_item's copy so
+                            // the next diff recognises this item as already-present
+                            // rather than re-adding it (the cargo dup regression).
+                            if( std::optional<vehicle_stack::iterator> ins =
+                                    veh.add_item( m, part, new_item ) ) {
+                                ( *ins )->set_uid( iu );
+                            }
                         }
                         if( !added.empty() ) {
                             mp_log( "[cdda-mp] server veh cargo ADD @ " +
@@ -11141,10 +11148,17 @@ static void apply_vehicle_sync( JsonObject &jo )
                         existing_uids.insert( it.uid().get_value() );
                     }
                     for( item &new_item : incoming_items ) {
-                        if( existing_uids.count( new_item.uid().get_value() ) ) {
+                        const int64_t iu = new_item.uid().get_value();
+                        if( existing_uids.count( iu ) ) {
                             continue;
                         }
-                        veh.add_item( m, part, new_item );
+                        // Preserve the host's UID across add_item's copy so the
+                        // next diff recognises this item as already-present
+                        // rather than re-adding it (the cargo dup regression).
+                        if( std::optional<vehicle_stack::iterator> added =
+                                veh.add_item( m, part, new_item ) ) {
+                            ( *added )->set_uid( iu );
+                        }
                     }
                 }
                 known_uids = std::move( incoming_uids );

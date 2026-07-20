@@ -246,6 +246,15 @@ class item : public visitable
             return uid_;
         }
 
+        /** Restore this instance's UID to a specific value.  Used by the MP
+         * cargo sync appliers to preserve the authoritative sender's UID across
+         * the add_item copy: item_uid's copy ctor otherwise regenerates it, so
+         * the next UID-diff can't recognise the item as already-present and
+         * re-adds it every sync (the vehicle-cargo dup regression). */
+        void set_uid( int64_t v ) {
+            uid_ = item_uid( v );
+        }
+
         /**
          * Filter converting this instance to another type preserving all other aspects
          * @param new_type the type id to convert to
