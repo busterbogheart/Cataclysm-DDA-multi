@@ -246,6 +246,15 @@ class item : public visitable
             return uid_;
         }
 
+        /** Restore this instance's UID to a specific value.  Used by the MP
+         * vehicle-cargo mirror to preserve the host's authoritative UID across
+         * add_item's copy (item_uid's copy ctor otherwise regenerates it), so the
+         * client's cart carries host UIDs and a client pickup can be reported to
+         * the host as a removal it can match. */
+        void set_uid( int64_t v ) {
+            uid_ = item_uid( v );
+        }
+
         /**
          * Filter converting this instance to another type preserving all other aspects
          * @param new_type the type id to convert to

@@ -1985,11 +1985,15 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_client_trap_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_graffiti_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_field_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_partial_con_baseline;
-// Client→server vehicle cargo baseline.  Keyed by the absolute tile position
-// of the cargo vpart so the host can find the vehicle + part by tile lookup.
-// Mirrors the item baseline but for items stored inside vehicle cargo parts
-// (trunks, freezers, lockers, etc.).
-static std::unordered_map<tripoint_abs_ms, std::string> g_client_veh_cargo_baseline;
+// Client→server vehicle cargo baseline.  Keyed by the absolute tile position of
+// the cargo vpart.  Holds the set of item UIDs the client last synced with the
+// host for that part (applied from the host's broadcast, or sent as its own
+// delta).  build_client_veh_cargo_changes() diffs the live cart against this to
+// send ONLY what the client changed — items it dropped in (added) and UIDs it
+// picked up (removed) — never a full snapshot.  A snapshot from a client that
+// trails the host would, applied host-side as a replace, wipe items the host
+// just dropped (GH#15), and as a merge it duplicated them.
+static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_client_veh_cargo_baseline;
 // Server→client vehicle cargo baseline.  Same keying as the client direction —
 // without this the client can't see items the host drops into trunks/seats/etc.,
 // and its stale snapshot would then overwrite the host on the next client drop.
@@ -3767,25 +3771,31 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             std::to_string( vp_abs.y() ) + "," +
                             std::to_string( vp_abs.z() ) );
 
-                    // Authoritative full replace — restores the pre-c8cd48032e
-                    // behavior (mirrors d6232daffa's ground-tile revert).  The
-                    // client's list for a part it just mutated IS the cargo: erase
-                    // everything, rebuild from the wire.  The UID-diff that briefly
-                    // replaced this protected host-placed items from client-driven
-                    // removal, so a client pickup of a host-dropped item never
-                    // cleared on the host (the retain), and it thrashed/duped on
-                    // item stacking.  A full replace can't desync.
-                    std::string had;
-                    {
-                        vehicle_stack stack = veh.get_items( part );
-                        while( !stack.empty() ) {
-                            had += stack.begin()->typeId().str() + ",";
-                            stack.erase( stack.begin() );
+                    // Apply the client's DELTA onto our authoritative cart: remove
+                    // (by uid) the items it picked up, then add the ones it dropped
+                    // in.  Items in neither list are the host's own and are left
+                    // untouched — a client snapshot must never wipe them (GH#15),
+                    // and a one-shot delta can't dupe on re-echo.  The removed uids
+                    // match because the client's cart mirrors ours with our uids
+                    // preserved (apply_vehicle_sync set_uid).
+                    std::string removed_log;
+                    if( co.has_array( "removed" ) ) {
+                        for( const JsonValue &rv : co.get_array( "removed" ) ) {
+                            const int64_t ruid = std::strtoll( rv.get_string().c_str(),
+                                                               nullptr, 10 );
+                            vehicle_stack stack = veh.get_items( part );
+                            for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
+                                if( iter->uid().get_value() == ruid ) {
+                                    removed_log += iter->typeId().str() + ",";
+                                    stack.erase( iter );
+                                    break;
+                                }
+                            }
                         }
                     }
-                    std::string added;
-                    if( co.has_array( "items" ) ) {
-                        for( const JsonValue &iv : co.get_array( "items" ) ) {
+                    std::string added_log;
+                    if( co.has_array( "added" ) ) {
+                        for( const JsonValue &iv : co.get_array( "added" ) ) {
                             try {
                                 item new_item;
                                 JsonObject io = iv.get_object();
@@ -3793,17 +3803,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() &&
                                     new_item.typeId().is_valid() ) {
-                                    added += new_item.typeId().str() + ",";
+                                    added_log += new_item.typeId().str() + ",";
                                     veh.add_item( m, part, new_item );
                                 }
                             } catch( const JsonError & ) {}
                         }
                     }
-                    mp_log( "[cdda-mp] server veh cargo REPLACE @ " +
+                    mp_log( "[cdda-mp] server veh cargo DELTA @ " +
                             std::to_string( vp_abs.x() ) + "," +
                             std::to_string( vp_abs.y() ) + "," +
                             std::to_string( vp_abs.z() ) +
-                            " had=" + had + " now=" + added );
+                            " added=" + added_log + " removed=" + removed_log );
                 }
             }
         } catch( const JsonError & ) {}
@@ -9316,29 +9326,54 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
                 std::abs( vp_abs.y() - center.y() ) > radius ) {
                 continue;
             }
-            std::string items_sig;
-            std::string items_json = "[";
-            bool ifirst = true;
+            // Delta vs the last-synced baseline: send only what the CLIENT
+            // changed — items it dropped in (added, full json) and UIDs it
+            // picked up (removed).  Never a full snapshot: a snapshot from a
+            // client trailing the host wipes host-dropped items on replace and
+            // dupes them on merge (see g_client_veh_cargo_baseline).
+            std::set<int64_t> current_uids;
+            std::unordered_map<int64_t, std::string> uid_json;
             for( const item &it : v->get_items( vp.part() ) ) {
-                const std::string item_json = serialize( it );
-                items_sig += item_json + ',';
-                if( !ifirst ) {
-                    items_json += ',';
+                const int64_t u = it.uid().get_value();
+                current_uids.insert( u );
+                uid_json[u] = serialize( it );
+            }
+            std::set<int64_t> &baseline = g_client_veh_cargo_baseline[vp_abs];
+            std::string added_json = "[";
+            std::string removed_json = "[";
+            bool afirst = true;
+            bool rfirst = true;
+            for( const int64_t u : current_uids ) {
+                if( baseline.count( u ) ) {
+                    continue;   // already known to the host
                 }
-                ifirst = false;
-                items_json += item_json;
+                if( !afirst ) {
+                    added_json += ',';
+                }
+                afirst = false;
+                added_json += uid_json[u];
             }
-            items_json += "]";
-            auto &baseline = g_client_veh_cargo_baseline[vp_abs];
-            if( baseline == items_sig ) {
-                continue; // no change since last send
+            for( const int64_t u : baseline ) {
+                if( current_uids.count( u ) ) {
+                    continue;   // still present, untouched
+                }
+                if( !rfirst ) {
+                    removed_json += ',';
+                }
+                rfirst = false;
+                removed_json += "\"" + std::to_string( u ) + "\"";   // string: UIDs are int64
             }
-            baseline = items_sig;
-            mp_log( "[cdda-mp] client veh cargo @ " +
+            added_json += "]";
+            removed_json += "]";
+            if( afirst && rfirst ) {
+                continue;   // this cargo part unchanged by the client
+            }
+            baseline = current_uids;
+            mp_log( "[cdda-mp] client veh cargo DELTA @ " +
                     std::to_string( vp_abs.x() ) + "," +
                     std::to_string( vp_abs.y() ) + "," +
                     std::to_string( vp_abs.z() ) +
-                    " items_sig_len=" + std::to_string( items_sig.size() ) );
+                    " added=" + added_json + " removed=" + removed_json );
             if( !first ) {
                 out += ',';
             }
@@ -9346,7 +9381,8 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
             out += "{\"x\":" + std::to_string( vp_abs.x() )
                    + ",\"y\":" + std::to_string( vp_abs.y() )
                    + ",\"z\":" + std::to_string( vp_abs.z() )
-                   + ",\"items\":" + items_json + "}";
+                   + ",\"added\":" + added_json
+                   + ",\"removed\":" + removed_json + "}";
         }
     }
     out += ']';
@@ -11039,7 +11075,13 @@ static void apply_vehicle_sync( JsonObject &jo )
                         stack.erase( stack.begin() );
                     }
                 }
-                std::string items_sig;
+                // Mirror the host's authoritative cargo, preserving each item's
+                // host UID across add_item's copy so the client cart carries the
+                // SAME uids the host has.  That lets a later client pickup be
+                // reported to the host as a removal it can match by uid, and lets
+                // the next client scan recognise these as host-owned (baseline)
+                // rather than re-sending them as client-"added" items.
+                std::set<int64_t> mirror_uids;
                 if( co.has_array( "items" ) ) {
                     for( const JsonValue &iv : co.get_array( "items" ) ) {
                         try {
@@ -11049,17 +11091,20 @@ static void apply_vehicle_sync( JsonObject &jo )
                             new_item.deserialize( io );
                             if( !new_item.typeId().is_empty() &&
                                 new_item.typeId().is_valid() ) {
-                                veh.add_item( m, part, new_item );
-                                items_sig += serialize( new_item ) + ',';
+                                const int64_t hu = new_item.uid().get_value();
+                                mirror_uids.insert( hu );
+                                if( std::optional<vehicle_stack::iterator> added =
+                                        veh.add_item( m, part, new_item ) ) {
+                                    ( *added )->set_uid( hu );
+                                }
                             }
                         } catch( const JsonError & ) {}
                     }
                 }
-                // Resync the client→host baseline to the post-apply state so the
-                // next build_client_veh_cargo_changes() doesn't immediately
-                // re-send the host's authoritative contents back as a "client
-                // delta" (a no-op that just pollutes the wire).
-                g_client_veh_cargo_baseline[vp_abs] = items_sig;
+                // Baseline the client→host delta to exactly this authoritative
+                // set, so build_client_veh_cargo_changes() reports only the
+                // client's OWN later changes, never an echo of the host's list.
+                g_client_veh_cargo_baseline[vp_abs] = mirror_uids;
             }
         }
     }
