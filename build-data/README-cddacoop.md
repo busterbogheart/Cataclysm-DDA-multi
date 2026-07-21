@@ -306,6 +306,12 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### Unreleased
+
+- **Item duplication fixes** — closed several ways items could clone themselves when moving them between a vehicle and your inv
+- **More vehicle sync stability** — spawning or parking several vehicles near each other no longer makes an earlier one vanish or collapse into nothingness on the client's screen
+- **More accurate ping reporting in co-op HUD** — the latency readout now measures true round-trip time so idle players no longer see a fake multi-second 'ping'.  A good ping will render in green (0 - 180ms).
+
 ### 2026-07-18
 
 - **Safer rejoining for client** — rejoining after a crash or a save-and-quit is much more solid now. No more instantly fast-forwarding 17 million turns, and your partner correctly reappears on your screen — previously the host could come back invisible with a blank `[?]` / `----` status in the co-op panel.
