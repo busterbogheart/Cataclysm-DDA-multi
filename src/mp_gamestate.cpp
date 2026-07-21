@@ -1986,14 +1986,19 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_client_graffiti_baseli
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_field_baseline;
 static std::unordered_map<tripoint_abs_ms, std::string> g_client_partial_con_baseline;
 // Client→server vehicle cargo baseline.  Keyed by the absolute tile position of
-// the cargo vpart.  Holds the set of item UIDs the client last synced with the
-// host for that part (applied from the host's broadcast, or sent as its own
-// delta).  build_client_veh_cargo_changes() diffs the live cart against this to
-// send ONLY what the client changed — items it dropped in (added) and UIDs it
-// picked up (removed) — never a full snapshot.  A snapshot from a client that
-// trails the host would, applied host-side as a replace, wipe items the host
-// just dropped (GH#15), and as a merge it duplicated them.
-static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_client_veh_cargo_baseline;
+// the cargo vpart.  Maps each item UID the client last synced with the host for
+// that part → that item's count() (charges for charge/ammo stacks, else 1).
+// build_client_veh_cargo_changes() diffs the live cart against this to send ONLY
+// what the client changed — items it dropped in (added), UIDs it picked up
+// (removed), AND stacks whose count changed while keeping their UID (a partial
+// pickup/deposit: emitted as remove-then-re-add so the host replaces the stack).
+// Tracking count (not just the UID set) is what closes the charge-stack dupe:
+// taking 10 of 20 arrows leaves the same UID with fewer charges, so a UID-set
+// diff saw no change and never told the host (host kept 20 → 10 duplicated).
+// Never a full snapshot: a snapshot from a client that trails the host would,
+// applied host-side as a replace, wipe items the host just dropped (GH#15), and
+// as a merge it duplicated them.
+static std::unordered_map<tripoint_abs_ms, std::map<int64_t, int>> g_client_veh_cargo_baseline;
 // Server→client vehicle cargo baseline.  Same keying as the client direction —
 // without this the client can't see items the host drops into trunks/seats/etc.,
 // and its stale snapshot would then overwrite the host on the next client drop.
@@ -9331,44 +9336,59 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
             // picked up (removed).  Never a full snapshot: a snapshot from a
             // client trailing the host wipes host-dropped items on replace and
             // dupes them on merge (see g_client_veh_cargo_baseline).
-            std::set<int64_t> current_uids;
+            std::map<int64_t, int> current;   // uid -> count() (charges for stacks)
             std::unordered_map<int64_t, std::string> uid_json;
             for( const item &it : v->get_items( vp.part() ) ) {
                 const int64_t u = it.uid().get_value();
-                current_uids.insert( u );
+                current[u] = it.count();
                 uid_json[u] = serialize( it );
             }
-            std::set<int64_t> &baseline = g_client_veh_cargo_baseline[vp_abs];
+            std::map<int64_t, int> &baseline = g_client_veh_cargo_baseline[vp_abs];
             std::string added_json = "[";
             std::string removed_json = "[";
             bool afirst = true;
             bool rfirst = true;
-            for( const int64_t u : current_uids ) {
-                if( baseline.count( u ) ) {
-                    continue;   // already known to the host
-                }
+            auto emit_added = [&]( const std::string & j ) {
                 if( !afirst ) {
                     added_json += ',';
                 }
                 afirst = false;
-                added_json += uid_json[u];
-            }
-            for( const int64_t u : baseline ) {
-                if( current_uids.count( u ) ) {
-                    continue;   // still present, untouched
-                }
+                added_json += j;
+            };
+            auto emit_removed = [&]( int64_t u ) {
                 if( !rfirst ) {
                     removed_json += ',';
                 }
                 rfirst = false;
                 removed_json += "\"" + std::to_string( u ) + "\"";   // string: UIDs are int64
+            };
+            for( const auto &cu : current ) {
+                const int64_t u = cu.first;
+                const auto bit = baseline.find( u );
+                if( bit == baseline.end() ) {
+                    emit_added( uid_json[u] );      // brand-new item the client dropped in
+                } else if( bit->second != cu.second ) {
+                    // Same UID, changed count — a partial pickup or deposit on a
+                    // charge stack.  Model it as remove-then-re-add so the host
+                    // erases the old stack and rebuilds it at the new count.  The
+                    // host applier processes removed before added and preserves the
+                    // UID, so the stack keeps its identity at the corrected count.
+                    emit_removed( u );
+                    emit_added( uid_json[u] );
+                }
+                // else unchanged — leave it alone (host owns its baseline copy)
+            }
+            for( const auto &bu : baseline ) {
+                if( !current.count( bu.first ) ) {
+                    emit_removed( bu.first );       // stack fully picked up / gone
+                }
             }
             added_json += "]";
             removed_json += "]";
             if( afirst && rfirst ) {
                 continue;   // this cargo part unchanged by the client
             }
-            baseline = current_uids;
+            baseline = current;
             mp_log( "[cdda-mp] client veh cargo DELTA @ " +
                     std::to_string( vp_abs.x() ) + "," +
                     std::to_string( vp_abs.y() ) + "," +
@@ -10695,6 +10715,36 @@ static void apply_vehicle_sync( JsonObject &jo )
 
     const VehicleList vehs = m.get_vehicles();
 
+    // DIAG (veh-thrash root): dump the packet's nid list AND the current client
+    // vehicle inventory (each mp_net_id@pos) at entry, so we can see exactly what
+    // exists before the apply loop and which vehicle a later REPLACE/cull tears
+    // down.  Rate-limited so a stationary two-vehicle scene doesn't flood.
+    {
+        static int64_t s_last_inv_dump_ms = -1;
+        const int64_t now_ms = mp_now_ms();
+        if( now_ms - s_last_inv_dump_ms > 2000 ) {
+            s_last_inv_dump_ms = now_ms;
+            std::string pkt_nids;
+            for( const JsonValue &e : jo.get_array( "vehicles" ) ) {
+                JsonObject eo = e.get_object();
+                eo.allow_omitted_members();
+                pkt_nids += std::to_string( eo.get_int( "nid", 0 ) ) +
+                            ( eo.has_object( "snapshot" ) ? "(snap) " : " " );
+            }
+            std::string inv;
+            for( const wrapped_vehicle &wv : vehs ) {
+                if( !wv.v ) {
+                    continue;
+                }
+                const tripoint_abs_ms p = wv.v->pos_abs();
+                inv += "nid" + std::to_string( wv.v->mp_net_id ) + "@" +
+                       std::to_string( p.x() ) + "," + std::to_string( p.y() ) + " ";
+            }
+            mp_log( "[cdda-mp] CLI-VEH-APPLY-ENTER: pkt_nids=[ " + pkt_nids +
+                    "] client_inv=[ " + inv + "]" );
+        }
+    }
+
     // Authoritative positions of every host vehicle in this broadcast.
     // vehicle_step lists ALL host vehicles, so this is the complete set; used
     // after the apply loop to cull client-local phantom vehicles.
@@ -10735,8 +10785,13 @@ static void apply_vehicle_sync( JsonObject &jo )
             // grabbed a different cart).  A never-before-seen nid has no prior
             // instance, so nothing is torn down and we simply create it below.
             if( vehicle *prev = find_client_veh_by_nid( vehs, nid ) ) {
+                const tripoint_abs_ms pabs = prev->pos_abs();
                 mp_log( "[cdda-mp] CLI-VEH-REPLACE: nid=" + std::to_string( nid )
-                        + " name=\"" + prev->name + "\"" );
+                        + " name=\"" + prev->name + "\""
+                        + " prev_mp_net_id=" + std::to_string( prev->mp_net_id )
+                        + " prev_abs=" + std::to_string( pabs.x() )
+                        + "," + std::to_string( pabs.y() )
+                        + "," + std::to_string( pabs.z() ) );
                 m.destroy_vehicle( prev );
             }
             g_client_veh_pos.erase( nid );
@@ -10856,6 +10911,13 @@ static void apply_vehicle_sync( JsonObject &jo )
         // Adopt: tag whatever we matched by position/name with this nid so every
         // future lookup is pure identity (and the cull leaves it alone).
         if( found && found->mp_net_id == 0 ) {
+            const tripoint_abs_ms aabs = found->pos_abs();
+            mp_log( "[cdda-mp] CLI-VEH-ADOPT: nid=" + std::to_string( nid )
+                    + " name=\"" + found->name + "\""
+                    + " via=" + ( found_by_name_only ? "name" : "position" )
+                    + " abs=" + std::to_string( aabs.x() )
+                    + "," + std::to_string( aabs.y() )
+                    + "," + std::to_string( aabs.z() ) );
             found->mp_net_id = nid;
         }
 
@@ -11105,8 +11167,16 @@ static void apply_vehicle_sync( JsonObject &jo )
                 // UID-diff that briefly replaced this could not round-trip
                 // cross-owned pickups/drops or item stacking — it duplicated and
                 // retained items (the cart dup).  A full replace can't desync.
+                // DIAG (dime-dupe root): record what we erase (uid list) so we can
+                // tell whether an in-flight host broadcast resurrects an item the
+                // client just optimistically picked up.  Paired with the rebuilt
+                // uid dump below.
+                std::string erased_uids;
                 {
                     vehicle_stack stack = veh.get_items( part );
+                    for( const item &it : stack ) {
+                        erased_uids += std::to_string( it.uid().get_value() ) + " ";
+                    }
                     while( !stack.empty() ) {
                         stack.erase( stack.begin() );
                     }
@@ -11117,7 +11187,7 @@ static void apply_vehicle_sync( JsonObject &jo )
                 // reported to the host as a removal it can match by uid, and lets
                 // the next client scan recognise these as host-owned (baseline)
                 // rather than re-sending them as client-"added" items.
-                std::set<int64_t> mirror_uids;
+                std::map<int64_t, int> mirror_uids;   // uid -> count() (charge-aware baseline)
                 if( co.has_array( "items" ) ) {
                     for( const JsonValue &iv : co.get_array( "items" ) ) {
                         try {
@@ -11128,7 +11198,7 @@ static void apply_vehicle_sync( JsonObject &jo )
                             if( !new_item.typeId().is_empty() &&
                                 new_item.typeId().is_valid() ) {
                                 const int64_t hu = new_item.uid().get_value();
-                                mirror_uids.insert( hu );
+                                mirror_uids[hu] = new_item.count();
                                 if( std::optional<vehicle_stack::iterator> added =
                                         veh.add_item( m, part, new_item ) ) {
                                     ( *added )->set_uid( hu );
@@ -11136,6 +11206,20 @@ static void apply_vehicle_sync( JsonObject &jo )
                             }
                         } catch( const JsonError & ) {}
                     }
+                }
+                // DIAG (dime-dupe root): dump erased-vs-rebuilt uids so a resurrected
+                // just-picked item is visible (erased uid absent from wire, or a wire
+                // uid the client had already removed reappearing).
+                {
+                    std::string wire_uids;
+                    for( const auto &mu : mirror_uids ) {
+                        wire_uids += std::to_string( mu.first ) + " ";
+                    }
+                    mp_log( "[cdda-mp] CLI-CARGO-REPLACE @ "
+                            + std::to_string( vp_abs.x() ) + ","
+                            + std::to_string( vp_abs.y() ) + ","
+                            + std::to_string( vp_abs.z() )
+                            + " erased=[ " + erased_uids + "] wire=[ " + wire_uids + "]" );
                 }
                 // Baseline the client→host delta to exactly this authoritative
                 // set, so build_client_veh_cargo_changes() reports only the
