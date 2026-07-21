@@ -2442,6 +2442,14 @@ class vehicle
         std::vector<int> fake_parts; // NOLINT(cata-serialize)
         std::vector<int> control_req_parts; // NOLINT(cata-serialize)
 
+        // Multiplayer network id assigned by the host and mirrored onto the
+        // client's copy of this vehicle, so the client can match a host vehicle
+        // by a stable identity instead of guessing by position/name (which is
+        // ambiguous for multiple same-type vehicles and breaks when one drifts).
+        // Runtime only — not serialized; re-tagged from the host each session.
+        // Mirrors monster::mp_net_id.  0 = untagged / client-local.
+        uint32_t mp_net_id = 0; // NOLINT(cata-serialize)
+
         // config values
         std::string name;   // vehicle name
         /**

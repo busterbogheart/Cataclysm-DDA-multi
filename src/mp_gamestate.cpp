@@ -10638,6 +10638,24 @@ static void apply_tile_changes( JsonObject &jo )
     }
 }
 
+// Find the client's copy of a host vehicle by its network id — a stable
+// identity the host assigns and the client mirrors onto vehicle::mp_net_id.
+// This replaces the old position/name guessing, which was ambiguous across
+// multiple same-type vehicles (three spawned carts collapsed into one) and
+// broke whenever a vehicle drifted off its reported tile.
+static vehicle *find_client_veh_by_nid( const VehicleList &vehs, uint32_t nid )
+{
+    if( nid == 0 ) {
+        return nullptr;
+    }
+    for( const wrapped_vehicle &wv : vehs ) {
+        if( wv.v && wv.v->mp_net_id == nid ) {
+            return wv.v;
+        }
+    }
+    return nullptr;
+}
+
 // Client: apply vehicle position, facing, and velocity from the server state packet.
 // Scope: stationary and moving vehicles visible to the host.  Driving, boarding,
 // and reality-bubble edge transitions are excluded until those features are designed.
@@ -10656,26 +10674,22 @@ static void apply_vehicle_sync( JsonObject &jo )
     if( jo.has_array( "removed_vehicles" ) ) {
         for( const JsonValue &rv : jo.get_array( "removed_vehicles" ) ) {
             const auto rnid = static_cast<uint32_t>( rv.get_int() );
-            auto pos_it = g_client_veh_pos.find( rnid );
-            if( pos_it == g_client_veh_pos.end() ) {
+            g_client_veh_pos.erase( rnid );
+            // Destroy by network id — the stable identity — so we never tear
+            // down an unrelated same-type vehicle that happens to sit at a stale
+            // tracked tile.  Re-fetch the list each iteration since a prior
+            // destroy invalidates it.
+            vehicle *dveh = find_client_veh_by_nid( m.get_vehicles(), rnid );
+            if( !dveh ) {
                 continue;
             }
-            const tripoint_abs_ms rabs = pos_it->second;
-            g_client_veh_pos.erase( pos_it );
-            if( !m.inbounds( rabs ) ) {
-                continue;
-            }
-            const optional_vpart_position vp = m.veh_at( m.get_bub( rabs ) );
-            if( !vp ) {
-                continue;
-            }
-            vehicle &dveh = vp->vehicle();
+            const tripoint_abs_ms rabs = dveh->pos_abs();
             mp_log( "[cdda-mp] CLI-VEH-REMOVE: nid=" + std::to_string( rnid )
                     + " abs=" + std::to_string( rabs.x() )
                     + "," + std::to_string( rabs.y() )
                     + "," + std::to_string( rabs.z() )
-                    + " name=\"" + dveh.name + "\"" );
-            m.destroy_vehicle( &dveh );
+                    + " name=\"" + dveh->name + "\"" );
+            m.destroy_vehicle( dveh );
         }
     }
 
@@ -10714,35 +10728,18 @@ static void apply_vehicle_sync( JsonObject &jo )
         // deserialize-and-place.  The snapshot is complete state, so we skip
         // the slim per-part / cargo apply that follows and move on.
         if( vo.has_object( "snapshot" ) && m.inbounds( new_abs ) ) {
-            // Tear down the previous local instance (if any) so a structural
-            // change doesn't end up with two overlapping vehicles at the same
-            // tile.  Look up by tracked position; fall back to scanning by name.
-            auto prev_it = g_client_veh_pos.find( nid );
-            tripoint_abs_ms prev_abs = ( prev_it != g_client_veh_pos.end() )
-                                       ? prev_it->second
-                                       : new_abs;
-            vehicle *prev = nullptr;
-            if( m.inbounds( prev_abs ) ) {
-                if( const optional_vpart_position vp = m.veh_at( m.get_bub( prev_abs ) ) ) {
-                    prev = &vp->vehicle();
-                }
-            }
-            if( !prev && !vname.empty() ) {
-                for( const wrapped_vehicle &wv : vehs ) {
-                    if( wv.v && wv.v->name == vname ) {
-                        prev = wv.v;
-                        break;
-                    }
-                }
-            }
-            if( prev ) {
+            // Tear down the previous local instance of THIS nid (if any) before
+            // re-placing it.  Match ONLY by network id — the old position/name
+            // fallback destroyed unrelated same-type vehicles (three spawned
+            // carts collapsed into one, because a new nid's position lookup
+            // grabbed a different cart).  A never-before-seen nid has no prior
+            // instance, so nothing is torn down and we simply create it below.
+            if( vehicle *prev = find_client_veh_by_nid( vehs, nid ) ) {
                 mp_log( "[cdda-mp] CLI-VEH-REPLACE: nid=" + std::to_string( nid )
                         + " name=\"" + prev->name + "\"" );
                 m.destroy_vehicle( prev );
             }
-            if( prev_it != g_client_veh_pos.end() ) {
-                g_client_veh_pos.erase( prev_it );
-            }
+            g_client_veh_pos.erase( nid );
 
             JsonObject snap = vo.get_object( "snapshot" );
             snap.allow_omitted_members();
@@ -10779,6 +10776,7 @@ static void apply_vehicle_sync( JsonObject &jo )
                         + "," + std::to_string( new_abs.z() ) );
                 continue;
             }
+            placed->mp_net_id = nid;   // stable identity for later matching
             g_client_veh_pos[nid] = placed->pos_abs();
             mp_log( "[cdda-mp] CLI-VEH-CREATE: nid=" + std::to_string( nid )
                     + " abs=" + std::to_string( new_abs.x() )
@@ -10797,6 +10795,12 @@ static void apply_vehicle_sync( JsonObject &jo )
                                            ? pos_it->second
                                            : new_abs;
 
+        // Identity match first: if this host vehicle was already tagged with its
+        // network id (on a prior snapshot or adopt), use that copy directly — no
+        // position/name guessing, which is what collapsed multiple same-type
+        // carts and lost drifted ones.
+        found = find_client_veh_by_nid( vehs, nid );
+
         // Position-based matches are a guess, not a confirmed identity — an
         // independently-mapgen'd static vehicle (e.g. a parking-lot special)
         // can coincidentally sit at the exact tile the host's vehicle
@@ -10808,7 +10812,7 @@ static void apply_vehicle_sync( JsonObject &jo )
         // Require the name to agree too; a mismatch is logged and the match
         // rejected so it falls through to the name fallback / SKIP-UNKNOWN
         // instead of corrupting an unrelated vehicle.
-        if( m.inbounds( search_abs ) ) {
+        if( !found && m.inbounds( search_abs ) ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == search_abs ) {
                     if( vname.empty() || wv.v->name == vname ) {
@@ -10847,6 +10851,12 @@ static void apply_vehicle_sync( JsonObject &jo )
                     break;
                 }
             }
+        }
+
+        // Adopt: tag whatever we matched by position/name with this nid so every
+        // future lookup is pure identity (and the cull leaves it alone).
+        if( found && found->mp_net_id == 0 ) {
+            found->mp_net_id = nid;
         }
 
         // First sighting of this nid resolving to an existing local vehicle
@@ -11153,6 +11163,12 @@ static void apply_vehicle_sync( JsonObject &jo )
         for( const wrapped_vehicle &wv : m.get_vehicles() ) {
             vehicle *v = wv.v;
             if( !v || v == av_veh ) {
+                continue;
+            }
+            // Never cull a vehicle we've tagged with a host network id — it's a
+            // real host vehicle, removed only via the removed_vehicles path.
+            // Only untagged (client-local phantom) vehicles are cull candidates.
+            if( v->mp_net_id != 0 ) {
                 continue;
             }
             const tripoint_abs_ms vp = v->pos_abs();
