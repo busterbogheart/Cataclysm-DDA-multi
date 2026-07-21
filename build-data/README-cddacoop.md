@@ -306,7 +306,7 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
-### Unreleased
+### 2026-07-21
 
 - **Item duplication fixes** — closed several ways items could clone themselves when moving them between a vehicle and your inv
 - **More vehicle sync stability** — spawning or parking several vehicles near each other no longer makes an earlier one vanish or collapse into nothingness on the client's screen
