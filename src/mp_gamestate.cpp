@@ -10720,36 +10720,6 @@ static void apply_vehicle_sync( JsonObject &jo )
 
     const VehicleList vehs = m.get_vehicles();
 
-    // DIAG (veh-thrash root): dump the packet's nid list AND the current client
-    // vehicle inventory (each mp_net_id@pos) at entry, so we can see exactly what
-    // exists before the apply loop and which vehicle a later REPLACE/cull tears
-    // down.  Rate-limited so a stationary two-vehicle scene doesn't flood.
-    {
-        static int64_t s_last_inv_dump_ms = -1;
-        const int64_t now_ms = mp_now_ms();
-        if( now_ms - s_last_inv_dump_ms > 2000 ) {
-            s_last_inv_dump_ms = now_ms;
-            std::string pkt_nids;
-            for( const JsonValue &e : jo.get_array( "vehicles" ) ) {
-                JsonObject eo = e.get_object();
-                eo.allow_omitted_members();
-                pkt_nids += std::to_string( eo.get_int( "nid", 0 ) ) +
-                            ( eo.has_object( "snapshot" ) ? "(snap) " : " " );
-            }
-            std::string inv;
-            for( const wrapped_vehicle &wv : vehs ) {
-                if( !wv.v ) {
-                    continue;
-                }
-                const tripoint_abs_ms p = wv.v->pos_abs();
-                inv += "nid" + std::to_string( wv.v->mp_net_id ) + "@" +
-                       std::to_string( p.x() ) + "," + std::to_string( p.y() ) + " ";
-            }
-            mp_log( "[cdda-mp] CLI-VEH-APPLY-ENTER: pkt_nids=[ " + pkt_nids +
-                    "] client_inv=[ " + inv + "]" );
-        }
-    }
-
     // Authoritative positions of every host vehicle in this broadcast.
     // vehicle_step lists ALL host vehicles, so this is the complete set; used
     // after the apply loop to cull client-local phantom vehicles.
@@ -11172,16 +11142,8 @@ static void apply_vehicle_sync( JsonObject &jo )
                 // UID-diff that briefly replaced this could not round-trip
                 // cross-owned pickups/drops or item stacking — it duplicated and
                 // retained items (the cart dup).  A full replace can't desync.
-                // DIAG (dime-dupe root): record what we erase (uid list) so we can
-                // tell whether an in-flight host broadcast resurrects an item the
-                // client just optimistically picked up.  Paired with the rebuilt
-                // uid dump below.
-                std::string erased_uids;
                 {
                     vehicle_stack stack = veh.get_items( part );
-                    for( const item &it : stack ) {
-                        erased_uids += std::to_string( it.uid().get_value() ) + " ";
-                    }
                     while( !stack.empty() ) {
                         stack.erase( stack.begin() );
                     }
@@ -11211,20 +11173,6 @@ static void apply_vehicle_sync( JsonObject &jo )
                             }
                         } catch( const JsonError & ) {}
                     }
-                }
-                // DIAG (dime-dupe root): dump erased-vs-rebuilt uids so a resurrected
-                // just-picked item is visible (erased uid absent from wire, or a wire
-                // uid the client had already removed reappearing).
-                {
-                    std::string wire_uids;
-                    for( const auto &mu : mirror_uids ) {
-                        wire_uids += std::to_string( mu.first ) + " ";
-                    }
-                    mp_log( "[cdda-mp] CLI-CARGO-REPLACE @ "
-                            + std::to_string( vp_abs.x() ) + ","
-                            + std::to_string( vp_abs.y() ) + ","
-                            + std::to_string( vp_abs.z() )
-                            + " erased=[ " + erased_uids + "] wire=[ " + wire_uids + "]" );
                 }
                 // Baseline the client→host delta to exactly this authoritative
                 // set, so build_client_veh_cargo_changes() reports only the
