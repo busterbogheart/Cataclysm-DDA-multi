@@ -1318,8 +1318,13 @@ struct mp_hud_t {
                 ps = "--";
                 pc = c_dark_gray;
             } else {
-                pc = ping < 120 ? c_green
-                     : ping < 300 ? c_yellow : c_red;
+                // Thresholds tuned for the actual co-op use case (turn-based over
+                // cellular/tether/Tailscale), not LAN: normal mobile RTT sits
+                // ~80-180ms and read as constant yellow before.  Turn-based play
+                // is latency-tolerant, so green covers a healthy link, yellow
+                // means noticeably laggy, red means actually degraded.
+                pc = ping < 200 ? c_green
+                     : ping < 500 ? c_yellow : c_red;
                 ps = std::to_string( ping ) + "ms";
             }
             const int ping_x = W - static_cast<int>( ps.size() ) - 1;
