@@ -10881,6 +10881,32 @@ static void apply_vehicle_sync( JsonObject &jo )
                         + " name=\"" + vname + "\""
                         + " first_encounter=" + std::to_string( first_encounter )
                         + " (further skips for this nid suppressed 10s)" );
+                // DIAG (veh-thrash root): dump every client vehicle within 12
+                // tiles of new_abs so we can tell whether the cart drifted off
+                // its tracked/reported tile (present nearby, match failed) or is
+                // genuinely absent (culled/destroyed).  Fresh list — not the
+                // pre-loop `vehs` snapshot the match used — to catch a stale-list
+                // miss too.
+                {
+                    std::string near;
+                    for( const wrapped_vehicle &wv : m.get_vehicles() ) {
+                        if( !wv.v ) {
+                            continue;
+                        }
+                        const tripoint_abs_ms p = wv.v->pos_abs();
+                        if( p.z() == new_abs.z() &&
+                            std::abs( p.x() - new_abs.x() ) <= 12 &&
+                            std::abs( p.y() - new_abs.y() ) <= 12 ) {
+                            near += "\"" + wv.v->name + "\"@" +
+                                    std::to_string( p.x() ) + "," +
+                                    std::to_string( p.y() ) + " ";
+                        }
+                    }
+                    mp_log( "[cdda-mp] CLI-VEH-SKIP-DIAG: nid=" + std::to_string( nid ) +
+                            " tracked=" + std::to_string( search_abs.x() ) + "," +
+                            std::to_string( search_abs.y() ) +
+                            " nearby=[ " + near + "]" );
+                }
                 // Ask the host to re-include a full snapshot for this nid on its
                 // next broadcast — closes the "invisible forever" gap where the
                 // one-shot snapshot was missed/superseded before this client
