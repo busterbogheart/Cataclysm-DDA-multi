@@ -1303,7 +1303,7 @@ struct mp_hud_t {
         }
 
         // Right edge: latency + the co-op kill tally.  Ping is the round-trip ms
-        // colored green/yellow/red; tally is "☠ <you>·<partner>", perspective-
+        // colored green/yellow/red; tally is "kills <you>·<partner>", perspective-
         // correct (my kills first), a little friendly rivalry counter.
         {
             // True network RTT from the heartbeat ping/pong (io thread), not the
@@ -1329,16 +1329,16 @@ struct mp_hud_t {
             const int partner_kills = is_hosting() ? g_client_kills : g_host_kills;
             const std::string mk = std::to_string( my_kills );
             const std::string pk = std::to_string( partner_kills );
-            const std::string tally = "☠ " + mk + "·" + pk;
+            const std::string tally = "kills " + mk + "·" + pk;
             const int tally_x = ping_x - 2 - utf8_width( tally );
             if( tally_x > x ) {   // draw only if it doesn't overrun the left content
                 // Color the two numbers apart so it's obvious which is which at a
                 // glance: partner's count in green to match their green '@' proxy
-                // glyph on the map; yours in white (your own '@' color), skull +
+                // glyph on the map; yours in white (your own '@' color), label +
                 // separator neutral gray.
                 int tx = tally_x;
-                mvwprintz( win, point( tx, crow ), c_light_gray, "☠ " );
-                tx += utf8_width( "☠ " );
+                mvwprintz( win, point( tx, crow ), c_dark_gray, "kills " );
+                tx += utf8_width( "kills " );
                 mvwprintz( win, point( tx, crow ), c_white, "%s", mk.c_str() );
                 tx += utf8_width( mk );
                 mvwprintz( win, point( tx, crow ), c_light_gray, "·" );
@@ -1994,23 +1994,13 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_client_veh_cargo_basel
 // without this the client can't see items the host drops into trunks/seats/etc.,
 // and its stale snapshot would then overwrite the host on the next client drop.
 static std::unordered_map<tripoint_abs_ms, std::string> g_host_veh_cargo_baseline;
-// Host-side: the set of item UIDs the client most recently reported for a given
-// cargo vpart via client_veh_cargo_changes.  Used to diff incoming updates
-// against reality instead of blindly erasing the whole cargo stack (see the
-// item_location invalidation bug, 2026-07-10 / GH#15, 2026-07-11) — a client
-// echoing a stale/locally-generated view of a vehicle it isn't actually
-// modifying must never be able to destroy items the host is holding live
-// references into (e.g. an in-progress ACT_PICKUP).
-static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_client_veh_cargo_known_uids;
-// (Ground-tile item UID-diff maps removed 2026-07-19: the plain-tile apply is
-// back to i_clear()+rebuild after the 2026-07-11 UID-diff caused the ground-item
-// duplication balloon — item_uid regenerates on add_item so the diff only ever
-// added.  Vehicle cargo below keeps the UID-diff, which is working (#15).)
-// Client-side: same as g_client_veh_cargo_known_uids above, but for vehicle
-// cargo — the client-side apply of the host's per-cargo-part item list
-// (mirrors g_client_veh_cargo_known_uids, host-side, for the opposite
-// direction of the same wire message family).
-static std::unordered_map<tripoint_abs_ms, std::set<int64_t>> g_host_veh_cargo_known_uids;
+// (Vehicle-cargo AND ground-tile UID-diff maps both removed: the 2026-07-11
+// UID-diff duplicated/retained items — item_uid regenerates on the add_item
+// copy so per-UID matching never converges, and it can't express a cross-owned
+// removal (host places, client takes).  Ground tiles reverted to i_clear+rebuild
+// 2026-07-19; vehicle cargo reverted to erase-all+rebuild 2026-07-20.  Both are
+// authoritative full replaces — the sender's list IS the truth — which round-trip
+// pickups/drops and item stacking that diffing could not.)
 // Client→server worn-list baseline.  When the worn signature changes (e.g.
 // drop_activity_actor peeled a worn garment off as part of a drop), we trigger
 // a client_resync_worn() so the host's proxy mirrors the new worn list.
@@ -3777,17 +3767,23 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             std::to_string( vp_abs.y() ) + "," +
                             std::to_string( vp_abs.z() ) );
 
-                    // Parse the client's incoming item list up front so we can diff
-                    // by UID instead of blindly erasing everything already here.
-                    // (Fixed 2026-07-11, GH#15: the old erase+recreate destroyed the
-                    // original item objects on every apply, including items the host
-                    // itself had just looted in — a client periodically re-echoing a
-                    // stale/locally-generated view of a vehicle it wasn't actually
-                    // touching could wipe the host's real, growing pile out from
-                    // under an in-progress ACT_PICKUP and dangle its item_location
-                    // targets, which is what crashed the host.)
-                    std::vector<item> incoming_items;
-                    std::set<int64_t> incoming_uids;
+                    // Authoritative full replace — restores the pre-c8cd48032e
+                    // behavior (mirrors d6232daffa's ground-tile revert).  The
+                    // client's list for a part it just mutated IS the cargo: erase
+                    // everything, rebuild from the wire.  The UID-diff that briefly
+                    // replaced this protected host-placed items from client-driven
+                    // removal, so a client pickup of a host-dropped item never
+                    // cleared on the host (the retain), and it thrashed/duped on
+                    // item stacking.  A full replace can't desync.
+                    std::string had;
+                    {
+                        vehicle_stack stack = veh.get_items( part );
+                        while( !stack.empty() ) {
+                            had += stack.begin()->typeId().str() + ",";
+                            stack.erase( stack.begin() );
+                        }
+                    }
+                    std::string added;
                     if( co.has_array( "items" ) ) {
                         for( const JsonValue &iv : co.get_array( "items" ) ) {
                             try {
@@ -3797,78 +3793,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() &&
                                     new_item.typeId().is_valid() ) {
-                                    incoming_uids.insert( new_item.uid().get_value() );
-                                    incoming_items.push_back( std::move( new_item ) );
+                                    added += new_item.typeId().str() + ",";
+                                    veh.add_item( m, part, new_item );
                                 }
                             } catch( const JsonError & ) {}
                         }
                     }
-
-                    std::set<int64_t> &known_uids = g_client_veh_cargo_known_uids[vp_abs];
-
-                    // Remove only items the client previously reported for this cell
-                    // and has now stopped reporting (a genuine client-side removal).
-                    // Items the host added itself (e.g. via its own pickup/craft) were
-                    // never in known_uids, so they're never touched here.
-                    {
-                        vehicle_stack stack = veh.get_items( part );
-                        std::vector<int64_t> to_remove;
-                        for( const item &it : stack ) {
-                            const int64_t uid = it.uid().get_value();
-                            if( known_uids.count( uid ) && !incoming_uids.count( uid ) ) {
-                                to_remove.push_back( uid );
-                            }
-                        }
-                        if( !to_remove.empty() ) {
-                            std::string removed;
-                            for( int64_t uid : to_remove ) {
-                                for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
-                                    if( iter->uid().get_value() == uid ) {
-                                        removed += iter->typeId().str() + ",";
-                                        stack.erase( iter );
-                                        break;
-                                    }
-                                }
-                            }
-                            mp_log( "[cdda-mp] server veh cargo REMOVE @ " +
-                                    std::to_string( vp_abs.x() ) + "," +
-                                    std::to_string( vp_abs.y() ) + "," +
-                                    std::to_string( vp_abs.z() ) + " items=" + removed );
-                        }
-                    }
-
-                    // Add only items whose UID isn't already present — an item the
-                    // host already has (possibly with live references into it) is
-                    // left completely alone rather than replaced.
-                    {
-                        std::set<int64_t> existing_uids;
-                        for( const item &it : veh.get_items( part ) ) {
-                            existing_uids.insert( it.uid().get_value() );
-                        }
-                        std::string added;
-                        for( item &new_item : incoming_items ) {
-                            const int64_t iu = new_item.uid().get_value();
-                            if( existing_uids.count( iu ) ) {
-                                continue;
-                            }
-                            added += new_item.typeId().str() + ",";
-                            // Preserve the client's UID across add_item's copy so
-                            // the next diff recognises this item as already-present
-                            // rather than re-adding it (the cargo dup regression).
-                            if( std::optional<vehicle_stack::iterator> ins =
-                                    veh.add_item( m, part, new_item ) ) {
-                                ( *ins )->set_uid( iu );
-                            }
-                        }
-                        if( !added.empty() ) {
-                            mp_log( "[cdda-mp] server veh cargo ADD @ " +
-                                    std::to_string( vp_abs.x() ) + "," +
-                                    std::to_string( vp_abs.y() ) + "," +
-                                    std::to_string( vp_abs.z() ) + " items=" + added );
-                        }
-                    }
-
-                    known_uids = std::move( incoming_uids );
+                    mp_log( "[cdda-mp] server veh cargo REPLACE @ " +
+                            std::to_string( vp_abs.x() ) + "," +
+                            std::to_string( vp_abs.y() ) + "," +
+                            std::to_string( vp_abs.z() ) +
+                            " had=" + had + " now=" + added );
                 }
             }
         } catch( const JsonError & ) {}
@@ -11092,14 +11027,19 @@ static void apply_vehicle_sync( JsonObject &jo )
                         std::to_string( vp_abs.x() ) + "," +
                         std::to_string( vp_abs.y() ) + "," +
                         std::to_string( vp_abs.z() ) );
-                // UID diff instead of erase-all+rebuild (2026-07-11, mirrors the
-                // host-side fix for the same bug — see g_client_veh_cargo_known_uids):
-                // erasing every item destroys the original objects, so any
-                // client-held item_location pointing into this cargo (e.g. a
-                // pickup_selector UI open on the trunk) goes dangling even when
-                // "the same item" logically survives.
-                std::vector<item> incoming_items;
-                std::set<int64_t> incoming_uids;
+                // Authoritative full replace — restores the pre-c8cd48032e
+                // behavior (mirrors d6232daffa's ground-tile revert).  The host's
+                // list IS the cargo: erase everything, rebuild from the wire.  The
+                // UID-diff that briefly replaced this could not round-trip
+                // cross-owned pickups/drops or item stacking — it duplicated and
+                // retained items (the cart dup).  A full replace can't desync.
+                {
+                    vehicle_stack stack = veh.get_items( part );
+                    while( !stack.empty() ) {
+                        stack.erase( stack.begin() );
+                    }
+                }
+                std::string items_sig;
                 if( co.has_array( "items" ) ) {
                     for( const JsonValue &iv : co.get_array( "items" ) ) {
                         try {
@@ -11109,74 +11049,17 @@ static void apply_vehicle_sync( JsonObject &jo )
                             new_item.deserialize( io );
                             if( !new_item.typeId().is_empty() &&
                                 new_item.typeId().is_valid() ) {
-                                incoming_uids.insert( new_item.uid().get_value() );
-                                incoming_items.push_back( std::move( new_item ) );
+                                veh.add_item( m, part, new_item );
+                                items_sig += serialize( new_item ) + ',';
                             }
                         } catch( const JsonError & ) {}
                     }
                 }
-
-                std::set<int64_t> &known_uids = g_host_veh_cargo_known_uids[vp_abs];
-
-                // Remove only items the host previously reported for this part
-                // and has now stopped reporting (a genuine removal).
-                {
-                    vehicle_stack stack = veh.get_items( part );
-                    std::vector<int64_t> to_remove;
-                    for( const item &it : stack ) {
-                        const int64_t uid = it.uid().get_value();
-                        if( known_uids.count( uid ) && !incoming_uids.count( uid ) ) {
-                            to_remove.push_back( uid );
-                        }
-                    }
-                    for( int64_t uid : to_remove ) {
-                        for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
-                            if( iter->uid().get_value() == uid ) {
-                                stack.erase( iter );
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Add only items whose UID isn't already present — an item the
-                // client already has (possibly with live references into it) is
-                // left completely alone rather than replaced.
-                {
-                    std::set<int64_t> existing_uids;
-                    for( const item &it : veh.get_items( part ) ) {
-                        existing_uids.insert( it.uid().get_value() );
-                    }
-                    for( item &new_item : incoming_items ) {
-                        const int64_t iu = new_item.uid().get_value();
-                        if( existing_uids.count( iu ) ) {
-                            continue;
-                        }
-                        // Preserve the host's UID across add_item's copy so the
-                        // next diff recognises this item as already-present
-                        // rather than re-adding it (the cargo dup regression).
-                        if( std::optional<vehicle_stack::iterator> added =
-                                veh.add_item( m, part, new_item ) ) {
-                            ( *added )->set_uid( iu );
-                        }
-                    }
-                }
-                known_uids = std::move( incoming_uids );
-
-                // Resync the client→host baseline to the post-apply (full,
-                // merged) state so the next build_client_veh_cargo_changes()
-                // doesn't immediately re-send the host's authoritative contents
-                // back as a "client delta" (which would be a no-op but pollutes
-                // the wire).  Recomputed from the live stack, not just what was
-                // added this pass, since untouched pre-existing items must still
-                // be reflected in the baseline.
-                {
-                    std::string items_sig;
-                    for( const item &it : veh.get_items( part ) ) {
-                        items_sig += serialize( it ) + ',';
-                    }
-                    g_client_veh_cargo_baseline[vp_abs] = items_sig;
-                }
+                // Resync the client→host baseline to the post-apply state so the
+                // next build_client_veh_cargo_changes() doesn't immediately
+                // re-send the host's authoritative contents back as a "client
+                // delta" (a no-op that just pollutes the wire).
+                g_client_veh_cargo_baseline[vp_abs] = items_sig;
             }
         }
     }
