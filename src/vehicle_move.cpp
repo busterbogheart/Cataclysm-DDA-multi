@@ -918,6 +918,28 @@ veh_collision vehicle::part_collision( map &here, int part, const tripoint_abs_m
     const bool is_veh_collision = !bash_floor && ovp && &ovp->vehicle() != this;
     const bool is_body_collision = !bash_floor && critter != nullptr;
 
+    // DIAG (phantom co-op collision): when the vehicle registers a body collision
+    // while hosting, dump WHAT it hit.  Chasing the "belted driver dies at ~4 mph
+    // with nothing around, random" report — prime suspect is the car colliding
+    // with its OWN client-proxy passenger during a transient boarding desync
+    // (the in_vehicle guard just above only clears a Character when in_vehicle is
+    // true, so a proxy briefly flagged in_vehicle=false reads as an obstacle).
+    // Logging in_vehicle + proxy/partner identity confirms or refutes it.
+    if( is_body_collision && cata_mp::is_hosting() ) {
+        std::string flags;
+        if( Character *cch = dynamic_cast<Character *>( critter ) ) {
+            flags = " char in_vehicle=" + std::to_string( cch->in_vehicle )
+                    + " is_proxy=" + std::to_string( cata_mp::is_remote_player( cch->getID() ) )
+                    + " is_partner=" + std::to_string( cata_mp::is_partner_npc( cch->getID() ) );
+        }
+        cata_mp::mp_log( "[veh-bodycoll] hit=\"" + critter->disp_name() + "\"" + flags
+                         + " veh=\"" + name + "\" velocity=" + std::to_string( velocity )
+                         + " coll_tile=" + std::to_string( p.x() ) + "," + std::to_string( p.y() )
+                         + "," + std::to_string( p.z() )
+                         + " veh_pos=" + std::to_string( pos_abs().x() ) + ","
+                         + std::to_string( pos_abs().y() ) );
+    }
+
     veh_collision ret;
     ret.type = veh_coll_nothing;
     ret.part = part;
