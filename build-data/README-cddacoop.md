@@ -306,6 +306,12 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### 2026-07-26
+
+- **Fixed a crash when both players reach/wield the same item** — picking up, examining, or opening the advanced inventory manager while your partner had one of those same screens open on their end could crash their game.  Now it just errors, and only sometimes. 
+- **Indoor lighting mis-match fixes** — sometimes the client would see a different lighting in a room than the host, especially in taller buildings. The client now gets the host's real ceiling data instead of guessing at its own.
+- **Finally fixed the stamina bug** — even with matching speed/cost, the client could visibly lag further and further behind over a long walk or run.  This should be fixed and you can move together as expected. 
+
 ### 2026-07-21
 
 - **Item duplication fixes** — closed several ways items could clone themselves when moving them between a vehicle and your inv
