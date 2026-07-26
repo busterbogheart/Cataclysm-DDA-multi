@@ -2847,7 +2847,31 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                                      std::to_string( player_character.get_moves() ) +
                                      " stam=" + std::to_string( pre_stam ) + "->" +
                                      std::to_string( player_character.get_stamina() ) +
+                                     " stamina_max=" + std::to_string( player_character.get_stamina_max() ) +
                                      " ter=" + here.ter( next_pos ).id().str() );
+                    // TEMP diag (GH #19, continued): the individual limb-score modifiers
+                    // (limb_run_cost_mod/footing/speed) came back IDENTICAL between this
+                    // client and the host's proxy in the last test, so the ~20-point gap
+                    // must be in one of the OTHER run_cost_effects() terms (No Shoes,
+                    // enchantments, stamina/move-mode multipliers, Downed, etc.). Call the
+                    // same function run_cost() uses internally and log every named effect
+                    // it applied, so the full breakdown can be diffed against the host's
+                    // SRV-MOVE-COST-EFFECTS line for the same move.
+                    {
+                        float diag_movecost = static_cast<float>( mcost );
+                        if( diag ) {
+                            diag_movecost /= M_SQRT2;
+                        }
+                        const std::vector<run_cost_effect> effects =
+                            player_character.run_cost_effects( diag_movecost );
+                        std::string eff_log;
+                        for( const run_cost_effect &e : effects ) {
+                            eff_log += e.description + "(x" + std::to_string( e.times ) +
+                                      "+" + std::to_string( e.plus ) + ") ";
+                        }
+                        cata_mp::mp_log( "[cdda-mp] CLI-MOVE-COST-EFFECTS final=" +
+                                         std::to_string( diag_movecost ) + " [" + eff_log + "]" );
+                    }
                     player_character.set_activity_level(
                         player_character.current_movement_mode()->exertion_level() );
                     if( player_character.is_running() && !player_character.can_run() ) {

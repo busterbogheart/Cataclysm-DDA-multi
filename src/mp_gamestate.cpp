@@ -3349,6 +3349,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         if( cs.has_int( "per" ) ) {
             remote->set_per_base( cs.get_int( "per" ) );
         }
+        if( cs.has_int( "cardio_acc" ) ) {
+            remote->set_cardio_acc( cs.get_int( "cardio_acc" ) );
+        }
         if( cs.has_array( "skills" ) ) {
             for( const JsonValue &entry : cs.get_array( "skills" ) ) {
                 JsonArray ja = entry.get_array();
@@ -4978,7 +4981,19 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 const bool diag = ( std::abs( offset.x ) + std::abs( offset.y ) ) == 2;
                 const int prev_moves = g_remote_moves;
                 g_remote_moves -= remote->run_cost( mcost, diag );
-                remote->burn_move_stamina( prev_moves - g_remote_moves );
+                // GH #19 (host-vs-client move cadence): the client_stamina block
+                // earlier in this same handler already set remote's stamina to the
+                // client's own authoritative post-move value (client burns its own
+                // stamina locally before dispatching, every dispatch carries
+                // client_stamina). Burning again here double-charges the proxy —
+                // it compounds every move since the NEXT move's cost is computed
+                // from the artificially-depleted stamina. Only burn independently
+                // when this message has no client_stamina to trust (shouldn't
+                // happen for a client-originated move/drag, but stay correct for
+                // any other caller of this branch).
+                if( msg.find( "\"client_stamina\":" ) == std::string::npos ) {
+                    remote->burn_move_stamina( prev_moves - g_remote_moves );
+                }
                 acted = true;
                 mp_log( "[cdda-mp] HOST-DRAG-NO-STEP: proxy held in place, "
                         "AP charged " + std::to_string( prev_moves - g_remote_moves ) );
@@ -5045,8 +5060,61 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             const int prev_moves = g_remote_moves;
             const int ap_cost = remote->run_cost( mcost, diag );
             g_remote_moves -= ap_cost;
+            // TEMP diag (GH #19, host-vs-client move cadence): mirrors the
+            // client's own CLI-MOVE-COST log (handle_action.cpp) for the same
+            // move, so the two can be diffed directly — same mcost/ap_cost here
+            // as the client computed locally would mean the SRV-ACK debt-carry
+            // cap is the whole story; a mismatch (esp. terrain id) would point
+            // at client-local-mapgen divergence (GH #10/#11) feeding a
+            // different, more expensive terrain into the host's authoritative
+            // combined_movecost than what the client saw on its own map.
+            mp_log( "[cdda-mp] SRV-MOVE-COST dir_offset=(" + std::to_string( offset.x ) + "," +
+                    std::to_string( offset.y ) + ") diag=" + std::to_string( diag ) +
+                    " mcost=" + std::to_string( mcost ) +
+                    " ap_cost=" + std::to_string( ap_cost ) +
+                    " remote_moves=" + std::to_string( prev_moves ) + "->" +
+                    std::to_string( g_remote_moves ) +
+                    " move_mode=" + remote->move_mode.str() +
+                    " stamina=" + std::to_string( remote->get_stamina() ) +
+                    " stamina_max=" + std::to_string( remote->get_stamina_max() ) +
+                    " can_run=" + std::to_string( remote->can_run() ) +
+                    " ter=" + m.ter( next ).id().str() );
+            // TEMP diag (GH #19, continued): the individual limb-score modifiers came
+            // back IDENTICAL between this proxy and the real client in the last test
+            // (and pain isn't referenced anywhere in run_cost_effects at all), so the
+            // ~20-point gap must be in one of the OTHER terms (No Shoes, enchantments,
+            // stamina/move-mode multipliers, Downed, etc.). Call the exact same
+            // function run_cost() used above and log every named effect it applied,
+            // to diff directly against the client's CLI-MOVE-COST-EFFECTS line.
+            {
+                float diag_movecost = static_cast<float>( mcost );
+                if( diag ) {
+                    diag_movecost /= M_SQRT2;
+                }
+                const std::vector<run_cost_effect> effects =
+                    remote->run_cost_effects( diag_movecost );
+                std::string eff_log;
+                for( const run_cost_effect &e : effects ) {
+                    eff_log += e.description + "(x" + std::to_string( e.times ) +
+                              "+" + std::to_string( e.plus ) + ") ";
+                }
+                mp_log( "[cdda-mp] SRV-MOVE-COST-EFFECTS final=" +
+                        std::to_string( diag_movecost ) + " [" + eff_log + "]" );
+            }
             // burn_move_stamina with the actual AP consumed, mirroring game.cpp:7776.
-            remote->burn_move_stamina( prev_moves - g_remote_moves );
+            // GH #19 (host-vs-client move cadence, log-confirmed 2026-07-26): the
+            // client_stamina block earlier in this same handler already set
+            // remote's stamina to the client's own authoritative post-move value
+            // (the client burns its own stamina locally before dispatching, and
+            // every dispatch carries client_stamina). Burning again here
+            // double-charges the proxy every single move — the run_cost_effects
+            // breakdown showed the entire host-vs-client ap_cost gap (e.g. 103 vs
+            // 123) traced to the "Stamina" multiplier alone, and it compounds
+            // because each move's cost depends on the (increasingly wrong)
+            // stamina left over from the double-charge on the move before it.
+            if( msg.find( "\"client_stamina\":" ) == std::string::npos ) {
+                remote->burn_move_stamina( prev_moves - g_remote_moves );
+            }
             // Auto-transition to walk when stamina runs out (mirrors game.cpp:8970).
             static const move_mode_id walk_id( "walk" );
             if( !remote->can_run() ) {
@@ -9816,6 +9884,12 @@ std::string client_enrich_action( const std::string &json )
     char_stats += ",\"dex\":" + std::to_string( av.get_dex_base() );
     char_stats += ",\"int\":" + std::to_string( av.get_int_base() );
     char_stats += ",\"per\":" + std::to_string( av.get_per_base() );
+    // GH #19: without this the proxy's own (unsynced, default-initialized)
+    // cardio_acc feeds get_cardiofit() -> get_stamina_max(), producing a
+    // stamina ceiling that has nothing to do with the real client's actual
+    // fitness — same root class as the is_npc() shortcut fix in
+    // character_health.cpp's get_cardiofit().
+    char_stats += ",\"cardio_acc\":" + std::to_string( av.get_cardio_acc() );
     char_stats += ",\"skills\":[";
     bool first_s = true;
     for( const auto &[sid, slevel] : av.get_all_skills() ) {

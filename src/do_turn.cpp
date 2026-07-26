@@ -937,11 +937,22 @@ bool game::do_turn()
                         cata_mp::mp_log( "[cdda-mp] HOST-HANDLE-ACTION: calling, pre_moves=" +
                                          std::to_string( u.get_moves() ) );
                     }
+                    // TEMP diag (host-vs-client move cadence, GH #19): host movement
+                    // runs the plain unmodified SP path with no lockstep gate, unlike
+                    // the client's mp_dispatch (already logs SEND/DROP per attempt in
+                    // handle_action.cpp). Log every real host tile-move with a wall-
+                    // clock timestamp so it can be directly compared against the
+                    // client's CLI mp_dispatch SEND cadence from the same test.
+                    const tripoint_abs_ms pre_pos = cata_mp::is_hosting() ? u.pos_abs() : tripoint_abs_ms();
                     const bool acted = handle_action();
                     if( cata_mp::is_hosting() ) {
                         cata_mp::mp_log( "[cdda-mp] HOST-HANDLE-ACTION: returned acted=" +
                                          std::to_string( acted ) +
                                          " post_moves=" + std::to_string( u.get_moves() ) );
+                        if( u.pos_abs() != pre_pos ) {
+                            cata_mp::mp_log( "[cdda-mp] HOST-MOVE-STEP: " +
+                                             pre_pos.to_string() + " -> " + u.pos_abs().to_string() );
+                        }
                     }
                     if( acted ) {
                         ++moves_since_last_save;

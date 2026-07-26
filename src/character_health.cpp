@@ -2377,7 +2377,15 @@ void Character::update_stamina( int turns )
 
 int Character::get_cardiofit() const
 {
-    if( is_npc() ) {
+    // GH #19 (host-vs-client move cadence, log-confirmed 2026-07-26): mirrors the
+    // same is_remote_player() exception get_stamina_max() (above) already has —
+    // get_stamina_max() calls this function, so without the same exception here
+    // a remote player's host-side proxy took the flat NPC shortcut below instead
+    // of the real fitness-based formula, computing a stamina_max wildly different
+    // from the real client's (13500 vs 8500 in the confirmed repro) even with
+    // otherwise-identical synced stats. That single mismatch was the entire
+    // source of the host-vs-client movement-cost/cadence gap.
+    if( is_npc() && !cata_mp::is_remote_player( getID() ) ) {
         // No point in doing a bunch of checks on NPCs for now since they can't use cardio.
         return 2 * get_cardio_acc_base();
     }
