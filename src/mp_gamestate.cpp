@@ -795,6 +795,18 @@ static uint32_t g_client_last_grant_seq = 0;
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
 
+// Server: set whenever a client_stamina sync was just applied to the proxy
+// (handle_remote_action, run via process_mp_events() before grant_client_turn()
+// each host turn — see do_turn.cpp). Consumed and cleared by grant_client_turn()
+// to skip its own update_stamina(1) regen tick that turn: the client_stamina
+// value already reflects the real character's own regen/burn for that move, so
+// an extra independent tick on top of it is pure drift with nothing to
+// reconcile it against — GH #19, log-confirmed 2026-07-26 (ap_cost holding a
+// steady few points above the client's own calc even after the stamina_max fix,
+// worse the more the client got locked out waiting on a grant, since a locked
+// turn has no client_stamina message to correct the tick).
+static bool g_remote_stamina_synced_this_turn = false;
+
 // Server: elapsed wait time (ms) in the last wait_for_client_action() call.
 static int g_wait_elapsed_ms = 0;
 // Server: duration (ms) of the last monmove() (AI turn) call; set by do_turn.cpp.
@@ -3651,6 +3663,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             jo.allow_omitted_members();
             if( jo.has_int( "client_stamina" ) ) {
                 remote->set_stamina( jo.get_int( "client_stamina" ) );
+                g_remote_stamina_synced_this_turn = true;
             }
         } catch( const JsonError & ) {}
     }
@@ -5690,8 +5703,17 @@ void grant_client_turn()
             " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) +
             " host_act=" + ( ha ? ha.id().str() : "none" ) );
     // Proxy skips npcmove so never auto-regenerates stamina. Replicate the
-    // update_body() path that the real avatar gets each game turn.
-    remote->update_stamina( 1 );
+    // update_body() path that the real avatar gets each game turn — but only
+    // when a client_stamina sync hasn't ALREADY set the proxy's stamina to the
+    // real character's own authoritative value this turn (process_mp_events()
+    // runs before this in do_turn.cpp, so a sync earlier in the same turn is
+    // already reflected). Ticking regen independently on top of a fresh sync
+    // is redundant and drifts from what the real client experienced — GH #19.
+    if( g_remote_stamina_synced_this_turn ) {
+        g_remote_stamina_synced_this_turn = false;
+    } else {
+        remote->update_stamina( 1 );
+    }
     check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
     server *srv = get_active_server();
     if( srv ) {
