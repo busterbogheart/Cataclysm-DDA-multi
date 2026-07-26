@@ -12418,15 +12418,42 @@ std::string serialize_remote_player_state()
     // Scan for tile changes around both the remote player AND the host so that
     // doors/terrain the host interacts with also reach the client.
     std::string tile_changes = build_tile_changes( pos, 20 );
+    auto merge_tile_changes = [&tile_changes]( const std::string & extra ) {
+        if( extra.size() <= 2 ) { // just "[]" — nothing to merge
+            return;
+        }
+        if( tile_changes == "[]" ) {
+            tile_changes = extra;
+        } else {
+            tile_changes = tile_changes.substr( 0, tile_changes.size() - 1 )
+                           + "," + extra.substr( 1 );
+        }
+    };
     if( host_pos != pos ) {
-        std::string host_tc = build_tile_changes( host_pos, 20 );
-        if( host_tc.size() > 2 ) { // not just "[]"
-            if( tile_changes == "[]" ) {
-                tile_changes = host_tc;
-            } else {
-                tile_changes = tile_changes.substr( 0, tile_changes.size() - 1 )
-                               + "," + host_tc.substr( 1 );
-            }
+        merge_tile_changes( build_tile_changes( host_pos, 20 ) );
+    }
+    // Also stream the levels directly overhead (the roof, and whatever's above
+    // it) at both positions. The client runs its own local worldgen for the
+    // join scaffold (GH #10/#11 — client-local-mapgen divergence), so an
+    // un-synced roof above can differ from the host's real one even when the
+    // room underneath is fully in sync, which flips the client's
+    // is_outside/light calc for that room. A single z+1 isn't always enough —
+    // a stairwell/shaft can open straight through several floors before
+    // reaching a real roof or the sky (e.g. a basement at z=-1 needs z=0, 1,
+    // 2… synced, not just z=0), so scan a few levels up, not just one.
+    // Interim fix: send the host's real tiles for those levels so the
+    // client's light calc uses real data instead of its own possibly-
+    // divergent local geometry. Does not fix the underlying worldgen
+    // divergence (tracked separately, needs the join-handshake redesign),
+    // only its visible lighting symptom. map::inbounds() harmlessly no-ops
+    // this once dz runs past the map's real z range.
+    static constexpr int ROOF_SYNC_LEVELS = 3;
+    for( int dz = 1; dz <= ROOF_SYNC_LEVELS; ++dz ) {
+        merge_tile_changes( build_tile_changes(
+                                 tripoint_abs_ms( pos.x(), pos.y(), pos.z() + dz ), 20 ) );
+        if( host_pos != pos ) {
+            merge_tile_changes( build_tile_changes(
+                                     tripoint_abs_ms( host_pos.x(), host_pos.y(), host_pos.z() + dz ), 20 ) );
         }
     }
 
