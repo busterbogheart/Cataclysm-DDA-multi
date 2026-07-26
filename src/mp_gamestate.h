@@ -6,6 +6,7 @@
 #include "character_id.h"
 #include "coordinates.h"
 #include "enums.h" // object_type — used by mp_client_dispatch_grab_if_changed
+#include <functional>
 #include <string>
 
 class npc;
@@ -19,6 +20,38 @@ namespace cata_mp {
 // Called once per game turn from do_turn() — drains the event queue and
 // processes connect/disconnect/action events from remote players.
 void process_mp_events();
+
+// RAII scope guard for UI that builds item_location references into a live
+// map/vehicle item stack and then blocks on a keypress (pickup, examine,
+// advanced inventory). Both process_mp_events() (host) and
+// client_process_incoming() (client) can run re-entrantly while such a menu
+// is blocked waiting for input — see sdltiles.cpp's mp_pump_if_host() and
+// handle_action.cpp's per-poll network pump. If an incoming message mutates
+// the exact item stack the open menu is displaying, its cached
+// item_location entries go stale mid-menu and a subsequent unguarded
+// dereference (inside upstream pickup/inventory UI code, which has no
+// reason to expect concurrent mutation) crashes. While any guard is alive,
+// tile/vehicle-cargo item mutations are deferred instead of applied
+// immediately; they run once the last guard goes out of scope, back in a
+// valid non-reentrant context. See ROADMAP for the 2026-07-26 crash report
+// this guards against.
+class mp_ui_item_ref_guard
+{
+    public:
+        mp_ui_item_ref_guard();
+        ~mp_ui_item_ref_guard();
+        mp_ui_item_ref_guard( const mp_ui_item_ref_guard & ) = delete;
+        mp_ui_item_ref_guard &operator=( const mp_ui_item_ref_guard & ) = delete;
+};
+
+// True while any mp_ui_item_ref_guard is alive. Mutation sites that touch a
+// map tile's or vehicle cargo part's item stack should check this and defer
+// via mp_defer_item_apply() instead of mutating immediately.
+bool mp_ui_holds_item_refs();
+
+// Queues fn to run once the last mp_ui_item_ref_guard goes out of scope.
+// Only meaningful to call while mp_ui_holds_item_refs() is true.
+void mp_defer_item_apply( std::function<void()> fn );
 
 // Returns a JSON string describing the remote player's current position,
 // HP, and nearby visible tiles. Sent to the client after each action.
@@ -172,6 +205,15 @@ void mp_client_dispatch_grab_if_changed( object_type pre_type,
 // around ACTION_HAUL and ACTION_HAUL_TOGGLE after running the SP handler;
 // forwards a toggle_haul action to the host when is_hauling() actually flipped.
 void mp_client_dispatch_hauling_if_changed( bool pre_hauling );
+
+// Client-only: "direct your character" menu, bound to ACTION_LOOT while in
+// client mode (the plain SP loot() the host uses would run against the
+// client's own non-authoritative local zone_manager/map and do nothing
+// real). Lets the client tell their own proxy NPC to work a zone activity
+// using zones the host has already drawn — phase 0 of the loot-zones-in-coop
+// design; the host stays the only zone editor for now. Never assigns any
+// activity locally.
+void mp_client_request_zone_activity();
 
 // Enrich a client action JSON with the current client_light and client_bleed fields.
 // Call before any direct client_send() to ensure the server always receives light/bleed state.

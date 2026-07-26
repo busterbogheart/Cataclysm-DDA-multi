@@ -45,6 +45,7 @@
 #include "messages.h"
 #include "morale_types.h"
 #include "npc.h"
+#include "npctalk.h"
 #include "output.h"
 #include "overmap.h"
 #include "overmapbuffer.h"
@@ -81,6 +82,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -3010,6 +3012,45 @@ void host_broadcast_idle_tick()
     srv->post_broadcast( serialize_remote_player_state() + "\n" );
 }
 
+// See mp_gamestate.h for the "why" — item_location-holding UI (pickup,
+// examine, advanced inventory) racing an incoming network message that
+// mutates the same map tile / vehicle cargo part.  Single-threaded, no
+// mutex needed: both process_mp_events() and client_process_incoming()
+// (the only writers) run synchronously on the main thread, and the guard's
+// scope always starts and ends there too.
+static int g_mp_ui_item_ref_depth = 0;
+static std::vector<std::function<void()>> g_mp_deferred_item_applies;
+
+mp_ui_item_ref_guard::mp_ui_item_ref_guard()
+{
+    ++g_mp_ui_item_ref_depth;
+}
+
+mp_ui_item_ref_guard::~mp_ui_item_ref_guard()
+{
+    if( --g_mp_ui_item_ref_depth == 0 && !g_mp_deferred_item_applies.empty() ) {
+        std::vector<std::function<void()>> pending;
+        pending.swap( g_mp_deferred_item_applies );
+        mp_log( "[cdda-mp] mp_ui_item_ref_guard: draining " +
+                std::to_string( pending.size() ) + " deferred item apply(s)" );
+        for( std::function<void()> &fn : pending ) {
+            fn();
+        }
+    }
+}
+
+bool mp_ui_holds_item_refs()
+{
+    return g_mp_ui_item_ref_depth > 0;
+}
+
+void mp_defer_item_apply( std::function<void()> fn )
+{
+    mp_log( "[cdda-mp] mp_ui_item_ref_guard: deferring item apply (queue size " +
+            std::to_string( g_mp_deferred_item_applies.size() + 1 ) + ")" );
+    g_mp_deferred_item_applies.push_back( std::move( fn ) );
+}
+
 // Standard turn-ending broadcast for handlers in handle_remote_action.
 //
 // All actions that consume the client's full turn budget MUST end with this
@@ -3387,7 +3428,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 remote->male = jo.get_bool( "male" );
             }
             if( jo.has_array( "worn" ) ) {
-                remote->clear_worn();
+                // Parse now; clear_worn()+wear_item() below destructively rebuilds
+                // remote->worn, which is exactly the mp_ui_item_ref_guard hazard
+                // (mp_gamestate.h) if the host has a UI open that holds
+                // item_locations into the proxy's worn/inv containers (e.g. AIM,
+                // or a nearby-NPC-aware pickup/examine menu) — defer the rebuild
+                // until that UI closes instead of mutating underneath it.
+                std::vector<item> worn_items;
                 for( const JsonValue &wv : jo.get_array( "worn" ) ) {
                     JsonObject wo = wv.get_object();
                     wo.allow_omitted_members();
@@ -3411,28 +3458,43 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 + e.what() );
                     }
                     if( !worn_item.typeId().is_empty() && worn_item.typeId().is_valid() ) {
+                        worn_items.push_back( std::move( worn_item ) );
+                    }
+                }
+                auto do_worn_apply = [items = std::move( worn_items )]() mutable {
+                    npc *remote2 = g->critter_by_id<npc>( remote_player_npc_id );
+                    if( !remote2 ) {
+                        return;
+                    }
+                    remote2->clear_worn();
+                    for( item &worn_item : items ) {
                         // wear_item(who, item, interactive, do_calc_encumbrance, do_sort, quiet)
-                        auto result = remote->worn.wear_item( *remote, worn_item,
-                                                             false, false, true, true );
+                        auto result = remote2->worn.wear_item( *remote2, worn_item,
+                                                              false, false, true, true );
                         if( !result ) {
                             mp_log( "[cdda-mp] worn_sync: wear_item FAILED for "
                                     + worn_item.typeId().str() );
                         }
                     }
+                    std::vector<item *> applied_worn;
+                    remote2->worn.inv_dump( applied_worn );
+                    std::string worn_list;
+                    for( const item *wi : applied_worn ) {
+                        worn_list += wi->typeId().str() + ' ';
+                    }
+                    mp_log( "[cdda-mp] worn_sync applied: [" + worn_list + "]" );
+                    // Log overlay IDs the NPC would generate (confirm tileset coverage).
+                    std::string ov_log;
+                    for( const auto &ov : remote2->get_overlay_ids() ) {
+                        ov_log += ov.first + ' ';
+                    }
+                    mp_log( "[cdda-mp] worn_sync overlays: [" + ov_log + "]" );
+                };
+                if( mp_ui_holds_item_refs() ) {
+                    mp_defer_item_apply( std::move( do_worn_apply ) );
+                } else {
+                    do_worn_apply();
                 }
-                std::vector<item *> applied_worn;
-                remote->worn.inv_dump( applied_worn );
-                std::string worn_list;
-                for( const item *wi : applied_worn ) {
-                    worn_list += wi->typeId().str() + ' ';
-                }
-                mp_log( "[cdda-mp] worn_sync applied: [" + worn_list + "]" );
-                // Log overlay IDs the NPC would generate (confirm tileset coverage).
-                std::string ov_log;
-                for( const auto &ov : remote->get_overlay_ids() ) {
-                    ov_log += ov.first + ' ';
-                }
-                mp_log( "[cdda-mp] worn_sync overlays: [" + ov_log + "]" );
             }
             // Apply the client's wielded weapon to the remote NPC.
             // Prefer the full item serialization (carries ammo, mods, charges,
@@ -3526,11 +3588,31 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // available to host-side skill / activity checks.
             if( jo.has_array( "client_inv" ) ) {
                 try {
-                    remote->inv->clear();
+                    // Same defer-while-a-guarded-UI-is-open treatment as the worn
+                    // rebuild above — parse now, mutate remote->inv later if needed.
+                    std::vector<item> inv_items;
                     JsonArray inv_ja = jo.get_array( "client_inv" );
-                    remote->inv->json_load_items( inv_ja );
-                    mp_log( "[cdda-mp] worn_sync: inv rebuilt items=" +
-                            std::to_string( remote->inv->size() ) );
+                    inv_items.reserve( inv_ja.size() );
+                    for( JsonObject iobj : inv_ja ) {
+                        item tmp;
+                        tmp.deserialize( iobj );
+                        inv_items.emplace_back( std::move( tmp ) );
+                    }
+                    auto do_inv_apply = [items = std::move( inv_items )]() mutable {
+                        npc *remote2 = g->critter_by_id<npc>( remote_player_npc_id );
+                        if( !remote2 ) {
+                            return;
+                        }
+                        remote2->inv->clear();
+                        remote2->inv->add_items_bulk( std::move( items ), true, false );
+                        mp_log( "[cdda-mp] worn_sync: inv rebuilt items=" +
+                                std::to_string( remote2->inv->size() ) );
+                    };
+                    if( mp_ui_holds_item_refs() ) {
+                        mp_defer_item_apply( std::move( do_inv_apply ) );
+                    } else {
+                        do_inv_apply();
+                    }
                 } catch( const JsonError &e ) {
                     mp_log( std::string( "[cdda-mp] worn_sync: inv rebuild error: " ) + e.what() );
                 }
@@ -3662,10 +3744,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         // main-thread stalls applying them → HOST-STALL disconnects
                         // (issue #17/#18, the "duped by the hundreds" + "connection
                         // unstable during busy activity").  Replace can't accumulate.
-                        // (The dangling-item_location risk the UID-diff guarded is a
-                        // rare open-pickup-UI-on-this-exact-tile case that was never
-                        // observed for ground tiles; the balloon was constant.)
-                        m.i_clear( bub );
+                        // (The dangling-item_location risk the UID-diff guarded is no
+                        // longer rare — see mp_ui_item_ref_guard in mp_gamestate.h: if
+                        // the host's own pickup/examine/AIM UI is open on this exact
+                        // tile, the replace below is deferred until that UI closes.)
+                        std::vector<item> new_items;
                         for( const JsonValue &iv : to.get_array( "items" ) ) {
                             try {
                                 item new_item;
@@ -3673,9 +3756,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 io.allow_omitted_members();
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
-                                    m.add_item( bub, std::move( new_item ) );
+                                    new_items.push_back( std::move( new_item ) );
                                 }
                             } catch( const JsonError & ) {}
+                        }
+                        auto do_replace = [bub, items = std::move( new_items )]() mutable {
+                            map &m2 = get_map();
+                            m2.i_clear( bub );
+                            for( item &it : items ) {
+                                m2.add_item( bub, std::move( it ) );
+                            }
+                        };
+                        if( mp_ui_holds_item_refs() ) {
+                            mp_defer_item_apply( std::move( do_replace ) );
+                        } else {
+                            do_replace();
                         }
                         touched = true;
                     }
@@ -3774,8 +3869,6 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 std::to_string( vp_abs.z() ) );
                         continue;
                     }
-                    vehicle &veh = cargo_vp->vehicle();
-                    vehicle_part &part = cargo_vp->part();
                     mp_log( "[cdda-mp] server apply veh cargo @ " +
                             std::to_string( vp_abs.x() ) + "," +
                             std::to_string( vp_abs.y() ) + "," +
@@ -3788,22 +3881,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     // and a one-shot delta can't dupe on re-echo.  The removed uids
                     // match because the client's cart mirrors ours with our uids
                     // preserved (apply_vehicle_sync set_uid).
-                    std::string removed_log;
+                    std::vector<int64_t> removed_uids;
                     if( co.has_array( "removed" ) ) {
                         for( const JsonValue &rv : co.get_array( "removed" ) ) {
-                            const int64_t ruid = std::strtoll( rv.get_string().c_str(),
-                                                               nullptr, 10 );
-                            vehicle_stack stack = veh.get_items( part );
-                            for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
-                                if( iter->uid().get_value() == ruid ) {
-                                    removed_log += iter->typeId().str() + ",";
-                                    stack.erase( iter );
-                                    break;
-                                }
-                            }
+                            removed_uids.push_back(
+                                std::strtoll( rv.get_string().c_str(), nullptr, 10 ) );
                         }
                     }
-                    std::string added_log;
+                    std::vector<item> added_items;
                     if( co.has_array( "added" ) ) {
                         for( const JsonValue &iv : co.get_array( "added" ) ) {
                             try {
@@ -3813,17 +3898,50 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() &&
                                     new_item.typeId().is_valid() ) {
-                                    added_log += new_item.typeId().str() + ",";
-                                    veh.add_item( m, part, new_item );
+                                    added_items.push_back( std::move( new_item ) );
                                 }
                             } catch( const JsonError & ) {}
                         }
                     }
-                    mp_log( "[cdda-mp] server veh cargo DELTA @ " +
-                            std::to_string( vp_abs.x() ) + "," +
-                            std::to_string( vp_abs.y() ) + "," +
-                            std::to_string( vp_abs.z() ) +
-                            " added=" + added_log + " removed=" + removed_log );
+                    // Re-resolve the cargo part at apply time rather than capturing
+                    // veh/part by reference — deferred applies (mp_ui_item_ref_guard)
+                    // can run one or more turns later, and the vehicle could have
+                    // moved in the interim.
+                    auto do_cargo_delta = [vp_bub, removed_uids,
+                             items = std::move( added_items )]() mutable {
+                        map &m2 = get_map();
+                        const std::optional<vpart_reference> vp2 = m2.veh_at( vp_bub ).cargo();
+                        if( !vp2 ) {
+                            mp_log( "[cdda-mp] server veh cargo DELTA: cargo part gone by "
+                                    "apply time, dropped" );
+                            return;
+                        }
+                        vehicle &veh2 = vp2->vehicle();
+                        vehicle_part &part2 = vp2->part();
+                        std::string removed_log;
+                        for( int64_t ruid : removed_uids ) {
+                            vehicle_stack stack = veh2.get_items( part2 );
+                            for( auto iter = stack.begin(); iter != stack.end(); ++iter ) {
+                                if( iter->uid().get_value() == ruid ) {
+                                    removed_log += iter->typeId().str() + ",";
+                                    stack.erase( iter );
+                                    break;
+                                }
+                            }
+                        }
+                        std::string added_log;
+                        for( item &it : items ) {
+                            added_log += it.typeId().str() + ",";
+                            veh2.add_item( m2, part2, it );
+                        }
+                        mp_log( "[cdda-mp] server veh cargo DELTA (applied): added=" +
+                                added_log + " removed=" + removed_log );
+                    };
+                    if( mp_ui_holds_item_refs() ) {
+                        mp_defer_item_apply( std::move( do_cargo_delta ) );
+                    } else {
+                        do_cargo_delta();
+                    }
                 }
             }
         } catch( const JsonError & ) {}
@@ -3979,26 +4097,36 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
             // Use NPC's server-side position — client coordinates may be out of sync.
-            map &here = get_map();
             const tripoint_bub_ms bub_pos = remote->pos_bub();
             if( jo.has_array( "items" ) ) {
+                std::vector<itype_id> tids;
                 for( const JsonValue &iv : jo.get_array( "items" ) ) {
                     JsonObject io = iv.get_object();
                     io.allow_omitted_members();
                     const itype_id tid( io.get_string( "t", "" ) );
-                    if( !tid.is_valid() ) {
-                        continue;
+                    if( tid.is_valid() ) {
+                        tids.push_back( tid );
                     }
-                    map_stack stack = here.i_at( bub_pos );
-                    for( auto it = stack.begin(); it != stack.end(); ++it ) {
-                        if( it->typeId() == tid ) {
-                            here.i_rem( bub_pos, &*it );
-                            mp_log( "[cdda-mp] pickup: removed " + tid.str()
-                                    + " from " + std::to_string( bub_pos.x() ) + ","
-                                    + std::to_string( bub_pos.y() ) );
-                            break;
+                }
+                auto do_remove = [bub_pos, tids]() {
+                    map &here = get_map();
+                    for( const itype_id &tid : tids ) {
+                        map_stack stack = here.i_at( bub_pos );
+                        for( auto it = stack.begin(); it != stack.end(); ++it ) {
+                            if( it->typeId() == tid ) {
+                                here.i_rem( bub_pos, &*it );
+                                mp_log( "[cdda-mp] pickup: removed " + tid.str()
+                                        + " from " + std::to_string( bub_pos.x() ) + ","
+                                        + std::to_string( bub_pos.y() ) );
+                                break;
+                            }
                         }
                     }
+                };
+                if( mp_ui_holds_item_refs() ) {
+                    mp_defer_item_apply( do_remove );
+                } else {
+                    do_remove();
                 }
             }
         } catch( const JsonError &e ) {
@@ -4662,6 +4790,33 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 std::to_string( remote->pos_bub().y() ) + ")" );
         flush_action_msgs( pre_action_msg, remote->name );
         srv_emit_ack( "toggle_haul" );
+        return;
+    }
+
+    // Client → host: direct the client's own proxy NPC to work a zone
+    // activity (e.g. "sort loot into zones").  Reuses talk_function::
+    // unmodified — the exact same call vanilla companion dialogue makes,
+    // since the proxy is a real npc.  Zones themselves stay host-authoritative
+    // and host-only-edited for now (no zone_sync yet — phase 0 of the
+    // loot-zones-in-coop design, ROADMAP 2026-07-25).  Text is queued directly
+    // via g_action_msgs_pending (not add_msg) so it never pollutes the host's
+    // own message log with narration about the client's character.
+    if( msg.find( "\"action\":\"zone_activity\"" ) != std::string::npos ) {
+        std::string activity_id;
+        if( jo.has_string( "activity" ) ) {
+            activity_id = jo.get_string( "activity" );
+        }
+        if( activity_id == "stop" ) {
+            talk_function::revert_activity( *remote );
+            g_action_msgs_pending.push_back( _( "You stop what you were doing." ) );
+        } else if( activity_id == "sort_loot" ) {
+            talk_function::sort_loot( *remote );
+            g_action_msgs_pending.push_back( _( "You start sorting loot into the zones." ) );
+        }
+        mp_log( "[cdda-mp] HOST-ZONE-ACTIVITY: proxy '" + remote->name + "' activity=" +
+                activity_id );
+        flush_action_msgs( pre_action_msg, remote->name );
+        srv_emit_ack( "zone_activity" );
         return;
     }
 
@@ -8419,8 +8574,11 @@ static bool apply_one_state_message( const std::string &msg )
                     if( jo.has_bool( "host_male" ) ) {
                         host_npc->male = jo.get_bool( "host_male" );
                     }
-                    host_npc->clear_worn();
-                    std::string applied_log;
+                    // Parse now; defer the destructive clear_worn()+rebuild if the
+                    // client's own pickup/examine/AIM UI is open — same
+                    // mp_ui_item_ref_guard hazard as the host-side worn_sync
+                    // handler (mp_gamestate.h).
+                    std::vector<item> worn_items;
                     for( const JsonValue &wv : jo.get_array( "host_worn" ) ) {
                         JsonObject wo = wv.get_object();
                         wo.allow_omitted_members();
@@ -8440,12 +8598,28 @@ static bool apply_one_state_message( const std::string &msg )
                                     + e.what() );
                         }
                         if( !worn_item.typeId().is_empty() && worn_item.typeId().is_valid() ) {
-                            applied_log += worn_item.typeId().str() + ' ';
-                            host_npc->worn.wear_item( *host_npc, worn_item,
-                                                      false, false, true, true );
+                            worn_items.push_back( std::move( worn_item ) );
                         }
                     }
-                    mp_log( "[cdda-mp] host_worn applied: [" + applied_log + "]" );
+                    auto do_worn_apply = [items = std::move( worn_items )]() mutable {
+                        npc *host_npc2 = g->critter_by_id<npc>( client_host_npc_id );
+                        if( !host_npc2 ) {
+                            return;
+                        }
+                        host_npc2->clear_worn();
+                        std::string applied_log;
+                        for( item &worn_item : items ) {
+                            applied_log += worn_item.typeId().str() + ' ';
+                            host_npc2->worn.wear_item( *host_npc2, worn_item,
+                                                      false, false, true, true );
+                        }
+                        mp_log( "[cdda-mp] host_worn applied: [" + applied_log + "]" );
+                    };
+                    if( mp_ui_holds_item_refs() ) {
+                        mp_defer_item_apply( std::move( do_worn_apply ) );
+                    } else {
+                        do_worn_apply();
+                    }
                     // Apply all mutations from the host_appearance array.  Full
                     // state sync: clear every mutation on the proxy first, then
                     // apply the host's list.  Earlier per-type clearing missed
@@ -8514,13 +8688,33 @@ static bool apply_one_state_message( const std::string &msg )
                         }
                     }
                     // Rebuild the host NPC's main inventory from the serialized blob.
+                    // Parse now; defer the destructive clear()+rebuild the same way
+                    // as host_worn above.
                     if( jo.has_array( "host_inv" ) ) {
                         try {
-                            host_npc->inv->clear();
+                            std::vector<item> inv_items;
                             JsonArray inv_ja = jo.get_array( "host_inv" );
-                            host_npc->inv->json_load_items( inv_ja );
-                            mp_log( "[cdda-mp] host_inv applied: items=" +
-                                    std::to_string( host_npc->inv->size() ) );
+                            inv_items.reserve( inv_ja.size() );
+                            for( JsonObject iobj : inv_ja ) {
+                                item tmp;
+                                tmp.deserialize( iobj );
+                                inv_items.emplace_back( std::move( tmp ) );
+                            }
+                            auto do_inv_apply = [items = std::move( inv_items )]() mutable {
+                                npc *host_npc2 = g->critter_by_id<npc>( client_host_npc_id );
+                                if( !host_npc2 ) {
+                                    return;
+                                }
+                                host_npc2->inv->clear();
+                                host_npc2->inv->add_items_bulk( std::move( items ), true, false );
+                                mp_log( "[cdda-mp] host_inv applied: items=" +
+                                        std::to_string( host_npc2->inv->size() ) );
+                            };
+                            if( mp_ui_holds_item_refs() ) {
+                                mp_defer_item_apply( std::move( do_inv_apply ) );
+                            } else {
+                                do_inv_apply();
+                            }
                         } catch( const JsonError &e ) {
                             mp_log( std::string( "[cdda-mp] host_inv rebuild error: " )
                                     + e.what() );
@@ -9773,6 +9967,44 @@ void mp_client_dispatch_hauling_if_changed( bool pre_hauling )
     }
 }
 
+// Client-side "direct your character" menu.  Phase 0 of the loot-zones-in-coop
+// design (ROADMAP 2026-07-25) — the host stays the only zone editor; this only
+// lets the client tell their own proxy NPC to act on zones the host has
+// already drawn, via the same talk_function:: calls the host's companion
+// dialogue already uses.  No activity is ever assigned to the client's own
+// local avatar/map — that would run against the client's non-authoritative
+// local zone_manager and do nothing real.
+void mp_client_request_zone_activity()
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    avatar &av = get_avatar();
+    const bool had_grant = av.get_moves() > 0 && !is_client_waiting_for_ack();
+    if( !had_grant ) {
+        add_msg( m_bad, _( "You can't do that right now." ) );
+        return;
+    }
+
+    uilist menu;
+    menu.title = _( "Direct your character" );
+    constexpr int RET_SORT_LOOT = 1;
+    constexpr int RET_STOP = 2;
+    menu.entries.emplace_back( RET_SORT_LOOT, true, 'l', _( "Sort loot into zones" ) );
+    menu.entries.emplace_back( RET_STOP, true, '-', _( "Stop what they're doing" ) );
+    menu.query();
+    if( menu.ret != RET_SORT_LOOT && menu.ret != RET_STOP ) {
+        return;
+    }
+    const std::string activity_id = menu.ret == RET_STOP ? "stop" : "sort_loot";
+    const std::string json = "{\"type\":\"action\",\"action\":\"zone_activity\",\"activity\":\"" +
+                              activity_id + "\"}";
+    mp_log( "[cdda-mp] CLI-ZONE-ACTIVITY-SEND: activity=" + activity_id );
+    client_send( client_enrich_action( json ) );
+    av.set_moves( 0 );
+    client_mark_action_sent();
+}
+
 void set_client_turn_activity( const std::string &activity_id_str )
 {
     g_client_turn_activity = activity_id_str;
@@ -10520,7 +10752,10 @@ static void apply_tile_changes( JsonObject &jo )
             // item_uid regenerates on add_item's copy so the dedup never matched
             // and only ever ADDED, ballooning tiles to thousands of items and
             // stalling the client (issue #17/#18).  Replace can't accumulate.
-            m.i_clear( bub );
+            // If the client's own pickup/examine/AIM UI is open on this exact
+            // tile, defer the replace until it closes — see mp_ui_item_ref_guard
+            // in mp_gamestate.h.
+            std::vector<item> new_items;
             std::string applied;
             for( const JsonValue &iv : to.get_array( "items" ) ) {
                 try {
@@ -10530,9 +10765,21 @@ static void apply_tile_changes( JsonObject &jo )
                     new_item.deserialize( io );
                     if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
                         applied += new_item.typeId().str() + ' ';
-                        m.add_item( bub, std::move( new_item ) );
+                        new_items.push_back( std::move( new_item ) );
                     }
                 } catch( const JsonError & ) {}
+            }
+            auto do_replace = [bub, items = std::move( new_items )]() mutable {
+                map &m2 = get_map();
+                m2.i_clear( bub );
+                for( item &it : items ) {
+                    m2.add_item( bub, std::move( it ) );
+                }
+            };
+            if( mp_ui_holds_item_refs() ) {
+                mp_defer_item_apply( std::move( do_replace ) );
+            } else {
+                do_replace();
             }
             if( !applied.empty() ) {
                 mp_log( "[cdda-mp] apply_tile_changes: set items @ " +
@@ -11130,8 +11377,6 @@ static void apply_vehicle_sync( JsonObject &jo )
                             std::to_string( vp_abs.z() ) );
                     continue;
                 }
-                vehicle &veh = cargo_vp->vehicle();
-                vehicle_part &part = cargo_vp->part();
                 mp_log( "[cdda-mp] client apply veh cargo @ " +
                         std::to_string( vp_abs.x() ) + "," +
                         std::to_string( vp_abs.y() ) + "," +
@@ -11142,18 +11387,22 @@ static void apply_vehicle_sync( JsonObject &jo )
                 // UID-diff that briefly replaced this could not round-trip
                 // cross-owned pickups/drops or item stacking — it duplicated and
                 // retained items (the cart dup).  A full replace can't desync.
-                {
-                    vehicle_stack stack = veh.get_items( part );
-                    while( !stack.empty() ) {
-                        stack.erase( stack.begin() );
-                    }
-                }
+                //
                 // Mirror the host's authoritative cargo, preserving each item's
                 // host UID across add_item's copy so the client cart carries the
                 // SAME uids the host has.  That lets a later client pickup be
                 // reported to the host as a removal it can match by uid, and lets
                 // the next client scan recognise these as host-owned (baseline)
                 // rather than re-sending them as client-"added" items.
+                //
+                // Parse now (cheap, no map mutation); apply now unless the
+                // client's own pickup/examine/AIM UI is open on this exact cargo
+                // part, in which case the erase+rebuild is deferred until it
+                // closes — see mp_ui_item_ref_guard in mp_gamestate.h.  The
+                // baseline is set immediately regardless: it reflects the target
+                // authoritative state build_client_veh_cargo_changes() should
+                // converge on, independent of when the actual mutation lands.
+                std::vector<item> mirror_items;
                 std::map<int64_t, int> mirror_uids;   // uid -> count() (charge-aware baseline)
                 if( co.has_array( "items" ) ) {
                     for( const JsonValue &iv : co.get_array( "items" ) ) {
@@ -11164,20 +11413,42 @@ static void apply_vehicle_sync( JsonObject &jo )
                             new_item.deserialize( io );
                             if( !new_item.typeId().is_empty() &&
                                 new_item.typeId().is_valid() ) {
-                                const int64_t hu = new_item.uid().get_value();
-                                mirror_uids[hu] = new_item.count();
-                                if( std::optional<vehicle_stack::iterator> added =
-                                        veh.add_item( m, part, new_item ) ) {
-                                    ( *added )->set_uid( hu );
-                                }
+                                mirror_uids[new_item.uid().get_value()] = new_item.count();
+                                mirror_items.push_back( std::move( new_item ) );
                             }
                         } catch( const JsonError & ) {}
                     }
                 }
-                // Baseline the client→host delta to exactly this authoritative
-                // set, so build_client_veh_cargo_changes() reports only the
-                // client's OWN later changes, never an echo of the host's list.
                 g_client_veh_cargo_baseline[vp_abs] = mirror_uids;
+                auto do_cargo_replace = [vp_bub, items = std::move( mirror_items )]() mutable {
+                    map &m2 = get_map();
+                    const std::optional<vpart_reference> vp2 = m2.veh_at( vp_bub ).cargo();
+                    if( !vp2 ) {
+                        mp_log( "[cdda-mp] client veh cargo replace: cargo part gone by "
+                                "apply time, dropped" );
+                        return;
+                    }
+                    vehicle &veh2 = vp2->vehicle();
+                    vehicle_part &part2 = vp2->part();
+                    {
+                        vehicle_stack stack = veh2.get_items( part2 );
+                        while( !stack.empty() ) {
+                            stack.erase( stack.begin() );
+                        }
+                    }
+                    for( item &it : items ) {
+                        const int64_t hu = it.uid().get_value();
+                        if( std::optional<vehicle_stack::iterator> added =
+                                veh2.add_item( m2, part2, it ) ) {
+                            ( *added )->set_uid( hu );
+                        }
+                    }
+                };
+                if( mp_ui_holds_item_refs() ) {
+                    mp_defer_item_apply( std::move( do_cargo_replace ) );
+                } else {
+                    do_cargo_replace();
+                }
             }
         }
     }

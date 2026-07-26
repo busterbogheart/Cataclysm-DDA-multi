@@ -3017,11 +3017,18 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 before_types.push_back( it.typeId().str() );
             }
 
-            // Run normal pickup dialog.
-            if( act == ACTION_PICKUP_ALL ) {
-                pickup_all();
-            } else {
-                pickup();
+            // Run normal pickup dialog.  Guarded: the selection menu builds
+            // item_location entries into this tile's live item stack and blocks
+            // on keypresses — an incoming network message applying a peer's
+            // pickup/tile-sync to this same tile mid-menu can crash it (see
+            // mp_ui_item_ref_guard in mp_gamestate.h).
+            {
+                cata_mp::mp_ui_item_ref_guard mp_pickup_ui_guard;
+                if( act == ACTION_PICKUP_ALL ) {
+                    pickup_all();
+                } else {
+                    pickup();
+                }
             }
 
             // pickup() only starts an ACT_PICKUP activity; it doesn't run it.
@@ -3594,7 +3601,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_EXAMINE:
-        case ACTION_EXAMINE_AND_PICKUP:
+        case ACTION_EXAMINE_AND_PICKUP: {
+            // Guarded: examine's loot/container submenus build item_location
+            // entries into live map/vehicle item stacks and block on keypresses —
+            // see mp_ui_item_ref_guard in mp_gamestate.h.
+            cata_mp::mp_ui_item_ref_guard mp_examine_ui_guard;
             if( mouse_target ) {
                 // Examine including item pickup if ACTION_EXAMINE_AND_PICKUP is used
                 examine( *mouse_target, act == ACTION_EXAMINE_AND_PICKUP );
@@ -3602,13 +3613,24 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 examine( act == ACTION_EXAMINE_AND_PICKUP );
             }
             break;
+        }
 
-        case ACTION_ADVANCEDINV:
+        case ACTION_ADVANCEDINV: {
+            // Guarded: AIM displays live map-tile and vehicle-cargo item stacks
+            // side by side with player inventory and blocks on keypresses —
+            // see mp_ui_item_ref_guard in mp_gamestate.h.
+            cata_mp::mp_ui_item_ref_guard mp_aim_ui_guard;
             create_advanced_inv();
             break;
+        }
 
         case ACTION_PICKUP:
-        case ACTION_PICKUP_ALL:
+        case ACTION_PICKUP_ALL: {
+            // Guarded: this is the path the HOST's own pickup actually runs
+            // through (the client-only diff-dispatch block above returns
+            // early and never reaches this switch) — see mp_ui_item_ref_guard
+            // in mp_gamestate.h.
+            cata_mp::mp_ui_item_ref_guard mp_pickup_switch_ui_guard;
             if( mouse_target ) {
                 pickup( *mouse_target );
             } else {
@@ -3619,6 +3641,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 }
             }
             break;
+        }
 
         case ACTION_GRAB: {
             // MP: snapshot the avatar's grab state before running SP grab()
@@ -3679,7 +3702,17 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_LOOT:
-            loot();
+            // Client mode: the plain SP loot() would assign the sort activity
+            // to the client's own local avatar against the client's own
+            // non-authoritative local zone_manager/map — silently doing
+            // nothing real. Route it to the host instead, which acts on the
+            // client's proxy NPC using zones the host actually drew (phase 0
+            // of the loot-zones-in-coop design, ROADMAP 2026-07-25).
+            if( cata_mp::is_client_mode() ) {
+                cata_mp::mp_client_request_zone_activity();
+            } else {
+                loot();
+            }
             break;
 
         case ACTION_INVENTORY:
