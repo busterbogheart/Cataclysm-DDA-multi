@@ -2089,7 +2089,7 @@
     "items": [
       { "group": "quicklime_bag", "prob": 85 },
       { "group": "quicklime_barrel", "prob": 20 },
-      { "group": "saltpeter_canvas_bag_part", "prob": 15 }
+      { "item": "chem_saltpetre", "prob": 15, "count": [ 10, 50 ] }
     ]
   },
   {
