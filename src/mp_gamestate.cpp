@@ -2017,7 +2017,28 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_client_partial_con_bas
 // Never a full snapshot: a snapshot from a client that trails the host would,
 // applied host-side as a replace, wipe items the host just dropped (GH#15), and
 // as a merge it duplicated them.
-static std::unordered_map<tripoint_abs_ms, std::map<int64_t, int>> g_client_veh_cargo_baseline;
+//
+// KEYED BY VEHICLE IDENTITY (mp_net_id + part index), NOT by absolute position.
+// A position key is silently re-created EMPTY every time the cargo part moves —
+// and every part of a vehicle moves together, so one vehicle step orphans the
+// whole cart's baseline at once.  An empty baseline makes every item in the cart
+// miss the lookup below and get emitted as "brand-new item the client dropped
+// in", i.e. the client re-sends the ENTIRE cart as `added` and the host appends
+// a second copy of everything.  That is the 2026-07-28 vehicle item-dupe
+// (dayman-itemdupe log, build 4191c2b54f: host applied 6945 adds vs 1632
+// removes in one session, net +5313 phantom items; camera_pro alone x2761).
+// A vehicle-identity key survives both movement and any host/client position
+// drift for a parked vehicle.
+static std::unordered_map<uint64_t, std::map<int64_t, int>> g_client_veh_cargo_baseline;
+
+// Stable per-cargo-part baseline key: host-assigned vehicle net id in the high
+// 32 bits, part index in the low 32.  nid 0 (untagged / client-local vehicle)
+// never reaches here — see build_client_veh_cargo_changes().
+static uint64_t mp_cargo_baseline_key( uint32_t nid, size_t part_idx )
+{
+    return ( static_cast<uint64_t>( nid ) << 32 ) |
+           static_cast<uint32_t>( part_idx );
+}
 // Server→client vehicle cargo baseline.  Same keying as the client direction —
 // without this the client can't see items the host drops into trunks/seats/etc.,
 // and its stale snapshot would then overwrite the host on the next client drop.
@@ -3945,13 +3966,42 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 }
                             }
                         }
+                        // AUTHORITY GATE (2026-07-28).  The comment above used to
+                        // assert "a one-shot delta can't dupe on re-echo" — the
+                        // dayman-itemdupe log disproved it: the client re-sent whole
+                        // carts as `added` and we appended a second copy every time
+                        // (6945 adds vs 1632 removes in one session).  We are the
+                        // authority, so validate instead of trusting: an item whose
+                        // UID we already hold in THIS cart is by definition a
+                        // re-echo of our own item (the client's cart mirrors our
+                        // UIDs via set_uid), never a new drop.  A genuine client
+                        // drop carries a UID we've never seen.
+                        //
+                        // Built AFTER the removals above so the charge-stack
+                        // remove-then-re-add path (same UID, changed count) still
+                        // lands — by then the old stack is gone from the cart.
+                        std::unordered_set<int64_t> present_uids;
+                        {
+                            vehicle_stack stack = veh2.get_items( part2 );
+                            for( const item &it : stack ) {
+                                present_uids.insert( it.uid().get_value() );
+                            }
+                        }
                         std::string added_log;
+                        std::string dupe_log;
                         for( item &it : items ) {
+                            const int64_t u = it.uid().get_value();
+                            if( u != 0 && present_uids.count( u ) ) {
+                                dupe_log += it.typeId().str() + ",";
+                                continue;
+                            }
                             added_log += it.typeId().str() + ",";
+                            present_uids.insert( u );
                             veh2.add_item( m2, part2, it );
                         }
                         mp_log( "[cdda-mp] server veh cargo DELTA (applied): added=" +
-                                added_log + " removed=" + removed_log );
+                                added_log + " removed=" + removed_log +
+                                " dupe_rejected=" + dupe_log );
                     };
                     if( mp_ui_holds_item_refs() ) {
                         mp_defer_item_apply( std::move( do_cargo_delta ) );
@@ -9613,6 +9663,15 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
             v->pos_abs().z() != center.z() ) {
             continue;
         }
+        // Untagged = the host has never told us about this vehicle, so it is a
+        // client-local mapgen phantom with no host counterpart.  Reporting cargo
+        // for it is meaningless at best: the host resolves our message by
+        // POSITION, so a phantom's delta lands on whatever real vehicle happens
+        // to occupy that tile host-side.  Say nothing about vehicles we don't
+        // share.
+        if( v->mp_net_id == 0 ) {
+            continue;
+        }
         for( const vpart_reference &vp : v->get_any_parts( VPFLAG_CARGO ) ) {
             const tripoint_bub_ms vp_bub = vp.pos_bub( m );
             const tripoint_abs_ms vp_abs = m.get_abs( vp_bub );
@@ -9632,7 +9691,9 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
                 current[u] = it.count();
                 uid_json[u] = serialize( it );
             }
-            std::map<int64_t, int> &baseline = g_client_veh_cargo_baseline[vp_abs];
+            const uint64_t bkey = mp_cargo_baseline_key( v->mp_net_id, vp.part_index() );
+            const bool baseline_known = g_client_veh_cargo_baseline.count( bkey ) > 0;
+            std::map<int64_t, int> &baseline = g_client_veh_cargo_baseline[bkey];
             std::string added_json = "[";
             std::string removed_json = "[";
             bool afirst = true;
@@ -9677,11 +9738,21 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
             if( afirst && rfirst ) {
                 continue;   // this cargo part unchanged by the client
             }
+            const size_t baseline_n_before = baseline.size();
             baseline = current;
+            // Diagnostic for the 2026-07-28 dupe: baseline_known=0 on a cart that
+            // already holds items means we are about to re-send the whole cart as
+            // `added` — the dupe signature.  With the identity key that should now
+            // only ever happen once per cargo part per session.
             mp_log( "[cdda-mp] client veh cargo DELTA @ " +
                     std::to_string( vp_abs.x() ) + "," +
                     std::to_string( vp_abs.y() ) + "," +
                     std::to_string( vp_abs.z() ) +
+                    " nid=" + std::to_string( v->mp_net_id ) +
+                    " part=" + std::to_string( vp.part_index() ) +
+                    " baseline_known=" + std::to_string( baseline_known ) +
+                    " baseline_n=" + std::to_string( baseline_n_before ) +
+                    " cart_n=" + std::to_string( current.size() ) +
                     " added=" + added_json + " removed=" + removed_json );
             if( !first ) {
                 out += ',';
@@ -11515,7 +11586,16 @@ static void apply_vehicle_sync( JsonObject &jo )
                         } catch( const JsonError & ) {}
                     }
                 }
-                g_client_veh_cargo_baseline[vp_abs] = mirror_uids;
+                // Same vehicle-identity key the send side uses — a position key
+                // here would be orphaned by the next vehicle step and the whole
+                // cart would look client-"added" (2026-07-28 dupe).  An untagged
+                // vehicle has no host counterpart, so there is nothing to
+                // baseline; the send side skips it too.
+                if( cargo_vp->vehicle().mp_net_id != 0 ) {
+                    g_client_veh_cargo_baseline[
+                        mp_cargo_baseline_key( cargo_vp->vehicle().mp_net_id,
+                                               cargo_vp->part_index() ) ] = mirror_uids;
+                }
                 auto do_cargo_replace = [vp_bub, items = std::move( mirror_items )]() mutable {
                     map &m2 = get_map();
                     const std::optional<vpart_reference> vp2 = m2.veh_at( vp_bub ).cargo();
