@@ -2543,6 +2543,17 @@ static void spawn_remote_player( const std::string &name )
     remote_player_connected = true;
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
+    // MP DIAG (2026-07-29, rejoin resync scope): both resyncs below are bounded
+    // to the HOST'S CURRENT position — build_tile_changes(host_pos, 20) and
+    // build_map_sync_z's MAPSIZE bubble — neither replays changes to tiles the
+    // host has since walked away from. Logging the host's position here lets a
+    // repro compare it against the distance to whatever changed while the
+    // client was disconnected (e.g. a flag taken down, an item dropped).
+    {
+        const tripoint_abs_ms hp = u.pos_abs();
+        mp_log( "[cdda-mp] REJOIN-RESYNC: host_pos=" + std::to_string( hp.x() ) + "," +
+                std::to_string( hp.y() ) + "," + std::to_string( hp.z() ) );
+    }
     g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
     mp_reset_overmap_sync();  // bulk-send the overmap region to the fresh client
     mp_reset_map_sync();      // re-stream submap terrain+furniture to the fresh client
@@ -10691,6 +10702,15 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 continue; // Nothing changed — skip this tile.
             }
             const bool had_pc = !baseline.partial_con_sig.empty();
+            // MP DIAG (2026-07-29, rejoin resync scope): capture BEFORE
+            // overwriting so a ter/furn change (e.g. taking down a flag) gets
+            // its own log line the way items/fields already do — that log
+            // previously only fired for items/fields, which is what made an
+            // earlier read of this code look like furniture had no delta path
+            // at all (it does; it just wasn't logged). Distance from `center`
+            // (this scan's radius-20 anchor) settles whether the change was
+            // in-scope for THIS resync at the moment it was recorded.
+            const bool ter_furn_changed = baseline.ter != ter_str || baseline.furn != furn_str;
             baseline.ter          = ter_str;
             baseline.furn         = furn_str;
             baseline.items_sig    = items_sig;
@@ -10710,6 +10730,15 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                         std::to_string( abs.x() ) + "," +
                         std::to_string( abs.y() ) + "," +
                         std::to_string( abs.z() ) + " : " + fields_sig );
+            }
+            if( ter_furn_changed ) {
+                const int dist = square_dist( abs, center );
+                mp_log( "[cdda-mp] tile_delta terfurn @ " +
+                        std::to_string( abs.x() ) + "," +
+                        std::to_string( abs.y() ) + "," +
+                        std::to_string( abs.z() ) + " ter=" + ter_str +
+                        " furn=" + furn_str + " dist_from_scan_center=" +
+                        std::to_string( dist ) );
             }
 
             if( !first ) {
@@ -11227,6 +11256,28 @@ static void apply_vehicle_sync( JsonObject &jo )
                     + "," + std::to_string( new_abs.y() )
                     + "," + std::to_string( new_abs.z() )
                     + " name=\"" + placed->name + "\"" );
+            // ROOT FIX (2026-07-29, vehicle cargo dupe #3, same class as the
+            // CLI-VEH-ADOPT fix above but a DIFFERENT trigger): item_uid's
+            // copy constructor regenerates a fresh uid on every copy
+            // (item_uid.h) — deserializing this vehicle from the host's
+            // snapshot does not guarantee its items keep the host's original
+            // uids, so the very next cargo scan sees an empty baseline for
+            // this newly-tagged identity and reports items that are freshly
+            // real (correct types/counts, just non-host uids) as "added".
+            // Log-proven: nid=22 "Electric SUV" via CLI-VEH-CREATE, then
+            // server veh cargo DELTA (applied) with dupe_rejected= empty for
+            // toolbox_empty/sm_extinguisher/hose/manual_mechanics_car_owner —
+            // the host's UID gate can't catch a uid it has genuinely never
+            // seen. Seed the baseline from what the snapshot just placed so
+            // the next scan reports it as unchanged, not new.
+            for( const vpart_reference &pvp : placed->get_any_parts( VPFLAG_CARGO ) ) {
+                std::map<int64_t, int> existing;
+                for( const item &it : placed->get_items( pvp.part() ) ) {
+                    existing[it.uid().get_value()] = it.count();
+                }
+                g_client_veh_cargo_baseline[
+                    mp_cargo_baseline_key( nid, pvp.part_index() ) ] = std::move( existing );
+            }
             // Snapshot is fully authoritative — no need to re-apply slim deltas.
             continue;
         }
@@ -11254,8 +11305,8 @@ static void apply_vehicle_sync( JsonObject &jo )
         // Minerik: host's "Electric Sports Car" was replaced client-side by a
         // visibly bigger, different car — this is the likely mechanism.)
         // Require the name to agree too; a mismatch is logged and the match
-        // rejected so it falls through to the name fallback / SKIP-UNKNOWN
-        // instead of corrupting an unrelated vehicle.
+        // rejected so it falls through to SKIP-UNKNOWN (request a fresh
+        // authoritative snapshot) instead of corrupting an unrelated vehicle.
         if( !found && m.inbounds( search_abs ) ) {
             for( const wrapped_vehicle &wv : vehs ) {
                 if( wv.v && wv.v->pos_abs() == search_abs ) {
@@ -11286,28 +11337,53 @@ static void apply_vehicle_sync( JsonObject &jo )
                 }
             }
         }
-        bool found_by_name_only = false;
-        if( !found && !vname.empty() ) {
-            for( const wrapped_vehicle &wv : vehs ) {
-                if( wv.v && wv.v->name == vname ) {
-                    found = wv.v;
-                    found_by_name_only = true;
-                    break;
-                }
-            }
-        }
+        // NOTE (2026-07-29): a third fallback used to match by NAME ALONE, with
+        // no position bound at all — grabs the first same-named vehicle
+        // anywhere on the map. Log-confirmed to silently mismatch: a host
+        // vehicle's nid got adopted onto an unrelated "Rolling Trash Can" 30
+        // tiles from the host's real one (same session that produced the
+        // 2026-07-09 Minerik report this file already warned about above).
+        // Removed rather than bounded — the existing CLI-VEH-SKIP-UNKNOWN +
+        // veh_snapshot_req path below already handles "no safe match yet"
+        // correctly (request a fresh authoritative snapshot); a same-machine
+        // repro should confirm previously-name-adopted vehicles now either
+        // position-match correctly or wait one round-trip instead of
+        // silently attaching to the wrong object.
 
-        // Adopt: tag whatever we matched by position/name with this nid so every
+        // Adopt: tag whatever we matched by position with this nid so every
         // future lookup is pure identity (and the cull leaves it alone).
         if( found && found->mp_net_id == 0 ) {
             const tripoint_abs_ms aabs = found->pos_abs();
             mp_log( "[cdda-mp] CLI-VEH-ADOPT: nid=" + std::to_string( nid )
                     + " name=\"" + found->name + "\""
-                    + " via=" + ( found_by_name_only ? "name" : "position" )
+                    + " via=position"
                     + " abs=" + std::to_string( aabs.x() )
                     + "," + std::to_string( aabs.y() )
                     + "," + std::to_string( aabs.z() ) );
             found->mp_net_id = nid;
+            // ROOT FIX (2026-07-29, vehicle cargo dupe #3, log-confirmed): an
+            // adopted vehicle is the client's OWN pre-existing local mapgen
+            // instance — it can already hold items from its own independent
+            // item-spawn roll (same JSON entry, same chance, rolled twice on
+            // two machines). The very next cargo scan sees an empty baseline
+            // for this newly-tagged identity and reports those pre-existing
+            // items as "added", carrying uids the host has never seen (they
+            // were rolled locally, not received from the host) — so the
+            // host's UID dupe-gate can't catch them; it genuinely can't tell
+            // a locally-rolled duplicate from a real client drop. Log-proven:
+            // nid=51 part=73 baseline_known=0 baseline_n=0 cart_n=5 on first
+            // sight, host ended up with 2x toolbox_empty/extinguisher/
+            // survival_kit_box/plastic_sheet/hose. Seed the baseline with
+            // what's ALREADY here at adopt time so the next scan reports it
+            // as unchanged, not new.
+            for( const vpart_reference &avp : found->get_any_parts( VPFLAG_CARGO ) ) {
+                std::map<int64_t, int> existing;
+                for( const item &it : found->get_items( avp.part() ) ) {
+                    existing[it.uid().get_value()] = it.count();
+                }
+                g_client_veh_cargo_baseline[
+                    mp_cargo_baseline_key( nid, avp.part_index() ) ] = std::move( existing );
+            }
         }
 
         // First sighting of this nid resolving to an existing local vehicle
@@ -11316,8 +11392,7 @@ static void apply_vehicle_sync( JsonObject &jo )
         // a real re-acquire vs. a coincidental match.  Log it once per nid.
         if( found && first_encounter ) {
             mp_log( "[cdda-mp] CLI-VEH-FOUND-EXISTING: nid=" + std::to_string( nid )
-                    + " name=\"" + found->name + "\" via="
-                    + ( found_by_name_only ? "name" : "position" )
+                    + " name=\"" + found->name + "\" via=position"
                     + " abs=" + std::to_string( new_abs.x() ) + "," + std::to_string( new_abs.y() ) );
         }
 
