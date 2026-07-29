@@ -63,6 +63,8 @@
 #include "mod_manager.h"
 #include "monster.h"
 #include "move_mode.h"
+#include "mp_client_conn.h"
+#include "mp_gamestate.h"
 #include "npc.h"
 #include "options.h"
 #include "output.h"
@@ -6542,6 +6544,21 @@ void vehicle::place_spawn_items( map &here )
         return;
     }
 
+    // MP DIAG (2026-07-29, vehicle cargo dupe #3): the only caller is
+    // map::add_vehicle(), once per placement — a SINGLE call here can only put
+    // 0 or 1 of a given item per spawn entry (roll_remainder on a distribution-
+    // type item_group). Two identical items surfacing in one vehicle's cargo
+    // (e.g. a "Prison Bus" with 2 glock_19 on first sight, client log
+    // dayman-itemdupe/2026-07-29 same-machine test) means either this ran
+    // twice for the same logical vehicle, or the underlying map_extra/mapgen
+    // that placed it ran twice. This line settles which, next repro.
+    if( cata_mp::is_host_mode() || cata_mp::is_client_mode() ) {
+        const tripoint_abs_ms p = pos_abs();
+        cata_mp::mp_log( "[cdda-mp] VEH-SPAWN-ITEMS: name=\"" + name + "\" type=" +
+                          type.str() + " abs=" + std::to_string( p.x() ) + "," +
+                          std::to_string( p.y() ) + "," + std::to_string( p.z() ) );
+    }
+
     for( const vehicle_prototype::part_def &pt : type->parts ) {
         if( pt.with_ammo ) {
             int turret = part_with_feature( pt.pos, "TURRET", true );
@@ -6584,6 +6601,23 @@ void vehicle::place_spawn_items( map &here )
                                                        spawn_flags::use_spawn_rate );
                     created.insert( created.end(), group_items.begin(), group_items.end() );
                 }
+            }
+            // MP DIAG (2026-07-29, vehicle cargo dupe #3): see the entry log
+            // above. spawn_count and this call's item list settle whether a
+            // single call's own roll produced >1 of the same item (would show
+            // spawn_count>1, or a group listed as one entry yielding 2+ items)
+            // versus needing a second call to explain a duplicate.
+            if( cata_mp::is_host_mode() || cata_mp::is_client_mode() ) {
+                std::string created_log;
+                for( const item &e : created ) {
+                    created_log += e.typeId().str() + ",";
+                }
+                cata_mp::mp_log( "[cdda-mp] VEH-SPAWN-ITEMS-ENTRY: name=\"" + name +
+                                  "\" pos=" + std::to_string( spawn.pos.x() ) + "," +
+                                  std::to_string( spawn.pos.y() ) +
+                                  " chance=" + std::to_string( spawn.chance ) +
+                                  " spawn_count=" + std::to_string( spawn_count ) +
+                                  " created=" + created_log );
             }
             for( item &e : created ) {
                 if( e.is_null() ) {
