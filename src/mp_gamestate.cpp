@@ -1387,13 +1387,16 @@ static std::chrono::steady_clock::time_point g_mp_last_go_time =
 static bool mp_turn_show_green()
 {
     const player_activity &pact = get_avatar().activity;
-    static const activity_id s_act_wait( "ACT_WAIT" );
-    static const activity_id s_act_wait_stamina( "ACT_WAIT_STAMINA" );
-    static const activity_id s_act_wait_weather( "ACT_WAIT_WEATHER" );
-    static const activity_id s_act_wait_npc( "ACT_WAIT_NPC" );
-    const bool in_wait_act = pact && (
-                                 pact.id() == s_act_wait || pact.id() == s_act_wait_stamina ||
-                                 pact.id() == s_act_wait_weather || pact.id() == s_act_wait_npc );
+    // Any activity owns the move budget — the player has no free turn until it
+    // finishes or is interrupted, so the indicator must stay red for all of
+    // them. This used to test only the four ACT_WAIT variants, which let every
+    // other activity through: moves are replenished at the top of the turn and
+    // the activity's do_turn() spends them a fraction of a second later, so the
+    // gap in between read as "you can act" and painted green. Confirmed on WAN
+    // 2026-07-30 — ACT_WORKOUT_LIGHT flashed green for 400-800ms per turn with
+    // grant_seq unchanged across the transition, i.e. purely this local
+    // replenish window, nothing to do with the grant/ack cycle.
+    const bool in_activity = static_cast<bool>( pact );
     // On the CLIENT, local moves>0 is NOT sufficient to act: the client must
     // also not be waiting on the host's grant/ack for the turn it already sent.
     // Without this, the bar paints green (we have stale local moves) while the
@@ -1402,7 +1405,7 @@ static bool mp_turn_show_green()
     // (moves>0 && !waiting_for_ack). On the host this term is false (host uses
     // g_host_waiting_for_client), so host behavior is unchanged.
     const bool client_blocked_on_ack = is_client_mode() && g_client_waiting_for_ack;
-    const bool go = get_avatar().get_moves() > 0 && !in_wait_act
+    const bool go = get_avatar().get_moves() > 0 && !in_activity
                     && !g_host_waiting_for_client && !client_blocked_on_ack;
     const auto now = std::chrono::steady_clock::now();
     if( go ) {
@@ -1410,17 +1413,10 @@ static bool mp_turn_show_green()
     }
     const auto since_go_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  now - g_mp_last_go_time ).count();
-    const bool shown = !in_wait_act && ( go || since_go_ms < 400 );
+    const bool shown = !in_activity && ( go || since_go_ms < 400 );
 
-    // MP DIAG (2026-07-29, "host flashes green during a long non-WAIT
-    // activity" report): in_wait_act only excludes the four ACT_WAIT
-    // variants, not activities in general (crafting/building/reading/etc.),
-    // and `go` is a per-turn snapshot of get_moves()>0 — an activity that
-    // consumes moves AFTER they're replenished each turn has a real window
-    // where this reads true. Log every transition with the activity id and
-    // the role's own grant-seq counter so a WAN repro can show whether the
-    // flash is purely this local moves-replenish artifact or lines up with
-    // an actual grant/ack cycle event (the user's own hunch).
+    // Kept past the diagnosis above so the fix stays verifiable: a green
+    // transition logged with a non-none act= means the gate leaked again.
     static bool s_last_shown = false;
     if( shown != s_last_shown ) {
         s_last_shown = shown;
