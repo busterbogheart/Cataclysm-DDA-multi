@@ -1410,7 +1410,29 @@ static bool mp_turn_show_green()
     }
     const auto since_go_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  now - g_mp_last_go_time ).count();
-    return !in_wait_act && ( go || since_go_ms < 400 );
+    const bool shown = !in_wait_act && ( go || since_go_ms < 400 );
+
+    // MP DIAG (2026-07-29, "host flashes green during a long non-WAIT
+    // activity" report): in_wait_act only excludes the four ACT_WAIT
+    // variants, not activities in general (crafting/building/reading/etc.),
+    // and `go` is a per-turn snapshot of get_moves()>0 — an activity that
+    // consumes moves AFTER they're replenished each turn has a real window
+    // where this reads true. Log every transition with the activity id and
+    // the role's own grant-seq counter so a WAN repro can show whether the
+    // flash is purely this local moves-replenish artifact or lines up with
+    // an actual grant/ack cycle event (the user's own hunch).
+    static bool s_last_shown = false;
+    if( shown != s_last_shown ) {
+        s_last_shown = shown;
+        const uint32_t gs = is_hosting() ? g_grant_seq : g_client_last_grant_seq;
+        mp_log( "[cdda-mp] TURN-GREEN: shown=" + std::to_string( shown ) +
+                " go=" + std::to_string( go ) +
+                " act=" + ( pact ? pact.id().str() : "none" ) +
+                " moves=" + std::to_string( get_avatar().get_moves() ) +
+                " grant_seq=" + std::to_string( gs ) +
+                " role=" + ( is_hosting() ? "host" : "client" ) );
+    }
+    return shown;
 }
 
 struct mp_edge_t {
