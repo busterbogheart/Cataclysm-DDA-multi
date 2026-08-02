@@ -141,6 +141,20 @@ static std::atomic<bool> g_rc_in_progress{ false };
 static std::atomic<bool> g_client_joined{ false };
 static void reconnect_worker();
 
+// Pre-JOIN link loss.  The PROBE->JOIN window is the player's character
+// creation and can run for minutes with no traffic in either direction, so a
+// NAT/firewall on the path can reap the connection before we ever get to send
+// the join (six joins killed at ~60s on a router port-forward, 2026-07-31 — the
+// host now heartbeats pre-auth sessions to keep the path warm, this is the
+// backstop for when that isn't enough).  We deliberately do NOT run the
+// reconnect sweep here: it fires the stored JOIN the instant it re-dials, which
+// spawns the proxy while the player is still on the character-creation screen
+// (the 2bc3067620 cascade).  Instead we flag it and re-dial inside
+// client_send_join(), at the moment the join is actually wanted.
+static std::atomic<bool> g_preauth_link_lost{ false };
+static int g_preauth_redials = 0;
+static bool g_in_preauth_redial = false;
+static constexpr int MP_PREAUTH_REDIAL_MAX = 3;
 // Proof-of-life for the pre-auth keepalive.  The host's pre-JOIN heartbeats are
 // dropped before the recv queue (they carry no state) and neither side logs the
 // send, so without this counter there is NO way to tell from the logs whether
@@ -263,6 +277,19 @@ struct client_impl {
                 // catches the mid-send RTO case.)
                 if( g_rc_enabled.load() ) {
                     start_reconnect_sweep( "link dropped (read error)" );
+                } else if( !g_client_joined.load() ) {
+                    // Pre-JOIN (character creation).  Do NOT sweep — the sweep sends
+                    // the stored JOIN on success and would spawn the proxy mid-char
+                    // creation.  Flag it; client_send_join() re-dials at join time.
+                    // Critically, do NOT push connected:false either: that told the
+                    // game loop the session was over while the player was still
+                    // creating a character, and they walked into a solo world with a
+                    // dead socket, spawning ~72 tiles from the host in locally
+                    // generated terrain ("some corner of inaccessible map",
+                    // 2026-07-31).
+                    g_preauth_link_lost.store( true );
+                    mp_log( "[cdda-mp] HANDSHAKE: link lost during the pre-JOIN window "
+                            "(character creation) — will re-dial when the join fires" );
                 } else {
                     // Reconnect disabled (intentional teardown / host goodbye): the
                     // game thread cleans up the host NPC via the synthetic message.
@@ -369,6 +396,13 @@ bool client_connect( const std::string &host, uint16_t port,
 {
     g_client = std::make_unique<client_impl>();
 
+    // A fresh connect (menu join, or the mid-game reconnect sweep) resets the
+    // pre-JOIN re-dial budget; a re-dial made BY client_send_join() must not, or
+    // it would refill its own budget and loop forever.
+    if( !g_in_preauth_redial ) {
+        g_preauth_redials = 0;
+        g_preauth_link_lost.store( false );
+    }
     g_preauth_hb_count.store( 0 );
     g_preauth_connect_ms.store( mp_now_ms() );
 
@@ -555,13 +589,48 @@ std::string client_connect_error()
 
 void client_send_join()
 {
-    if( g_join_sent || !g_client || g_pending_join.empty() ) {
+    if( g_join_sent || g_pending_join.empty() ) {
         return;
+    }
+    // If the link died while we were in character creation, re-dial HERE rather
+    // than letting the player walk into a solo world holding a dead socket.  This
+    // is called every tick, so the attempt count is what stops it hammering.
+    if( !g_client || g_preauth_link_lost.load() ) {
+        if( g_preauth_redials >= MP_PREAUTH_REDIAL_MAX ) {
+            return;                       // already gave up and told the player
+        }
+        ++g_preauth_redials;
+        mp_log( "[cdda-mp] JOIN: link was dead before the join could be sent — re-dial " +
+                std::to_string( g_preauth_redials ) + "/" +
+                std::to_string( MP_PREAUTH_REDIAL_MAX ) + " -> " + g_rc_host + ":" +
+                std::to_string( g_rc_port ) );
+        g_in_preauth_redial = true;
+        const bool ok = client_connect( g_rc_host, g_rc_port, g_rc_name, g_rc_password,
+                                        g_rc_version );
+        g_in_preauth_redial = false;
+        if( !ok ) {
+            mp_log( "[cdda-mp] JOIN: re-dial failed (" + client_connect_error() + ")" );
+            if( g_preauth_redials >= MP_PREAUTH_REDIAL_MAX ) {
+                mp_log( "[cdda-mp] JOIN: giving up after " +
+                        std::to_string( MP_PREAUTH_REDIAL_MAX ) +
+                        " re-dials — surfacing join failure to the player" );
+                g_recv_queue.push( "{\"type\":\"state\",\"join_failed\":true}" );
+                g_recv_queue.push( "{\"type\":\"state\",\"connected\":false}" );
+            }
+            return;
+        }
+        g_preauth_link_lost.store( false );
+        mp_log( "[cdda-mp] JOIN: re-dial succeeded — sending join" );
     }
     asio::error_code ec;
     asio::write( g_client->sock, asio::buffer( g_pending_join ), ec );
     if( ec ) {
         std::cerr << "[cdda-mp] Failed to send join: " << ec.message() << std::endl;
+        // Was a silent stderr-only return: the client retried a dead socket every
+        // tick forever, never joined, and never told anyone (2026-07-31).  Mark
+        // the link lost so the branch above re-dials on the next tick.
+        mp_log( "[cdda-mp] JOIN: write failed (" + ec.message() + ") — marking link lost" );
+        g_preauth_link_lost.store( true );
         return;
     }
     g_join_sent = true;

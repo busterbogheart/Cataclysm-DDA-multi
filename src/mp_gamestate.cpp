@@ -8474,6 +8474,23 @@ static bool apply_one_state_message( const std::string &msg )
         add_msg( m_warning, _( "Reconnecting to host… (try %d/%d)" ), n, tot );
         return true;
     }
+    // The join itself never landed — the link died during character creation and
+    // the re-dials couldn't bring it back.  Say so plainly: before this, the
+    // player was dropped into a solo world with no indication anything had gone
+    // wrong (2026-07-31).
+    if( msg.find( "\"join_failed\":true" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] JOIN: narrating join failure to player" );
+        add_msg( m_bad, _( "Couldn't join the host — the connection dropped during character "
+                           "creation and could not be re-established.  You are NOT in the "
+                           "host's game." ) );
+        // The one question that would have short-circuited a whole session of
+        // diagnosis: a commercial VPN on either end silently reroutes the traffic
+        // and reaps idle connections.  Ask it here, where the failure is felt.
+        add_msg( m_bad, _( "If either of you is running a commercial VPN (NordVPN, ExpressVPN, "
+                           "Proton, …), turn it off and try again — that is the most common "
+                           "cause of this." ) );
+        return true;
+    }
     if( msg.find( "\"reconnect_failed\":true" ) != std::string::npos ) {
         mp_log( "[cdda-mp] RECONNECT: gave up — narrating to player" );
         add_msg( m_bad, _( "Couldn't reconnect to the host after several tries — connection lost." ) );
