@@ -337,6 +337,45 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### 2026-08-02
+
+- **A few fixes for joining issues** Several separate problems:
+    - **Your partner's join could quietly die while they made their character.** Between the
+      moment the client connects and the moment it actually joins, the player is in character
+      creation and neither machine sent a single byte during that time. Routers, 
+      firewalls and VPNs treat a connection quiet like that as dead
+      and silently cut it off, so the join was sent into a connection that no longer existed. The
+      host now sends a tiny keepalive to connecting players, and the client re-dials if it
+      finds the link dead at the moment it needs it.
+    - **If the join fails, you're now told.** Previously the client finished character
+      creation and dropped into its own empty world about seventy tiles from the host, with
+      no message at all. Now it says so plainly.
+    - **The host warns you that your partner can't connect yet.** The game doesn't open the
+      port until you're actually in the world, so from the moment you set up hosting through
+      worldgen, character creation and the intro/flavor text, anyone trying to join just gets
+      "connection refused."
+- **New Advice: Turn off your commercial VPN.** NordVPN, ExpressVPN, Proton and friends hijack your
+  machine's routing and send co-op traffic out through the VPN exit instead of to your
+  partner. This is not the same as Tailscale or Radmin, which exist to connect the two players.
+- **Vehicle cargo duplication is fixed (for real this time?)** — loot inside a car, bus, or cart would quietly clone itself...
+ Two separate causes were found and fixed.
+- **An update from upstream experimental CDDA** — this build pulls in roughly six weeks of changes from
+  the main fork (early June through late July).  The parts most worth knowing about:
+    - **Three fixes that protect your save.** Containers can no longer be nested more than 12
+      deep and putting an item inside itself no longer crashes the game. Deeply-nested containers were a known way
+      to corrupt a save file.
+    - **Various annoyances now gone.** Car and motorbike batteries lying on the ground no longer
+      act as obstacles you have to walk around. Elevators that led nowhere are fixed. Labyrinth
+      treasure-room terminals work again. Cold-blooded characters get their heat speed bonus in
+      hot weather like they're supposed to. You can no longer target-practice in pitch darkness.
+      Mines no longer spawn absurd numbers of sacks holding one unit of sand each. The overmap
+      map item covers twice the range.
+    - **New !!content!! (SPOILER ALERT)** A large batch for Xedra, the new
+      XedraWood mod filling out (giant serpents and their nests, magical tattoos, etc), Mind Over Matter, Aftershock, Magiclysm and Bombastic Perks, and a pile of new items; manga and manga-themed bookshelves, wyrmhound mutant dogs, a dragonfly head mutation, and an Obsolete Academic profession.
+    - Some upstream changes were left out on purpose because they broke content
+      checks when tested including some chemical and container recipe changes, and a mutant limb update.  If they're fixed
+      later we can pull those in. 
+
 ### 2026-07-26
 
 - **Fixed a crash when both players reach/wield the same item** — picking up, examining, or opening the advanced inventory manager while your partner had one of those same screens open on their end could crash their game.  Now it just errors, and only sometimes. 
