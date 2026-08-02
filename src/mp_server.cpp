@@ -148,6 +148,12 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     asio::streambuf read_buf;
     std::string name;
     bool authenticated = false;
+    // "ip:port" of the far end, captured at construction — remote_endpoint() is
+    // gone once the socket closes, and every diagnostic here wants to name who
+    // it was talking to.  Without this the host log couldn't distinguish a
+    // partner's failed join from a scanner (cost a full round-trip with a
+    // tester, 2026-07-31).
+    std::string peer;
 
     std::function<void( std::shared_ptr<client_session>, const std::string & )> on_message;
     std::function<void( std::shared_ptr<client_session> )> on_disconnect;
@@ -158,7 +164,12 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     bool writing_ = false;
 
     explicit client_session( tcp::socket sock )
-        : socket( std::move( sock ) ) {}
+        : socket( std::move( sock ) ) {
+        std::error_code pec;
+        const auto ep = socket.remote_endpoint( pec );
+        peer = pec ? std::string( "unknown" )
+               : ( ep.address().to_string() + ":" + std::to_string( ep.port() ) );
+    }
 
     void start() {
         // Disable Nagle — see client_connect(). The host's grant packets are
@@ -391,6 +402,8 @@ void server::on_client_disconnected( std::shared_ptr<client_session> session ) {
     std::string name = session->name.empty() ? "unknown" : session->name;
     std::cout << "[cdda-mp] Client '" << name << "' disconnected. Total: " <<
               clients_.size() << std::endl;
+    mp_log( "[cdda-mp] CLOSED: " + session->peer + " ('" + name + "', authenticated=" +
+            ( session->authenticated ? "1" : "0" ) + ")" );
 
     if( session->authenticated ) {
         // Only the CURRENT active session ending is a real disconnect.  If this is
@@ -437,7 +450,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
     // client surface a version mismatch before the character creation UI.
     if( type == "version_probe" ) {
         const std::string probe_ver = json_get_str( msg, "version" );
-        mp_log( "[cdda-mp] PROBE recv: client_ver='" +
+        mp_log( "[cdda-mp] PROBE recv from " + session->peer + ": client_ver='" +
                 ( probe_ver.empty() ? std::string( "(none)" ) : probe_ver ) +
                 "' host_ver='" + version_ + "' -> client_commit=" +
                 mp_version_commit_id( probe_ver ) + " host_commit=" +
@@ -564,8 +577,13 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         // sweep again — the reconnect-flapping half of the 2026-07-01 bug.  (An
         // older client that truly predates version_probe simply never gets a
         // welcome and times out on its own end; we don't need to force-close it.)
-        mp_log( "[cdda-mp] HANDSHAKE: ignoring stray pre-auth message type='" +
-                ( type.empty() ? std::string( "(none)" ) : type ) +
+        // Log the peer and a prefix of the RAW line: a burst of typeless lines is
+        // almost always a port scanner's HTTP request being split by the newline
+        // framer, and without the raw text we can't tell that apart from a real
+        // partner's malformed packet (2026-07-31).
+        mp_log( "[cdda-mp] HANDSHAKE: ignoring stray pre-auth message from " + session->peer +
+                " type='" + ( type.empty() ? std::string( "(none)" ) : type ) +
+                "' raw='" + mp_json_escape( msg.substr( 0, 80 ) ) +
                 "' (pre-JOIN) — waiting for join." );
     }
 }
