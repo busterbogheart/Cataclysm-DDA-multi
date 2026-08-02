@@ -7026,6 +7026,23 @@ bool mp_menu_start_host_session()
             mp_copy_join_address_now( true );
         }
     }
+    // "Armed" is not "listening".  The listen thread is deliberately deferred to
+    // the host's first do_turn (below) so there's a world for arrivals to spawn
+    // into — but the host has the address in hand RIGHT NOW and will send it to
+    // their partner immediately, who then gets connection-refused for the whole
+    // of worldgen + character creation + the scenario intro.  Measured windows:
+    // 3m58s locally, 22m48s in a reported case where the host was (correctly)
+    // certain their port forward was fine — there was simply nothing behind it
+    // yet.  Say so before they share it.  Gated on the listen thread genuinely
+    // not being up, so a re-arm over a live server doesn't nag.
+    if( !is_server_thread_running() ) {
+        popup( _( "Your partner can't connect yet.\n\n"
+                  "The game doesn't open the port until you're actually in the world, so "
+                  "anyone who tries before then just gets \"connection refused\" — even if "
+                  "your address and port forwarding are perfectly correct.\n\n"
+                  "Finish world and character creation first.  Once you're in the world the "
+                  "sidebar shows your join address and your partner can join." ) );
+    }
     set_host_mode( true );
     // Server thread starts on the host's first do_turn (see
     // mp_start_pending_host_thread) so we don't end up listening before
@@ -7549,6 +7566,10 @@ bool mp_menu_join_session()
                   "status in Tailscale/Radmin does NOT guarantee routing — try the host's "
                   "OTHER listed address (the host screen shows both its LAN and VPN IPs), or "
                   "toggle the VPN off/on to reset its route.\n"
+                  "• Running a COMMERCIAL VPN (NordVPN, ExpressVPN, Proton, …)?  Turn it "
+                  "off.  It takes over your machine's routing and will send co-op traffic "
+                  "out through the VPN exit instead of to your partner — this is a real "
+                  "reported cause of \"it just won't connect\".\n"
                   "• Check the address and that the port isn't firewalled." ),
                host.c_str(), static_cast<int>( port ) );
         return false;

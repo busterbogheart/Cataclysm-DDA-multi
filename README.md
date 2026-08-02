@@ -70,10 +70,6 @@ The client pastes that into `CO-OP > Join`. Port defaults to 8080.
 
 You need one of these to route your partner's traffic to your machine:
 
-- **[playit.gg](https://playit.gg)** *(easiest)* — free, no port forwarding, no
-  account needed for the client. Install the playit agent on the host machine,
-  add a TCP tunnel on port 8080, and share the address it gives you. Your partner
-  pastes it straight into the Join screen.
 - **[Tailscale](https://tailscale.com)** *(what I use)* — free VPN that makes both
   machines appear on the same LAN. By default you
   and your friend are on **separate networks** and won't see each other. You have
@@ -94,10 +90,41 @@ You need one of these to route your partner's traffic to your machine:
     4. The host shares their Tailscale IP (the `100.x.y.z` address next to their
        machine name). The friend pastes it into the Join screen as `100.x.y.z:8080`. (You can save the IP in the
        game with a name like `Joe's Tailscale`)
+- **[Radmin VPN](https://www.radmin-vpn.com)** *(Windows only!)* free, no account, no email. Connects the two machines.  If either player is on macOS or Linux, use Tailscale or ZeroTier instead.  Steps:
+    1. Both players install Radmin VPN from [radmin-vpn.com](https://www.radmin-vpn.com).
+    2. **Host:** *Network* → *Create network* — pick a network name and password then send both to your partner.
+    3. **Client:** *Network* → *Join network* — enter the same name and password.
+    4. **Verify before launching the game:** you should each see the other machine
+       listed with a green dot and a `26.x.y.z` address. If you don't see each other there, the game can't connect either so fix this first.
+    5. The host shares their `26.x.y.z` address; the client pastes it into the Join screen as `26.x.y.z:8080`.
+
 - **Router port forwarding** — forward TCP 8080 to the host machine and share
   your public IP. Works without any extra software but requires router access.
+- **[playit.gg](https://playit.gg)** *(easiest)* — free, no port forwarding, no
+  account needed for the client. Install the playit agent on the host machine,
+  add a TCP tunnel on port 8080, and share the address it gives you. Your partner
+  pastes it straight into the Join screen.
 - **ZeroTier / ngrok** — similar to Tailscale; see
   [cddacoop.com](https://cddacoop.com) for walkthroughs.
+
+### If it just won't connect
+
+Two causes account for nearly every report:
+
+1. **The host isn't listening yet.** The host doesn't open the port until they
+   are actually in the world; arming co-op in the menu isn't enough. World
+   generation plus character creation can easily take 5–20 minutes, and for that
+   whole time your partner gets "connection refused" even though the address and
+   the port forwarding are perfectly correct. **Host: get into the world first,
+   then tell your partner to join.**
+2. **One player is running a commercial VPN.** NordVPN, ExpressVPN, Proton, etc can take over your machine's routing and send the co-op traffic out through
+   the VPN exit instead of to your partner, then they drop connections that sit
+   idle. This is not the same thing as Tailscale/Radmin, which exist to connect
+   two players. **So, turn the commercial VPN off on both machines.** 
+
+If it's neither: check that both of you are on the same build (the game refuses
+mismatched versions), and that you can see each other's machine in
+your VPN/Tailscale app before launching the game.
 <!-- /SYNC:connecting -->
 
 ---
