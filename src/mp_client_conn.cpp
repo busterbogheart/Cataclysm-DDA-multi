@@ -368,12 +368,20 @@ bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms )
         tcp::socket sock( io );
         bool connected = false;
         bool finished = false;
+        // Declared before async_connect so the completion handler can cancel it.
+        // Without that cancel, io.run() below can't return until the timer
+        // expires, so EVERY probe cost the full timeout no matter how fast the
+        // connect resolved: a flat 3s stall on every co-op join (plus a 3s ghost
+        // socket left sitting on the host), and 3s per attempt on the join
+        // re-dial path.  Measured at exactly +3001ms per probe, 2026-08-02.
+        asio::steady_timer deadline( io );
         asio::async_connect( sock, endpoints,
         [&]( const asio::error_code & ec, const tcp::endpoint & ) {
             finished = true;
             connected = !ec;
+            asio::error_code ignore;
+            deadline.cancel( ignore );
         } );
-        asio::steady_timer deadline( io );
         deadline.expires_after( std::chrono::milliseconds( timeout_ms ) );
         deadline.async_wait( [&]( const asio::error_code & ) {
             if( !finished ) {
