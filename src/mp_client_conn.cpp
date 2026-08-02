@@ -604,10 +604,25 @@ void client_send_join()
                 std::to_string( g_preauth_redials ) + "/" +
                 std::to_string( MP_PREAUTH_REDIAL_MAX ) + " -> " + g_rc_host + ":" +
                 std::to_string( g_rc_port ) );
-        g_in_preauth_redial = true;
-        const bool ok = client_connect( g_rc_host, g_rc_port, g_rc_name, g_rc_password,
-                                        g_rc_version );
-        g_in_preauth_redial = false;
+        // Bounded preflight before the blocking connect.  client_connect() calls
+        // asio::connect() with no timeout and we are on the GAME THREAD, so a
+        // path that silently DROPS instead of refusing costs ~75s per attempt on
+        // macOS (SYN retry) — three of those is a four-minute frozen client, with
+        // no UI, right as character creation ends.  And a middlebox that reaps an
+        // idle flow is exactly the kind that drops SYNs, so the hang is most
+        // likely precisely when this code is most likely to run.  The menu join
+        // path has always gated client_connect behind this same 3s probe; the
+        // re-dial needs it for the same reason.
+        bool ok = false;
+        if( tcp_probe( g_rc_host, g_rc_port, 3000 ) ) {
+            g_in_preauth_redial = true;
+            ok = client_connect( g_rc_host, g_rc_port, g_rc_name, g_rc_password,
+                                 g_rc_version );
+            g_in_preauth_redial = false;
+        } else {
+            mp_log( "[cdda-mp] JOIN: re-dial preflight failed — nothing reachable at " +
+                    g_rc_host + ":" + std::to_string( g_rc_port ) + " within 3s" );
+        }
         if( !ok ) {
             mp_log( "[cdda-mp] JOIN: re-dial failed (" + client_connect_error() + ")" );
             if( g_preauth_redials >= MP_PREAUTH_REDIAL_MAX ) {
