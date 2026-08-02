@@ -337,7 +337,7 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
-### Unreleased
+### 2026-08-02
 
 - **A few fixes for joining issues** Several separate problems:
     - **Your partner's join could quietly die while they made their character.** Between the
