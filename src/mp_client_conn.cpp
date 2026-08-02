@@ -141,6 +141,14 @@ static std::atomic<bool> g_rc_in_progress{ false };
 static std::atomic<bool> g_client_joined{ false };
 static void reconnect_worker();
 
+// Proof-of-life for the pre-auth keepalive.  The host's pre-JOIN heartbeats are
+// dropped before the recv queue (they carry no state) and neither side logs the
+// send, so without this counter there is NO way to tell from the logs whether
+// the path stayed warm through character creation — which is the entire fix.
+// Reported once, at join.
+static std::atomic<int> g_preauth_hb_count{ 0 };
+static std::atomic<int64_t> g_preauth_connect_ms{ 0 };
+
 // Heartbeat + stall detection (Increment 1.5).  The read-error path only fires
 // when there's outstanding SENT data for TCP's RTO to time out on; a link that
 // dies while the client is idle/locked WAITING for a grant is invisible to it
@@ -288,7 +296,20 @@ struct client_impl {
                         g_rc_enabled.store( false );
                         mp_log( "[cdda-mp] RECONNECT: disabled (host goodbye/session_ending)" );
                     }
-                    g_recv_queue.push( std::move( msg ) );
+                    // A bare host heartbeat carries no state — its only job is
+                    // liveness, already stamped above.  Now that the host beats
+                    // pre-auth sessions too, queueing one every 1.5s across a
+                    // minutes-long character creation would pile up hundreds of
+                    // no-op packets (and recv-packet log lines) for the game loop
+                    // to drain in one tick at join.  Drop them until we're joined;
+                    // in-game behavior is unchanged.
+                    const bool idle_heartbeat = !g_client_joined.load() &&
+                                                msg.find( "\"type\":\"heartbeat\"" ) != std::string::npos;
+                    if( idle_heartbeat ) {
+                        g_preauth_hb_count.fetch_add( 1 );
+                    } else {
+                        g_recv_queue.push( std::move( msg ) );
+                    }
                 }
             }
             start_read();
@@ -347,6 +368,9 @@ bool client_connect( const std::string &host, uint16_t port,
                      const std::string &version )
 {
     g_client = std::make_unique<client_impl>();
+
+    g_preauth_hb_count.store( 0 );
+    g_preauth_connect_ms.store( mp_now_ms() );
 
     asio::error_code ec;
     tcp::resolver resolver( g_client->io_ctx );
@@ -541,6 +565,17 @@ void client_send_join()
         return;
     }
     g_join_sent = true;
+    // How warm did the path stay while the player was in character creation?
+    // beats=0 over a multi-second window means the host is NOT keeping the
+    // pre-auth connection alive and any NAT on the path will reap it — the exact
+    // failure this fix targets.  Roughly one beat per 1.5s is healthy.
+    {
+        const int64_t started = g_preauth_connect_ms.load();
+        const int64_t window = started > 0 ? mp_now_ms() - started : 0;
+        mp_log( "[cdda-mp] PREAUTH-KEEPALIVE: " + std::to_string( g_preauth_hb_count.load() ) +
+                " host beats over " + std::to_string( window / 1000 ) +
+                "s of pre-JOIN (character creation) — 0 means the path went cold" );
+    }
     // Arm the stall timer FROM JOIN.  g_last_recv_ms was last set at connect
     // (PROBE) time, but char creation can take tens of seconds during which the
     // client isn't in the game loop and never refreshes it.  The heartbeat/stall

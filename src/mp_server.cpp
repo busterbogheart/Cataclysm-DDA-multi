@@ -321,15 +321,33 @@ void server::arm_heartbeat() {
         if( ec ) {
             return;   // cancelled (server stopping)
         }
-        // Beat to every authenticated client.  On the io thread, so it fires even
-        // when the host's game thread is parked in a modal.  Clients drop it after
-        // stamping their liveness clock; pre-JOIN sessions aren't sent one.
+        // Beat to EVERY session, authenticated or not.  On the io thread, so it
+        // fires even when the host's game thread is parked in a modal.  Clients
+        // drop it after stamping their liveness clock.
+        //
+        // Pre-auth sessions get one too, and that is the whole point: the window
+        // between PROBE and JOIN is the joining player's character creation,
+        // which routinely runs for MINUTES, and both ends are otherwise silent
+        // across it (client heartbeat is gated on g_client_joined; the host had
+        // nothing to say to a session with no proxy yet).  A NAT or firewall on
+        // the path reaps a TCP flow that carries zero bytes for that long — a
+        // tester's partner lost six consecutive joins at ~60s each on a router
+        // port-forward, while both joins that completed in under a second
+        // succeeded (2026-07-31).  Tunnel users (Tailscale/ZeroTier) never saw
+        // it because the tunnel keepalives its own outer flow.
+        //
+        // Safe against the 2bc3067620 cascade this replaces: that was the CLIENT
+        // beating pre-auth into a host that used to disconnect unauthenticated
+        // senders.  The host has tolerated stray pre-auth messages since that
+        // same commit, and this direction can't trip the client's stall watchdog
+        // — that watchdog is itself gated on g_client_joined.
+        //
+        // Bonus: writing to a socket whose peer has gone away errors out and
+        // disconnects it, which reaps dead scanner sessions out of clients_.
         {
             std::lock_guard<std::mutex> lock( clients_mutex_ );
             for( auto &c : clients_ ) {
-                if( c->authenticated ) {
-                    c->send( "{\"type\":\"heartbeat\"}\n" );
-                }
+                c->send( "{\"type\":\"heartbeat\"}\n" );
             }
         }
         arm_heartbeat();
