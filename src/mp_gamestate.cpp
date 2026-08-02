@@ -7550,10 +7550,20 @@ bool mp_menu_join_session()
     if( !mp_parse_address( entered, host, port ) ) {
         return false;
     }
+    // Log the attempt BEFORE the probe.  "I can't connect" is the single most
+    // common thing a player reports, and until now that path wrote nothing at
+    // all to the client log — probe fails, popup, return.  So the log a player
+    // sends us had no trace they had even tried, which is precisely what made
+    // the 2026-07-31 investigation take a full session.  Now the log shows the
+    // address dialled and, below, why it failed.
+    mp_log( "[cdda-mp] MENU: join attempt -> " + host + ":" + std::to_string( port ) );
     // Pre-flight TCP probe so a typo'd IP returns in ~3 s instead of hanging
     // on macOS's 75 s default SYN retry.  Only on success do we commit to
     // setting client_mode and running the real connect handshake.
     if( !tcp_probe( host, port, 3000 ) ) {
+        mp_log( "[cdda-mp] MENU: join FAILED — no TCP route to " + host + ":" +
+                std::to_string( port ) + " within 3s (host not listening yet, wrong "
+                "address, firewall, or VPN routing)" );
         // Couldn't even open a TCP connection — a network/route/firewall problem,
         // NOT a version/password one (that surfaces later with its own message).
         // Name the VPN-route gotcha explicitly: a "Connected" status in the VPN

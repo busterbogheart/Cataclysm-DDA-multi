@@ -664,9 +664,17 @@ void client_send_join()
     {
         const int64_t started = g_preauth_connect_ms.load();
         const int64_t window = started > 0 ? mp_now_ms() - started : 0;
+        // Only append the "went cold" warning when the window was long enough for
+        // silence to mean anything.  A successful re-dial joins within
+        // milliseconds of connecting, so it legitimately reports 0 beats over 0s
+        // — printing the alarm text there makes a healthy recovery read as a
+        // failure in the log (observed in the 2026-08-02 test pass).
+        const bool meaningful = window >= 5000;
         mp_log( "[cdda-mp] PREAUTH-KEEPALIVE: " + std::to_string( g_preauth_hb_count.load() ) +
                 " host beats over " + std::to_string( window / 1000 ) +
-                "s of pre-JOIN (character creation) — 0 means the path went cold" );
+                "s of pre-JOIN (character creation)" +
+                ( meaningful ? " — 0 means the path went cold"
+                  : " — window too short to judge (immediate join)" ) );
     }
     // Arm the stall timer FROM JOIN.  g_last_recv_ms was last set at connect
     // (PROBE) time, but char creation can take tens of seconds during which the
