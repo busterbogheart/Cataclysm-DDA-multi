@@ -172,6 +172,7 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     // All send() / do_write() calls happen on the single Asio thread so no mutex needed.
     std::deque<std::string> write_queue_;
     bool writing_ = false;
+    bool disconnected_ = false;   // see disconnect()
 
     explicit client_session( tcp::socket sock )
         : socket( std::move( sock ) ), probe_timer( socket.get_executor() ) {
@@ -270,6 +271,19 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     }
 
     void disconnect() {
+        // One disconnect per session.  Closing the socket makes the pending
+        // async_read (and any in-flight async_write) complete with an error, and
+        // those handlers call disconnect() too — so every close fired two
+        // on_disconnect callbacks.  Visible as duplicate CLOSED: lines in the
+        // 2026-08-02 probe-deadline test.  Harmless there because an
+        // unauthenticated session takes no action, and on an authenticated one
+        // the second pass was stopped only incidentally by active_session_ having
+        // already been reset — a real drop that trips both a read and a write
+        // error takes exactly that path, so don't rely on the accident.
+        if( disconnected_ ) {
+            return;
+        }
+        disconnected_ = true;
         std::error_code tec;
         probe_timer.cancel( tec );
         std::error_code ec;
