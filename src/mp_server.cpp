@@ -143,6 +143,13 @@ static std::string mp_compress_frame( const std::string &msg )
 // client_session — owns one TCP connection
 // ---------------------------------------------------------------------------
 
+// A connection that never sends a version_probe isn't a co-op client — it's an
+// internet port scanner (8080 is one of the most-scanned ports there is, and a
+// host with a router port-forward is reachable by all of them).  Drop those so
+// they can't sit in clients_ forever holding a player slot.  Generous vs. the
+// real client, which probes microseconds after connecting.
+static constexpr int MP_PROBE_DEADLINE_S = 20;
+
 struct client_session : public std::enable_shared_from_this<client_session> {
     tcp::socket socket;
     asio::streambuf read_buf;
@@ -154,6 +161,9 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     // partner's failed join from a scanner (cost a full round-trip with a
     // tester, 2026-07-31).
     std::string peer;
+    // Set the moment a valid version_probe arrives; gates the deadline below.
+    bool probed = false;
+    asio::steady_timer probe_timer;
 
     std::function<void( std::shared_ptr<client_session>, const std::string & )> on_message;
     std::function<void( std::shared_ptr<client_session> )> on_disconnect;
@@ -164,11 +174,28 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     bool writing_ = false;
 
     explicit client_session( tcp::socket sock )
-        : socket( std::move( sock ) ) {
+        : socket( std::move( sock ) ), probe_timer( socket.get_executor() ) {
         std::error_code pec;
         const auto ep = socket.remote_endpoint( pec );
         peer = pec ? std::string( "unknown" )
                : ( ep.address().to_string() + ":" + std::to_string( ep.port() ) );
+    }
+
+    // Close a session that connected but never spoke the protocol.  Checked
+    // against `probed`, NOT `authenticated`: authentication legitimately takes
+    // minutes (the client is in character creation between PROBE and JOIN), so
+    // an auth-based deadline would kill every real join.
+    void arm_probe_deadline() {
+        probe_timer.expires_after( std::chrono::seconds( MP_PROBE_DEADLINE_S ) );
+        auto self = shared_from_this();
+        probe_timer.async_wait( [self]( const std::error_code & ec ) {
+            if( ec || self->probed ) {
+                return;   // cancelled, or the peer identified itself in time
+            }
+            mp_log( "[cdda-mp] ACCEPT: dropping " + self->peer + " — no version_probe within " +
+                    std::to_string( MP_PROBE_DEADLINE_S ) + "s (not a co-op client)" );
+            self->disconnect();
+        } );
     }
 
     void start() {
@@ -182,6 +209,7 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         std::error_code ka_ec;
         socket.set_option( asio::socket_base::keep_alive( true ), ka_ec );
         send( "{\"type\":\"hello\",\"protocol\":\"cdda-mp\",\"version\":\"0.1\"}\n" );
+        arm_probe_deadline();
         do_read();
     }
 
@@ -242,6 +270,8 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     }
 
     void disconnect() {
+        std::error_code tec;
+        probe_timer.cancel( tec );
         std::error_code ec;
         socket.close( ec );
         if( on_disconnect ) {
@@ -397,16 +427,21 @@ void server::do_accept() {
 }
 
 void server::on_client_connected( std::shared_ptr<client_session> session ) {
+    size_t total = 0;
     {
         std::lock_guard<std::mutex> lock( clients_mutex_ );
         clients_.push_back( session );
+        total = clients_.size();       // read under the lock (was racy)
     }
-    std::cout << "[cdda-mp] Client connected. Total: " << clients_.size() << std::endl;
-
-    if( clients_.size() > 2 ) {
-        session->send( "{\"type\":\"error\",\"message\":\"Server is full (max 2 players)\"}\n" );
-        session->disconnect();
-    }
+    std::cout << "[cdda-mp] Client connected. Total: " << total << std::endl;
+    mp_log( "[cdda-mp] ACCEPT: " + session->peer + " connected (open sockets: " +
+            std::to_string( total ) + ")" );
+    // NO player-cap check here.  It used to reject the 3rd *socket*, counting
+    // every unauthenticated connection — so two lingering port scanners could
+    // permanently lock out the real partner, and the rejection was std::cout
+    // only, invisible in the log players send us.  The cap now lives in the JOIN
+    // handler where it can count actual players; scanners are handled by the
+    // probe deadline instead.
 }
 
 void server::on_client_disconnected( std::shared_ptr<client_session> session ) {
@@ -421,7 +456,8 @@ void server::on_client_disconnected( std::shared_ptr<client_session> session ) {
     std::cout << "[cdda-mp] Client '" << name << "' disconnected. Total: " <<
               clients_.size() << std::endl;
     mp_log( "[cdda-mp] CLOSED: " + session->peer + " ('" + name + "', authenticated=" +
-            ( session->authenticated ? "1" : "0" ) + ")" );
+            ( session->authenticated ? "1" : "0" ) + ", probed=" +
+            ( session->probed ? "1" : "0" ) + ")" );
 
     if( session->authenticated ) {
         // Only the CURRENT active session ending is a real disconnect.  If this is
@@ -467,6 +503,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
     // without spawning the proxy NPC or queuing a connect event.  Lets the
     // client surface a version mismatch before the character creation UI.
     if( type == "version_probe" ) {
+        session->probed = true;        // a real co-op client — cancel the drop deadline
         const std::string probe_ver = json_get_str( msg, "version" );
         mp_log( "[cdda-mp] PROBE recv from " + session->peer + ": client_ver='" +
                 ( probe_ver.empty() ? std::string( "(none)" ) : probe_ver ) +
@@ -518,6 +555,26 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         std::string name = json_get_str( msg, "name" );
         if( name.empty() ) {
             name = "player";
+        }
+
+        // Player cap — counts AUTHENTICATED sessions only.  A half-open socket or
+        // a port scanner is not a player and must never consume a slot (see
+        // on_client_connected).  Same limit as before: two players max.
+        size_t authed = 0;
+        {
+            std::lock_guard<std::mutex> lock( clients_mutex_ );
+            for( const auto &c : clients_ ) {
+                if( c->authenticated && c != session ) {
+                    ++authed;
+                }
+            }
+        }
+        if( authed >= 2 ) {
+            session->send( "{\"type\":\"error\",\"message\":\"Server is full (max 2 players)\"}\n" );
+            mp_log( "[cdda-mp] JOIN REJECTED — server full (name='" + name + "', peer=" +
+                    session->peer + ", authenticated players=" + std::to_string( authed ) + ")" );
+            session->disconnect();
+            return;
         }
 
         // Check version compatibility — reject mismatched binaries. Compare
