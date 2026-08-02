@@ -7036,12 +7036,11 @@ bool mp_menu_start_host_session()
     // yet.  Say so before they share it.  Gated on the listen thread genuinely
     // not being up, so a re-arm over a live server doesn't nag.
     if( !is_server_thread_running() ) {
-        popup( _( "Your partner can't connect yet.\n\n"
-                  "The game doesn't open the port until you're actually in the world, so "
-                  "anyone who tries before then just gets \"connection refused\" — even if "
+        popup( _( "The game doesn't open the port until you're actually in the world, so "
+                  "anyone who tries before that just gets \"connection refused\", even if "
                   "your address and port forwarding are perfectly correct.\n\n"
-                  "Finish world and character creation first.  Once you're in the world the "
-                  "sidebar shows your join address and your partner can join." ) );
+                  "So finish world and character creation first.  Once you're in the world "
+                  "your partner can join." ) );
     }
     set_host_mode( true );
     // Server thread starts on the host's first do_turn (see
@@ -7569,18 +7568,15 @@ bool mp_menu_join_session()
         // Name the VPN-route gotcha explicitly: a "Connected" status in the VPN
         // app does NOT mean apps can route to the peer, and the host now shows
         // both its LAN and VPN addresses so the partner can try the other one.
-        popup( _( "Could not reach %s:%d.\n\n"
-                  "• Make sure the host is IN-GAME and hosting — the host only starts "
-                  "listening once it's in a world.\n"
-                  "• Both machines must be on the same network or VPN.  A \"Connected\" "
-                  "status in Tailscale/Radmin does NOT guarantee routing — try the host's "
-                  "OTHER listed address (the host screen shows both its LAN and VPN IPs), or "
-                  "toggle the VPN off/on to reset its route.\n"
-                  "• Running a COMMERCIAL VPN (NordVPN, ExpressVPN, Proton, …)?  Turn it "
-                  "off.  It takes over your machine's routing and will send co-op traffic "
-                  "out through the VPN exit instead of to your partner — this is a real "
-                  "reported cause of \"it just won't connect\".\n"
-                  "• Check the address and that the port isn't firewalled." ),
+        popup( _( "Could not reach %s:%d ...\n\n"
+                  "1 Make sure the host is in-game and hosting\n"
+                  "2 Ensure both machines are on the same network or VPN.  A \"Connected\" "
+                  "status in Tailscale/Radmin does not guarantee routing, so try the host's "
+                  "other listed address, or toggle the VPN off/on to reset its route.\n"
+                  "3 Turn off any commercial VPN (NordVPN, ExpressVPN, Proton, etc).  "
+                  "It takes over your machine's routing and will send co-op traffic "
+                  "out through the VPN instead of to your partner.\n"
+                  "4 Check the address and check the port isn't firewalled." ),
                host.c_str(), static_cast<int>( port ) );
         return false;
     }
@@ -8511,15 +8507,13 @@ static bool apply_one_state_message( const std::string &msg )
     // wrong (2026-07-31).
     if( msg.find( "\"join_failed\":true" ) != std::string::npos ) {
         mp_log( "[cdda-mp] JOIN: narrating join failure to player" );
-        add_msg( m_bad, _( "Couldn't join the host — the connection dropped during character "
-                           "creation and could not be re-established.  You are NOT in the "
+        add_msg( m_bad, _( "Couldn't join: the connection dropped during char creation "
+                           "and could not be re-established.  You are NOT in the "
                            "host's game." ) );
         // The one question that would have short-circuited a whole session of
         // diagnosis: a commercial VPN on either end silently reroutes the traffic
         // and reaps idle connections.  Ask it here, where the failure is felt.
-        add_msg( m_bad, _( "If either of you is running a commercial VPN (NordVPN, ExpressVPN, "
-                           "Proton, …), turn it off and try again — that is the most common "
-                           "cause of this." ) );
+        add_msg( m_bad, _( "If either player is running a commercial VPN, turn it off and try again." ) );
         return true;
     }
     if( msg.find( "\"reconnect_failed\":true" ) != std::string::npos ) {
