@@ -5808,11 +5808,39 @@ void grant_client_turn()
         // by the time client_teleport_avatar fires update_map.  If map_sync
         // arrives after remote_player_state the client loads stale disk tiles
         // (t_open_air) first, gravity_check fires, and the client falls.
+        // MP DIAGNOSTIC 2026-08-14 — grant_client_turn() measured at a flat 120ms
+        // EVERY turn in a two-player craft (TURN-PHASES grant=120ms), which is the
+        // single largest per-turn cost on the host and is entirely our code. Split
+        // it into build vs send so we know whether to attack the radius-20 tile
+        // scan inside serialize_remote_player_state() or a blocking socket write.
+        using clk = std::chrono::steady_clock;
+        const auto g_t0 = clk::now();
         const std::string mapm = build_map_sync();
+        const auto g_t_map = clk::now();
         if( !mapm.empty() ) {
             srv->post_broadcast( mapm + "\n" );
         }
-        srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        const auto g_t_map_send = clk::now();
+        const std::string state = serialize_remote_player_state();
+        const auto g_t_ser = clk::now();
+        srv->post_broadcast( state + "\n" );
+        const auto g_t_ser_send = clk::now();
+        {
+            const auto d = []( clk::time_point a, clk::time_point b ) {
+                return static_cast<long long>(
+                           std::chrono::duration_cast<std::chrono::milliseconds>( b - a ).count() );
+            };
+            const long long tot = d( g_t0, g_t_ser_send );
+            if( tot >= 20 ) {
+                mp_log( "[cdda-mp] GRANT-BREAKDOWN: total=" + std::to_string( tot ) +
+                        "ms build_map_sync=" + std::to_string( d( g_t0, g_t_map ) ) +
+                        "ms send_map=" + std::to_string( d( g_t_map, g_t_map_send ) ) +
+                        "ms serialize_state=" + std::to_string( d( g_t_map_send, g_t_ser ) ) +
+                        "ms send_state=" + std::to_string( d( g_t_ser, g_t_ser_send ) ) +
+                        "ms map_bytes=" + std::to_string( mapm.size() ) +
+                        " state_bytes=" + std::to_string( state.size() ) );
+            }
+        }
         // Stream the host's overmap region so the client's far-map (cities/
         // roads/biomes) matches instead of its own non-deterministic regen.
         // Returns "" unless this is the first sync or the host moved a step,
@@ -12893,7 +12921,18 @@ std::string serialize_remote_player_state()
 
     // Scan for tile changes around both the remote player AND the host so that
     // doors/terrain the host interacts with also reach the client.
+    const auto srp_t0 = std::chrono::steady_clock::now();
     std::string tile_changes = build_tile_changes( pos, 20 );
+    {
+        // Radius-20 scan = ~1681 tiles, each computing item/field/trap/graffiti
+        // signatures. Suspect for the 120ms grant cost; measure rather than assume.
+        const long long d = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - srp_t0 ).count();
+        if( d >= 10 ) {
+            mp_log( "[cdda-mp] TILE-SCAN: build_tile_changes(r=20) took " +
+                    std::to_string( d ) + "ms bytes=" + std::to_string( tile_changes.size() ) );
+        }
+    }
     auto merge_tile_changes = [&tile_changes]( const std::string & extra ) {
         if( extra.size() <= 2 ) { // just "[]" — nothing to merge
             return;
