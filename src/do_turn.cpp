@@ -1298,10 +1298,12 @@ bool game::do_turn()
     // Update vision caches for monsters. If this turns out to be expensive,
     // consider a stripped down cache just for monsters.
     m.build_map_cache( levz, true );
+    cata_mp::mp_turn_phase( "map_cache" );
     // Lockstep: wait for the client to act before advancing the world.
     if( cata_mp::is_hosting() ) {
         cata_mp::wait_for_client_action();
     }
+    cata_mp::mp_turn_phase( "client_wait" );
     // process monster and npc turn (skipped on client — host is authoritative)
     if( !cata_mp::is_client_mode() ) {
         if( cata_mp::is_hosting() ) {

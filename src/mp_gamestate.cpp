@@ -5759,6 +5759,11 @@ void grant_client_turn()
         }
         return;
     }
+    // MP DIAGNOSTIC 2026-08-14 — bracket the WHOLE post-early-return body, not just
+    // the broadcasts. Everything above the !remote_player_connected return also runs
+    // solo-host, where the turn measured 2ms, so the 120ms is somewhere below here —
+    // but that includes update_stamina/check_separation_warning, not only the sends.
+    const auto grant_body_t0 = std::chrono::steady_clock::now();
     g_proxy_was_alive = true;
     g_client_acted_this_turn = false;
     // FIX #2/#3: accumulate this turn's speed onto any carried AP debt instead of
@@ -5793,7 +5798,9 @@ void grant_client_turn()
     } else {
         remote->update_stamina( 1 );
     }
+    const auto grant_t_stamina = std::chrono::steady_clock::now();
     check_separation_warning( get_avatar().pos_abs(), remote->pos_abs() );
+    const auto grant_t_separation = std::chrono::steady_clock::now();
     server *srv = get_active_server();
     if( srv ) {
         // NOTE: do NOT throttle this broadcast during fast-forward. The grant
@@ -5830,9 +5837,11 @@ void grant_client_turn()
                 return static_cast<long long>(
                            std::chrono::duration_cast<std::chrono::milliseconds>( b - a ).count() );
             };
-            const long long tot = d( g_t0, g_t_ser_send );
+            const long long tot = d( grant_body_t0, g_t_ser_send );
             if( tot >= 20 ) {
                 mp_log( "[cdda-mp] GRANT-BREAKDOWN: total=" + std::to_string( tot ) +
+                        "ms stamina=" + std::to_string( d( grant_body_t0, grant_t_stamina ) ) +
+                        "ms separation=" + std::to_string( d( grant_t_stamina, grant_t_separation ) ) +
                         "ms build_map_sync=" + std::to_string( d( g_t0, g_t_map ) ) +
                         "ms send_map=" + std::to_string( d( g_t_map, g_t_map_send ) ) +
                         "ms serialize_state=" + std::to_string( d( g_t_map_send, g_t_ser ) ) +
