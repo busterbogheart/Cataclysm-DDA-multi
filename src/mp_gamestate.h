@@ -328,6 +328,23 @@ bool is_passive_activity( const std::string &activity_id_str );
 // fires on either side (hostile in sight, low HP, player input, etc.).
 bool should_fast_forward();
 
+// MP DIAGNOSTIC 2026-08-14 — per-turn phase timing for game::do_turn().
+//
+// Two ~120ms gaps per turn were measured in a two-player craft (one between
+// grant_client_turn and HOST-INPUT-GATE, one between the tile broadcast and
+// DO-TURN-EXIT) with no log markers between them to attribute the cost. These
+// bracket the turn so the next run reports where the time actually goes instead
+// of us inferring it.
+//
+// mp_turn_phase_begin() resets at the top of the turn (so an early return can't
+// leave stale marks), mp_turn_phase() records a named checkpoint, and
+// mp_turn_phase_flush() emits ONE line of deltas — but only when the turn
+// exceeded threshold_ms, so fast turns don't flood the log. All no-op outside
+// an MP session.
+void mp_turn_phase_begin();
+void mp_turn_phase( const char *name );
+void mp_turn_phase_flush( int threshold_ms );
+
 // Redraw gate for game::handle_progress_ui()'s long-action progress popup.
 //
 // Returns TRUE when this is an MP session (host or client), meaning the caller's

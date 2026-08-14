@@ -6262,6 +6262,65 @@ bool should_fast_forward()
     return true;
 }
 
+// MP DIAGNOSTIC 2026-08-14 — per-turn phase timing, see mp_gamestate.h.
+namespace
+{
+struct mp_turn_mark {
+    const char *name;
+    std::chrono::steady_clock::time_point t;
+};
+std::vector<mp_turn_mark> g_turn_marks;
+} // namespace
+
+void mp_turn_phase_begin()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    g_turn_marks.clear();
+    g_turn_marks.push_back( { "begin", std::chrono::steady_clock::now() } );
+}
+
+void mp_turn_phase( const char *name )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    // Only record if a begin() happened this turn — otherwise an early return
+    // path would accumulate marks with no matching flush.
+    if( g_turn_marks.empty() ) {
+        return;
+    }
+    g_turn_marks.push_back( { name, std::chrono::steady_clock::now() } );
+}
+
+void mp_turn_phase_flush( int threshold_ms )
+{
+    if( g_turn_marks.size() < 2 ) {
+        g_turn_marks.clear();
+        return;
+    }
+    const auto ms_between = []( const mp_turn_mark & a, const mp_turn_mark & b ) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>( b.t - a.t ).count();
+    };
+    const auto total = ms_between( g_turn_marks.front(), g_turn_marks.back() );
+    if( total < threshold_ms ) {
+        g_turn_marks.clear();
+        return;
+    }
+    std::string line = "[cdda-mp] TURN-PHASES: total=" + std::to_string( total ) + "ms";
+    for( size_t i = 1; i < g_turn_marks.size(); ++i ) {
+        const auto d = ms_between( g_turn_marks[i - 1], g_turn_marks[i] );
+        // Only print segments that actually cost something — a turn has many
+        // phases and the zero ones are noise.
+        if( d > 0 ) {
+            line += std::string( " " ) + g_turn_marks[i].name + "=" + std::to_string( d ) + "ms";
+        }
+    }
+    mp_log( line );
+    g_turn_marks.clear();
+}
+
 bool mp_progress_redraw_gate( bool first_redraw, bool &due )
 {
     due = false;

@@ -725,10 +725,12 @@ bool game::do_turn()
         cata_mp::mp_log( "[cdda-mp] HOST-POST-MP-EVENTS: avatar_moves=" +
                          std::to_string( get_avatar().get_moves() ) );
     }
+    cata_mp::mp_turn_phase_begin();
     // Lockstep: grant the client their turn at the start of each game turn.
     if( cata_mp::is_hosting() ) {
         cata_mp::grant_client_turn();
     }
+    cata_mp::mp_turn_phase( "grant" );
     // Keep the MP debug HUD alive whenever multiplayer is active.
     // Gate on host *intent* (is_host_mode), not server liveness (is_hosting):
     // the listen thread sets active_server_ asynchronously, so on a 2nd host
@@ -786,6 +788,7 @@ bool game::do_turn()
     // up the host-driven calendar's jumps. Logic lives in mp_gamestate.cpp to
     // keep this SP file a one-line callout (minimize upstream merge conflicts).
     cata_mp::mp_do_turn_update_body( u );
+    cata_mp::mp_turn_phase( "body" );
 
     // Auto-save if autosave is enabled (suppressed in client mode — server owns saves)
     if( !cata_mp::is_client_mode() &&
@@ -794,6 +797,7 @@ bool game::do_turn()
         !u.is_dead_state() ) {
         autosave();
     }
+    cata_mp::mp_turn_phase( "autosave" );
 
     weather.update_weather();
 
@@ -893,6 +897,7 @@ bool game::do_turn()
     }
 
     if( cata_mp::is_hosting() ) {
+        cata_mp::mp_turn_phase( "pre_input" );
         cata_mp::mp_log( "[cdda-mp] HOST-INPUT-GATE: avatar_moves=" + std::to_string( u.get_moves() ) +
                          " has_act=" + ( u.activity ? u.activity.id().str() : "none" ) +
                          " sleep=" + std::to_string( u.has_effect( effect_sleep ) ) +
@@ -1283,6 +1288,7 @@ bool game::do_turn()
         m.process_fields();
     }
     m.process_items();
+    cata_mp::mp_turn_phase( "fields_items" );
     explosion_handler::process_explosions();
     m.creature_in_field( u );
 
@@ -1315,6 +1321,7 @@ bool game::do_turn()
             overmap_npc_move();
         }
     }
+    cata_mp::mp_turn_phase( "monmove" );
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
     mon_info_update();
@@ -1345,6 +1352,7 @@ bool game::do_turn()
     }
 
     handle_progress_ui();
+    cata_mp::mp_turn_phase( "progress_ui" );
 
     m.invalidate_visibility_cache();
 
@@ -1394,6 +1402,10 @@ bool game::do_turn()
     // between this line and the next HOST-DO-TURN-ENTRY is spent OUTSIDE do_turn
     // (main loop / SDL frame pacing), not in the progress-UI redraw.  Lets the
     // 16ms/turn be attributed without guessing.
+    cata_mp::mp_turn_phase( "tail" );
+    // 20ms threshold: a healthy turn is ~2ms, so this only fires on the slow
+    // turns we're chasing and leaves fast ones out of the log entirely.
+    cata_mp::mp_turn_phase_flush( 20 );
     cata_mp::mp_log_do_turn_exit();
     return false;
 }
