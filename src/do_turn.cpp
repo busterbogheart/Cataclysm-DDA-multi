@@ -556,6 +556,19 @@ void game::handle_progress_ui()
 {
     avatar &u = get_avatar();
 
+    // MP DIAGNOSTIC 2026-08-14 — "MP crafting is ~10x slower than SP" (ROADMAP).
+    // MP forces wait_refresh_rate to 1_turns whenever FF is off (below), so this
+    // function runs a full redraw + refresh_display() EVERY game turn.  Server log
+    // shows a rock-steady 16ms/turn — exactly one 60Hz vsync frame — capping MP at
+    // ~62 turns/sec against SP's ~600.  These timers prove (or refute) that the
+    // 16ms is spent here rather than elsewhere in the turn tail.  Emission is a
+    // named callout in mp_gamestate.cpp so this SP file stays thin (merge rule 4).
+    const auto t_pui0 = std::chrono::steady_clock::now();
+    double ms_redraw_gated = 0.0;
+    double ms_redraw_popup = 0.0;
+    double ms_refresh = 0.0;
+    bool gate_fired = false;
+
     // handle activity/progress/waiting UI
     const bool player_is_sleeping = u.has_effect( effect_sleep );
     bool wait_redraw = false;
@@ -588,44 +601,26 @@ void game::handle_progress_ui()
         } else {
             wait_refresh_rate = 5_minutes;
         }
-        // In lockstep MP (no FF), 1 grant ≈ 1s real-time, so cap to 1_turns
-        // so the progress bar updates every grant cycle.  In FF mode turns
-        // race at CPU speed — calendar::once_every(1_turns) fires every turn
-        // and the SDL redraw becomes the bottleneck (10-30ms/turn caps FF at
-        // ~33-100 turns/sec).  Use a wall-clock cap instead: redraw at ~10 Hz
-        // so the popup stays live without throttling the simulation.
-        if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
-            if( !cata_mp::should_fast_forward() ) {
-                wait_refresh_rate = 1_turns;
-            }
-            // FF path handled by wall-clock gate below; leave wait_refresh_rate
-            // at SP default (5_minutes) so the calendar gate never fires.
-        }
+        // MP does NOT use the calendar gate below — see mp_progress_redraw_gate().
+        // wait_refresh_rate stays at the SP value; the wall-clock gate supersedes it.
     }
     if( wait_redraw ) {
-        // FF mode: bypass the calendar gate entirely and use a wall-clock cap
-        // (~100ms = ~10 Hz).  This lets thousands of game turns race through
-        // per second while the progress popup still updates smoothly.
-        static auto s_last_ff_redraw = std::chrono::steady_clock::time_point {};
-        const bool ff_active = cata_mp::should_fast_forward();
-        const bool ff_redraw_due = [&] {
-            if( !ff_active ) {
-                return false;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            if( first_redraw_since_waiting_started ||
-                std::chrono::duration_cast<std::chrono::milliseconds>( now - s_last_ff_redraw ).count() >= 100 ) {
-                s_last_ff_redraw = now;
-                return true;
-            }
-            return false;
-        }();
-        if( ff_redraw_due ||
-            ( !ff_active && ( first_redraw_since_waiting_started ||
-                              calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) ) ) {
-            if( ff_redraw_due || first_redraw_since_waiting_started ||
+        // MP: a wall-clock redraw cap replaces the calendar gate entirely, so the
+        // redraw rate is decoupled from the simulation rate.  SP is untouched and
+        // keeps its calendar gate.  Logic lives in mp_gamestate.cpp (merge rule 4).
+        bool mp_redraw_due = false;
+        const bool mp_session = cata_mp::mp_progress_redraw_gate(
+                                    first_redraw_since_waiting_started, mp_redraw_due );
+        if( mp_redraw_due ||
+            ( !mp_session && ( first_redraw_since_waiting_started ||
+                               calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) ) ) {
+            gate_fired = true;
+            if( mp_redraw_due || first_redraw_since_waiting_started ||
                 calendar::once_every( wait_refresh_rate ) ) {
+                const auto t_rg = std::chrono::steady_clock::now();
                 ui_manager::redraw();
+                ms_redraw_gated = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - t_rg ).count();
             }
 
             // Avoid redrawing the main UI every time due to invalidation
@@ -641,8 +636,13 @@ void game::handle_progress_ui()
                 wait_popup = std::make_unique<static_popup>();
             }
             wait_popup->on_top( true ).wait_message( "%s", wait_message );
+            const auto t_rp = std::chrono::steady_clock::now();
             ui_manager::redraw();
+            const auto t_rf = std::chrono::steady_clock::now();
             refresh_display();
+            const auto t_rf_end = std::chrono::steady_clock::now();
+            ms_redraw_popup = std::chrono::duration<double, std::milli>( t_rf - t_rp ).count();
+            ms_refresh = std::chrono::duration<double, std::milli>( t_rf_end - t_rf ).count();
             first_redraw_since_waiting_started = false;
         }
     } else {
@@ -650,6 +650,12 @@ void game::handle_progress_ui()
         wait_popup_reset();
         first_redraw_since_waiting_started = true;
     }
+
+    cata_mp::mp_log_progress_ui( wait_redraw, gate_fired,
+                                 to_turns<int>( wait_refresh_rate ),
+                                 ms_redraw_gated, ms_redraw_popup, ms_refresh,
+                                 std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - t_pui0 ).count() );
 }
 
 bool game::do_turn()
@@ -1384,5 +1390,10 @@ bool game::do_turn()
 #endif
 
     debug_menu::debug_capture::tick_if_active();
+    // MP DIAGNOSTIC 2026-08-14 — brackets the far end of the turn.  Any wall-clock
+    // between this line and the next HOST-DO-TURN-ENTRY is spent OUTSIDE do_turn
+    // (main loop / SDL frame pacing), not in the progress-UI redraw.  Lets the
+    // 16ms/turn be attributed without guessing.
+    cata_mp::mp_log_do_turn_exit();
     return false;
 }

@@ -328,6 +328,33 @@ bool is_passive_activity( const std::string &activity_id_str );
 // fires on either side (hostile in sight, low HP, player input, etc.).
 bool should_fast_forward();
 
+// Redraw gate for game::handle_progress_ui()'s long-action progress popup.
+//
+// Returns TRUE when this is an MP session (host or client), meaning the caller's
+// SP calendar-based gate must NOT be used — and sets `due` to whether a redraw is
+// owed right now under a wall-clock cap.  Returns FALSE in SP, leaving `due`
+// false, so SP keeps its existing calendar gate untouched.
+//
+// The point is to decouple redraw rate from simulation rate.  The calendar gate
+// ties the two together; at 1_turns that forced a full frame every game turn and
+// the frame cost then paced the simulation.  See mp_gamestate.cpp for the
+// measurements.
+bool mp_progress_redraw_gate( bool first_redraw, bool &due );
+
+// MP DIAGNOSTIC 2026-08-14 — instrumentation for "MP crafting is ~10x slower than
+// SP" (ROADMAP).  game::handle_progress_ui() times its redraw path and hands the
+// numbers here; keeping the emission (throttle, formatting, running averages) in
+// this file leaves do_turn.cpp carrying only thin named callouts — merge rule 4.
+// No-ops outside an MP session.
+void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
+                         double ms_redraw_gated, double ms_redraw_popup,
+                         double ms_refresh, double ms_total );
+
+// Marks the last statement of game::do_turn().  Wall-clock between this and the
+// next HOST-DO-TURN-ENTRY is time spent outside do_turn entirely (main loop / SDL
+// frame pacing).  No-ops outside an MP session.
+void mp_log_do_turn_exit();
+
 // Client only: returns true when the client host-NPC proxy occupies the given
 // absolute map position.  Used by handle_action to block walk-through-host.
 bool is_client_host_at( const tripoint_abs_ms &abs );

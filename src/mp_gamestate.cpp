@@ -6262,6 +6262,112 @@ bool should_fast_forward()
     return true;
 }
 
+bool mp_progress_redraw_gate( bool first_redraw, bool &due )
+{
+    due = false;
+    if( !is_hosting() && !is_client_mode() ) {
+        // SP: caller keeps its own calendar gate.  SP already free-runs long
+        // actions and redraws every 5 in-game minutes, which is why an SP craft
+        // finishes in seconds.
+        return false;
+    }
+    // A WALL-CLOCK cap, deliberately not a calendar gate.  The calendar gate ties
+    // redraw rate to simulation rate; MP used to force it to 1_turns whenever
+    // fast-forward was off, which meant a full frame every single game turn.
+    // Measured solo-host on 2026-08-14: ui_manager::redraw() 9.94ms +
+    // refresh_display() 4.23ms = 14.20ms of a 16ms turn — ~87% of the turn spent
+    // drawing, capping MP at ~62 turns/sec against SP's ~600.  Note the cost is
+    // the redraw WORK (tiles, sidebar widgets, ImGui), not vsync blocking, so the
+    // only fix is to not perform it.  Decoupling the two lets turns race at CPU
+    // speed while the popup still updates smoothly at ~10 Hz.
+    //
+    // This supersedes the old 1_turns override in every regime rather than
+    // special-casing: in true lockstep (client connected, ~1 turn/sec) more than
+    // 100ms elapses per turn anyway, so the gate fires every turn exactly as
+    // before; when the simulation can outrun the display, it throttles.
+    constexpr std::chrono::milliseconds REDRAW_INTERVAL( 100 );
+    static std::chrono::steady_clock::time_point s_last_redraw{};
+    const auto now = std::chrono::steady_clock::now();
+    if( first_redraw ||
+        std::chrono::duration_cast<std::chrono::milliseconds>( now - s_last_redraw ) >=
+        REDRAW_INTERVAL ) {
+        s_last_redraw = now;
+        due = true;
+    }
+    return true;
+}
+
+// MP DIAGNOSTIC 2026-08-14 — see the ROADMAP entry "MP crafting is ~10x slower
+// than SP".  Emits one line per progress-UI pass plus a rolling average every 100
+// passes, so the 16ms/turn can be attributed to a specific call rather than
+// inferred from cadence.  Downsamples after 3000 lines so a long session can't
+// blow the 10MB log cap on this alone.
+void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
+                         double ms_redraw_gated, double ms_redraw_popup,
+                         double ms_refresh, double ms_total )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    // Idle turns (no activity, nothing to wait for) are the overwhelming majority
+    // of a normal session and carry no signal — skip them so the log stays a
+    // record of the long-action path only.
+    if( !wait_redraw ) {
+        return;
+    }
+    static long long calls = 0;
+    static double sum_total = 0.0;
+    static double sum_gated = 0.0;
+    static double sum_popup = 0.0;
+    static double sum_refresh = 0.0;
+    static long long gate_fires = 0;
+    calls++;
+    sum_total += ms_total;
+    sum_gated += ms_redraw_gated;
+    sum_popup += ms_redraw_popup;
+    sum_refresh += ms_refresh;
+    if( gate_fired ) {
+        gate_fires++;
+    }
+    const bool ff = should_fast_forward();
+    // Full detail for the first 3000 passes, then 1-in-20.  A craft the user
+    // aborts after ~15s at 62 turns/sec lands well inside the detailed window.
+    const bool verbose = calls <= 3000 || ( calls % 20 ) == 0;
+    if( verbose ) {
+        char buf[256];
+        std::snprintf( buf, sizeof( buf ),
+                       "[cdda-mp] PROGRESS-UI: gate=%d ff=%d rate=%dt "
+                       "redraw_gated=%.2fms redraw_popup=%.2fms refresh=%.2fms total=%.2fms",
+                       gate_fired ? 1 : 0, ff ? 1 : 0, rate_turns,
+                       ms_redraw_gated, ms_redraw_popup, ms_refresh, ms_total );
+        mp_log( buf );
+    }
+    if( ( calls % 100 ) == 0 ) {
+        char buf[256];
+        std::snprintf( buf, sizeof( buf ),
+                       "[cdda-mp] PROGRESS-UI-AVG: n=%lld gate_fired=%lld avg_total=%.2fms "
+                       "avg_gated=%.2fms avg_popup=%.2fms avg_refresh=%.2fms "
+                       "=> %.1f progress-UI passes/sec",
+                       calls, gate_fires, sum_total / calls, sum_gated / calls,
+                       sum_popup / calls, sum_refresh / calls,
+                       sum_total > 0.0 ? 1000.0 / ( sum_total / calls ) : 0.0 );
+        mp_log( buf );
+    }
+}
+
+void mp_log_do_turn_exit()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    // Only meaningful while a long action is running — otherwise the turn is
+    // paced by player input and the gap carries no information.
+    if( !get_avatar().activity ) {
+        return;
+    }
+    mp_log( "[cdda-mp] DO-TURN-EXIT" );
+}
+
 void mp_log_safemode_check( int newseen, int mostseen, int safe_mode )
 {
     if( !is_client_mode() && !is_hosting() ) {
