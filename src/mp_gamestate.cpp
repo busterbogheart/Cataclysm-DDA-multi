@@ -5774,6 +5774,37 @@ void grant_client_turn()
     // host's monmove() solo so the world keeps moving while the client pays off the
     // expensive move (SP-faithful: a costly step burns several turns).
     g_remote_moves += remote->get_speed();
+    // MP FIX 2026-08-15 — clamp the POSITIVE balance to a single turn's speed.
+    //
+    // Measured (CRAFT-HOST / CRAFT-CLIENT, same character, same recipe, 0%-loss
+    // link, identical 274-turn range): the host spent 27400 AP (100.0/turn) and
+    // the client spent 43200 AP (157.7/turn) — while per_ap was 32 on BOTH sides
+    // and the client ticked exactly once per calendar turn (274 ticks / 274
+    // distinct turns). Same progress per AP, same tick count, 1.58x the AP. The
+    // client crafted 1.58x faster purely because it was funded more.
+    //
+    // Cause: this accumulator adds a full turn's speed every host turn, and there
+    // is one grant per calendar turn (2403 grants / 2403 distinct turns), but the
+    // client drains the WHOLE balance in a single tick. Whenever an ack lags N
+    // turns the balance reaches N*speed and the client spends all of it inside one
+    // calendar turn — the clock advanced 1 turn, the character got N turns of AP.
+    // Observed climbing to 3800 before an ack landed and zeroed it. Every lag
+    // event permanently injects free AP, so the client outruns the host forever.
+    //
+    // This is why the 5GHz link fix (loss 35-50% -> 0%) shrank the gap from ~9x to
+    // 1.58x without closing it: the network sets the SIZE of each accumulation, not
+    // whether it happens. Acks always lag sometimes.
+    //
+    // Only the positive side is clamped. The NEGATIVE side is deliberate and stays
+    // untouched: an action costing more than one turn's speed drives the balance
+    // negative (see the `g_remote_moves = std::min( 0, g_remote_moves )` after the
+    // move handlers), and the following turns pay that debt off with no grant
+    // issued — SP-faithful, a costly step burns several turns. Expensive actions
+    // are funded by going into debt AFTER the fact, never by pre-accumulating, so
+    // capping the positive balance cannot make an expensive action unaffordable.
+    if( g_remote_moves > remote->get_speed() ) {
+        g_remote_moves = remote->get_speed();
+    }
     g_granted_this_turn = ( g_remote_moves > 0 );
     if( g_granted_this_turn ) {
         ++g_grant_seq;
