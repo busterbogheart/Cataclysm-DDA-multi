@@ -3151,7 +3151,21 @@ static void srv_emit_ack( const char *action_name )
             + ") grant_seq=" + std::to_string( g_grant_seq ) );
     server *srv = get_active_server();
     if( srv ) {
-        srv->post_broadcast( serialize_remote_player_state() + "\n" );
+        // MP PERF 2026-08-15 — the "wait" ack is the ONLY caller here that mutates
+        // no world state (see the is_wait branch in handle_remote_action: it logs
+        // and acks, nothing else). It is also the overwhelming majority during a
+        // long activity — 942 of 945 acks in the measured craft session, the other
+        // 3 being "smash". Every other caller (pickup, drop, open/close, eat,
+        // control_vehicle, cruise, grab, …) has just changed the world and the
+        // client needs the resulting tile delta, so those keep the full scan.
+        //
+        // This is what made the host build 2.20 full state packets per game turn
+        // while only ONE of them was inside the TURN-PHASES `grant` bracket — the
+        // rest was hidden inside what the host recorded as `client_wait`, which is
+        // why ~170ms of that 230.9ms wait had no attribution. The client was never
+        // slow: it answers a grant in ~9ms.
+        const bool is_wait_ack = std::string( action_name ) == "wait";
+        srv->post_broadcast( serialize_remote_player_state( is_wait_ack ) + "\n" );
     }
     // The handler just mutated authoritative world state (positions, items,
     // doors, vehicle flags, etc.) but the host may be sitting in a blocking
@@ -12995,7 +13009,7 @@ static void mp_handle_note_sync( const std::string &msg )
     }
 }
 
-std::string serialize_remote_player_state()
+std::string serialize_remote_player_state( bool skip_tile_scan )
 {
     if( !remote_player_connected ) {
         return "{\"type\":\"state\",\"connected\":false}";
@@ -13076,7 +13090,25 @@ std::string serialize_remote_player_state()
     // paired with the scans here rather than left to any caller.
     g_scan_visited_this_broadcast.clear();
     const auto srp_t0 = std::chrono::steady_clock::now();
-    std::string tile_changes = build_tile_changes( pos, 20 );
+    // MP PERF 2026-08-15 — the "wait" ack passes skip_tile_scan. Measured: the host
+    // builds 2.20 full state packets per game turn (1832 SRP-BREAKDOWN vs 831
+    // CRAFT-HOST), because srv_emit_ack() rebroadcasts the ENTIRE world state just
+    // to carry moves=0. 942 of 945 acks in a long activity are "wait", which mutates
+    // nothing. tile_scans_all (58.7ms) is essentially the whole packet build cost
+    // (grant 58.4ms), so skipping it on the ack removes ~70ms per game turn.
+    //
+    // Only the SCAN is skipped, never a field the client needs: tile_changes is
+    // emitted as an empty array, which apply_tile_changes() iterates to a no-op, and
+    // unlike "monsters"/"vehicles" it has no companion removal field nested behind an
+    // early return, so nothing can be swallowed.
+    //
+    // Not a sync risk: the grant broadcast still runs the full scan every single
+    // turn. A change landing between the grant scan and the ack is now picked up by
+    // the NEXT turn's grant scan instead of the ack's — delayed by at most one turn
+    // (~120ms), never dropped, because build_tile_changes() diffs against the
+    // persistent g_tile_baseline rather than against "what happened since the last
+    // scan".
+    std::string tile_changes = skip_tile_scan ? "[]" : build_tile_changes( pos, 20 );
     {
         // Radius-20 scan = ~1681 tiles, each computing item/field/trap/graffiti
         // signatures. Suspect for the 120ms grant cost; measure rather than assume.
@@ -13098,7 +13130,7 @@ std::string serialize_remote_player_state()
                            + "," + extra.substr( 1 );
         }
     };
-    if( host_pos != pos ) {
+    if( !skip_tile_scan && host_pos != pos ) {
         merge_tile_changes( build_tile_changes( host_pos, 20 ) );
     }
     // Also stream the levels directly overhead (the roof, and whatever's above
@@ -13117,7 +13149,7 @@ std::string serialize_remote_player_state()
     // only its visible lighting symptom. map::inbounds() harmlessly no-ops
     // this once dz runs past the map's real z range.
     static constexpr int ROOF_SYNC_LEVELS = 3;
-    for( int dz = 1; dz <= ROOF_SYNC_LEVELS; ++dz ) {
+    for( int dz = 1; !skip_tile_scan && dz <= ROOF_SYNC_LEVELS; ++dz ) {
         merge_tile_changes( build_tile_changes(
                                  tripoint_abs_ms( pos.x(), pos.y(), pos.z() + dz ), 20 ) );
         if( host_pos != pos ) {

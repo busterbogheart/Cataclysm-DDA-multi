@@ -55,7 +55,13 @@ void mp_defer_item_apply( std::function<void()> fn );
 
 // Returns a JSON string describing the remote player's current position,
 // HP, and nearby visible tiles. Sent to the client after each action.
-std::string serialize_remote_player_state();
+// skip_tile_scan=true omits the radius-20 tile scans and emits an empty
+// "tile_changes" instead. Used by the "wait" ack (942 of 945 acks during a long
+// activity), which mutates no world state and exists only to carry moves=0 —
+// yet was rebuilding the entire world, tile scans included, at ~58ms a time.
+// The grant broadcast still performs a full scan every turn, so changes are still
+// delivered; at worst by one turn later (~120ms) than before.
+std::string serialize_remote_player_state( bool skip_tile_scan = false );
 
 // Heartbeat-measured network RTT for the co-op panel (io thread → game thread).
 // Client side measures it directly; host side reads the value the client mirrors.
