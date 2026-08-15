@@ -2003,6 +2003,10 @@ struct mp_tile_state {
     std::string partial_con_sig; // "construction:counter:ncomponents", empty = no build site
 };
 static std::unordered_map<tripoint_abs_ms, mp_tile_state> g_tile_baseline;
+// MP PERF 2026-08-15 — tiles already visited by an earlier build_tile_changes()
+// within the SAME broadcast. Reset by mp_reset_scan_dedup() at the top of the
+// scan sequence in serialize_remote_player_state(). See build_tile_changes().
+static std::unordered_set<tripoint_abs_ms> g_scan_visited_this_broadcast;
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs );
 // Partial-construction (in-progress build site) sync helpers — defined near
 // compute_tile_state, forward-declared here for the client_tile_changes applier.
@@ -10974,6 +10978,33 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             if( !m.inbounds( abs ) ) {
                 continue;
             }
+            // MP PERF 2026-08-15 — serialize_remote_player_state() runs this scan up
+            // to 8 times per broadcast: radius 20 at the client's position, the same
+            // at the host's, and ROOF_SYNC_LEVELS=3 z-levels above each. When the two
+            // players are within 40 tiles the client and host areas OVERLAP, and
+            // every tile in that overlap is fully recomputed by the second scan —
+            // ter/furn id strings, a full serialize() of every item on the tile,
+            // field/trap/graffiti/partial-con signatures, plus an unordered_map
+            // lookup — only to compare equal and emit nothing, because the first scan
+            // already refreshed the baseline for that exact tile.
+            //
+            // Skipping a tile a previous scan already visited THIS broadcast is
+            // therefore output-identical, not an approximation: the second visit can
+            // only ever produce "no change". Sensitivity is unchanged — every tile is
+            // still examined once per broadcast with the same full serialize()-based
+            // fingerprint. Nothing is cached ACROSS broadcasts and no change signal is
+            // inferred, so a dropped item or an opened door cannot be missed. (That is
+            // why submap::last_touched was rejected for this: it is written only by
+            // mapgen, submap save and actualize(), so it would have silently missed
+            // exactly those edits.)
+            //
+            // Measured before this change: 114.4ms per broadcast for all 8 scans, of
+            // which scan #1 alone was 56.6ms — the two ground scans are essentially
+            // the whole cost and the 6 roof scans total ~1.8ms (open air, no items to
+            // serialize). 677 of 685 scans produced an empty "[]" (2 bytes).
+            if( !g_scan_visited_this_broadcast.insert( abs ).second ) {
+                continue;
+            }
             const tripoint_bub_ms bub = m.get_bub( abs );
             const std::string ter_str  = m.ter( bub ).id().str();
             const std::string furn_str = m.furn( bub ).id().str();
@@ -13024,6 +13055,14 @@ std::string serialize_remote_player_state()
 
     // Scan for tile changes around both the remote player AND the host so that
     // doors/terrain the host interacts with also reach the client.
+    //
+    // MP PERF 2026-08-15 — clear the per-broadcast visited set BEFORE the first
+    // scan. This must happen on every broadcast: the set exists only to stop the
+    // 2nd..8th scan of THIS broadcast re-walking tiles the 1st already did. If it
+    // ever persisted across broadcasts it would suppress genuine changes on the
+    // next turn — the one failure mode that would cost tile sync — so the reset is
+    // paired with the scans here rather than left to any caller.
+    g_scan_visited_this_broadcast.clear();
     const auto srp_t0 = std::chrono::steady_clock::now();
     std::string tile_changes = build_tile_changes( pos, 20 );
     {
