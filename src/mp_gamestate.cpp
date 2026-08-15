@@ -5890,7 +5890,62 @@ void grant_client_turn()
             srv->post_broadcast( mapm + "\n" );
         }
         const auto g_t_map_send = clk::now();
-        const std::string state = serialize_remote_player_state();
+        // MP PERF 2026-08-15 — throttle the SCAN (not the grant) while fast-forward
+        // is held.
+        //
+        // Measured in a held-FF two-player craft: FF engaged once and stayed
+        // engaged, only 29 of 1013 turns had client_wait (2.9%, ~5.5ms amortized),
+        // and the turn still cost 66ms — of which ~58ms is this function's own tile
+        // scan. So the network round trip was never the fast-forward bottleneck;
+        // our own per-turn serialization is. The host is already free-running here
+        // (wait_for_client_action breaks out when should_fast_forward() is true).
+        //
+        // THE LANDMINE this is built around: the grant rides INSIDE the state
+        // packet, so the 2026-06-21 attempt to throttle FF broadcasts starved the
+        // client of grants and deadlocked both sides — "client waits for a grant
+        // that never comes; host waits for its ack" — and was reverted. The note
+        // left behind asked for a fix that "throttles only the heavy map/state
+        // delta while still delivering every grant". That is exactly this: a
+        // packet is emitted EVERY turn and always carries moves/grant_seq; only
+        // the 1681-tile scan is skipped, via the same skip_tile_scan path the
+        // wait-ack already uses.
+        //
+        // A full scan still happens every FF_SCAN_INTERVAL turns, and immediately
+        // on FF exit so nothing is stale when normal play resumes. Cost per turn
+        // drops from ~66ms toward the ~7ms floor (progress_ui + monmove).
+        //
+        // Staleness trade-off, stated plainly: host-side terrain changes can reach
+        // the client up to FF_SCAN_INTERVAL turns late — but only while BOTH
+        // players are in long passive activities and neither is moving, which is
+        // when the world around them is least likely to change. Any distraction
+        // (hostile in view, pain, sound, hunger) cancels the activity through SP's
+        // own activity_actor::do_turn, should_fast_forward() goes false, and the
+        // exit path below forces a full scan on that very turn.
+        static constexpr int FF_SCAN_INTERVAL = 10;
+        static int s_ff_turns_since_scan = 0;
+        static bool s_was_ff = false;
+        const bool ff_now = should_fast_forward();
+        bool full_scan = true;
+        if( ff_now ) {
+            if( ++s_ff_turns_since_scan >= FF_SCAN_INTERVAL ) {
+                s_ff_turns_since_scan = 0;
+            } else {
+                full_scan = false;
+            }
+        } else {
+            // Not in FF: always full, and reset so the next FF window starts with
+            // a scan rather than inheriting a partial count.
+            s_ff_turns_since_scan = 0;
+        }
+        if( s_was_ff && !ff_now ) {
+            // FF just ended (activity cancelled / distraction / partner stopped).
+            // Force a full scan THIS turn so the client is current the moment
+            // interactive play resumes.
+            full_scan = true;
+            mp_log( "[cdda-mp] FF-SCAN: fast-forward ended, forcing full scan" );
+        }
+        s_was_ff = ff_now;
+        const std::string state = serialize_remote_player_state( !full_scan );
         const auto g_t_ser = clk::now();
         srv->post_broadcast( state + "\n" );
         const auto g_t_ser_send = clk::now();
