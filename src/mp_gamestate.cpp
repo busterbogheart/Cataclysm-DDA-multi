@@ -6664,6 +6664,24 @@ bool mp_in_burst_mode()
 // moves_total at 0 and track progress elsewhere.  This helper hides those
 // special cases so the wire field `*_activity_pct` reflects what the player
 // sees in their wait popup, not 0%.
+// MP DIAGNOSTIC 2026-08-15 — crafting progress does NOT live in moves_left; for a
+// craft that field reads as the INT_MAX sentinel 21474836 the whole way through,
+// which is why every log so far showed "moves_left 21474836->21474836" and told us
+// nothing. Real progress is the craft item's item_counter, 100,000 per percent.
+//
+// Same character, same recipe (belly wrap), clean 0%-loss link: client finished in
+// 21.6s, host was at 6% after 12s and still going at 58s — ~9x. Time and bytes are
+// both measured now and neither explains it, so measure the thing that actually
+// diverges: progress gained per unit of AP spent, on each side.
+static long long mp_craft_counter( const player_activity &act )
+{
+    if( !act || act.targets.empty() || !act.targets[0] ) {
+        return -1;
+    }
+    const item *it = act.targets[0].get_item();
+    return ( it && it->is_craft() ) ? static_cast<long long>( it->item_counter ) : -1;
+}
+
 static int mp_compute_activity_pct( const player_activity &act )
 {
     if( !act ) {
@@ -9423,7 +9441,14 @@ static bool apply_one_state_message( const std::string &msg )
                     const std::string pre_tick_id = ca.id().str();
                     const int pre_tick_moves = get_avatar().get_moves();
                     const int pre_tick_moves_left = ca.moves_left;
+                    // MP DIAGNOSTIC 2026-08-15 — see mp_craft_counter(). This is the
+                    // ONE tick the client gives its activity per grant; capture the
+                    // progress it actually buys so it can be compared against the
+                    // host's per-game-turn rate (CRAFT-HOST below).
+                    const long long pre_tick_counter = mp_craft_counter( ca );
+                    const int pre_tick_turn = to_turn<int>( calendar::turn );
                     get_avatar().activity.do_turn( get_avatar() );
+                    const long long post_tick_counter = mp_craft_counter( get_avatar().activity );
                     const int post_tick_moves = get_avatar().get_moves();
                     const player_activity &post_ca = get_avatar().activity;
                     const int post_tick_moves_left = post_ca ? post_ca.moves_left : 0;
@@ -9442,6 +9467,18 @@ static bool apply_one_state_message( const std::string &msg )
                             + " moves_left " + std::to_string( pre_tick_moves_left ) + "->" + std::to_string( post_tick_moves_left )
                             + " ended=" + std::to_string( !get_avatar().activity )
                             + " grant_seq=" + std::to_string( grant_seq ) );
+                    if( pre_tick_counter >= 0 || post_tick_counter >= 0 ) {
+                        const int ap_spent = pre_tick_moves - post_tick_moves;
+                        const long long gained = post_tick_counter - pre_tick_counter;
+                        mp_log( "[cdda-mp] CRAFT-CLIENT: turn=" + std::to_string( pre_tick_turn ) +
+                                " counter " + std::to_string( pre_tick_counter ) + "->" +
+                                std::to_string( post_tick_counter ) +
+                                " gained=" + std::to_string( gained ) +
+                                " pct=" + std::to_string( post_tick_counter / 100000 ) +
+                                " ap_spent=" + std::to_string( ap_spent ) +
+                                " per_ap=" + std::to_string( ap_spent > 0 ? gained / ap_spent : 0 ) +
+                                " ticks_this_grant=1 grant_seq=" + std::to_string( grant_seq ) );
+                    }
                     client_send( client_enrich_action(
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                     g_client_waiting_for_ack = true;
@@ -13482,6 +13519,33 @@ std::string serialize_remote_player_state()
     // itself is a real cost candidate and has never been on a clock. Capture into
     // a local so it can be timed and so the components can be sized at the point
     // where they're actually spent.
+    // MP DIAGNOSTIC 2026-08-15 — host-side counterpart to CRAFT-CLIENT. This
+    // function runs several times per game turn (the grant plus every ack), so gate
+    // on calendar turn to get one honest sample per turn. Host gained-per-turn set
+    // against the client's gained-per-grant is the comparison that settles the ~9x,
+    // and per_ap on each side separates "more ticks" from "more progress per tick".
+    {
+        static int s_last_craft_turn = -1;
+        static long long s_last_craft_counter = -1;
+        const long long hc = mp_craft_counter( host.activity );
+        const int now_turn = to_turn<int>( calendar::turn );
+        if( hc >= 0 && now_turn != s_last_craft_turn ) {
+            const long long gained = ( s_last_craft_counter >= 0 && s_last_craft_turn >= 0 )
+                                     ? hc - s_last_craft_counter : 0;
+            const int turns = ( s_last_craft_turn >= 0 ) ? now_turn - s_last_craft_turn : 0;
+            mp_log( "[cdda-mp] CRAFT-HOST: turn=" + std::to_string( now_turn ) +
+                    " counter=" + std::to_string( hc ) +
+                    " pct=" + std::to_string( hc / 100000 ) +
+                    " gained=" + std::to_string( gained ) +
+                    " turns_elapsed=" + std::to_string( turns ) +
+                    " per_turn=" + std::to_string( turns > 0 ? gained / turns : 0 ) +
+                    " host_moves=" + std::to_string( host.get_moves() ) +
+                    " host_speed=" + std::to_string( host.get_speed() ) );
+            s_last_craft_turn = now_turn;
+            s_last_craft_counter = hc;
+        }
+    }
+
     const auto srp_t_prebuild = srpclk::now();
     std::string srp_out = "{\"type\":\"state\","
            "\"client_rejoin\":" + std::string( client_rejoin ? "true" : "false" ) + ","
