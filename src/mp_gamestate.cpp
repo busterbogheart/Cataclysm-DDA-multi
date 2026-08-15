@@ -2007,6 +2007,15 @@ static std::unordered_map<tripoint_abs_ms, mp_tile_state> g_tile_baseline;
 // within the SAME broadcast. Reset by mp_reset_scan_dedup() at the top of the
 // scan sequence in serialize_remote_player_state(). See build_tile_changes().
 static std::unordered_set<tripoint_abs_ms> g_scan_visited_this_broadcast;
+// MP PERF 2026-08-15 — last "vehicles" block sent inside the state packet, used to
+// suppress byte-identical repeats. MUST be cleared on rejoin, or a reconnecting
+// client (which has no vehicles at all) would be told nothing changed and would
+// never receive them. See serialize_remote_player_state() and the REJOIN-RESYNC path.
+static std::string g_last_state_vehicles_payload;
+static void mp_reset_vehicle_payload_cache()
+{
+    g_last_state_vehicles_payload.clear();
+}
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs );
 // Partial-construction (in-progress build site) sync helpers — defined near
 // compute_tile_state, forward-declared here for the client_tile_changes applier.
@@ -2577,6 +2586,9 @@ static void spawn_remote_player( const std::string &name )
                 std::to_string( hp.y() ) + "," + std::to_string( hp.z() ) );
     }
     g_tile_baseline.clear();  // force full resync — client reloads from disk on connect
+    mp_reset_vehicle_payload_cache(); // else the "unchanged" suppression would starve
+    // a reconnecting client of vehicles entirely (it has none yet, but the host's
+    // last-sent cache still matches what it would send)
     mp_reset_overmap_sync();  // bulk-send the overmap region to the fresh client
     mp_reset_map_sync();      // re-stream submap terrain+furniture to the fresh client
     g_client_known_veh_nids.clear();  // re-snapshot every visible vehicle for the fresh client
@@ -13709,8 +13721,33 @@ std::string serialize_remote_player_state()
            ",\"monsters\":" + monsters +
            ",\"removed_monsters\":" + removed_monsters_json +
            ",\"tile_changes\":" + tile_changes +
-           ",\"vehicles\":" + vehicles_json +
-           ",\"removed_vehicles\":" + removed_vehicles_json +
+           // MP PERF 2026-08-15 — suppress the vehicles block when it is
+           // byte-identical to the one we last sent. Measured at 57,321 bytes
+           // repeated unchanged on EVERY turn, in packets whose tile delta was 2
+           // bytes; at 8.18 turns/sec that is ~466KB/s of pure repetition, and
+           // client_wait is now the larger half of the turn budget.
+           //
+           // Safe because apply_vehicle_sync() early-returns on a missing
+           // "vehicles" array, so an absent block is a no-op on the client rather
+           // than a clear.
+           //
+           // BUT "removed_vehicles" is parsed INSIDE apply_vehicle_sync(), AFTER
+           // that early return — so dropping "vehicles" would silently swallow any
+           // removal riding the same packet (a folded, destroyed, or out-of-bubble
+           // vehicle would never be torn down on the client). Hence both fields are
+           // suppressed together and ONLY when there is no removal to deliver;
+           // whenever removed_vehicles is non-empty the full block is sent.
+           // The cache is reset on rejoin (see mp_reset_vehicle_payload_cache) so a
+           // reconnecting client always receives a full block.
+           [&]() -> std::string {
+               const bool has_removals = removed_vehicles_json != "[]";
+               if( !has_removals && vehicles_json == g_last_state_vehicles_payload ) {
+                   return "";
+               }
+               g_last_state_vehicles_payload = vehicles_json;
+               return ",\"vehicles\":" + vehicles_json +
+                      ",\"removed_vehicles\":" + removed_vehicles_json;
+           }() +
            ",\"msgs\":" + msgs_json +
            ",\"grant_seq\":" + std::to_string( g_grant_seq ) +
            ",\"sfx\":" + [&]() -> std::string {
