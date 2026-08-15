@@ -5739,7 +5739,13 @@ void grant_client_turn()
     if( !remote_player_connected ) {
         return;
     }
+    // MP DIAGNOSTIC 2026-08-14 — bracket starts BEFORE critter_by_id. Placing it
+    // after was the third repeat of one error: naming a suspect, then instrumenting
+    // past it. Everything above the connected-check also runs solo-host (2ms turns),
+    // so this is the true start of the client-only work.
+    const auto grant_body_t0 = std::chrono::steady_clock::now();
     npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+    const auto grant_t_lookup = std::chrono::steady_clock::now();
     if( !remote ) {
         // If we previously had a live proxy and it's now gone, treat it as a
         // death (monsters on the host's side killed the NPC representing the
@@ -5759,11 +5765,6 @@ void grant_client_turn()
         }
         return;
     }
-    // MP DIAGNOSTIC 2026-08-14 — bracket the WHOLE post-early-return body, not just
-    // the broadcasts. Everything above the !remote_player_connected return also runs
-    // solo-host, where the turn measured 2ms, so the 120ms is somewhere below here —
-    // but that includes update_stamina/check_separation_warning, not only the sends.
-    const auto grant_body_t0 = std::chrono::steady_clock::now();
     g_proxy_was_alive = true;
     g_client_acted_this_turn = false;
     // FIX #2/#3: accumulate this turn's speed onto any carried AP debt instead of
@@ -5840,7 +5841,8 @@ void grant_client_turn()
             const long long tot = d( grant_body_t0, g_t_ser_send );
             if( tot >= 20 ) {
                 mp_log( "[cdda-mp] GRANT-BREAKDOWN: total=" + std::to_string( tot ) +
-                        "ms stamina=" + std::to_string( d( grant_body_t0, grant_t_stamina ) ) +
+                        "ms critter_lookup=" + std::to_string( d( grant_body_t0, grant_t_lookup ) ) +
+                        "ms stamina=" + std::to_string( d( grant_t_lookup, grant_t_stamina ) ) +
                         "ms separation=" + std::to_string( d( grant_t_stamina, grant_t_separation ) ) +
                         "ms build_map_sync=" + std::to_string( d( g_t0, g_t_map ) ) +
                         "ms send_map=" + std::to_string( d( g_t_map, g_t_map_send ) ) +
@@ -5854,9 +5856,21 @@ void grant_client_turn()
         // roads/biomes) matches instead of its own non-deterministic regen.
         // Returns "" unless this is the first sync or the host moved a step,
         // so it's cheap on the steady-state path.
+        const auto g_t_om0 = std::chrono::steady_clock::now();
         const std::string om = build_overmap_sync();
         if( !om.empty() ) {
             srv->post_broadcast( om + "\n" );
+        }
+        {
+            // Last uncovered region in this function. Documented as returning ""
+            // except on first sync or host movement (so it should be free during a
+            // craft) — but that is a comment, not a measurement.
+            const long long d = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - g_t_om0 ).count();
+            if( d >= 5 ) {
+                mp_log( "[cdda-mp] GRANT-OVERMAP: build+send took " + std::to_string( d ) +
+                        "ms bytes=" + std::to_string( om.size() ) );
+            }
         }
     }
 }
