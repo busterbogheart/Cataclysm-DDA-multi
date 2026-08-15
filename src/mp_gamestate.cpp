@@ -12902,13 +12902,25 @@ std::string serialize_remote_player_state()
     const avatar &host = get_avatar();
     tripoint_abs_ms host_pos = host.pos_abs();
 
+    // MP DIAGNOSTIC 2026-08-15 — GRANT-BREAKDOWN attributes the entire 115ms host
+    // turn to serialize_state, but TILE-SCAN only accounts for ~57ms of it while
+    // emitting 2 bytes. The other ~58ms and ALL of the 74-235KB state_bytes are
+    // unattributed. That byte volume (~800KB/s at 7.8 turns/sec) is what saturates
+    // the link, backs the write queue to 107, pushes RTT past 1000ms and strands
+    // the client's wait acks — which is what lets g_remote_moves run to 13900.
+    // So the bytes matter as much as the milliseconds here: measure both, per
+    // component, instead of narrowing to a suspect the way the last four passes did.
+    using srpclk = std::chrono::steady_clock;
+    const auto srp_all_t0 = srpclk::now();
     std::string viewport = build_viewport( pos_bub );
+    const auto srp_t_viewport = srpclk::now();
     // Broadcast every monster in the reality bubble the client can see (~84-tile
     // view radius), not just 40 — at 40, host monsters in the 40–84 band weren't
     // sent (the EXCLUDED-NEAR diag) and the client filled the gap with its own
     // divergent local-mapgen monsters.  Must match the client's cull radius in
     // apply_monster_sync.
     std::string monsters     = build_monster_list( pos, 84 );
+    const auto srp_t_monsters = srpclk::now();
 
     // Death-based monster removal (mirrors removed_vehicles, but glitch-proof).
     // A monster is "removed" only if it had a net id last broadcast and is no
@@ -12994,6 +13006,12 @@ std::string serialize_remote_player_state()
                                      tripoint_abs_ms( host_pos.x(), host_pos.y(), host_pos.z() + dz ), 20 ) );
         }
     }
+
+    // MP DIAGNOSTIC 2026-08-15 — srp_t0 (above) starts the FIRST radius-20 scan;
+    // this closes after the host-pos scan and the ROOF_SYNC_LEVELS=3 z-levels at
+    // both positions, i.e. up to 8 scans of 1681 tiles each per turn. TILE-SCAN
+    // only ever logged the first, so the other seven have never been measured.
+    const auto srp_t_scans = srpclk::now();
 
     // Per-bodypart HP for accurate client sidebar display.
     std::string bparts_json = "[";
@@ -13458,7 +13476,14 @@ std::string serialize_remote_player_state()
     const bool client_rejoin = g_client_rejoin_pending;
     g_client_rejoin_pending = false;
 
-    return "{\"type\":\"state\","
+    // MP DIAGNOSTIC 2026-08-15 — the packet is assembled by one ~80-operand
+    // operator+ chain that materializes a 74-235KB string. Each operand appends to
+    // (and may reallocate + copy) the whole accumulating buffer, so the assembly
+    // itself is a real cost candidate and has never been on a clock. Capture into
+    // a local so it can be timed and so the components can be sized at the point
+    // where they're actually spent.
+    const auto srp_t_prebuild = srpclk::now();
+    std::string srp_out = "{\"type\":\"state\","
            "\"client_rejoin\":" + std::string( client_rejoin ? "true" : "false" ) + ","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
            // Host's game-start anchors so the client's "survived N days" (and any
@@ -13569,6 +13594,36 @@ std::string serialize_remote_player_state()
                return j;
            }() +
            ",\"map\":" + viewport + "}";
+
+    // MP DIAGNOSTIC 2026-08-15 — component sizes AND timings in one line. The
+    // total is already on the wire as GRANT-BREAKDOWN's state_bytes, so this only
+    // needs to say where those bytes and milliseconds come from. Threshold matches
+    // GRANT-BREAKDOWN's 20ms so the two lines pair up per turn.
+    {
+        const auto srp_t_end = srpclk::now();
+        const auto ms = []( srpclk::time_point a, srpclk::time_point b ) {
+            return static_cast<long long>(
+                       std::chrono::duration_cast<std::chrono::milliseconds>( b - a ).count() );
+        };
+        const long long srp_total = ms( srp_all_t0, srp_t_end );
+        if( srp_total >= 20 ) {
+            mp_log( "[cdda-mp] SRP-BREAKDOWN: total=" + std::to_string( srp_total ) +
+                    "ms viewport=" + std::to_string( ms( srp_all_t0, srp_t_viewport ) ) +
+                    "ms monsters=" + std::to_string( ms( srp_t_viewport, srp_t_monsters ) ) +
+                    "ms tile_scans_all=" + std::to_string( ms( srp_t0, srp_t_scans ) ) +
+                    "ms rest_build=" + std::to_string( ms( srp_t_scans, srp_t_prebuild ) ) +
+                    "ms assemble=" + std::to_string( ms( srp_t_prebuild, srp_t_end ) ) +
+                    "ms | BYTES out=" + std::to_string( srp_out.size() ) +
+                    " viewport=" + std::to_string( viewport.size() ) +
+                    " monsters=" + std::to_string( monsters.size() ) +
+                    " tile_changes=" + std::to_string( tile_changes.size() ) +
+                    " vehicles=" + std::to_string( vehicles_json.size() ) +
+                    " host_inv=" + std::to_string( host_inv_json.size() ) +
+                    " bodyparts=" + std::to_string( bparts_json.size() ) +
+                    " msgs=" + std::to_string( msgs_json.size() ) );
+        }
+    }
+    return srp_out;
 }
 
 void client_wait_for_initial_position()
