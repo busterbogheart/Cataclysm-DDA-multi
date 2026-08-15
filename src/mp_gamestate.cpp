@@ -6734,6 +6734,52 @@ bool mp_in_burst_mode()
 // 21.6s, host was at 6% after 12s and still going at 58s — ~9x. Time and bytes are
 // both measured now and neither explains it, so measure the thing that actually
 // diverges: progress gained per unit of AP spent, on each side.
+// MP DIAGNOSTIC 2026-08-15 — the client gains 2285 counter/turn against the host's
+// 3265 while BOTH spend exactly 100 AP: per_ap 22.85 vs 32.65, so the client's
+// craft is 70% as efficient per unit of AP. Not an AP bug (the clamp holds,
+// ap_spent=100 on all 1641 client ticks, 1641 ticks across 1641 distinct turns) and
+// not position or lighting (both sides logged center_abs=5437,7740, outside=1,
+// light 3 in the session where they MATCHED at 32 and the one where they diverged).
+//
+// Crafting speed is a product of ~7 independent multipliers plus helper count, and
+// two guesses at which one (vehicle-mounted workbench, then lost vehicle sync) were
+// both wrong — vehicles still reach the client (11 CLI-VEH-CREATE) and no workbench
+// is involved. So log every factor on both sides instead of guessing a third time.
+// Change-gated: emits only when the composite actually changes, so a steady craft
+// produces one line per side rather than one per turn.
+static void mp_log_craft_multipliers( const Character &who, const player_activity &act,
+                                      const char *side )
+{
+    if( !act || act.targets.empty() || !act.targets[0] ) {
+        return;
+    }
+    const item *craft = act.targets[0].get_item();
+    if( !craft || !craft->is_craft() ) {
+        return;
+    }
+    const recipe &rec = craft->get_making();
+    const std::vector<Character *> helpers = who.get_crafting_helpers();
+    const std::string line =
+        std::string( "[cdda-mp] CRAFT-MULT " ) + side +
+        ": total=" + std::to_string( who.crafting_speed_multiplier( rec ) ) +
+        " morale=" + std::to_string( who.morale_crafting_speed_multiplier( rec ) ) +
+        " light=" + std::to_string( who.lighting_craft_speed_multiplier( rec ) ) +
+        " bench=" + std::to_string( who.workbench_crafting_speed_multiplier( *craft, std::nullopt ) ) +
+        " limb=" + std::to_string( who.limb_score_crafting_speed_multiplier( rec ) ) +
+        " pain=" + std::to_string( who.pain_crafting_speed_multiplier( rec ) ) +
+        " mut=" + std::to_string( who.mut_crafting_speed_multiplier( rec ) ) +
+        " helpers=" + std::to_string( helpers.size() ) +
+        " skill=" + std::to_string( who.get_skill_level( rec.skill_used ) ) +
+        " morale_lvl=" + std::to_string( who.get_morale_level() ) +
+        " focus=" + std::to_string( who.get_focus() );
+    static std::map<std::string, std::string> s_last;
+    std::string &prev = s_last[side];
+    if( prev != line ) {
+        prev = line;
+        mp_log( line );
+    }
+}
+
 static long long mp_craft_counter( const player_activity &act )
 {
     if( !act || act.targets.empty() || !act.targets[0] ) {
@@ -9508,6 +9554,7 @@ static bool apply_one_state_message( const std::string &msg )
                     // host's per-game-turn rate (CRAFT-HOST below).
                     const long long pre_tick_counter = mp_craft_counter( ca );
                     const int pre_tick_turn = to_turn<int>( calendar::turn );
+                    mp_log_craft_multipliers( get_avatar(), ca, "CLIENT" );
                     get_avatar().activity.do_turn( get_avatar() );
                     const long long post_tick_counter = mp_craft_counter( get_avatar().activity );
                     const int post_tick_moves = get_avatar().get_moves();
@@ -13643,6 +13690,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
         static long long s_last_craft_counter = -1;
         const long long hc = mp_craft_counter( host.activity );
         const int now_turn = to_turn<int>( calendar::turn );
+        mp_log_craft_multipliers( host, host.activity, "HOST" );
         if( hc >= 0 && now_turn != s_last_craft_turn ) {
             const long long gained = ( s_last_craft_counter >= 0 && s_last_craft_turn >= 0 )
                                      ? hc - s_last_craft_counter : 0;
