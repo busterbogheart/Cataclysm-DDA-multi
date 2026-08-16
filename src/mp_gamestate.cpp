@@ -5993,6 +5993,32 @@ void grant_client_turn()
         s_was_ff = ff_now;
         std::string state;
         if( emit ) {
+            // MP FIX 2026-08-15 — the AP a batch carries MUST correspond to the
+            // turns it claims. Deriving it from g_remote_moves did not, because
+            // srv_emit_ack("wait") zeroes that accumulator and the ack lands at an
+            // arbitrary point relative to the batch boundary: an ack arriving
+            // mid-batch reset it, so the next emit advertised batch_turns=10 while
+            // carrying only the turns accumulated since the reset. The client then
+            // ticked 10 times on a fraction of the AP.
+            //
+            // Measured: 288 of 308 batches carried the full 940 AP, but 20 carried
+            // 7426 total instead of 18800. The client received 278146 AP against
+            // the ~306278 needed and stalled at 90.8% while the host finished —
+            // the reported "host done, client at 90%".
+            //
+            // The previous commit claimed flow control "falls out for free" because
+            // the host would not open a new batch until the last was acked. That
+            // was never implemented and is not true; nothing kept the turn counter
+            // and the AP accumulator in step. Rather than add a stall, make the
+            // grant deterministic: the invariant is AP-per-calendar-turn == speed,
+            // so a batch of N turns carries exactly N * speed regardless of when
+            // acks arrive.
+            //
+            // The negative/debt case is untouched: a deficit turn issues no grant
+            // (g_granted_this_turn is false) and must keep paying itself off.
+            if( ff_now && batch_turns > 1 && g_remote_moves > 0 ) {
+                g_remote_moves = remote->get_speed() * batch_turns;
+            }
             g_batch_turns_to_send = batch_turns;
             state = serialize_remote_player_state();
             g_batch_turns_to_send = 1;
