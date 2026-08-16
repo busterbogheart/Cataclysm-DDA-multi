@@ -2044,6 +2044,10 @@ static void mp_reset_vehicle_payload_cache()
     g_last_state_vehicles_payload.clear();
 }
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs );
+// Verifier bookkeeping — must be refreshed anywhere compute_tile_state() refreshes
+// the baseline, or the verifier reports phantom mismatches. No-op unless
+// MP_VERIFY_ITEM_FP is set.
+static void mp_refresh_item_sig_verify( const tripoint_abs_ms &abs );
 // Partial-construction (in-progress build site) sync helpers — defined near
 // compute_tile_state, forward-declared here for the client_tile_changes applier.
 static std::string mp_partial_con_sig( const tripoint_bub_ms &bub );
@@ -3958,6 +3962,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     // turn, blocking the host's input pump.
                     if( touched ) {
                         g_tile_baseline[abs] = compute_tile_state( abs );
+                        // Keep the verifier's parallel map in step with the baseline
+                        // it is checking against, or it reports a change the hash
+                        // already accounted for. No-op unless MP_VERIFY_ITEM_FP set.
+                        mp_refresh_item_sig_verify( abs );
                     }
                 }
             }
@@ -11216,6 +11224,14 @@ static void mp_hash_item( const item &it, uint64_t &h )
     mp_hash_mix( h, static_cast<uint64_t>( it.item_counter ) );
     mp_hash_mix( h, static_cast<uint64_t>( to_turns<int64_t>( it.get_rot() ) ) );
     mp_hash_mix( h, it.is_active() ? 1u : 0u );
+    // Temperature IS hashed; `last_temp_check` deliberately is NOT.
+    // Measured 2026-08-16: 134 of 137 verifier mismatches were last_temp_check
+    // ticking on its own with `temperature` and `specific_energy` byte-identical
+    // beside it. It is bookkeeping, not state — and the OLD serialize() fingerprint
+    // was re-broadcasting a 14KB item stack EVERY TURN because of it. Ignoring it is
+    // the win. Temperature itself is real (food freshness) and changes rarely, so it
+    // belongs in the hash; specific_energy is derived from it and adds nothing.
+    mp_hash_mix( h, static_cast<uint64_t>( it.temperature.value() ) );
     // Pocket contents — a change inside a container must dirty the tile.
     // Iterate EVERY pocket type, not the no-arg all_items_top(): that one filters to
     // is_standard_type() (CONTAINER/MAGAZINE/MAGAZINE_WELL) and would silently miss
@@ -11250,6 +11266,27 @@ static bool mp_verify_item_fp()
     return on;
 }
 static std::unordered_map<tripoint_abs_ms, std::string> g_tile_items_sig_verify;
+
+// Keep the verify map in step with EVERY place that refreshes g_tile_baseline.
+// Missing one makes the verifier report a change the hash already accounted for —
+// which is exactly what produced 3 phantom mismatches on 2026-08-16, where the host
+// refreshed the baseline after applying a client tile change (see the
+// compute_tile_state() call in the client_tile_changes applier) and this map went
+// stale. A false positive here is expensive: it discredits the real signal.
+static void mp_refresh_item_sig_verify( const tripoint_abs_ms &abs )
+{
+    if( !mp_verify_item_fp() ) {
+        return;
+    }
+    map &m = get_map();
+    std::string vsig;
+    if( m.inbounds( abs ) ) {
+        for( const item &it : m.i_at( m.get_bub( abs ) ) ) {
+            vsig += serialize( it ) + ',';
+        }
+    }
+    g_tile_items_sig_verify[abs] = vsig;
+}
 
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
 {
