@@ -11100,6 +11100,27 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
     bool first = true;
     map &m = get_map();
 
+    // MP DIAGNOSTIC 2026-08-15 — split the per-tile cost. The scan measures 57.6ms
+    // for 1681 tiles = ~34us PER TILE, which is roughly 100x what two std::string
+    // constructions, seven string compares and a hash lookup should cost. The first
+    // scan of an area emits 128KB across 1681 tiles (~76 bytes/tile), i.e. most
+    // tiles are bare terrain with no items, so the standing assumption that
+    // serialize() dominates is probably wrong.
+    //
+    // The untested alternative: each tile does ~8 INDEPENDENT map queries
+    // (inbounds, get_bub, ter, furn, i_at, field_at, tr_at, has_graffiti_at,
+    // mp_partial_con_sig), each walking the submap indirection separately. Eight of
+    // those at ~4us lands right on 34us. If that is where it goes, the fix is to
+    // resolve the submap once per 12x12 block instead of 1681*8 lookups — a much
+    // bigger and more structural win than shaving string allocations.
+    //
+    // DIAGNOSTIC ONLY this session; the optimisation itself is deliberately
+    // deferred so today's fast-forward testing is not complicated by it.
+    using tsclk = std::chrono::steady_clock;
+    long long ns_coord = 0, ns_terfurn = 0, ns_items = 0, ns_rest = 0, ns_diff = 0;
+    long long n_tiles = 0, n_with_items = 0, n_items_serialized = 0;
+    const auto ts_fn0 = tsclk::now();
+
     for( int dy = -radius; dy <= radius; ++dy ) {
         for( int dx = -radius; dx <= radius; ++dx ) {
             const tripoint_abs_ms abs{ center.x() + dx, center.y() + dy, center.z() };
@@ -11133,9 +11154,13 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             if( !g_scan_visited_this_broadcast.insert( abs ).second ) {
                 continue;
             }
+            const auto ts_a = tsclk::now();
             const tripoint_bub_ms bub = m.get_bub( abs );
+            const auto ts_b = tsclk::now();
             const std::string ter_str  = m.ter( bub ).id().str();
             const std::string furn_str = m.furn( bub ).id().str();
+            const auto ts_c = tsclk::now();
+            ++n_tiles;
 
             // Build item fingerprint and JSON simultaneously.
             // Full item serialize() is used so nested pocket contents are included.
@@ -11143,9 +11168,11 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             std::string items_json = "[]";
             auto items = m.i_at( bub );
             if( !items.empty() ) {
+                ++n_with_items;
                 items_json = "[";
                 bool ifirst = true;
                 for( const item &it : items ) {
+                    ++n_items_serialized;
                     const std::string item_json = serialize( it );
                     items_sig += item_json + ',';
                     if( !ifirst ) {
@@ -11156,6 +11183,8 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 }
                 items_json += "]";
             }
+
+            const auto ts_d = tsclk::now();
 
             // Build field fingerprint and JSON.
             std::string fields_sig;
@@ -11196,6 +11225,12 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             // tile would be skipped once ter/furn/items settle.
             const std::string partial_con_sig = mp_partial_con_sig( bub );
             const bool has_pc = m.partial_con_at( bub ) != nullptr;
+
+            const auto ts_e = tsclk::now();
+            ns_coord   += std::chrono::duration_cast<std::chrono::nanoseconds>( ts_b - ts_a ).count();
+            ns_terfurn += std::chrono::duration_cast<std::chrono::nanoseconds>( ts_c - ts_b ).count();
+            ns_items   += std::chrono::duration_cast<std::chrono::nanoseconds>( ts_d - ts_c ).count();
+            ns_rest    += std::chrono::duration_cast<std::chrono::nanoseconds>( ts_e - ts_d ).count();
 
             auto &baseline = g_tile_baseline[abs];
             if( baseline.ter == ter_str && baseline.furn == furn_str &&
@@ -11266,6 +11301,24 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
         }
     }
     out += ']';
+    {
+        const long long total_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                       tsclk::now() - ts_fn0 ).count();
+        // 10ms threshold matches the existing TILE-SCAN line so the two pair up per scan.
+        if( total_us >= 10000 && n_tiles > 0 ) {
+            ns_diff = total_us * 1000 - ( ns_coord + ns_terfurn + ns_items + ns_rest );
+            mp_log( "[cdda-mp] TILE-SCAN-SPLIT: total=" + std::to_string( total_us / 1000 ) +
+                    "ms tiles=" + std::to_string( n_tiles ) +
+                    " us_per_tile=" + std::to_string( total_us / n_tiles ) +
+                    " | coord=" + std::to_string( ns_coord / 1000 ) +
+                    "us terfurn=" + std::to_string( ns_terfurn / 1000 ) +
+                    "us items=" + std::to_string( ns_items / 1000 ) +
+                    "us rest=" + std::to_string( ns_rest / 1000 ) +
+                    "us baseline_and_emit=" + std::to_string( ns_diff / 1000 ) +
+                    "us | tiles_with_items=" + std::to_string( n_with_items ) +
+                    " items_serialized=" + std::to_string( n_items_serialized ) );
+        }
+    }
     return out;
 }
 
