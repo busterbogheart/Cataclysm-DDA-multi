@@ -6117,9 +6117,34 @@ void wait_for_client_action()
                     + ( get_avatar().activity ? get_avatar().activity.id().str() : "?" )
                     + " partner_act=" + g_partner_activity );
         } else {
-            mp_log( "[cdda-mp] lockstep-resume: FAST-FORWARD exit" );
+            mp_log( std::string( "[cdda-mp] lockstep-resume: FAST-FORWARD exit reason=" )
+                    + mp_ff_decline_reason()
+                    + " host_act=" + ( get_avatar().activity ?
+                                       get_avatar().activity.id().str() : "(none)" )
+                    + " partner_act=" + ( g_partner_activity.empty() ?
+                                          "(none)" : g_partner_activity ) );
         }
         ff_was_active = ff_now;
+    }
+
+    // Log WHY fast-forward is being declined, deduped so it fires once per change of
+    // reason rather than every turn. Without this a declined FF is silent and a slow
+    // co-op action gives no clue whether the activity is unlisted, the partner is
+    // idle, or the pair simply never qualified. Idle/idle is skipped — that is just
+    // two players standing around, not a diagnosis worth a line.
+    {
+        static std::string last_reason;
+        const std::string reason = ff_now ? std::string() : mp_ff_decline_reason();
+        if( reason != last_reason ) {
+            if( !reason.empty() && reason != "self_idle" && reason != "not_mp" ) {
+                mp_log( "[cdda-mp] FF-DECLINED: " + reason
+                        + " (host_act=" + ( get_avatar().activity ?
+                                            get_avatar().activity.id().str() : "(none)" )
+                        + " partner_act=" + ( g_partner_activity.empty() ?
+                                              "(none)" : g_partner_activity ) + ")" );
+            }
+            last_reason = reason;
+        }
     }
     if( ff_now ) {
         process_mp_events();
@@ -6506,6 +6531,36 @@ static bool is_fast_forwardable_activity( const std::string &id )
     }
     static const std::set<std::string> no_ff = { "ACT_FIRSTAID" };
     return no_ff.count( id ) == 0;
+}
+
+// Why fast-forward is NOT engaging, "" when it is. Mirrors should_fast_forward()'s
+// checks in the same order.
+//
+// Added 2026-08-16: a declined FF logged NOTHING, so "I hotwired a car and it was
+// slow" was indistinguishable from "the activity is not on the passive list" —
+// which is exactly what it turned out to be. Because the gate is a pure AND of two
+// INDEPENDENT per-side predicates, naming the side and the activity is a complete
+// explanation; there is no pairwise term to consider.
+std::string mp_ff_decline_reason()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return "not_mp";
+    }
+    const player_activity &av_act = get_avatar().activity;
+    if( !av_act ) {
+        return "self_idle";
+    }
+    const std::string mine = av_act.id().str();
+    if( !is_fast_forwardable_activity( mine ) ) {
+        return "self_not_ff_eligible:" + mine;
+    }
+    if( g_partner_activity.empty() ) {
+        return "partner_idle";
+    }
+    if( !is_fast_forwardable_activity( g_partner_activity ) ) {
+        return "partner_not_ff_eligible:" + g_partner_activity;
+    }
+    return "";
 }
 
 bool should_fast_forward()

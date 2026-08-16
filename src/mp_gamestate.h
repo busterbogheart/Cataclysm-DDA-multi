@@ -333,6 +333,10 @@ bool is_passive_activity( const std::string &activity_id_str );
 // Re-evaluated every turn — naturally exits when SP's activity cancellation
 // fires on either side (hostile in sight, low HP, player input, etc.).
 bool should_fast_forward();
+// Why should_fast_forward() is returning false, "" when it is true. Names the side
+// and the activity — a complete explanation, since the gate is a pure AND of two
+// independent per-side predicates with no pairwise term.
+std::string mp_ff_decline_reason();
 
 // MP DIAGNOSTIC 2026-08-14 — per-turn phase timing for game::do_turn().
 //
