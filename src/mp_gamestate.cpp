@@ -1996,7 +1996,10 @@ void mp_client_prepare_spawn()
 struct mp_tile_state {
     std::string ter;
     std::string furn;
-    std::string items_sig;    // "type:charges,..." — empty when no items
+    // MP PERF 2026-08-16 — was a concatenated full serialize() of every item on the
+    // tile, which made change detection 99.4% of the scan cost. Now a cheap
+    // recursive hash; see mp_hash_item(). 0 = no items.
+    uint64_t items_hash = 0;
     std::string fields_sig;   // "type:intensity,..." — empty when no fields
     std::string trap_sig;     // trap id string, empty = tr_null (no placed trap)
     std::string graffiti_sig; // empty = no graffiti
@@ -11162,6 +11165,78 @@ static void mp_apply_partial_con_obj( const tripoint_bub_ms &bub, JsonObject po 
     m.partial_con_set( bub, pc );
 }
 
+// MP PERF 2026-08-16 — cheap item fingerprint, replacing a full JSON serialize().
+//
+// Measured on the 2026-08-16 two-machine run: build_tile_changes() burned 46ms of
+// every 67ms fast-forward batch (69% of FF wall time), and 99.4% of the scan was a
+// full serialize() of every item on every tile — 3123 items across 56 tiles at
+// ~14.6us each — performed only to discover that nothing had changed. serialize()
+// is the right thing to SEND; it is far too expensive as a change DETECTOR.
+//
+// This hashes the volatile fields instead and recurses through pocket contents, so
+// a change nested inside a container still registers (the property the old
+// "full serialize so nested pockets are included" comment was protecting).
+// serialize() now runs only for tiles that actually changed, i.e. only for what is
+// actually emitted.
+//
+// ⚠️ KNOWN GAP: `item_vars` is private with no public accessor, so it is NOT
+// hashed. Set MP_VERIFY_ITEM_FP=1 to run the old serialize()-based signature
+// alongside this and log every disagreement — see g_tile_items_sig_verify below.
+// Do not trust this in a release until that has run clean.
+static inline void mp_hash_mix( uint64_t &h, uint64_t v )
+{
+    h ^= v + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+}
+
+static void mp_hash_item( const item &it, uint64_t &h )
+{
+    mp_hash_mix( h, std::hash<std::string> {}( it.typeId().str() ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.uid().get_value() ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.charges ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.damage() ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.degradation() ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.burnt ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.poison ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.irradiation ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.wetness ) );
+    mp_hash_mix( h, static_cast<uint64_t>( it.item_counter ) );
+    mp_hash_mix( h, static_cast<uint64_t>( to_turns<int64_t>( it.get_rot() ) ) );
+    mp_hash_mix( h, it.is_active() ? 1u : 0u );
+    // Pocket contents — a change inside a container must dirty the tile.
+    // Iterate EVERY pocket type, not the no-arg all_items_top(): that one filters to
+    // is_standard_type() (CONTAINER/MAGAZINE/MAGAZINE_WELL) and would silently miss
+    // gun mods, software, e-files and cables, all of which serialize() did include.
+    // The pocket type is mixed in too, so moving an item between pockets registers.
+    for( int pt = 0; pt < static_cast<int>( pocket_type::LAST ); ++pt ) {
+        for( const item *sub : it.all_items_top( static_cast<pocket_type>( pt ) ) ) {
+            mp_hash_mix( h, static_cast<uint64_t>( pt ) );
+            mp_hash_item( *sub, h );
+        }
+    }
+}
+
+template<typename Stack>
+static uint64_t mp_items_hash( const Stack &items )
+{
+    uint64_t h = 0;
+    for( const item &it : items ) {
+        mp_hash_item( it, h );
+    }
+    return h;
+}
+
+// MP DIAG 2026-08-16 — MP_VERIFY_ITEM_FP=1 recomputes the old serialize()-based
+// signature next to the new hash and logs any tile where the two DISAGREE about
+// whether something changed. That is the check that the hash misses nothing
+// (notably the unhashed private item_vars). Costs the full pre-optimisation price
+// while enabled, so it is off unless the env var is set.
+static bool mp_verify_item_fp()
+{
+    static const bool on = getenv( "MP_VERIFY_ITEM_FP" ) != nullptr;
+    return on;
+}
+static std::unordered_map<tripoint_abs_ms, std::string> g_tile_items_sig_verify;
+
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
 {
     mp_tile_state st;
@@ -11174,9 +11249,7 @@ static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
     st.ter  = m.ter( bub ).id().str();
     st.furn = m.furn( bub ).id().str();
 
-    for( const item &it : m.i_at( bub ) ) {
-        st.items_sig += serialize( it ) + ',';
-    }
+    st.items_hash = mp_items_hash( m.i_at( bub ) );
 
     const field &fld = m.field_at( bub );
     if( fld.field_count() > 0 ) {
@@ -11270,27 +11343,16 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             const auto ts_c = tsclk::now();
             ++n_tiles;
 
-            // Build item fingerprint and JSON simultaneously.
-            // Full item serialize() is used so nested pocket contents are included.
-            std::string items_sig;
-            std::string items_json = "[]";
+            // MP PERF 2026-08-16 — fingerprint with a cheap recursive hash. The JSON
+            // is built further down, ONLY for tiles that actually changed. Building
+            // it here for all 1429 scanned tiles (to throw ~99% of it away at the
+            // baseline compare) was 69% of fast-forward wall time. See mp_hash_item().
             auto items = m.i_at( bub );
-            if( !items.empty() ) {
+            const bool has_items = !items.empty();
+            if( has_items ) {
                 ++n_with_items;
-                items_json = "[";
-                bool ifirst = true;
-                for( const item &it : items ) {
-                    ++n_items_serialized;
-                    const std::string item_json = serialize( it );
-                    items_sig += item_json + ',';
-                    if( !ifirst ) {
-                        items_json += ',';
-                    }
-                    ifirst = false;
-                    items_json += item_json;
-                }
-                items_json += "]";
             }
+            const uint64_t items_hash = mp_items_hash( items );
 
             const auto ts_d = tsclk::now();
 
@@ -11341,8 +11403,32 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             ns_rest    += std::chrono::duration_cast<std::chrono::nanoseconds>( ts_e - ts_d ).count();
 
             auto &baseline = g_tile_baseline[abs];
+
+            // MP DIAG 2026-08-16 — cross-check the cheap hash against the old
+            // serialize() signature. Must run BEFORE the compare/continue below,
+            // because the case worth proving is the UNCHANGED one.
+            if( mp_verify_item_fp() ) {
+                std::string vsig;
+                for( const item &it : items ) {
+                    vsig += serialize( it ) + ',';
+                }
+                auto &vbase = g_tile_items_sig_verify[abs];
+                const bool sig_changed  = ( vbase != vsig );
+                const bool hash_changed = ( baseline.items_hash != items_hash );
+                if( sig_changed != hash_changed ) {
+                    mp_log( "[cdda-mp] ITEM-FP-MISMATCH @ " +
+                            std::to_string( abs.x() ) + "," +
+                            std::to_string( abs.y() ) + "," +
+                            std::to_string( abs.z() ) +
+                            " sig_changed=" + ( sig_changed ? "1" : "0" ) +
+                            " hash_changed=" + ( hash_changed ? "1" : "0" ) +
+                            " nitems=" + std::to_string( vsig.empty() ? 0 : 1 ) );
+                }
+                vbase = vsig;
+            }
+
             if( baseline.ter == ter_str && baseline.furn == furn_str &&
-                baseline.items_sig == items_sig && baseline.fields_sig == fields_sig &&
+                baseline.items_hash == items_hash && baseline.fields_sig == fields_sig &&
                 baseline.trap_sig == trap_sig && baseline.graffiti_sig == graffiti_sig &&
                 baseline.partial_con_sig == partial_con_sig ) {
                 continue; // Nothing changed — skip this tile.
@@ -11359,13 +11445,13 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             const bool ter_furn_changed = baseline.ter != ter_str || baseline.furn != furn_str;
             baseline.ter          = ter_str;
             baseline.furn         = furn_str;
-            baseline.items_sig    = items_sig;
+            baseline.items_hash   = items_hash;
             baseline.fields_sig   = fields_sig;
             baseline.trap_sig     = trap_sig;
             baseline.graffiti_sig = graffiti_sig;
             baseline.partial_con_sig = partial_con_sig;
 
-            if( !items_sig.empty() ) {
+            if( has_items ) {
                 mp_log( "tile_delta items @ " +
                         std::to_string( abs.x() ) + "," +
                         std::to_string( abs.y() ) + "," +
@@ -11385,6 +11471,24 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                         std::to_string( abs.z() ) + " ter=" + ter_str +
                         " furn=" + furn_str + " dist_from_scan_center=" +
                         std::to_string( dist ) );
+            }
+
+            // MP PERF 2026-08-16 — the tile really changed, so NOW pay for the JSON.
+            // Before this, serialize() ran for every tile scanned rather than every
+            // tile emitted, which is what made the scan 69% of fast-forward time.
+            std::string items_json = "[]";
+            if( has_items ) {
+                items_json = "[";
+                bool ifirst = true;
+                for( const item &it : items ) {
+                    ++n_items_serialized;
+                    if( !ifirst ) {
+                        items_json += ',';
+                    }
+                    ifirst = false;
+                    items_json += serialize( it );
+                }
+                items_json += "]";
             }
 
             if( !first ) {
