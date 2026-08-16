@@ -2011,6 +2011,30 @@ static std::unordered_set<tripoint_abs_ms> g_scan_visited_this_broadcast;
 // suppress byte-identical repeats. MUST be cleared on rejoin, or a reconnecting
 // client (which has no vehicles at all) would be told nothing changed and would
 // never receive them. See serialize_remote_player_state() and the REJOIN-RESYNC path.
+// MP PERF 2026-08-15 — fast-forward BATCHING.
+//
+// During held FF the host reached 118 turns/sec and began outrunning the client's
+// message loop: 6350 messages for 3063 turns (2/turn, ~236/sec). The client's
+// client_process_incoming() drains until the socket is empty, so it never exited
+// to redraw — CLI-DRAIN-END fired 20 times against 3070 grants, one drain swallowed
+// 3613 messages, and the UI froze for 15.6s mid-craft (the "stopped updating at
+// ~28%" report). Worse, while frozen and spending 100% of its budget on messages
+// the client still only processed ~75 grants/sec against the host's 118 — it was
+// falling behind even at full tilt, so simply bounding the drain would have traded
+// a visible freeze for silent drift.
+//
+// So cut the VOLUME: during FF emit one packet per FF_BATCH_TURNS turns carrying
+// that many turns' worth of AP, instead of one packet per turn.
+//
+// Bounded by the client's existing catch-up caps: mp_do_turn_process_turn() and
+// mp_do_turn_update_body() both cap at 100 turns, and the client is ALREADY built
+// for a jumping clock ("the host-driven calendar advances in JUMPS"). Keep the
+// batch well under that.
+static constexpr int FF_BATCH_TURNS = 10;
+// Turns represented by the packet currently being serialized. Set by
+// grant_client_turn() immediately before serialize_remote_player_state() and read
+// by the assembly; 1 means an ordinary single-turn grant.
+static int g_batch_turns_to_send = 1;
 static std::string g_last_state_vehicles_payload;
 static void mp_reset_vehicle_payload_cache()
 {
@@ -5832,8 +5856,18 @@ void grant_client_turn()
     // issued — SP-faithful, a costly step burns several turns. Expensive actions
     // are funded by going into debt AFTER the fact, never by pre-accumulating, so
     // capping the positive balance cannot make an expensive action unaffordable.
-    if( g_remote_moves > remote->get_speed() ) {
-        g_remote_moves = remote->get_speed();
+    // MP 2026-08-15 — the invariant this clamp actually enforces is "AP per CALENDAR
+    // TURN <= speed", and it enforced that per-GRANT because until now there was
+    // exactly one grant per calendar turn. FF batching breaks that 1:1 assumption:
+    // one batched grant legitimately covers FF_BATCH_TURNS turns and must carry that
+    // many turns of AP, which the per-grant cap would clamp to a single turn's worth
+    // and silently starve the client's craft. So cap against the turns the next
+    // packet will actually represent. Outside FF that is 1 and the behaviour is
+    // identical to before.
+    const bool ff_now_for_cap = should_fast_forward();
+    const int ap_cap = remote->get_speed() * ( ff_now_for_cap ? FF_BATCH_TURNS : 1 );
+    if( g_remote_moves > ap_cap ) {
+        g_remote_moves = ap_cap;
     }
     g_granted_this_turn = ( g_remote_moves > 0 );
     if( g_granted_this_turn ) {
@@ -5921,33 +5955,52 @@ void grant_client_turn()
         // (hostile in view, pain, sound, hunger) cancels the activity through SP's
         // own activity_actor::do_turn, should_fast_forward() goes false, and the
         // exit path below forces a full scan on that very turn.
-        static constexpr int FF_SCAN_INTERVAL = 10;
-        static int s_ff_turns_since_scan = 0;
+        // SUPERSEDES the scan-only throttle: skipping just the scan left the packet
+        // RATE at one per turn, and at 118 turns/sec that rate is itself what
+        // saturated the client (see FF_BATCH_TURNS). Batching cuts the rate, which
+        // fixes both the host's CPU and the client's drain.
+        static int s_ff_turns_pending = 0;
         static bool s_was_ff = false;
         const bool ff_now = should_fast_forward();
-        bool full_scan = true;
+        bool emit = true;
+        int batch_turns = 1;
         if( ff_now ) {
-            if( ++s_ff_turns_since_scan >= FF_SCAN_INTERVAL ) {
-                s_ff_turns_since_scan = 0;
+            // Accumulate. Emit only on a batch boundary, carrying every turn since
+            // the last emit. The grant is never STARVED — it arrives on a fixed,
+            // predictable cadence — which is what separates this from the
+            // 2026-06-21 throttle that deadlocked both sides by dropping grants
+            // indefinitely.
+            if( ++s_ff_turns_pending >= FF_BATCH_TURNS ) {
+                batch_turns = s_ff_turns_pending;
+                s_ff_turns_pending = 0;
             } else {
-                full_scan = false;
+                emit = false;
             }
         } else {
-            // Not in FF: always full, and reset so the next FF window starts with
-            // a scan rather than inheriting a partial count.
-            s_ff_turns_since_scan = 0;
+            s_ff_turns_pending = 0;
         }
         if( s_was_ff && !ff_now ) {
-            // FF just ended (activity cancelled / distraction / partner stopped).
-            // Force a full scan THIS turn so the client is current the moment
-            // interactive play resumes.
-            full_scan = true;
-            mp_log( "[cdda-mp] FF-SCAN: fast-forward ended, forcing full scan" );
+            // FF just ended (distraction, activity finished, partner stopped).
+            // Emit immediately with whatever turns are outstanding so the client
+            // is fully caught up the moment interactive play resumes, and so no
+            // accumulated AP is stranded.
+            emit = true;
+            batch_turns = s_ff_turns_pending > 0 ? s_ff_turns_pending : 1;
+            s_ff_turns_pending = 0;
+            mp_log( "[cdda-mp] FF-BATCH: fast-forward ended, flushing " +
+                    std::to_string( batch_turns ) + " turn(s)" );
         }
         s_was_ff = ff_now;
-        const std::string state = serialize_remote_player_state( !full_scan );
+        std::string state;
+        if( emit ) {
+            g_batch_turns_to_send = batch_turns;
+            state = serialize_remote_player_state();
+            g_batch_turns_to_send = 1;
+        }
         const auto g_t_ser = clk::now();
-        srv->post_broadcast( state + "\n" );
+        if( emit ) {
+            srv->post_broadcast( state + "\n" );
+        }
         const auto g_t_ser_send = clk::now();
         {
             const auto d = []( clk::time_point a, clk::time_point b ) {
@@ -9610,7 +9663,34 @@ static bool apply_one_state_message( const std::string &msg )
                     const long long pre_tick_counter = mp_craft_counter( ca );
                     const int pre_tick_turn = to_turn<int>( calendar::turn );
                     mp_log_craft_multipliers( get_avatar(), ca, "CLIENT" );
-                    get_avatar().activity.do_turn( get_avatar() );
+                    // MP 2026-08-15 — FF batching: one packet can represent several
+                    // calendar turns, and the activity must be ticked once PER TURN
+                    // or the client silently under-crafts by the batch factor. The
+                    // host sends the whole batch's AP in "moves" (its clamp caps at
+                    // speed*FF_BATCH_TURNS), so give each tick one turn's share.
+                    //
+                    // A tick can end the activity mid-batch (distraction: hostile in
+                    // view, pain, sound — SP's own activity_actor::do_turn decides,
+                    // exactly as in single-player). Stop immediately when that
+                    // happens; the remaining turns are simply not crafted, which is
+                    // correct — a distracted character stops while the world's clock
+                    // keeps running.
+                    const int batch_turns = jo.has_int( "batch_turns" )
+                                            ? std::max( 1, jo.get_int( "batch_turns" ) ) : 1;
+                    const int per_tick_moves = batch_turns > 1
+                                               ? std::max( 1, srv_moves / batch_turns )
+                                               : srv_moves;
+                    int ticks_done = 0;
+                    for( int bt = 0; bt < batch_turns; ++bt ) {
+                        if( !get_avatar().activity ) {
+                            break;  // ended mid-batch — see above
+                        }
+                        if( batch_turns > 1 ) {
+                            get_avatar().set_moves( per_tick_moves );
+                        }
+                        get_avatar().activity.do_turn( get_avatar() );
+                        ++ticks_done;
+                    }
                     const long long post_tick_counter = mp_craft_counter( get_avatar().activity );
                     const int post_tick_moves = get_avatar().get_moves();
                     const player_activity &post_ca = get_avatar().activity;
@@ -9640,7 +9720,9 @@ static bool apply_one_state_message( const std::string &msg )
                                 " pct=" + std::to_string( post_tick_counter / 100000 ) +
                                 " ap_spent=" + std::to_string( ap_spent ) +
                                 " per_ap=" + std::to_string( ap_spent > 0 ? gained / ap_spent : 0 ) +
-                                " ticks_this_grant=1 grant_seq=" + std::to_string( grant_seq ) );
+                                " ticks_this_grant=" + std::to_string( ticks_done ) +
+                                " batch_turns=" + std::to_string( batch_turns ) +
+                                " grant_seq=" + std::to_string( grant_seq ) );
                     }
                     client_send( client_enrich_action(
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
@@ -13880,6 +13962,10 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
                return s;
            }() ) +
            "\"bodyparts\":" + bparts_json +
+           // MP 2026-08-15 — turns this packet represents. 1 for an ordinary grant;
+           // FF_BATCH_TURNS for a batched fast-forward grant, telling the client to
+           // tick its activity that many times rather than once.
+           ",\"batch_turns\":" + std::to_string( g_batch_turns_to_send ) +
            ",\"moves\":" + std::to_string( g_remote_moves ) +
            ",\"speed\":" + std::to_string( remote->get_speed() ) +
            ",\"client_move_mode\":\"" + remote->move_mode.str() + "\""
