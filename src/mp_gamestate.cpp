@@ -11231,7 +11231,18 @@ static void mp_hash_item( const item &it, uint64_t &h )
     // was re-broadcasting a 14KB item stack EVERY TURN because of it. Ignoring it is
     // the win. Temperature itself is real (food freshness) and changes rarely, so it
     // belongs in the hash; specific_energy is derived from it and adds nothing.
-    mp_hash_mix( h, static_cast<uint64_t>( it.temperature.value() ) );
+    // ⚠️ units::temperature is quantity<FLOAT, kelvin>. A static_cast to an integer
+    // TRUNCATES to whole kelvin and hides every sub-degree change — measured
+    // 2026-08-16: 284.225K -> 284.617K (11 C 75 mC -> 11 C 467 mC) both hashed as
+    // 284 and the change was missed. Hash the bit pattern, never the cast value.
+    // Every other field here is an integer; temperature is the only float.
+    {
+        const float t = it.temperature.value();
+        static_assert( sizeof( float ) == sizeof( uint32_t ), "float is not 32-bit" );
+        uint32_t bits = 0;
+        std::memcpy( &bits, &t, sizeof( bits ) );
+        mp_hash_mix( h, bits );
+    }
     // Pocket contents — a change inside a container must dirty the tile.
     // Iterate EVERY pocket type, not the no-arg all_items_top(): that one filters to
     // is_standard_type() (CONTAINER/MAGAZINE/MAGAZINE_WELL) and would silently miss
@@ -11273,11 +11284,37 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_tile_items_sig_verify;
 // refreshed the baseline after applying a client tile change (see the
 // compute_tile_state() call in the client_tile_changes applier) and this map went
 // stale. A false positive here is expensive: it discredits the real signal.
-static void mp_refresh_item_sig_verify( const tripoint_abs_ms &abs )
+// Strip the fields the hash IGNORES BY DESIGN before comparing. Without this the
+// verifier can never reach 0: `last_temp_check` is a bookkeeping timestamp that
+// ticks constantly (134 of 137 mismatches on 2026-08-16 were nothing else), and
+// deliberately not hashing it is the entire point — the old fingerprint
+// re-broadcast a 14KB item stack every turn because of it. Masking it here is what
+// makes a nonzero mismatch count mean something.
+static std::string mp_mask_ignored_fields( const std::string &sig )
 {
-    if( !mp_verify_item_fp() ) {
-        return;
+    static const std::string key = "\"last_temp_check\":";
+    std::string out;
+    out.reserve( sig.size() );
+    size_t pos = 0;
+    while( true ) {
+        const size_t hit = sig.find( key, pos );
+        if( hit == std::string::npos ) {
+            out.append( sig, pos, std::string::npos );
+            break;
+        }
+        out.append( sig, pos, hit - pos );
+        size_t end = hit + key.size();
+        while( end < sig.size() && ( isdigit( static_cast<unsigned char>( sig[end] ) ) ||
+                                     sig[end] == '-' ) ) {
+            ++end;
+        }
+        pos = end;
     }
+    return out;
+}
+
+static std::string mp_tile_items_sig( const tripoint_abs_ms &abs )
+{
     map &m = get_map();
     std::string vsig;
     if( m.inbounds( abs ) ) {
@@ -11285,7 +11322,15 @@ static void mp_refresh_item_sig_verify( const tripoint_abs_ms &abs )
             vsig += serialize( it ) + ',';
         }
     }
-    g_tile_items_sig_verify[abs] = vsig;
+    return mp_mask_ignored_fields( vsig );
+}
+
+static void mp_refresh_item_sig_verify( const tripoint_abs_ms &abs )
+{
+    if( !mp_verify_item_fp() ) {
+        return;
+    }
+    g_tile_items_sig_verify[abs] = mp_tile_items_sig( abs );
 }
 
 static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
@@ -11463,6 +11508,7 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 for( const item &it : items ) {
                     vsig += serialize( it ) + ',';
                 }
+                vsig = mp_mask_ignored_fields( vsig );
                 auto &vbase = g_tile_items_sig_verify[abs];
                 const bool sig_changed  = ( vbase != vsig );
                 const bool hash_changed = ( baseline.items_hash != items_hash );
