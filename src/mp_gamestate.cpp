@@ -11430,13 +11430,27 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                 const bool sig_changed  = ( vbase != vsig );
                 const bool hash_changed = ( baseline.items_hash != items_hash );
                 if( sig_changed != hash_changed ) {
+                    // Name the offending FIELD, don't make anyone guess: find the
+                    // first byte where old and new serialize() output diverge and
+                    // print a window of each around it. The JSON key immediately
+                    // left of the divergence is the field the hash is blind to.
+                    size_t d = 0;
+                    while( d < vbase.size() && d < vsig.size() && vbase[d] == vsig[d] ) {
+                        ++d;
+                    }
+                    const size_t from = d > 60 ? d - 60 : 0;
                     mp_log( "[cdda-mp] ITEM-FP-MISMATCH @ " +
                             std::to_string( abs.x() ) + "," +
                             std::to_string( abs.y() ) + "," +
                             std::to_string( abs.z() ) +
                             " sig_changed=" + ( sig_changed ? "1" : "0" ) +
                             " hash_changed=" + ( hash_changed ? "1" : "0" ) +
-                            " nitems=" + std::to_string( vsig.empty() ? 0 : 1 ) );
+                            " items_on_tile=" + std::to_string( items.size() ) +
+                            " difflen=" + std::to_string( vbase.size() ) + "/" +
+                            std::to_string( vsig.size() ) +
+                            " at=" + std::to_string( d ) +
+                            "\n    OLD: ..." + vbase.substr( from, 140 ) +
+                            "\n    NEW: ..." + vsig.substr( from, 140 ) );
                 }
                 vbase = vsig;
             }
