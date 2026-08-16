@@ -6464,6 +6464,20 @@ bool is_passive_activity( const std::string &activity_id_str )
         "ACT_WAIT", "ACT_WAIT_STAMINA", "ACT_WAIT_WEATHER", "ACT_WAIT_NPC",
         "ACT_SLEEP", "ACT_TRY_SLEEP",
         "ACT_HELP_PARTNER",
+        // Added 2026-08-16 after a live report: host crafting + client hotwiring a
+        // vehicle crawled. Not a perf bug — should_fast_forward() needs BOTH sides
+        // in a listed activity, so ONE unlisted activity on EITHER side drops the
+        // pair back to strict 1:1 lockstep no matter how long the other side's
+        // action is. The side that kills FF need not be the side being watched.
+        //
+        // Each of these was checked the same way ACT_FIRSTAID was: its actor's
+        // do_turn opens no UI and is a pure timer (several have no do_turn at all).
+        // Terrain mutation, where it happens, is entirely in finish() — zero in
+        // do_turn — so nothing lands on the partner mid-activity and the batch
+        // lateness under FF batching is bounded by the one broadcast after finish.
+        "ACT_HOTWIRE_CAR", "ACT_LOCKPICK", "ACT_PICKAXE",
+        "ACT_BOLTCUTTING", "ACT_HACKSAW", "ACT_OXYTORCH", "ACT_PRYING",
+        "ACT_CHOP_TREE", "ACT_CLEAR_RUBBLE", "ACT_MILK",
     };
     return passive.count( activity_id_str ) > 0;
 }
