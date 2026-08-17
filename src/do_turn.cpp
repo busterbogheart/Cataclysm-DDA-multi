@@ -241,6 +241,45 @@ bool cleanup_at_end()
 
 } // namespace turn_handler
 
+// MP DIAGNOSTIC 2026-08-17 — brackets every blocking modal this function can open
+// on the CLIENT. Each one runs its own input loop that never pumps the MP loop, so
+// for as long as it is open the client stops answering the host and the host sits
+// in wait_for_client_action(). Confirmed for "messages" (263s host stall, watchdog
+// force-reconnect, proxy lost its worn items); these lines establish whether the
+// other five behave identically, which decides whether the fix is per-branch or a
+// single client-side pump mirroring the host's in sdltiles.cpp.
+//
+// Note the host is already immune here: get_input_event() pumps MP every 50ms
+// while is_hosting(), added 2026-07-01. The client never got the equivalent.
+namespace
+{
+// Fires for BOTH roles as of the 2026-08-17 afternoon round: `v` (morale) and F1
+// (help) opened on the HOST during a dual craft pause BOTH players, which the
+// host's 50ms pump in sdltiles.cpp is supposed to prevent and which `@`
+// (player_data) does not do. So the host is not actually immune for every dialog
+// and the role has to be in the log line to tell the two failure modes apart.
+struct mp_client_modal_probe {
+    const char *name;
+    bool active;
+    const char *role;
+    explicit mp_client_modal_probe( const char *n )
+        : name( n ),
+          active( cata_mp::is_client_mode() || cata_mp::is_hosting() ),
+          role( cata_mp::is_client_mode() ? "CLIENT" : "HOST" ) {
+        if( active ) {
+            cata_mp::mp_log( std::string( "[cdda-mp] MP-MODAL-ENTER: role=" ) + role +
+                             " ui=" + name + " — MP loop is not pumped from inside this dialog" );
+        }
+    }
+    ~mp_client_modal_probe() {
+        if( active ) {
+            cata_mp::mp_log( std::string( "[cdda-mp] MP-MODAL-EXIT: role=" ) + role +
+                             " ui=" + name );
+        }
+    }
+};
+} // namespace
+
 void handle_key_blocking_activity( int timeout )
 {
     if( test_mode ) {
@@ -295,17 +334,22 @@ void handle_key_blocking_activity( int timeout )
         } else if( action == "map" ) {
             // MP-locked host: allow viewing the overmap while waiting for the
             // client (mirrors the full-input path; zoom already works the same way).
+            mp_client_modal_probe probe( "map" );
             ui::omap::display();
         } else if( action == "player_data" ) {
+            mp_client_modal_probe probe( "player_data" );
             u.disp_info( true );
         } else if( action == "morale" ) {
             // Read-only morale view — was swallowed here while locked (the key
             // never reached handle_action's allow at do_regular_action), so the
             // client couldn't open it. Mirrors the host_ui_actions allow.
+            mp_client_modal_probe probe( "morale" );
             u.disp_morale();
         } else if( action == "messages" ) {
+            mp_client_modal_probe probe( "messages" );
             Messages::display_messages();
         } else if( action == "help" ) {
+            mp_client_modal_probe probe( "help" );
             get_help().display_help();
         } else if( action == "coop_chat" ) {
             // MP-locked host: let the host send chat while waiting for the client

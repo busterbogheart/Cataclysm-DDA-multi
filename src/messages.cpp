@@ -40,6 +40,25 @@
 #include <SDL_keyboard.h>
 #endif
 
+// MP DIAGNOSTIC 2026-08-17 — the message log wedged a co-op client.
+//
+// A client that opened this screen mid-activity never came out: ESC did nothing
+// with the window focused, the client stopped answering the host, and the host
+// sat in wait_for_client_action() for 263s until the client's watchdog declared
+// the link dead and force-reconnected (losing the proxy's worn items).
+//
+// The exit path here is stock SP — "QUIT" sets canceled and run()'s loop ends —
+// and a live `sample` proved the loop was spinning normally, so the key is not
+// reaching this handler. Declared rather than including mp_gamestate.h, matching
+// how mp_server.cpp / mp_client_conn.cpp pull in mp_log: keeps this SP file's
+// upstream merge surface to the log lines themselves.
+namespace cata_mp
+{
+void mp_log( const std::string &msg );
+bool is_client_mode();
+bool is_hosting();
+} // namespace cata_mp
+
 static const efftype_id effect_weed_high( "weed_high" );
 
 namespace
@@ -627,6 +646,17 @@ void Messages::dialog::init( ui_adaptor &ui )
 
     w = catacurses::newwin( w_height, w_width, point( w_x, w_y ) );
 
+    // MP DIAGNOSTIC 2026-08-17 — measured: with the log open on the client every key
+    // resolves against cat="default" (an empty, default-constructed input_context),
+    // never cat="MESSAGE_LOG". Nothing resolves, so handle_input() spins forever and
+    // ESC cannot close it — and show() never runs either, which is why no dialog
+    // appears. Both symptoms follow if this init never fires. This line says whether
+    // it does.
+    if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
+        cata_mp::mp_log( std::string( "[cdda-mp] MSGLOG-INIT: reached, first_init=" ) +
+                         ( first_init ? "1 — registering MESSAGE_LOG context" :
+                           "0 — context left as-is" ) );
+    }
     if( first_init ) {
         ctxt = input_context( "MESSAGE_LOG" );
         ctxt.register_action( "UP", to_translation( "Scroll up" ) );
@@ -847,6 +877,15 @@ void Messages::dialog::input()
         }
     } else {
         const std::string &action = ctxt.handle_input();
+        // MP DIAGNOSTIC 2026-08-17 — see display_messages() above. Names every
+        // action this loop actually receives. If ESC produces no line at all the
+        // key never reached input_context; if it produces a line naming something
+        // other than "QUIT" the binding resolved wrong (the MP client is forced
+        // into keychar mode by the ImGui HUD, which already silently ate the
+        // numpad keys once — see the client-gated fallback in sdltiles.cpp).
+        if( cata_mp::is_client_mode() ) {
+            cata_mp::mp_log( "[cdda-mp] MSGLOG-INPUT: action=\"" + action + "\"" );
+        }
         if( ( action == "DOWN" || action == "SCROLL_DOWN" ) &&
             offset + max_lines < folded_filtered.size() ) {
             ++offset;
@@ -889,8 +928,22 @@ void Messages::dialog::run()
         show();
     } );
 
+    // MP DIAGNOSTIC 2026-08-17 — see MSGLOG-INIT. handle_input() never returns on a
+    // wedged client, so this loop body runs exactly once; the two lines below bracket
+    // the ui_manager::redraw() that is supposed to drive on_screen_resize -> init().
+    // "redraw returned" with no MSGLOG-INIT between them means redraw ran but skipped
+    // this adaptor's resize callback — i.e. the ui_adaptor stack, not the dialog.
+    const bool mp_probe = cata_mp::is_client_mode() || cata_mp::is_hosting();
+    int mp_iter = 0;
     while( !errored && !canceled ) {
+        if( mp_probe ) {
+            cata_mp::mp_log( "[cdda-mp] MSGLOG-LOOP: iter=" + std::to_string( ++mp_iter ) +
+                             " calling ui_manager::redraw()" );
+        }
         ui_manager::redraw();
+        if( mp_probe ) {
+            cata_mp::mp_log( "[cdda-mp] MSGLOG-LOOP: redraw returned, entering input()" );
+        }
         input();
     }
 }
@@ -935,8 +988,16 @@ std::vector<std::string> Messages::dialog::filter_help_text( int width )
 
 void Messages::display_messages()
 {
+    const bool mp_client = cata_mp::is_client_mode();
+    if( mp_client ) {
+        cata_mp::mp_log( "[cdda-mp] MSGLOG-ENTER: client opened the message log — "
+                         "the MP loop is NOT pumped from here" );
+    }
     dialog dlg;
     dlg.run();
+    if( mp_client ) {
+        cata_mp::mp_log( "[cdda-mp] MSGLOG-EXIT: client closed the message log" );
+    }
     player_messages.curmes = calendar::turn;
 }
 

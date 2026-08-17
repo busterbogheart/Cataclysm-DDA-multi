@@ -27,6 +27,8 @@
 #include "imgui/imgui.h"
 #include "input.h"
 #include "map.h"
+#include "mp_gamestate.h"      // cata_mp::mp_log / is_hosting (CTXT-RESOLVE probe)
+#include "mp_client_conn.h"    // cata_mp::is_client_mode
 #include "options.h"
 #include "output.h"
 #include "point.h"
@@ -490,6 +492,27 @@ const std::string &input_context::handle_input( const int timeout )
         }
 
         const std::string &action = input_to_action( next_action );
+
+        // MP DIAGNOSTIC 2026-08-17 — a co-op client wedged inside the message log
+        // and ESC could not close it. Measured so far: the key reaches SDL
+        // (CLI-KEYDOWN sym=27 curses_lc=27), last_input IS set, yet the dialog's
+        // handle_input() never returned once in ~100s. That leaves this loop: if
+        // input_to_action() yields CATA_ERROR the loop just spins and the caller
+        // never sees the key. The client is forced into keychar mode by the co-op
+        // ImGui HUD (text_input_active=1 on every key), so a context whose bindings
+        // resolve only in keycode mode would fail exactly here — and ESC works in
+        // the menus and in map/morale/player_data, so this is context-specific.
+        // Names the category, the event type and the resolution.
+        if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
+            cata_mp::mp_log( "[cdda-mp] CTXT-RESOLVE: cat=\"" + category +
+                             "\" evt_type=" + std::to_string( static_cast<int>( next_action.type ) ) +
+                             " seq=" + std::to_string( next_action.sequence.empty() ? -1 :
+                                     static_cast<int>( next_action.sequence.front() ) ) +
+                             " pref_mode=" + std::to_string(
+                                 static_cast<int>( preferred_keyboard_mode ) ) +
+                             " -> action=\"" + action + "\"" +
+                             ( action == CATA_ERROR ? "  <-- UNRESOLVED, loop spins" : "" ) );
+        }
 
         //Special global key to toggle language to english and back
         if( action == "toggle_language_to_en" ) {

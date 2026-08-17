@@ -5541,6 +5541,25 @@ static void CheckMessages()
                         mode = keyboard_mode::keycode;
                     }
 #endif
+                    // MP DIAGNOSTIC 2026-08-17 — a co-op client wedged inside the
+                    // message log: ESC did nothing with the window focused, which
+                    // stalled the host in wait_for_client_action() for 263s. This
+                    // names every key the client actually receives and, critically,
+                    // which mode it is resolved in — the ImGui HUD keeps SDL text
+                    // input ACTIVE on the client, forcing keychar mode, and that
+                    // already silently ate the numpad keys once (the fallback just
+                    // below). Client-gated and repeat-suppressed so SP/host input
+                    // and the log volume are untouched.
+                    if( cata_mp::is_client_mode() && !is_repeat ) {
+                        cata_mp::mp_log(
+                            std::string( "[cdda-mp] CLI-KEYDOWN: sym=" ) +
+                            std::to_string( static_cast<int>( GetKeysym( ev ).sym ) ) +
+                            " name=\"" + SDL_GetKeyName( GetKeysym( ev ).sym ) + "\"" +
+                            " mode=" + ( mode == keyboard_mode::keychar ? "keychar" : "keycode" ) +
+                            " text_input_active=" +
+                            ( IsTextInputActive( ::window.get() ) ? "1" : "0" ) +
+                            " curses_lc=" + std::to_string( sdl_keysym_to_curses( GetKeysym( ev ) ) ) );
+                    }
                     if( mode == keyboard_mode::keychar ) {
                         const int lc = sdl_keysym_to_curses( GetKeysym( ev ) );
                         if( lc <= 0 ) {
@@ -6433,12 +6452,24 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
     // hammer the MP queue.  is_hosting() is false for client/SP so they are
     // unaffected.  Mirrors the main game loop's per-frame pump in handle_action.
     uint32_t mp_last_pump = 0;
-    const auto mp_pump_if_host = [&mp_last_pump]() {
+    // MP DIAGNOSTIC 2026-08-17 — reported: `v` (morale) and F1 (help) opened on the
+    // HOST during a dual craft pause BOTH players, while `@` (player_data) does not.
+    // This pump is exactly what is supposed to make that impossible, so the question
+    // is whether it runs at all for those two dialogs — an ImGui-based UI that polls
+    // events elsewhere would never reach this loop. Logs the FIRST pump after a gap
+    // rather than every 50ms, so an open dialog costs one line, not hundreds.
+    uint32_t mp_pump_calls = 0;
+    const auto mp_pump_if_host = [&mp_last_pump, &mp_pump_calls]() {
         if( !cata_mp::is_hosting() ) {
             return;
         }
         const uint32_t now = GetTicks();
         if( now - mp_last_pump >= 50 ) {
+            if( mp_pump_calls == 0 ) {
+                cata_mp::mp_log( "[cdda-mp] HOST-MODAL-PUMP: servicing MP from inside a "
+                                 "modal input wait (this path IS reached)" );
+            }
+            ++mp_pump_calls;
             mp_last_pump = now;
             cata_mp::process_mp_events();
         }
