@@ -377,14 +377,42 @@ void ui_adaptor::redraw()
     redraw_invalidated();
 }
 
+// MP DIAGNOSTIC 2026-08-17 — measured: on a co-op CLIENT, ui_manager::redraw()
+// returns without ever running the message-log adaptor's on_screen_resize callback
+// (MSGLOG-LOOP brackets it with no MSGLOG-INIT between). That skipped callback is
+// what constructs the dialog's input_context, so the context stays default-built,
+// every key including ESC resolves to CATA_ERROR, handle_input() spins forever and
+// show() never runs — the client wedges with no dialog on screen and the host
+// stalls behind it. Two early returns here can do that; this says which.
+namespace cata_mp
+{
+void mp_log( const std::string &msg );
+bool is_client_mode();
+bool is_hosting();
+} // namespace cata_mp
+
 void ui_adaptor::redraw_invalidated( )
 {
+    const bool mp_probe = cata_mp::is_client_mode() || cata_mp::is_hosting();
     if( test_mode || ui_stack.empty() ) {
+        if( mp_probe ) {
+            cata_mp::mp_log( std::string( "[cdda-mp] UI-REDRAW-SKIP: test_mode=" ) +
+                             ( test_mode ? "1" : "0" ) + " ui_stack_empty=" +
+                             ( ui_stack.empty() ? "1" : "0" ) + " — no callbacks will run" );
+        }
         return;
     }
 #if defined(TILES)
     display_buffer_draw_scope draw_scope;
     if( !draw_scope.should_draw() ) {
+        if( mp_probe ) {
+            cata_mp::mp_log( std::string( "[cdda-mp] UI-REDRAW-SKIP: draw_scope refused — "
+                                          "scope_invalid=" ) +
+                             ( display_buffer_scope_is_invalid() ? "1" : "0" ) +
+                             " abort_frame=" +
+                             ( renderer_should_abort_frame() ? "1" : "0" ) +
+                             " — no callbacks will run" );
+        }
         // Return before the redraw callbacks clear their invalidation flags, so a
         // queued recovery, a failed bind, or a watcher race all leave invalidation
         // intact for the next drain to replay the full UI.
@@ -577,20 +605,30 @@ void invalidate( const rectangle<point> &rect, const bool reenable_uis_below )
 
 void redraw()
 {
-    // #3 (render throttle): while the client is in a long activity, rate-cap the
-    // full tiles redraw to ~1Hz. The ~317ms draw on a slow client otherwise runs
-    // every turn and blocks the loop from processing the host's grant — pacing the
-    // host to the client and flickering the turn border RED. The wait/craft/read
-    // screen is fine at 1Hz; the freed loop acks grants promptly so the host moves
-    // smoothly. Cap interval must exceed the draw cost (~317ms) to actually skip.
-    if( cata_mp::client_render_can_throttle() ) {
-        static auto last_draw = std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
-        const auto now = std::chrono::steady_clock::now();
-        if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_draw ).count() < 1000 ) {
-            return;
-        }
-        last_draw = now;
-    }
+    // The MP client render throttle used to live HERE (52d18726d8, 2026-06-09) and
+    // it deadlocked the client. Moved to its actual call site — cata_mp::
+    // mp_client_repaint_throttled() in mp_gamestate.cpp. Do not put it back.
+    //
+    // Why it was wrong here: this is the shared entry point for EVERY caller,
+    // including modal dialogs that drive their own input loop. Messages::dialog
+    // ::run() calls redraw() exactly once and then blocks in input() forever. When
+    // the throttle swallowed that single call, ui_adaptor::redraw() never ran, so
+    // the dialog's on_screen_resize callback never ran, so its input_context was
+    // never constructed — leaving the default-built one with zero registered
+    // actions. Every key including ESC then resolved to CATA_ERROR, handle_input()
+    // spun forever, show() never ran, and the client sat in an invisible dialog it
+    // could not close. The host stalled behind it in wait_for_client_action() for
+    // 263s until the client's watchdog force-reconnected and the rejoin resync
+    // respawned the proxy without its worn items.
+    //
+    // Same cause, milder symptom, for morale and help: their first redraw was also
+    // swallowed so they rendered nothing, but their input contexts are built up
+    // front so ESC still closed them. The overmap escaped entirely because its loop
+    // redraws every iteration and a later call cleared the 1s gate.
+    //
+    // The throttle's intent was only ever to rate-cap the client's PER-TURN main
+    // view repaint. Scoping it to that one call site keeps the intent and cannot
+    // starve a dialog.
     ui_adaptor::redraw();
 }
 
