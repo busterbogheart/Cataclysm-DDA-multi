@@ -91,6 +91,7 @@
 #include "vpart_position.h"
 #include "weather.h"
 #include "mp_gamestate.h"
+#include "mp_client_conn.h"   // cata_mp::is_client_mode (co-op assist-message gate)
 
 static const activity_id ACT_CRAFT( "ACT_CRAFT" );
 static const activity_id ACT_CRAFT_WAIT( "ACT_CRAFT_WAIT" );
@@ -1971,7 +1972,14 @@ bool Character::craft_skill_gain( const item &craft, const int &num_practice_tic
                     add_msg_if_player_sees( pos_bub(), m_info, _( "%s assists with crafting…" ), helper->get_name() );
                 }
             }
-            if( batch_size == 1 && one_in( 300 ) ) {
+            // MP: suppressed in co-op. This is SP flavour nudging you to batch so a
+            // helper NPC becomes worthwhile — but in co-op the "helper" is a real
+            // player who is already actively assisting, so it fires repeatedly and
+            // reads as if the game has not noticed them. The batch_size > 1 line
+            // above ("assists with crafting…") is the correct message for that case
+            // and still fires. Condition addition only; the SP text is untouched.
+            if( batch_size == 1 && one_in( 300 ) &&
+                !cata_mp::is_hosting() && !cata_mp::is_client_mode() ) {
                 if( is_avatar() ) {
                     add_msg( m_info, _( "%s could assist you with a batch…" ), helper->get_name() );
                 } else {
