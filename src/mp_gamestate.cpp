@@ -5976,19 +5976,23 @@ void grant_client_turn()
             } else {
                 emit = false;
             }
-        } else {
-            s_ff_turns_pending = 0;
-        }
-        if( s_was_ff && !ff_now ) {
+        } else if( s_was_ff ) {
             // FF just ended (distraction, activity finished, partner stopped).
-            // Emit immediately with whatever turns are outstanding so the client
-            // is fully caught up the moment interactive play resumes, and so no
-            // accumulated AP is stranded.
+            // Emit immediately with whatever turns are outstanding so the client is
+            // fully caught up and no accumulated AP is stranded.
+            //
+            // MP FIX 2026-08-17 — this MUST be an `else if` on the same chain. It
+            // used to be a separate `if( s_was_ff && !ff_now )` block sitting after
+            // an `else { s_ff_turns_pending = 0; }`, so the counter was already
+            // zeroed by the time the flush read it and batch_turns was ALWAYS 1 —
+            // the flush silently dropped every accumulated turn's AP.
             emit = true;
             batch_turns = s_ff_turns_pending > 0 ? s_ff_turns_pending : 1;
             s_ff_turns_pending = 0;
             mp_log( "[cdda-mp] FF-BATCH: fast-forward ended, flushing " +
                     std::to_string( batch_turns ) + " turn(s)" );
+        } else {
+            s_ff_turns_pending = 0;
         }
         s_was_ff = ff_now;
         std::string state;
@@ -6112,6 +6116,31 @@ void wait_for_client_action()
                                        get_avatar().activity.id().str() : "(none)" )
                     + " partner_act=" + ( g_partner_activity.empty() ?
                                           "(none)" : g_partner_activity ) );
+            // MP FIX 2026-08-17 — DEADLOCK. Flush the pending FF batch HERE, before
+            // this function starts blocking on the client.
+            //
+            // grant_client_turn() accumulates turns during FF and only puts a packet
+            // on the wire every FF_BATCH_TURNS. Its flush-on-FF-end branch can only
+            // run the NEXT time grant_client_turn() is called — and when the host's
+            // own activity is what ended FF, that call never comes: the host falls
+            // straight into this wait and blocks. The client is left at moves=0
+            // inside a long activity, waiting for a grant that is sitting unsent in
+            // the host's accumulator, and neither side times out. Measured
+            // 2026-08-17: 26.25s of mutual wait broken only by the player cancelling
+            // the craft, with FF-BATCH appearing ZERO times in the whole log — the
+            // flush had never once executed.
+            //
+            // Calling it on the FF-exit EDGE (this branch runs once per transition)
+            // hits that flush branch while s_was_ff is still true, so the
+            // outstanding turns go out before we wait on them. The host must never
+            // begin waiting for the client while holding the client's grant.
+            //
+            // Trigger is NOT a near-simultaneous finish: any time the host's
+            // activity ends first while the client is still in a long one. The
+            // client gains less craft progress per AP, so that is the common case.
+            if( is_hosting() && !g_partner_activity.empty() ) {
+                grant_client_turn();
+            }
         }
         ff_was_active = ff_now;
     }
