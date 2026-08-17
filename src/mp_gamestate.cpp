@@ -1,4 +1,6 @@
 #include "mp_gamestate.h"
+
+#include <array>
 #include "mp_client_conn.h"
 #include "do_turn.h"
 #include "input.h"
@@ -831,6 +833,13 @@ static std::string g_partner_activity;
 // Progress % (0-100) of the partner's current activity.  Forwarded each
 // action/state packet alongside g_partner_activity.  Read by the Co-op panel.
 static int g_partner_activity_pct = 0;
+// Batch size of the partner's in-progress craft (1 = single item). Shown in the
+// Co-op panel as "crafting x5 12%" so a long batch is distinguishable from a
+// stalled single craft — the percentage is per-batch and otherwise identical.
+static int g_partner_activity_batch = 1;
+// What the partner is making ("bandage"), empty for non-crafts. See
+// mp_craft_result_name().
+static std::string g_partner_activity_name;
 // Total moves required by the partner's current activity (act.moves_total).
 // Read by the bump-menu predicate to decide whether the "Help with task"
 // option should appear (gate: >= HELPER_MIN_MOVES_TOTAL).  Zero when idle.
@@ -1296,7 +1305,19 @@ struct mp_hud_t {
         // "constructing a vehicle") so the panel matches the begin/finish
         // sentences.  Empty when partner is idle.
         if( !g_partner_activity.empty() ) {
-            const std::string verb = mp_activity_verb_phrase( g_partner_activity );
+            std::string verb = mp_activity_verb_phrase( g_partner_activity );
+            // Name what they are making: "crafting bandage" beats a bare
+            // "crafting", which is identical for a hammer and a 40-item batch.
+            if( !g_partner_activity_name.empty() ) {
+                verb += " " + g_partner_activity_name;
+            }
+            // Batch crafts get an "xN" suffix. The percentage is per-BATCH, so a
+            // batch of 40 crawls through the low percentages for a very long time
+            // and is otherwise indistinguishable from a stuck single craft — the
+            // suffix is the only thing on screen that explains the wait.
+            if( g_partner_activity_batch > 1 ) {
+                verb += " x" + std::to_string( g_partner_activity_batch );
+            }
             // Compose "<verb> NN%" — clamp verb length so the % stays on row.
             const int avail = W - x - 8; // reserve room for " NN%" + drift
             std::string vshown = verb;
@@ -1310,9 +1331,28 @@ struct mp_hud_t {
             // SP. Showing a permanent "0%" reads as broken sync; omit it instead.
             static const activity_id ACT_PULP_ID_HUD( "ACT_PULP" );
             if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD ) {
-                mvwprintz( win, point( x, crow ), c_light_blue, "%d%%",
-                           g_partner_activity_pct );
-                x += 5;
+                // Advance by what was actually printed, not a hardcoded 5. "21%" is
+                // three columns, so the flat +5 left a two-space hole before
+                // whatever came next — visible now that the fast-forward marker
+                // sits there.
+                const std::string pct_s = std::to_string( g_partner_activity_pct ) + "%";
+                mvwprintz( win, point( x, crow ), c_light_blue, "%s", pct_s.c_str() );
+                x += utf8_width( pct_s ) + 1;
+            }
+            // FAST-FORWARD INDICATOR. Shown only while the pair is actually
+            // skipping ahead, which is a state players currently have no way to
+            // see: co-op crafting either flies or crawls with nothing on screen
+            // explaining which, and a fast-forward that silently DECLINES (one
+            // side in an unlisted activity) is indistinguishable from the game
+            // being slow. Local state on both sides — should_fast_forward() needs
+            // no protocol field.
+            //
+            if( should_fast_forward() ) {
+                static const std::string ff_mark = "▶▶";
+                if( x < W - utf8_width( ff_mark ) - 1 ) {
+                    mvwprintz( win, point( x, crow ), c_green, "%s", ff_mark.c_str() );
+                    x += utf8_width( ff_mark ) + 1;
+                }
             }
         }
 
@@ -3312,6 +3352,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_string( "client_activity" ) ) {
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
+    }
+    if( jo.has_string( "client_activity_name" ) ) {
+        g_partner_activity_name = jo.get_string( "client_activity_name" );
+    }
+    if( jo.has_int( "client_activity_batch" ) ) {
+        g_partner_activity_batch = std::max( 1, jo.get_int( "client_activity_batch" ) );
     }
     if( jo.has_int( "client_activity_pct" ) ) {
         g_partner_activity_pct = jo.get_int( "client_activity_pct" );
@@ -7021,6 +7067,42 @@ static long long mp_craft_counter( const player_activity &act )
     return ( it && it->is_craft() ) ? static_cast<long long>( it->item_counter ) : -1;
 }
 
+// Batch size of an in-progress craft, or 1 for a single item / non-craft.
+//
+// The Co-op panel showed a bare "crafting NN%", which is the same display whether
+// the partner is making one bandage or forty. The percentage is per-BATCH, so a
+// batch of 40 sits at low percentages for a very long time and reads as a stall
+// with nothing on screen to explain it. Reads the craft item the same way
+// mp_craft_counter does (act.targets[0]) rather than the wielded item, so it stays
+// correct if the craft is ever not in hand.
+static int mp_craft_batch_size( const player_activity &act )
+{
+    if( !act || act.targets.empty() || !act.targets[0] ) {
+        return 1;
+    }
+    const item *it = act.targets[0].get_item();
+    if( !it || !it->is_craft() ) {
+        return 1;
+    }
+    return std::max( 1, it->get_making_batch_size() );
+}
+
+// Name of what the partner is actually making, e.g. "bandage". "crafting 12%" is
+// the same line whether they are two minutes from a hammer or forty minutes into a
+// batch of bandages; the name plus the batch count is what makes the wait legible.
+// Empty for non-crafts, which keeps the panel unchanged for every other activity.
+static std::string mp_craft_result_name( const player_activity &act )
+{
+    if( !act || act.targets.empty() || !act.targets[0] ) {
+        return std::string();
+    }
+    const item *it = act.targets[0].get_item();
+    if( !it || !it->is_craft() ) {
+        return std::string();
+    }
+    return it->get_making().result_name();
+}
+
 static int mp_compute_activity_pct( const player_activity &act )
 {
     if( !act ) {
@@ -9222,6 +9304,12 @@ static bool apply_one_state_message( const std::string &msg )
             }
             g_partner_activity_pct = new_pct;
         }
+        if( jo.has_string( "host_activity_name" ) ) {
+            g_partner_activity_name = jo.get_string( "host_activity_name" );
+        }
+        if( jo.has_int( "host_activity_batch" ) ) {
+            g_partner_activity_batch = std::max( 1, jo.get_int( "host_activity_batch" ) );
+        }
         if( jo.has_int( "host_activity_moves_total" ) ) {
             g_partner_activity_moves_total = jo.get_int( "host_activity_moves_total" );
         }
@@ -10736,6 +10824,12 @@ std::string client_enrich_action( const std::string &json )
         // well as standard moves_total-based activities.
         enriched += ",\"client_activity_pct\":" + std::to_string(
                         mp_compute_activity_pct( av.activity ) );
+        // Batch size, so the host's panel can say "crafting x5" instead of leaving
+        // a 40-item batch looking like a stuck single craft.
+        enriched += ",\"client_activity_batch\":" + std::to_string(
+                        mp_craft_batch_size( av.activity ) );
+        enriched += ",\"client_activity_name\":\"" +
+                    json_escape_str( mp_craft_result_name( av.activity ) ) + "\"";
         // Total moves of the live activity, so the host's bump menu can gate
         // the "Help with task" option on "long enough to warrant it".
         enriched += ",\"client_activity_moves_total\":" + std::to_string(
@@ -14097,6 +14191,10 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
            "\"host_activity_pct\":" + std::to_string(
                mp_compute_activity_pct( host.activity ) ) + ","
+           "\"host_activity_batch\":" + std::to_string(
+               mp_craft_batch_size( host.activity ) ) + ","
+           "\"host_activity_name\":\"" +
+           json_escape_str( mp_craft_result_name( host.activity ) ) + "\","
            "\"host_activity_moves_total\":" + std::to_string(
                host.activity ? host.activity.moves_total : 0 ) + ","
            "\"host_morale\":" + std::to_string( host.get_morale_level() ) + ","
