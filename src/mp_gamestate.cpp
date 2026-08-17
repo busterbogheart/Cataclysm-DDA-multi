@@ -10114,10 +10114,12 @@ void client_process_incoming()
         // real fix is the client's render speed, not the render frequency.
         // CLI-RENDER timing kept so we can measure that.
         const auto r0 = std::chrono::steady_clock::now();
-        g->invalidate_main_ui_adaptor();
+        // Throttled here rather than inside ui_manager::redraw(). This is THE call
+        // site the ~1Hz cap was written for; keeping it global starved modal
+        // dialogs of their one and only redraw and wedged the client.
+        mp_client_repaint_throttled();
         const auto r1 = std::chrono::steady_clock::now();
-        ui_manager::redraw();
-        const auto r2 = std::chrono::steady_clock::now();
+        const auto r2 = r1;   // invalidate+redraw are inside the helper now
         refresh_display();
         const auto r3 = std::chrono::steady_clock::now();
         auto ms = []( auto a, auto b ) {
@@ -10988,6 +10990,45 @@ int ms_since_last_grant()
 bool client_render_can_throttle()
 {
     return is_client_mode() && static_cast<bool>( get_avatar().activity );
+}
+
+// Rate-capped main-view repaint for the CLIENT during a long activity (~1Hz).
+//
+// This throttle used to sit inside ui_manager::redraw() itself (52d18726d8), which
+// applied it to EVERY caller — including modal dialogs that drive their own input
+// loop and redraw only once before blocking. Swallowing that one redraw left the
+// dialog's on_screen_resize callback unrun and its input_context default-built, so
+// no key resolved, ESC could not close it, nothing rendered, and the host stalled
+// behind the silent client until its watchdog force-reconnected. See the note left
+// in ui_manager::redraw().
+//
+// Scoped here instead: only the per-turn main-view repaint is capped, which is all
+// the original commit was ever aiming at. The cap interval must exceed the draw
+// cost to actually skip anything — the slow Intel client measured ~317ms/draw, so
+// 1000ms leaves real headroom.
+void mp_client_repaint_throttled()
+{
+    // invalidate ALWAYS, throttle only the paint — this split is deliberate and
+    // matches what the original in-ui_manager throttle did by accident of where it
+    // sat. Folding the invalidate inside the throttle looks equivalent and is not:
+    // the progress-UI path runs its own gated ui_manager::redraw() ~10Hz, and
+    // ui_manager::redraw() only repaints adaptors that are INVALIDATED. Skip the
+    // invalidate and those redraws still cost their 16-22ms but paint stale
+    // content, so the client's craft percentage visibly stops advancing while the
+    // logs show the redraws happening. (Regression introduced and caught in
+    // testing 2026-08-17 — the symptom was "progress on the client doesn't
+    // update" with a perfectly healthy-looking PROGRESS-UI gate.)
+    g->invalidate_main_ui_adaptor();
+    if( client_render_can_throttle() ) {
+        static auto last_draw = std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+        const auto now = std::chrono::steady_clock::now();
+        if( std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_draw ).count() < 1000 ) {
+            return;
+        }
+        last_draw = now;
+    }
+    ui_manager::redraw();
 }
 
 bool client_ctrl_veh()

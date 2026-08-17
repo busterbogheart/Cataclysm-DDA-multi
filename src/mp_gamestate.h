@@ -685,6 +685,11 @@ int ms_since_last_grant();
 // otherwise a ~317ms draw runs every turn, paces the host to it, and flickers the
 // turn border RED). Client-only; false on host/SP so they render normally.
 bool client_render_can_throttle();
+// Rate-capped (~1Hz) main-view repaint for a CLIENT in a long activity. Replaces
+// the throttle that used to live inside ui_manager::redraw(), where it applied to
+// every caller and starved modal dialogs of their single redraw — wedging the
+// client with an unclosable, invisible message log. Keep it scoped to this call.
+void mp_client_repaint_throttled();
 
 // Client only: true when the server's last state packet indicated the host is
 
