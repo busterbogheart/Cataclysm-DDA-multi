@@ -1,5 +1,8 @@
 #include "game_inventory.h"
 
+#include "mp_gamestate.h"    // cata_mp::mp_inv_ui_probe (inventory-selector item-ref diagnostic)
+#include "mp_client_conn.h"  // cata_mp::is_client_mode
+
 #include <imgui/imgui.h>
 #include <algorithm>
 #include <bitset>
@@ -151,6 +154,31 @@ static item_location inv_internal( Character &u, const inventory_selector_preset
                                    bool using_consume_menu = false
                                  )
 {
+    // MP DIAGNOSTIC 2026-08-17 — every inventory menu funnels through here, and
+    // inv_internal is frame 8 of both SIGSEGV stacks. Declares "a selector is open"
+    // so the host_inv / host_worn apply sites can report mutating the item stack
+    // out from under it. See mp_inv_ui_probe in mp_gamestate.h.
+    // MP FIX 2026-08-17 — THE fix for the inventory_selector SIGSEGV (three crashes).
+    //
+    // The host pumps MP from inside modal input waits (mp_pump_if_host, 2026-07-01),
+    // so while this selector is open process_mp_events() keeps running and applies
+    // the client's client_tile_changes — which does m.i_clear(bub) + re-add, i.e.
+    // destroys the very ground-item stack the selector's entries point into. The
+    // next keypress dereferences one and segfaults in process_input.
+    //
+    // That applier ALREADY defers correctly when mp_ui_holds_item_refs() is true.
+    // The guard simply was never held here: it is instantiated at exactly four
+    // handle_action.cpp call sites (pickup, examine, aim, pickup_switch) and the
+    // inventory selector is not one of them. Holding it here routes every inventory
+    // menu through the existing defer path, and mp_defer_item_apply() flushes the
+    // queued applies when the last guard goes out of scope — so nothing is dropped,
+    // only postponed until no UI is holding pointers into it.
+    //
+    // Placed in inv_internal because every inventory menu funnels through it; it is
+    // frame 8 of all three crash stacks.
+    cata_mp::mp_ui_item_ref_guard mp_inv_item_guard;
+    cata_mp::mp_inv_ui_probe mp_inv_ui;
+
     inventory_pick_selector inv_s( u, preset );
 
     inv_s.set_title( title );
@@ -182,7 +210,48 @@ static item_location inv_internal( Character &u, const inventory_selector_preset
             inv_s.set_filter( consume_menu_filter );
         }
         // Set position after filter to keep cursor at the right position
+        // MP FIX 2026-08-17 — prune dead item_locations immediately before the only
+        // code that dereferences them (highlight_one_of, below).
+        //
+        // These live in GLOBAL uistate and survive the menu closing, while MP
+        // replaces map-tile item stacks and proxy inventories wholesale ~10x/sec.
+        // The first attempt pruned at the destruction site (apply_tile_changes) and
+        // measurably did not hold: 0 prunes on the client against 16 dead locations
+        // still arriving here. Two reasons it cannot work there — the set of
+        // destruction sites is open-ended (host_inv, host_worn, trade, plus whatever
+        // upstream adds), and a location can die in the gap between the last prune
+        // and this menu opening, which is a ~100ms window we have measured.
+        //
+        // Validity is only knowable at the moment of use, so it is checked at the
+        // moment of use. Prunes only DEAD entries, so live selections still restore
+        // the cursor. MP-gated: in SP nothing can destroy these behind the menu.
+        if( cata_mp::is_hosting() || cata_mp::is_client_mode() ) {
+            cata_mp::mp_prune_dead_item_ui_refs();
+        }
         const std::vector<item_location> &locs = cm_uistate.consume_menu_selected_items;
+        // MP DIAGNOSTIC 2026-08-17 — prime suspect for the inventory_selector SIGSEGV.
+        //
+        // These item_locations live in GLOBAL uistate and survive the menu closing.
+        // Measured: the client cannot process packets while a selector is open (its
+        // main loop is parked in the selector's input loop), so queued host_inv /
+        // host_worn applies all flush the instant it closes — 19ms, measured. That
+        // clear()+rebuild dangles anything stored here, and consume finish() then
+        // re-arms this menu, which calls highlight_one_of() on them. Reports whether
+        // any stored location is already dead BEFORE we dereference it.
+        if( cata_mp::is_hosting() || cata_mp::is_client_mode() ) {
+            int dead = 0;
+            for( const item_location &l : locs ) {
+                if( !l || l.get_item() == nullptr ) {
+                    ++dead;
+                }
+            }
+            if( !locs.empty() ) {
+                cata_mp::mp_log( "[cdda-mp] CONSUME-UISTATE: stored_locs=" +
+                                 std::to_string( locs.size() ) + " dead=" +
+                                 std::to_string( dead ) +
+                                 ( dead > 0 ? "  <-- ABOUT TO DEREFERENCE A DEAD LOCATION" : "" ) );
+            }
+        }
         const std::vector<uint64_t> &selections = cm_uistate.consume_menu_selections;
         bool position_set = false;
         if( !locs.empty() ) {
