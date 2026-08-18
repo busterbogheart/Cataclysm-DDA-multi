@@ -842,6 +842,9 @@ static int g_partner_activity_batch = 1;
 // What the partner is making ("bandage"), empty for non-crafts. See
 // mp_craft_result_name().
 static std::string g_partner_activity_name;
+// Pulp corpse progress packed as done*1000+total; 0 when the partner is not
+// pulping. See mp_pulp_progress_packed().
+static int g_partner_pulp_packed = 0;
 // Total moves required by the partner's current activity (act.moves_total).
 // Read by the bump-menu predicate to decide whether the "Help with task"
 // option should appear (gate: >= HELPER_MIN_MOVES_TOTAL).  Zero when idle.
@@ -963,15 +966,13 @@ static std::string mp_activity_verb_phrase( const std::string &act_id )
         return std::string();
     }
     const activity_id aid( act_id );
-    // ACT_PULP's SP-defined verb is "smashing" (player_activities.json) — accurate
-    // for the generic activity_type, but co-op players see this label specifically
-    // for corpse-pulping and reasonably assume it means literal smashing (vehicles,
-    // furniture, etc.). Disambiguate here, MP-side only, rather than touch the
-    // upstream JSON verb used elsewhere.
-    static const activity_id ACT_PULP_ID( "ACT_PULP" );
-    if( aid == ACT_PULP_ID ) {
-        return _( "pulping" );
-    }
+    // NOTE: ACT_PULP used to be special-cased here to say "pulping" because the SP
+    // JSON verb was "smashing". That produced a visible inconsistency — the local
+    // progress popup (which reads the JSON verb) said "smashing" while the co-op
+    // panel said "pulping", on screen at the same time. Fixed at the source
+    // instead: player_activities.json now says "pulping" for ACT_PULP, so both
+    // displays agree and this override is unnecessary. ACT_PULP was the ONLY verb
+    // override in this function; every other activity uses the JSON verb directly.
     if( aid.is_valid() ) {
         const std::string v = aid->verb().translated();
         if( !v.empty() ) {
@@ -1332,7 +1333,17 @@ struct mp_hud_t {
             // see mp_compute_activity_pct) — it's an open-ended activity even in
             // SP. Showing a permanent "0%" reads as broken sync; omit it instead.
             static const activity_id ACT_PULP_ID_HUD( "ACT_PULP" );
-            if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD ) {
+            if( activity_id( g_partner_activity ) == ACT_PULP_ID_HUD &&
+                g_partner_pulp_packed > 0 ) {
+                // "3/7" corpses instead of the suppressed percent. A percentage
+                // would be actively misleading here — corpses vary enormously in
+                // pulp time, so 3/7 can sit still for a long stretch legitimately.
+                const int done = g_partner_pulp_packed / 1000;
+                const int total = g_partner_pulp_packed % 1000;
+                const std::string frac = std::to_string( done ) + "/" + std::to_string( total );
+                mvwprintz( win, point( x, crow ), c_light_blue, "%s", frac.c_str() );
+                x += utf8_width( frac ) + 1;
+            } else if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD ) {
                 // Advance by what was actually printed, not a hardcoded 5. "21%" is
                 // three columns, so the flat +5 left a two-space hole before
                 // whatever came next — visible now that the fast-forward marker
@@ -3501,6 +3512,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_string( "client_activity" ) ) {
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
+    }
+    if( jo.has_int( "client_pulp" ) ) {
+        g_partner_pulp_packed = jo.get_int( "client_pulp" );
     }
     if( jo.has_string( "client_activity_name" ) ) {
         g_partner_activity_name = jo.get_string( "client_activity_name" );
@@ -7283,6 +7297,35 @@ static std::string mp_craft_result_name( const player_activity &act )
     return it->get_making().result_name();
 }
 
+// Pulp progress as "pulped/total corpses", encoded as done*1000+total so it rides
+// a single int field. ACT_PULP has no usable percent — moves_left never drops
+// below moves_total, so the standard path yields a permanent 0% that reads as
+// broken sync, which is why the panel suppresses the percent for it entirely.
+// The corpse counts ARE the real progress and are already serialized on the
+// actor; they were just never exposed. Returns 0 for anything else.
+static int mp_pulp_progress_packed( const player_activity &act )
+{
+    static const activity_id ACT_PULP_ID( "ACT_PULP" );
+    if( !act || act.id() != ACT_PULP_ID ) {
+        return 0;
+    }
+    const pulp_activity_actor *pa = act.actor
+                                    ? dynamic_cast<const pulp_activity_actor *>( act.actor.get() )
+                                    : nullptr;
+    if( !pa ) {
+        return 0;
+    }
+    const int done = pa->mp_pulped_count();
+    // total = pulped + still queued + skipped-as-unpulpable, so the denominator
+    // reflects everything this activity took on rather than shrinking as corpses
+    // are abandoned.
+    const int total = done + pa->mp_remaining_count() + pa->mp_skipped_count();
+    if( total <= 0 ) {
+        return 0;
+    }
+    return std::min( done, 999 ) * 1000 + std::min( total, 999 );
+}
+
 static int mp_compute_activity_pct( const player_activity &act )
 {
     if( !act ) {
@@ -9489,6 +9532,9 @@ static bool apply_one_state_message( const std::string &msg )
             }
             g_partner_activity_pct = new_pct;
         }
+        if( jo.has_int( "host_pulp" ) ) {
+            g_partner_pulp_packed = jo.get_int( "host_pulp" );
+        }
         if( jo.has_string( "host_activity_name" ) ) {
             g_partner_activity_name = jo.get_string( "host_activity_name" );
         }
@@ -11034,6 +11080,8 @@ std::string client_enrich_action( const std::string &json )
                         mp_craft_batch_size( av.activity ) );
         enriched += ",\"client_activity_name\":\"" +
                     json_escape_str( mp_craft_result_name( av.activity ) ) + "\"";
+        enriched += ",\"client_pulp\":" + std::to_string(
+                        mp_pulp_progress_packed( av.activity ) );
         // Total moves of the live activity, so the host's bump menu can gate
         // the "Help with task" option on "long enough to warrant it".
         enriched += ",\"client_activity_moves_total\":" + std::to_string(
@@ -14407,6 +14455,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
                mp_craft_batch_size( host.activity ) ) + ","
            "\"host_activity_name\":\"" +
            json_escape_str( mp_craft_result_name( host.activity ) ) + "\","
+           "\"host_pulp\":" + std::to_string( mp_pulp_progress_packed( host.activity ) ) + ","
            "\"host_activity_moves_total\":" + std::to_string(
                host.activity ? host.activity.moves_total : 0 ) + ","
            "\"host_morale\":" + std::to_string( host.get_morale_level() ) + ","
