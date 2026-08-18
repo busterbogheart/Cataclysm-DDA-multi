@@ -7,7 +7,8 @@
 #include <vector>
 
 #include "cached_options.h"
-#include "mp_gamestate.h"  // cata_mp::client_render_can_throttle
+#include "mp_gamestate.h"    // cata_mp::mp_log / is_hosting (UI-REDRAW-SKIP probe)
+#include "mp_client_conn.h"  // cata_mp::is_client_mode
 #include "cata_assert.h"
 #include "cata_imgui.h"
 #include "cata_scope_helpers.h"
@@ -384,12 +385,6 @@ void ui_adaptor::redraw()
 // every key including ESC resolves to CATA_ERROR, handle_input() spins forever and
 // show() never runs — the client wedges with no dialog on screen and the host
 // stalls behind it. Two early returns here can do that; this says which.
-namespace cata_mp
-{
-void mp_log( const std::string &msg );
-bool is_client_mode();
-bool is_hosting();
-} // namespace cata_mp
 
 void ui_adaptor::redraw_invalidated( )
 {

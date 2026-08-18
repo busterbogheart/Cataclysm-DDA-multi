@@ -6458,8 +6458,13 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
     // is whether it runs at all for those two dialogs — an ImGui-based UI that polls
     // events elsewhere would never reach this loop. Logs the FIRST pump after a gap
     // rather than every 50ms, so an open dialog costs one line, not hundreds.
-    uint32_t mp_pump_calls = 0;
-    const auto mp_pump_if_host = [&mp_last_pump, &mp_pump_calls]() {
+    // static, NOT a local: this lives in get_input_event, which is called
+    // constantly, so a per-call counter logged on EVERY pump. Measured 2026-08-17:
+    // 74,858 lines = 79% of a 10.87MB server log, against a 10MB cap — the probe
+    // was evicting the evidence it existed to provide. Once per session is enough
+    // to prove the path is reached, which was the whole question.
+    static uint32_t mp_pump_calls = 0;
+    const auto mp_pump_if_host = [&mp_last_pump]() {   // mp_pump_calls is static, not captured
         if( !cata_mp::is_hosting() ) {
             return;
         }
