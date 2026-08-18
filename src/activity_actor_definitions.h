@@ -3929,12 +3929,13 @@ class pulp_activity_actor : public activity_actor
         // moves_left never falls below moves_total, so the standard path — and the
         // base get_progress_message() below — reports a permanent 0% that reads as
         // a stall. The corpse counts are the real progress and were already
-        // serialized on this actor; they were simply never exposed. All three
+        // serialized on this actor; they were simply never exposed. All four
         // bodies live in mp_gamestate.cpp to keep them out of activity_actor.cpp,
         // the hottest upstream file in the tree.
         int mp_unfinished_count() const;
         int mp_pulp_total() const;
         int mp_pulp_current() const;
+        std::string get_progress_message( const player_activity & ) const override;
 
     private:
         // list of corpses we are iterating over, from last

@@ -101,10 +101,10 @@
 #include <vector>
 
 // ── ACT_PULP progress, host and client side ───────────────────────────────────
-// These three are members of pulp_activity_actor but live here rather than in
+// These four are members of pulp_activity_actor but live here rather than in
 // activity_actor.cpp on purpose: that file is the hottest upstream file in the
 // tree (150 commits in six months), so each body there is future merge-conflict
-// surface. Defined in an MP-only file, the whole feature costs three declaration
+// surface. Defined in an MP-only file, the whole feature costs four declaration
 // lines in activity_actor_definitions.h. They sit ABOVE `namespace cata_mp` —
 // they are members of an SP class, so they cannot be defined inside it.
 int pulp_activity_actor::mp_unfinished_count() const
@@ -132,6 +132,15 @@ int pulp_activity_actor::mp_pulp_total() const
 int pulp_activity_actor::mp_pulp_current() const
 {
     return std::min( num_corpses + 1, mp_pulp_total() );
+}
+
+std::string pulp_activity_actor::get_progress_message( const player_activity & ) const
+{
+    const int total = mp_pulp_total();
+    if( total <= 0 ) {
+        return std::string();
+    }
+    return string_format( "%d/%d", mp_pulp_current(), total );
 }
 
 namespace cata_mp {
