@@ -11641,6 +11641,9 @@ static mp_tile_state compute_tile_state( const tripoint_abs_ms &abs )
 // Server: scan the sync area and emit tile entries whose ter/furn/items changed since last broadcast.
 static std::string build_tile_changes( const tripoint_abs_ms &center, int radius )
 {
+    // Per-batch delta counters — see the note at the item/field checks below.
+    int dbg_delta_items = 0;
+    int dbg_delta_fields = 0;
     std::string out = "[";
     bool first = true;
     map &m = get_map();
@@ -11802,17 +11805,17 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             baseline.graffiti_sig = graffiti_sig;
             baseline.partial_con_sig = partial_con_sig;
 
+            // MP LOG VOLUME 2026-08-17 — these were one line PER CHANGED TILE and
+            // became the top talker once HOST-MODAL-PUMP was silenced: 15,805 lines
+            // of a 3.6MB log in a single cross-OS session. The per-tile coordinate
+            // was only ever useful for "did this specific tile sync", which the
+            // apply_tile_changes lines on the receiving side already answer.
+            // Counted here and reported once per batch below instead.
             if( !items_sig.empty() ) {
-                mp_log( "tile_delta items @ " +
-                        std::to_string( abs.x() ) + "," +
-                        std::to_string( abs.y() ) + "," +
-                        std::to_string( abs.z() ) );
+                ++dbg_delta_items;
             }
             if( !fields_sig.empty() ) {
-                mp_log( "tile_delta fields @ " +
-                        std::to_string( abs.x() ) + "," +
-                        std::to_string( abs.y() ) + "," +
-                        std::to_string( abs.z() ) + " : " + fields_sig );
+                ++dbg_delta_fields;
             }
             if( ter_furn_changed ) {
                 const int dist = square_dist( abs, center );
@@ -11863,6 +11866,10 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                     "us | tiles_with_items=" + std::to_string( n_with_items ) +
                     " items_serialized=" + std::to_string( n_items_serialized ) );
         }
+    }
+    if( dbg_delta_items > 0 || dbg_delta_fields > 0 ) {
+        mp_log( "[cdda-mp] tile_delta: items=" + std::to_string( dbg_delta_items ) +
+                " fields=" + std::to_string( dbg_delta_fields ) + " tiles changed" );
     }
     return out;
 }
