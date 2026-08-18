@@ -3925,26 +3925,16 @@ class pulp_activity_actor : public activity_actor
         void serialize( JsonOut &jsout ) const override;
         static std::unique_ptr<activity_actor> deserialize( JsonValue &jsin );
 
-        // MP: corpses pulped / total, for the co-op panel. ACT_PULP has no usable
-        // progress fraction — moves_left never falls below moves_total, so the
-        // standard percent path reads a permanent 0% and looks like broken sync.
-        // The counts below are the real progress and are already serialized; they
-        // were simply never exposed. Read-only accessors, no behaviour change.
-        int mp_pulped_count() const {
-            return num_corpses;
-        }
-        // Corpses still queued. NOT unpulped_corpses_qty — that counts corpses
-        // SKIPPED as unpulpable (acid, too tough), which is a different thing and
-        // is usually 0, so using it made the fraction vanish whenever nothing had
-        // been skipped yet.
-        int mp_remaining_count() const {
-            return static_cast<int>( corpses.size() );
-        }
-        // Corpses abandoned as unpulpable, so the display can distinguish
-        // "finished" from "gave up on some".
-        int mp_skipped_count() const {
-            return unpulped_corpses_qty;
-        }
+        // ACT_PULP progress as "corpse N of total". There is no usable percent:
+        // moves_left never falls below moves_total, so the standard path — and the
+        // base get_progress_message() below — reports a permanent 0% that reads as
+        // a stall. The corpse counts are the real progress and were already
+        // serialized on this actor; they were simply never exposed. All three
+        // bodies live in mp_gamestate.cpp to keep them out of activity_actor.cpp,
+        // the hottest upstream file in the tree.
+        int mp_unfinished_count() const;
+        int mp_pulp_total() const;
+        int mp_pulp_current() const;
 
     private:
         // list of corpses we are iterating over, from last

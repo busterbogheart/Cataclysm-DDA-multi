@@ -100,6 +100,40 @@
 #include <unordered_set>
 #include <vector>
 
+// ── ACT_PULP progress, host and client side ───────────────────────────────────
+// These three are members of pulp_activity_actor but live here rather than in
+// activity_actor.cpp on purpose: that file is the hottest upstream file in the
+// tree (150 commits in six months), so each body there is future merge-conflict
+// surface. Defined in an MP-only file, the whole feature costs three declaration
+// lines in activity_actor_definitions.h. They sit ABOVE `namespace cata_mp` —
+// they are members of an SP class, so they cannot be defined inside it.
+int pulp_activity_actor::mp_unfinished_count() const
+{
+    int n = 0;
+    for( const item_location &il : corpses ) {
+        const item *corpse = il.get_item();
+        if( corpse != nullptr && corpse->damage() < corpse->max_damage() ) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+// Everything this activity took on: finished + still to do + given up on. Does
+// not shrink as corpses are abandoned, so the fraction cannot run backwards.
+int pulp_activity_actor::mp_pulp_total() const
+{
+    return num_corpses + mp_unfinished_count() + unpulped_corpses_qty;
+}
+
+// "Corpse N of total", counting the one being worked on — a fresh pile of two
+// reads 1/2, not 0/2. num_corpses alone is the FINISHED count, which is why the
+// first version sat at 0 until a corpse actually died.
+int pulp_activity_actor::mp_pulp_current() const
+{
+    return std::min( num_corpses + 1, mp_pulp_total() );
+}
+
 namespace cata_mp {
 
 void mp_log( const std::string &msg )
@@ -1338,9 +1372,9 @@ struct mp_hud_t {
                 // "3/7" corpses instead of the suppressed percent. A percentage
                 // would be actively misleading here — corpses vary enormously in
                 // pulp time, so 3/7 can sit still for a long stretch legitimately.
-                const int done = g_partner_pulp_packed / 1000;
+                const int cur = g_partner_pulp_packed / 1000;
                 const int total = g_partner_pulp_packed % 1000;
-                const std::string frac = std::to_string( done ) + "/" + std::to_string( total );
+                const std::string frac = std::to_string( cur ) + "/" + std::to_string( total );
                 mvwprintz( win, point( x, crow ), c_light_blue, "%s", frac.c_str() );
                 x += utf8_width( frac ) + 1;
             } else if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD ) {
@@ -7315,16 +7349,13 @@ static int mp_pulp_progress_packed( const player_activity &act )
     if( !pa ) {
         return 0;
     }
-    const int done = pa->mp_pulped_count();
-    // total = pulped + still queued + skipped-as-unpulpable, so the denominator
-    // reflects everything this activity took on rather than shrinking as corpses
-    // are abandoned.
-    const int total = done + pa->mp_remaining_count() + pa->mp_skipped_count();
+    const int total = pa->mp_pulp_total();
     if( total <= 0 ) {
         return 0;
     }
-    return std::min( done, 999 ) * 1000 + std::min( total, 999 );
+    return std::min( pa->mp_pulp_current(), 999 ) * 1000 + std::min( total, 999 );
 }
+
 
 static int mp_compute_activity_pct( const player_activity &act )
 {
