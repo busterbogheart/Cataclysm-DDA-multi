@@ -1,5 +1,7 @@
 #include "mp_gamestate.h"
 
+#include "uistate.h"   // uistate.consume_uistate (mp_prune_dead_item_ui_refs)
+
 #include <array>
 #include "mp_client_conn.h"
 #include "do_turn.h"
@@ -3161,6 +3163,60 @@ void host_broadcast_idle_tick()
 // (the only writers) run synchronously on the main thread, and the guard's
 // scope always starts and ends there too.
 static int g_mp_ui_item_ref_depth = 0;
+
+// MP DIAGNOSTIC 2026-08-17 — see mp_inv_ui_probe in mp_gamestate.h. Tracks whether
+// an inventory selector is open so the item-apply sites can report mutating out
+// from under one. Deliberately does NOT defer anything yet — the point is to prove
+// the overlap happens before changing behaviour.
+static int g_mp_inv_ui_depth = 0;
+mp_inv_ui_probe::mp_inv_ui_probe()
+{
+    ++g_mp_inv_ui_depth;
+    if( is_hosting() || is_client_mode() ) {
+        mp_log( "[cdda-mp] INV-UI-OPEN: depth=" + std::to_string( g_mp_inv_ui_depth ) +
+                " item_ref_guard_held=" + ( mp_ui_holds_item_refs() ? "1" : "0" ) );
+    }
+}
+mp_inv_ui_probe::~mp_inv_ui_probe()
+{
+    if( is_hosting() || is_client_mode() ) {
+        mp_log( "[cdda-mp] INV-UI-CLOSE: depth=" + std::to_string( g_mp_inv_ui_depth - 1 ) );
+    }
+    --g_mp_inv_ui_depth;
+}
+bool mp_inv_ui_open()
+{
+    return g_mp_inv_ui_depth > 0;
+}
+
+// Drop any item_location in global UI state whose target MP has just destroyed.
+//
+// item_locations stored in uistate outlive the menu that created them, and MP
+// replaces map-tile item stacks and proxy inventories wholesale on a ~10Hz sync.
+// Anything the UI cached is therefore unsound by construction across a sync — the
+// same shape of defect as the hand-picked item fingerprint: correctness resting on
+// two things staying in step with no mechanism keeping them there.
+//
+// Prunes only DEAD entries. get_item() returning nullptr is the safe validity test
+// (item_location handles a vanished target); dereferencing is what crashes, and
+// that is exactly what highlight_one_of() does with these.
+void mp_prune_dead_item_ui_refs()
+{
+    auto &sel = uistate.consume_uistate.consume_menu_selected_items;
+    if( sel.empty() ) {
+        return;
+    }
+    const size_t before = sel.size();
+    sel.erase( std::remove_if( sel.begin(), sel.end(),
+    []( const item_location & l ) {
+        return !l || l.get_item() == nullptr;
+    } ), sel.end() );
+    if( sel.size() != before ) {
+        mp_log( "[cdda-mp] UI-REF-PRUNE: dropped " + std::to_string( before - sel.size() ) +
+                " dead consume-menu item_location(s), " + std::to_string( sel.size() ) +
+                " left — MP replaced the items they pointed at" );
+    }
+}
 static std::vector<std::function<void()>> g_mp_deferred_item_applies;
 
 mp_ui_item_ref_guard::mp_ui_item_ref_guard()
@@ -3181,13 +3237,106 @@ mp_ui_item_ref_guard::~mp_ui_item_ref_guard()
     }
 }
 
+// True while a SHORT activity is holding an item_location target.
+//
+// MP FIX 2026-08-17 — the "Item location/name to be consumed should not be null"
+// report. mp_ui_item_ref_guard only covers the seconds a MENU is open, but the
+// eating itself runs for several seconds AFTER the menu closes while
+// consume_activity_actor holds an item_location to the food. Tile applies run
+// freely in that window, m.i_clear(bub) destroys the ground stack the food lives
+// in, and finish() then finds its target gone: the meal silently fails, no
+// calories, food gone.
+//
+// Deliberately restricted to SHORT activities. The obvious version of this —
+// "any activity with non-empty targets" — is wrong and would be worse than the
+// bug: it would defer tile applies for the entire duration of a 40-minute craft,
+// growing the queue unboundedly while the partner's world changes never land.
+// Consume and first aid are seconds long, so the deferral is bounded and the
+// partner sees at most a moment's lag on ground items near an eating player.
+static bool mp_activity_holds_item_target()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return false;
+    }
+    const player_activity &act = get_avatar().activity;
+    if( !act ) {
+        return false;
+    }
+    // NOT gated on act.targets — that was wrong and silently disabled this for a
+    // build. These are ACTOR-based activities: consume_activity_actor keeps its
+    // item_location in its OWN member (consume_location), and assign_activity(
+    // consume_activity_actor( food ) ) never populates player_activity::targets.
+    // So targets is always empty here and the predicate always returned false.
+    // The id alone is sufficient — each of these holds an item reference by
+    // construction, which is the whole reason it is on this list.
+    static const std::set<std::string> short_item_acts = {
+        "ACT_CONSUME", "ACT_EAT", "ACT_DRINK", "ACT_FIRSTAID",
+    };
+    return short_item_acts.count( act.id().str() ) > 0;
+}
+
 bool mp_ui_holds_item_refs()
 {
-    return g_mp_ui_item_ref_depth > 0;
+    const bool guard = g_mp_ui_item_ref_depth > 0;
+    const bool act = mp_activity_holds_item_target();
+    const bool held = guard || act;
+    // Log the EDGE, both directions. The previous version deduped on activity id,
+    // which hid the release — and the release is the half that was broken: 515
+    // applies deferred, ZERO drained, because this never went false.
+    static bool s_prev = false;
+    if( held != s_prev ) {
+        s_prev = held;
+        mp_log( std::string( "[cdda-mp] ITEM-REF-HOLD: " ) + ( held ? "ACQUIRED" : "RELEASED" ) +
+                " guard_depth=" + std::to_string( g_mp_ui_item_ref_depth ) +
+                " activity=" + ( get_avatar().activity ?
+                                 get_avatar().activity.id().str() : "(none)" ) +
+                " queued=" + std::to_string( g_mp_deferred_item_applies.size() ) );
+    }
+    return held;
+}
+
+// Runs any deferred item applies once nothing is holding item references.
+//
+// The guard destructor drains when its depth hits zero, but a SHORT-activity hold
+// (mp_activity_holds_item_target) ends when the ACTIVITY ends — no destructor
+// fires, so without this the queue would sit there forever and the partner's
+// ground-item changes would never land. Called once per turn from
+// process_mp_events(); cheap when the queue is empty, which is almost always.
+void mp_drain_deferred_item_applies_if_free()
+{
+    if( g_mp_deferred_item_applies.empty() || mp_ui_holds_item_refs() ) {
+        return;
+    }
+    std::vector<std::function<void()>> pending;
+    pending.swap( g_mp_deferred_item_applies );
+    mp_log( "[cdda-mp] DEFER-DRAIN: item refs released, draining " +
+            std::to_string( pending.size() ) + " deferred item apply(s)" );
+    for( std::function<void()> &fn : pending ) {
+        fn();
+    }
 }
 
 void mp_defer_item_apply( std::function<void()> fn )
 {
+    // SAFETY BOUND. An unbounded deferral queue is never correct: while it grows
+    // the partner's world changes are simply not landing, which is a worse failure
+    // than the dangling-reference crash this defers to avoid. Measured 2026-08-17:
+    // a hold that never released queued 515 applies and the client stopped
+    // applying world state entirely. Past the cap, apply immediately and say so
+    // loudly — a visible wrong beats a silent one.
+    constexpr size_t DEFER_CAP = 128;
+    if( g_mp_deferred_item_applies.size() >= DEFER_CAP ) {
+        mp_log( "[cdda-mp] DEFER-CAP: queue hit " + std::to_string( DEFER_CAP ) +
+                " — a hold is not releasing. Applying immediately and draining; "
+                "world sync takes priority over the item-ref guard." );
+        std::vector<std::function<void()>> pending;
+        pending.swap( g_mp_deferred_item_applies );
+        for( std::function<void()> &pf : pending ) {
+            pf();
+        }
+        fn();
+        return;
+    }
     mp_log( "[cdda-mp] mp_ui_item_ref_guard: deferring item apply (queue size " +
             std::to_string( g_mp_deferred_item_applies.size() + 1 ) + ")" );
     g_mp_deferred_item_applies.push_back( std::move( fn ) );
@@ -6593,7 +6742,38 @@ static bool is_fast_forwardable_activity( const std::string &id )
     if( !is_passive_activity( id ) ) {
         return false;
     }
-    static const std::set<std::string> no_ff = { "ACT_FIRSTAID" };
+    // Passive (so the grant handler keeps ticking them) but NOT fast-forwardable,
+    // because their actor opens a blocking UI in finish().
+    //
+    // AUDIT 2026-08-17 — the earlier eligibility test only asked whether do_turn
+    // opens UI. That test structurally cannot catch this class, and the comment
+    // above still claims ACT_FIRSTAID has "no UI (heal applies in finish())" — it
+    // does not: firstaid_activity_actor::finish calls eat_or_use / game_menus::inv
+    // and sets uistate.open_menu, exactly like consume does. FIRSTAID was excluded
+    // for the right reason and documented with the wrong one.
+    //
+    // Re-audited by inverting the search: of every actor in activity_actor.cpp,
+    // only FOUR have blocking UI in do_turn or finish, and only these two plus
+    // ACT_CRAFT are FF-eligible. So this list is complete, not a sample.
+    //
+    // ACT_CONSUME is evidence-backed: under FF the client ticks its activity from
+    // inside apply_one_state_message, so finish() ran in the network-recv path,
+    // hit "Item location/name to be consumed should not be null", warned WITHOUT
+    // returning, then still armed uistate.open_menu — and reopening the consume
+    // menu on a dead item_location SIGSEGV'd in inventory_selector::process_input
+    // (crash.log 2026-08-17). Same shape as f5a0eb5c77, which had to defer the
+    // smash prompt out of this same recv path.
+    //
+    // The EAT/DRINK/*_MENU ids are precautionary rather than proven: they are pure
+    // JSON timers with no actor code, but they are the selection stage of the same
+    // flow and are short activities — the duration-mismatch class that stranded the
+    // client on 2026-07-19. ACT_CRAFT stays FF-eligible: its query_yn only fires on
+    // practice recipes crossing a proficiency threshold, tracked separately.
+    static const std::set<std::string> no_ff = {
+        "ACT_FIRSTAID",
+        "ACT_CONSUME", "ACT_EAT", "ACT_DRINK",
+        "ACT_CONSUME_FOOD_MENU", "ACT_CONSUME_DRINK_MENU", "ACT_CONSUME_MEDS_MENU",
+    };
     return no_ff.count( id ) == 0;
 }
 
@@ -8336,6 +8516,11 @@ void process_mp_events()
     // be spawned into a world.  No-op for --host CLI launches.
     mp_start_pending_host_thread();
 
+    // Release any item applies that were deferred while a menu or a short
+    // item-target activity held references. The guard destructor covers the menu
+    // case; this covers the activity case, which ends with no destructor to fire.
+    mp_drain_deferred_item_applies_if_free();
+
     // Client: drain a budget of queued overmap-sync cells this turn (no-op when
     // nothing is pending). Keeps the ~32k-cell apply off the single-frame hot path.
     mp_drain_pending_omsync();
@@ -9478,6 +9663,13 @@ static bool apply_one_state_message( const std::string &msg )
                         if( !host_npc2 ) {
                             return;
                         }
+                        // MP DIAGNOSTIC 2026-08-17 — same exposure as host_inv below:
+                        // an open inventory selector lists worn containers and their
+                        // contents, so clearing worn dangles its item_locations too.
+                        if( mp_inv_ui_open() ) {
+                            mp_log( "[cdda-mp] INV-APPLY-WHILE-UI-OPEN: host_worn "
+                                    "clear+rewear with an inventory selector OPEN" );
+                        }
                         host_npc2->clear_worn();
                         std::string applied_log;
                         for( item &worn_item : items ) {
@@ -9576,6 +9768,18 @@ static bool apply_one_state_message( const std::string &msg )
                                 npc *host_npc2 = g->critter_by_id<npc>( client_host_npc_id );
                                 if( !host_npc2 ) {
                                     return;
+                                }
+                                // MP DIAGNOSTIC 2026-08-17 — this clear()+rebuild is the
+                                // prime suspect for the inventory_selector SIGSEGV. The
+                                // mp_ui_holds_item_refs() gate below does not know about
+                                // inventory selectors (the guard is only instantiated at
+                                // four handle_action call sites), so this can fire while a
+                                // selector is holding item_locations into the very stack
+                                // being destroyed.
+                                if( mp_inv_ui_open() ) {
+                                    mp_log( "[cdda-mp] INV-APPLY-WHILE-UI-OPEN: host_inv "
+                                            "clear+rebuild with an inventory selector OPEN "
+                                            "— every item_location it holds is now dangling" );
                                 }
                                 host_npc2->inv->clear();
                                 host_npc2->inv->add_items_bulk( std::move( items ), true, false );
@@ -11995,6 +12199,7 @@ static void apply_tile_changes( JsonObject &jo )
                 " ter_diff=" + std::to_string( ter_diff ) +
                 "  (ter_diff>0 => host terrain differs from our local world-gen)" );
     }
+
 
     // Run detection so newly synced traps show the warning tile immediately,
     // mirroring the search_surroundings() call that SP makes after every move.

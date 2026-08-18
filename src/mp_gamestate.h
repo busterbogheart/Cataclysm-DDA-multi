@@ -53,6 +53,38 @@ bool mp_ui_holds_item_refs();
 // Only meaningful to call while mp_ui_holds_item_refs() is true.
 void mp_defer_item_apply( std::function<void()> fn );
 
+// Drains deferred item applies once nothing holds item references. Needed because
+// a short-activity hold ends with the activity, not with a guard destructor.
+void mp_drain_deferred_item_applies_if_free();
+
+// MP DIAGNOSTIC 2026-08-17 — SIGSEGV in inventory_selector::process_input, twice.
+//
+// mp_ui_item_ref_guard is instantiated in exactly four places, all in
+// handle_action.cpp (pickup, examine, aim, pickup_switch). The INVENTORY SELECTOR
+// is not one of them, so while game_menus::inv::consume() has a selector open,
+// mp_ui_holds_item_refs() reads false and the host_inv apply runs
+// inv->clear() + add_items_bulk immediately — invalidating every item_location the
+// selector is holding. The next keypress dereferences one and segfaults.
+//
+// This pair is a PROBE, not the fix: mp_inv_ui_open() reports whether a selector
+// is up, and the item-apply sites log when they mutate while one is. If the log
+// confirms it, the fix is to promote this into a real mp_ui_item_ref_guard inside
+// inv_internal() — one RAII line covering every inventory menu at once, rather
+// than the guard being bolted onto call sites one at a time forever.
+class mp_inv_ui_probe
+{
+    public:
+        mp_inv_ui_probe();
+        ~mp_inv_ui_probe();
+        mp_inv_ui_probe( const mp_inv_ui_probe & ) = delete;
+        mp_inv_ui_probe &operator=( const mp_inv_ui_probe & ) = delete;
+};
+bool mp_inv_ui_open();
+
+// Drops item_locations cached in global UI state whose targets MP has just
+// destroyed. Call after any authoritative item replacement — see the definition.
+void mp_prune_dead_item_ui_refs();
+
 // Returns a JSON string describing the remote player's current position,
 // HP, and nearby visible tiles. Sent to the client after each action.
 // skip_tile_scan=true omits the radius-20 tile scans and emits an empty
