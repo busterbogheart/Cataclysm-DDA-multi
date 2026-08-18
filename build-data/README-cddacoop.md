@@ -337,6 +337,38 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### 2026-08-17
+
+- **Long actions are now about !!30X FASTER!! when you do them together.** When both
+  players are busy with something long (crafting, sleeping, reading, waiting, etc) the
+  game now skips ahead at about 135 game turns per second instead of 4 or 5. A one-hour craft
+  ingame should now only take about 20 seconds. A few reasons:
+    - The host was rebuilding and re-sending the entire world state just to tell your partner
+      "nothing to do this turn." 
+    - Every tile AND every vehicle in view was being scanned twice per turn.
+    - Turns are now granted in batches (shoulda thought of this before).
+- **The co-op panel now tells you what your partner is actually doing.** Instead of just
+  "crafting", it names the item, how many they're batching, and whether the game is
+  currently in FF mode like: `crafting bandage x5 12% ▶▶`.
+- **Ten more activities no longer slow down the game:** Hotwiring, picking a lock,
+  mining, chopping a tree, boltcutting, hacksawing, oxytorching, prying, clearing
+  rubble and milking now count toward the fast forward changes above.
+- **Log now reports why a fast-forward didn't happen.** If co-op feels slow, the
+  log now names which player and which activity is holding it back. 
+- **A couple deadlock and freeze fixes.** 1) Opening your message log while crafting, as
+  the joining player, froze you completely and 2) sometimes if the host finished crafting first
+  the game would deadlock (red/red).
+- **Pulping progress finally makes sense.** It used to show a stuck 0% while you pulped,
+  and the co-op panel said "pulping" while the progress bar above it said "smashing" —
+  now both agree, and it counts corpses as you go (like `2/2`), starting at 1 instead of
+  sitting at 0 until the first one's already dead.
+- **Logs got a lot smaller.** The host used to write one line per changed tile — a
+  normal session was 3.6MB of just that. Gone now; logs stay verbose everywhere else,
+  just not there.
+- **First real Windows ↔ macOS test.** A Windows host and a Mac client played together
+  over the internet with no issues — first time we've confirmed cross-platform co-op
+  actually works.
+
 ### 2026-08-02
 
 - **A few fixes for joining issues** Several separate problems:
