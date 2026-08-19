@@ -212,7 +212,7 @@ When reporting a bug, please attach **both players'** `cdda-mp-*.log` files (plu
 ---
 
 <!-- SYNC:donate section="Donate" -->
-If you'd like to support development: [GitHub Sponsors](https://github.com/sponsors/busterbogheart) &middot; [Ko-fi](https://ko-fi.com/cddacoop).  Thank you!  Sponsor reward ideas welcome...
+If you'd like to support development: [GitHub Sponsors](https://github.com/sponsors/busterbogheart) &middot; [Ko-fi](https://ko-fi.com/cddacoop) &middot; [Boosty](https://boosty.to/cddacoop).  Thank you!  Sponsor reward ideas welcome...
 <!-- /SYNC:donate -->
 
 ---
