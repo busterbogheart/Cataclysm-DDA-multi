@@ -28,6 +28,15 @@
 *.po      -text -diff
 *.pot     -text
 
+# ...except this fork's own catalogs. The rule above exists because upstream's
+# .po were tens of megabytes of machine-managed Transifex output that nobody
+# reviews. Ours are ~24 KB, hand-edited by volunteers, and reviewed in pull
+# requests — and "-diff" makes GitHub treat them as binary, which hides the
+# diff AND blocks its web editor, the one route that lets a translator
+# contribute without installing anything.
+lang/fork/*.po   text diff
+lang/fork/*.pot  text diff
+
 # Treat images, archives, and font files as binary.
 # (binary is a macro for -text -diff)
 *.db      binary

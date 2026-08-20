@@ -21,8 +21,14 @@ anything. Pick whichever of these suits you:
 
 Then:
 
-1. Grab `ru.po` from this folder (or `cddacoop.pot` if your language isn't here
-   yet — Poedit will ask which language and create the `.po` for you).
+1. Grab your language's `.po` from this folder. All 25 languages the game can
+   display are already here, ready to fill in:
+
+   `ar` `cs` `da` `de` `el` `es_AR` `es_ES` `fr` `hu` `id` `is` `it_IT` `ja`
+   `ko` `nb` `nl` `pl` `pt` `pt_BR` `ru` `sr` `tr` `uk_UA` `zh_CN` `zh_TW`
+
+   (If yours isn't listed, the game has no way to show it yet — say so and we
+   can look into adding it, starting from `cddacoop.pot`.)
 2. Fill in each empty `msgstr ""` with the translation of the `msgid` above it.
 3. Send it back — Discord DM or a pull request, both fine.
 
