@@ -104,10 +104,11 @@ jobs:
           echo "release_name=$REL" >> "$GITHUB_OUTPUT"
           echo "Release name: $REL"
 
-  # Pulls fresh translations from Transifex and hands every platform build
-  # the same lang/po + lang/mo + src/lang_stats.inc snapshot. Ported from
-  # upstream's own release.yml (see build-translations.yml header). Needs a
-  # TX_TOKEN repo secret; without one it no-ops and builds stay untranslated.
+  # Hands every platform build the same compiled lang/mo + src/lang_stats.inc.
+  # Prefers fresh translations from Transifex (needs a TX_TOKEN repo secret);
+  # without that secret it falls back to the archived .po still reachable in
+  # this repo's own git history, so releases ship translated either way.
+  # See build-translations.yml for the full story.
   build-translations:
     name: Build translations
     uses: ./.github/workflows/build-translations.yml

@@ -1,24 +1,45 @@
 name: Build translations
 
-# Ported from upstream CleverRaven/Cataclysm-DDA (commit 113d0f04af, "Pull
-# translations in CI instead of using repo ones"). Upstream stopped
-# committing .po files to git (they'd grown to ~38MB each) in favor of
-# pulling fresh translations from Transifex at release-build time instead.
-# We inherited the "delete .po from git" half of that change through past
-# merges but never the CI half — this restores it so our releases actually
-# ship translated builds again. See ROADMAP.md 2026-08-19 for the full story.
+# Produces the compiled lang/mo + src/lang_stats.inc that every platform build
+# packages, from one of two sources:
 #
-# Requires a TX_TOKEN repo secret (a Transifex API token with read access to
-# the cataclysm-dda-translators/cataclysm-dda project — see .tx/config).
-# Without it this job no-ops (continue-on-error below) and produces the same
-# untranslated placeholder state as before.
+#   1. Transifex (preferred, current) — needs a TX_TOKEN repo secret.
+#   2. This repo's own git history (fallback, frozen 2025-11-01) — needs nothing.
+#
+# Why a fallback exists at all: upstream CleverRaven/Cataclysm-DDA used to commit
+# real .po files straight into git. Commit 113d0f04af (2025-11-02, "Pull
+# translations in CI instead of using repo ones") replaced that with this
+# Transifex-at-build-time model, and 3f4b32df4f deleted the .po files a day
+# later. Our fork inherited the deletion through past merges but never the CI
+# half, so every release we have ever shipped has been English-only.
+#
+# The deletion commit is an ancestor of our master, which means every deleted
+# .po blob is still in our own repo's object store and reachable by SHA. That
+# is what PO_ARCHIVE_REF below points at. It is 28 languages, ~679 MB of .po,
+# compiling to ~170 MB of .mo, all of which compile cleanly under msgfmt.
+#
+# The fallback is deliberately not a replacement for Transifex. Those .po are
+# frozen at 2025-11-01 while our upstream base is 2026-06-10, so roughly seven
+# months of msgid drift means some newer strings fall back to English. Gettext
+# degrades per-string, not all-or-nothing, so this is "mostly translated"
+# rather than "broken" — but fresh Transifex data is strictly better whenever
+# TX_TOKEN is available.
 
 on:
   workflow_dispatch:
   workflow_call:
     secrets:
       TX_TOKEN:
-        required: true
+        # Not required: without it the job takes the git-history path instead
+        # of failing. Marking it required would also break the caller, which
+        # passes an empty value when the secret does not exist.
+        required: false
+
+env:
+  # Parent of 3f4b32df4f "Delete translations from repo" — the last commit in
+  # our history that still has real lang/po/*.po content. Pinned by full SHA
+  # so this never silently drifts.
+  PO_ARCHIVE_REF: 3e3d267a0abfc25e49d06e4c224d2aec08fb7599
 
 jobs:
   build-translations:
@@ -41,28 +62,106 @@ jobs:
             lang
           fetch-depth: 1
 
-      - name: Pull translations
+      - name: Pull translations from Transifex
+        id: tx
         continue-on-error: true
         env:
           TX_TOKEN: ${{ secrets.TX_TOKEN }}
         run: |
           if [ -z "${TX_TOKEN}" ]; then
-          echo "No TX_TOKEN secret set in this repo, not pulling translations from Transifex"
-          exit 1
+            echo "No TX_TOKEN secret set in this repo — will fall back to the archived translations in git history."
+            exit 1
           fi
           tx pull -a --force -w 2
 
+      # placeholder.po is a tracked 0-byte file, so "did we get anything" has to
+      # mean "is there a non-empty .po", not "does lang/po contain a .po".
+      - name: Decide translation source
+        id: source
+        run: |
+          count=$(find lang/po -name '*.po' -size +1k | wc -l)
+          echo "Non-empty .po files after Transifex pull: ${count}"
+          if [ "${count}" -gt 0 ]; then
+            echo "use_archive=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_archive=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The archived .po never change (they are pinned to one immutable SHA), so
+      # a hit here skips both the ~679 MB download and the compile entirely.
+      - name: Restore archived translations from cache
+        id: archive-cache
+        if: steps.source.outputs.use_archive == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            lang/mo
+            src/lang_stats.inc
+          key: po-archive-${{ env.PO_ARCHIVE_REF }}-v1
+
+      - name: Fetch archived translations from git history
+        if: >-
+          steps.source.outputs.use_archive == 'true'
+          && steps.archive-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "Fetching lang/po from ${GITHUB_REPOSITORY}@${PO_ARCHIVE_REF}"
+          # The Contents API pulls only the 28 files we need. A shallow git
+          # fetch of that commit would drag its entire tree (the whole game's
+          # data/ and src/) along for the ride.
+          names=$(gh api "repos/${GITHUB_REPOSITORY}/contents/lang/po?ref=${PO_ARCHIVE_REF}" \
+                    --jq '.[] | select(.name | endswith(".po")) | .name')
+          for n in ${names}; do
+            echo "  ${n}"
+            gh api -H "Accept: application/vnd.github.raw" \
+              "repos/${GITHUB_REPOSITORY}/contents/lang/po/${n}?ref=${PO_ARCHIVE_REF}" \
+              > "lang/po/${n}"
+          done
+          ls -la lang/po
+
+      # Upstream's lang/discard_invalid_po.sh is dead code now: it iterates
+      # `git diff --name-only lang/po/*.po`, but since the .po files were
+      # deleted from the repo, anything we pull or fetch is untracked and never
+      # shows up in a diff. Do the check it was meant to do, for real. Matters
+      # more for us than upstream — a truncated API response would otherwise
+      # reach msgfmt inside the platform builds and fail them there.
       - name: Discard invalid translations
-        run: ./lang/discard_invalid_po.sh
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        run: |
+          for f in lang/po/*.po; do
+            # placeholder.po is a tracked 0-byte file; left in place it compiles
+            # to an empty lang/mo/placeholder/ that nothing ever reads.
+            if [ ! -s "$f" ]; then echo "Dropping empty $f"; rm -f "$f"; continue; fi
+            msgfmt -o /dev/null "$f" 2>/dev/null || { echo "Discarding invalid $f"; rm -f "$f"; }
+          done
+
+      # Compile here rather than in each platform build: the .mo are ~170 MB
+      # against ~679 MB of .po, so shipping only the compiled output cuts what
+      # the three platform jobs each have to download by roughly 4x. The
+      # platform builds still pass LANGUAGES=all; with no .po present their
+      # `localization` target finds nothing to do and leaves this lang/mo
+      # in place.
+      - name: Compile translations
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        run: ./lang/compile_mo.sh all
 
       - name: Update translation statistics
+        if: steps.archive-cache.outputs.cache-hit != 'true'
         run: ./lang/update_stats.sh
+
+      - name: Report what was built
+        run: |
+          echo "Source: ${{ steps.source.outputs.use_archive == 'true' && 'archived git history' || 'Transifex' }}"
+          echo "Compiled languages:"
+          ls lang/mo 2>/dev/null || echo "  (none)"
+          du -sh lang/mo 2>/dev/null || true
 
       - name: Store translation artifacts
         uses: actions/upload-artifact@v4
         with:
           name: "translations"
           path: |
-            lang/po
             lang/mo
             src/lang_stats.inc
