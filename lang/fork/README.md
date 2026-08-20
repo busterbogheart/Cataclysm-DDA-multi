@@ -52,11 +52,26 @@ these. Poedit warns you if one goes missing.
 > `Could not reach %s:%d` → `Не удалось подключиться к %s:%d`
 
 **Hotkey brackets.** A few menu entries look like `C<O|o>-OP` or `<D|d>onate`.
-The bracket marks the key the player presses, uppercase and lowercase. Keep the
-same shape, and put the brackets on whichever letter makes sense as the hotkey
-in your language. 5 strings have these.
+The bracket marks the key the player actually presses, uppercase and lowercase.
+5 strings have these, and how you handle them depends on your alphabet.
 
-> `<H|h>ost a session` → `<С|с>оздать сессию`
+*If your language uses the Latin alphabet* — put the brackets around a letter of
+your translated word, the way the English does:
+
+> `<N|n>ew Game` → `<J|j>uego Nuevo` (Spanish) · `Se<t|T>tings` → `Con<f|F>iguraciones`
+
+*If your language does not use the Latin alphabet* — **keep the Latin letter and
+put the bracket in front of the word, followed by a space.** Do not push a Latin
+letter into the middle of a word: the key has to stay pressable on a normal
+keyboard, and embedding it misspells the word.
+
+> `<N|n>ew Game` → `<N|n> Начать` (Russian) · `Lo<a|A>d` → `<a|A> 読込` (Japanese)
+
+This is the convention the base game's own translations already follow, so
+copying whatever your language does in the main menu is always safe.
+
+> ✗ `<D|d>onate` → `Под<D|d>ержка` — reads "ПодDержка", misspelled
+> ✓ `<D|d>onate` → `<D|d> Поддержка`
 
 **Color tags.** `<color_light_gray>`, `<color_cyan>` and so on are markup, not
 text. Translate what's between them, never the tags themselves.
