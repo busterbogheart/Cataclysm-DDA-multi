@@ -89,6 +89,10 @@ jobs:
 
       # The archived .po never change (they are pinned to one immutable SHA), so
       # a hit here skips both the ~679 MB download and the compile entirely.
+      #
+      # The key must also cover lang/fork/*.po. A hit skips the layering step
+      # below along with everything else, so without the hash a translator's
+      # newly merged work would silently never reach a build.
       - name: Restore archived translations from cache
         id: archive-cache
         if: steps.source.outputs.use_archive == 'true'
@@ -97,7 +101,7 @@ jobs:
           path: |
             lang/mo
             src/lang_stats.inc
-          key: po-archive-${{ env.PO_ARCHIVE_REF }}-v1
+          key: po-archive-${{ env.PO_ARCHIVE_REF }}-fork-${{ hashFiles('lang/fork/*.po') }}-v2
 
       - name: Fetch archived translations from git history
         if: >-
@@ -136,6 +140,62 @@ jobs:
             if [ ! -s "$f" ]; then echo "Dropping empty $f"; rm -f "$f"; continue; fi
             msgfmt -o /dev/null "$f" 2>/dev/null || { echo "Discarding invalid $f"; rm -f "$f"; }
           done
+
+      # Layer this fork's own translations over whatever the base source gave us.
+      # Upstream's Transifex catalog is upstream's; our added strings (the co-op
+      # UI, the CO-OP tips) can only ever come from lang/fork/<lang>.po, so they
+      # get merged in here, just before the compile.
+      #
+      # msgattrib --translated first is what makes this safe. The fork files
+      # ship with every msgstr blank until a volunteer fills them in, and
+      # `msgcat --use-first` prefers whatever the first file says — including a
+      # blank. Feeding it the raw fork file would let an untranslated fork entry
+      # erase a real upstream translation on any msgid the two happen to share.
+      # Filtering to translated-only entries makes a blank file a no-op, which
+      # is exactly what it should be.
+      #
+      # An invalid fork .po fails the build rather than being skipped. These are
+      # files we committed ourselves, so a broken one is our bug to fix before
+      # release — quietly dropping it would ship a release missing translations
+      # nobody noticed were gone.
+      - name: Layer in this fork's own translations
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          layered=0
+          for f in lang/fork/*.po; do
+            n=$(basename "$f" .po)
+            if ! msgfmt -o /dev/null "$f" 2>/dev/null; then
+              echo "::error::lang/fork/${n}.po is not a valid PO file"
+              exit 1
+            fi
+            # On a file with nothing translated, msgattrib writes no output at
+            # all — not even a header — and creates no file. So -s doubles as
+            # the "has anyone actually translated anything yet" test.
+            rm -f "/tmp/fork-${n}.po"
+            msgattrib --translated --no-obsolete "$f" -o "/tmp/fork-${n}.po" || true
+            if [ ! -s "/tmp/fork-${n}.po" ]; then
+              echo "lang/fork/${n}.po: nothing translated yet, skipping"
+              continue
+            fi
+            # grep counts the header's own msgid "" too, hence the -1 below.
+            count=$(grep -c '^msgid "' "/tmp/fork-${n}.po" || true)
+            if [ -f "lang/po/${n}.po" ]; then
+              msgcat --use-first "/tmp/fork-${n}.po" "lang/po/${n}.po" -o "/tmp/merged-${n}.po"
+              mv "/tmp/merged-${n}.po" "lang/po/${n}.po"
+              echo "lang/fork/${n}.po: layered $((count - 1)) strings onto the base translation"
+            else
+              # No base translation for this language at all. Ship the fork
+              # strings on their own rather than nothing — note the in-game
+              # percentage will read high, since it is computed against only
+              # the strings present.
+              cp "/tmp/fork-${n}.po" "lang/po/${n}.po"
+              echo "lang/fork/${n}.po: no base .po for ${n}, shipping $((count - 1)) fork strings alone"
+            fi
+            layered=$((layered + 1))
+          done
+          echo "Languages with fork translations layered in: ${layered}"
 
       # Compile here rather than in each platform build: the .mo are ~170 MB
       # against ~679 MB of .po, so shipping only the compiled output cuts what
