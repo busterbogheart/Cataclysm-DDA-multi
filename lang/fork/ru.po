@@ -135,7 +135,7 @@ msgstr ""
 #: src/main_menu.cpp:509
 msgctxt "Main Menu"
 msgid "<D|d>onate"
-msgstr ""
+msgstr "<П|п>оддержать"
 
 #: src/main_menu.cpp:542
 msgctxt "Main Menu|Co-op"

@@ -515,6 +515,7 @@ std::map<distraction_type, std::string> player_activity::get_distractions() cons
                 for( Creature *critter : remote->get_visible_creatures( 5 ) ) {
                     if( remote->attitude_to( *critter ) == Creature::Attitude::HOSTILE ) {
                         res.emplace( distraction_type::hostile_spotted_near,
+                                     //~ %s is the monster's name
                                      string_format( _( "Your partner is in danger! The %s is close!" ),
                                                     critter->get_name() ) );
                         break;

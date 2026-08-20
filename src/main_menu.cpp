@@ -1197,6 +1197,7 @@ bool main_menu::opening_screen()
                                     popup( _( "Connected to world \"%s\".\nPress a key to continue." ),
                                            host_world );
                                 } else {
+                                    //~ first %s is the host's name (player name), second %s is the world name 
                                     popup( _( "Connected to %s's game.\nWorld: \"%s\"\nPress a key to continue." ),
                                            host_player, host_world );
                                 }
@@ -1206,8 +1207,10 @@ bool main_menu::opening_screen()
                         if( host_world.empty() ) {
                             join_title = _( "Co-op: join a session" );
                         } else if( host_player.empty() ) {
+                            //~ %s is the world's name
                             join_title = string_format( _( "Joining \"%s\"" ), host_world );
                         } else {
+                            //~ first %s is the world name, second %s is the host's player name 
                             join_title = string_format( _( "Joining \"%s\" — %s's game" ),
                                                         host_world, host_player );
                         }

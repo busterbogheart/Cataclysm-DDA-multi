@@ -1687,6 +1687,7 @@ void map::board_vehicle( const tripoint_bub_ms &pos, Character *p )
         if( psg == p ) {
             return; // already seated here — no-op
         }
+        //~ first %s is the passenger, second %s is the player trying to get on the vehicle 
         add_msg( m_info, _( "%s is already in that seat. [%s tried to board it]" ),
                  psg ? psg->get_name() : "<null_passenger>",
                  p ? p->get_name() : "<null_boarder>" );

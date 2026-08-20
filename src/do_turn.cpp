@@ -631,6 +631,7 @@ void game::handle_progress_ui()
         // without this the popup would say 1% throughout the entire help.
         if( ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) &&
             u.activity.id().str() == "ACT_HELP_PARTNER" ) {
+            //~ this string is for the progress display: %s is the activity verb and %d is the percent (number) complete.  %% is a literal percent sign. 
             wait_message = string_format( _( "%s: %d%%" ),
                                           u.activity.get_verb().translated(),
                                           cata_mp::partner_activity_pct() );
