@@ -9,14 +9,28 @@ There are 204 strings, about 1,900 words. Roughly an evening of work.
 
 ## For translators
 
-You need [Poedit](https://poedit.net) — free, works on Windows/macOS/Linux.
+A `.po` file is plain text, so **any editor works** — you do not have to install
+anything. Pick whichever of these suits you:
 
-1. Grab `ru.po` from this folder (or `cddacoop.pot` if your language isn't
-   here yet — Poedit will ask which language and create the `.po` for you).
-2. Open it in Poedit. The left column is English, the right is where your
-   translation goes.
-3. Translate, save, and send the `.po` back — Discord DM or a GitHub PR, both
-   fine.
+- **[Poedit](https://poedit.net)** (free, Windows/macOS/Linux) — English on the
+  left, your translation on the right, and it warns you if something's off.
+  Easiest if you don't mind installing an app.
+- **GitHub, in your browser** — open `lang/fork/ru.po` here on GitHub, hit the
+  edit pencil, and submit it as a pull request. Nothing to install at all.
+- **Any text editor** — Notepad++, VS Code, whatever you already use.
+
+Then:
+
+1. Grab `ru.po` from this folder (or `cddacoop.pot` if your language isn't here
+   yet — Poedit will ask which language and create the `.po` for you).
+2. Fill in each empty `msgstr ""` with the translation of the `msgid` above it.
+3. Send it back — Discord DM or a pull request, both fine.
+
+If you're editing as plain text rather than in Poedit, watch the quoting: a `"`
+inside the text has to be written `\"`, a line break has to be written `\n`, and
+longer strings are split across several quoted lines that all belong to the same
+entry. About 44 of the 204 are wrapped like that. Poedit and the GitHub editor
+both handle it for you; a plain editor does not.
 
 You do not need to finish it in one sitting, and you do not need to translate
 everything. Partial is genuinely useful: anything left blank just shows in
