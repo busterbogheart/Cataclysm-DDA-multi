@@ -1197,8 +1197,8 @@ bool main_menu::opening_screen()
                                     popup( _( "Connected to world \"%s\".\nPress a key to continue." ),
                                            host_world );
                                 } else {
-                                    //~ first %s is the host's name (player name), second %s is the world name 
-                                    popup( _( "Connected to %s's game.\nWorld: \"%s\"\nPress a key to continue." ),
+                                    //~ %1$s is the host's name (player name), %2$s is the world name 
+                                    popup( _( "Connected to %1$s's game.\nWorld: \"%2$s\"\nPress a key to continue." ),
                                            host_player, host_world );
                                 }
                             }
@@ -1210,8 +1210,8 @@ bool main_menu::opening_screen()
                             //~ %s is the world's name
                             join_title = string_format( _( "Joining \"%s\"" ), host_world );
                         } else {
-                            //~ first %s is the world name, second %s is the host's player name 
-                            join_title = string_format( _( "Joining \"%s\" — %s's game" ),
+                            //~ %1$s is the world name, %2$s is the host's player name 
+                            join_title = string_format( _( "Joining \"%1$s\" — %2$s's game" ),
                                                         host_world, host_player );
                         }
                         uilist jflow;

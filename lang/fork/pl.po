@@ -6,7 +6,9 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=4; plural=(n==1 ? 0 : (n%10>=2 && n%10<=4) && (n%100<12 || n%100>14) ? 1 : n!=1 && (n%10>=0 && n%10<=1) || (n%10>=5 && n%10<=9) || (n%100>=12 && n%100<=14) ? 2 : 3);\n"
+"Plural-Forms: nplurals=4; plural=(n==1 ? 0 : (n%10>=2 && n%10<=4) && "
+"(n%100<12 || n%100>14) ? 1 : n!=1 && (n%10>=0 && n%10<=1) || (n%10>=5 && "
+"n%10<=9) || (n%100>=12 && n%100<=14) ? 2 : 3);\n"
 
 #: src/activity_actor.cpp:780
 msgid "Autodrive is disabled in multiplayer."
@@ -39,9 +41,11 @@ msgstr ""
 msgid "Could not spawn %s here."
 msgstr ""
 
-#: src/do_turn.cpp:634
+#. ~ this string is for the progress display: %1$s is the activity verb and
+#. %2$d is the percent (number) complete.  %% is a literal percent sign.
+#: src/do_turn.cpp:635
 #, c-format
-msgid "%s: %d%%"
+msgid "%1$s: %2$d%%"
 msgstr ""
 
 #: src/game.cpp:5368
@@ -94,8 +98,8 @@ msgstr ""
 
 #: src/handle_action.cpp:4123
 msgid ""
-"Save and quit?  This is the authoritative co-op save — the shared world will"
-" be saved.  Your partner will be disconnected."
+"Save and quit?  This is the authoritative co-op save — the shared world will "
+"be saved.  Your partner will be disconnected."
 msgstr ""
 
 #: src/handle_action.cpp:4444
@@ -167,7 +171,7 @@ msgstr ""
 msgid "Co-op: host a session"
 msgstr ""
 
-#: src/main_menu.cpp:1042 src/main_menu.cpp:1216
+#: src/main_menu.cpp:1042 src/main_menu.cpp:1219
 msgid "New character"
 msgstr ""
 
@@ -243,35 +247,39 @@ msgid ""
 "Press a key to continue."
 msgstr ""
 
-#: src/main_menu.cpp:1200
+#. ~ %1$s is the host's name (player name), %2$s is the world name
+#: src/main_menu.cpp:1201
 #, c-format
 msgid ""
-"Connected to %s's game.\n"
-"World: \"%s\"\n"
+"Connected to %1$s's game.\n"
+"World: \"%2$s\"\n"
 "Press a key to continue."
 msgstr ""
 
-#: src/main_menu.cpp:1207 src/mp_gamestate.cpp:8432
+#: src/main_menu.cpp:1208 src/mp_gamestate.cpp:8441
 msgid "Co-op: join a session"
 msgstr ""
 
-#: src/main_menu.cpp:1209
+#. ~ %s is the world's name
+#: src/main_menu.cpp:1211
 #, c-format
 msgid "Joining \"%s\""
 msgstr ""
 
-#: src/main_menu.cpp:1211
+#. ~ %1$s is the world name, %2$s is the host's player name
+#: src/main_menu.cpp:1214
 #, c-format
-msgid "Joining \"%s\" — %s's game"
+msgid "Joining \"%1$s\" — %2$s's game"
 msgstr ""
 
-#: src/main_menu.cpp:1218
+#: src/main_menu.cpp:1221
 msgid "Load existing character"
 msgstr ""
 
-#: src/map.cpp:1690
+#. ~ %1$s is the passenger, %2$s is the player trying to get on the vehicle
+#: src/map.cpp:1691
 #, c-format
-msgid "%s is already in that seat. [%s tried to board it]"
+msgid "%1$s is already in that seat. [%2$s tried to board it]"
 msgstr ""
 
 #: src/mondeath.cpp:67
@@ -279,9 +287,11 @@ msgstr ""
 msgid "You kill the %s!"
 msgstr ""
 
-#: src/mondeath.cpp:72
+#. ~ this string for killing monsters: %1$s is the killer, %2$s is the monster
+#. name
+#: src/mondeath.cpp:73
 #, c-format
-msgid "%s kills the %s!"
+msgid "%1$s kills the %2$s!"
 msgstr ""
 
 #: src/mp_gamestate.cpp:563
@@ -368,12 +378,12 @@ msgstr ""
 msgid "%s has connected and joined the game."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4426 src/mp_gamestate.cpp:9648
+#: src/mp_gamestate.cpp:4426 src/mp_gamestate.cpp:9660
 #, c-format
 msgid "%s swaps places with you."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4451 src/mp_gamestate.cpp:9651
+#: src/mp_gamestate.cpp:4451 src/mp_gamestate.cpp:9663
 #, c-format
 msgid "%s pushes you out of the way."
 msgstr ""
@@ -383,7 +393,7 @@ msgstr ""
 msgid "%s tries to push you but you have nowhere to go."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4475 src/mp_gamestate.cpp:9630
+#: src/mp_gamestate.cpp:4475 src/mp_gamestate.cpp:9642
 #, c-format
 msgid "%s taps you on the shoulder, snapping you out of your wait."
 msgstr ""
@@ -400,172 +410,183 @@ msgid ""
 "corpse is untouched."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4678
+#. ~ %1$s is the player smashing, %2$s is the monster name
+#: src/mp_gamestate.cpp:4679
 #, c-format
-msgid "%s smashes the %s to pieces!"
+msgid "%1$s smashes the %2$s to pieces!"
 msgstr ""
 
-#: src/mp_gamestate.cpp:4681
+#. ~ %1$s is the player smashing, %2$s is the monster name
+#: src/mp_gamestate.cpp:4683
 #, c-format
-msgid "%s strikes the %s."
+msgid "%1$s strikes the %2$s."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4684
+#. ~ %1$s is the player smashing, %2$s is the monster name
+#: src/mp_gamestate.cpp:4687
 #, c-format
-msgid "%s can't damage the %s."
+msgid "%1$s can't damage the %2$s."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4777
+#: src/mp_gamestate.cpp:4780
 #, c-format
 msgid "%s lets go of the controls."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4819
+#. ~ %1$s is the player, %2$s is the vehicle name
+#: src/mp_gamestate.cpp:4823
 #, c-format
-msgid "%s takes control of the %s."
+msgid "%1$s takes control of the %2$s."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4829
+#. ~ %1$s is the player, %2$s is the vehicle name
+#: src/mp_gamestate.cpp:4834
 #, c-format
-msgid "%s can't start the %s's engine."
+msgid "%1$s can't start the %2$s's engine."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4831
+#. ~ %s is the vehicle name
+#: src/mp_gamestate.cpp:4837
 #, c-format
 msgid "You can't start the %s's engine."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4835
+#: src/mp_gamestate.cpp:4841
 #, c-format
 msgid "%s can't drive from here — no controls."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4836
+#: src/mp_gamestate.cpp:4842
 msgid "You can't drive from here — no controls."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4840
+#: src/mp_gamestate.cpp:4846
 #, c-format
 msgid "No vehicle here for %s to control."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4841
+#: src/mp_gamestate.cpp:4847
 msgid "No vehicle here to control."
-msgstr ""
-
-#: src/mp_gamestate.cpp:4954
-#, c-format
-msgid "%s pulls a handbrake."
 msgstr ""
 
 #: src/mp_gamestate.cpp:4960
 #, c-format
-msgid "%s loses control of %s."
+msgid "%s pulls a handbrake."
 msgstr ""
 
-#: src/mp_gamestate.cpp:4992
+#. ~ %1$s is the player, %2$s is the vehicle name
+#: src/mp_gamestate.cpp:4967
+#, c-format
+msgid "%1$s loses control of %2$s."
+msgstr ""
+
+#: src/mp_gamestate.cpp:5000
 #, c-format
 msgid "%s turns off the engine and lets go of the controls."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5012
+#: src/mp_gamestate.cpp:5020
 #, c-format
 msgid "%s turns off the engine."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5016
+#: src/mp_gamestate.cpp:5024
 #, c-format
 msgid "%s starts the engine."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5017
+#: src/mp_gamestate.cpp:5025
 msgid "You start the engine."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5078
+#: src/mp_gamestate.cpp:5086
 #, c-format
 msgid "%s triggers the alarm!"
 msgstr ""
 
-#: src/mp_gamestate.cpp:5121
+#: src/mp_gamestate.cpp:5129
 #, c-format
 msgid "%s finds the wire that starts the engine."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5125
+#: src/mp_gamestate.cpp:5133
 #, c-format
 msgid "%s finds a wire that looks like the right one."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5212
+#: src/mp_gamestate.cpp:5220
 msgid "You stop what you were doing."
 msgstr ""
 
-#: src/mp_gamestate.cpp:5215
+#: src/mp_gamestate.cpp:5223
 msgid "You start sorting loot into the zones."
 msgstr ""
 
-#: src/mp_gamestate.cpp:7167
+#: src/mp_gamestate.cpp:7175
 #, c-format
 msgid "You can no longer reach %s and stop treating them."
 msgstr ""
 
-#: src/mp_gamestate.cpp:7168
+#: src/mp_gamestate.cpp:7176
 msgid "your patient"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7450
+#: src/mp_gamestate.cpp:7458
 msgid "Your partner finished — you stop helping."
 msgstr ""
 
-#: src/mp_gamestate.cpp:7559
+#: src/mp_gamestate.cpp:7567
 msgid ""
 "Co-op world saved — the authoritative save of the shared world and your "
 "partner's character.  (Your partner also keeps a local copy of their own "
 "character.)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7562
+#: src/mp_gamestate.cpp:7570
 msgid ""
 "Saved your character locally.  Asking the host to save the shared world so "
 "you stay in sync…"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7766
+#: src/mp_gamestate.cpp:7774
 msgid "received template"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7897
+#: src/mp_gamestate.cpp:7905
 msgid "Listen port (CDDA_MP_PORT env override active)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7898
+#: src/mp_gamestate.cpp:7906
 msgid "Listen port (default 8080)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7920
+#. ~ %1$s is the wrong port, %2$s is original one entered
+#: src/mp_gamestate.cpp:7929
 #, c-format
-msgid "Invalid port \"%s\" — keeping %s."
+msgid "Invalid port \"%1$s\" — keeping %2$s."
 msgstr ""
 
-#: src/mp_gamestate.cpp:7932
+#: src/mp_gamestate.cpp:7941
 msgid "Hide join IP address on game screen? (was hidden last session)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:7933
+#: src/mp_gamestate.cpp:7942
 msgid ""
 "Hide join IP address on game screen?  (recommended for streaming. bindable "
 "during play as \"Copy co-op join address\" "
 msgstr ""
 
-#: src/mp_gamestate.cpp:7957
+#: src/mp_gamestate.cpp:7966
 msgid ""
-"The game doesn't open the port until you're actually in the world, so anyone who tries before that just gets \"connection refused\", even if your address and port forwarding are perfectly correct.\n"
+"The game doesn't open the port until you're actually in the world, so anyone "
+"who tries before that just gets \"connection refused\", even if your address "
+"and port forwarding are perfectly correct.\n"
 "\n"
-"So finish world and character creation first.  Once you're in the world your partner can join."
+"So finish world and character creation first.  Once you're in the world your "
+"partner can join."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8097
+#: src/mp_gamestate.cpp:8106
 #, c-format
 msgid ""
 "Can't join: the host is running mods you don't have installed:%s\n"
@@ -573,207 +594,217 @@ msgid ""
 "Install the missing mod(s), then rejoin."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8125
+#: src/mp_gamestate.cpp:8134
 msgid "Couldn't prepare the co-op world."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8147
+#: src/mp_gamestate.cpp:8156
 #, c-format
 msgid "Mod \"%s\" is not co-op compatible."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8151
+#: src/mp_gamestate.cpp:8160
 #, c-format
 msgid "Mod \"%s\" may break in co-op."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8174
+#: src/mp_gamestate.cpp:8183
 msgid ""
 "Random NPCs are enabled — co-op can't sync them to the other player yet."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8269
+#: src/mp_gamestate.cpp:8278
 msgid "This world has co-op history"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8270
+#: src/mp_gamestate.cpp:8279
 msgid "Load as solo, or arm Host so your partner can Join?"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8276
+#: src/mp_gamestate.cpp:8285
 msgid "Load solo"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8277
+#: src/mp_gamestate.cpp:8286
 msgid "Arm Host (co-op)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8412
+#: src/mp_gamestate.cpp:8421
 #, c-format
 msgid "Invalid port in '%s'."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8442
+#: src/mp_gamestate.cpp:8451
 msgid "Enter new address…"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8457
+#: src/mp_gamestate.cpp:8466
 msgid "Host address  (e.g. 192.168.1.5  or  100.64.0.5:8080)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8489
+#. ~ %1$s is the host address, %2$d is the port number
+#: src/mp_gamestate.cpp:8499
 #, c-format
 msgid ""
-"Could not reach %s:%d ...\n"
+"Could not reach %1$s:%2$d ...\n"
 "\n"
 "1 Make sure the host is in-game and hosting\n"
-"2 Ensure both machines are on the same network or VPN.  A \"Connected\" status in Tailscale/Radmin does not guarantee routing, so try the host's other listed address, or toggle the VPN off/on to reset its route.\n"
-"3 Turn off any commercial VPN (NordVPN, ExpressVPN, Proton, etc).  It takes over your machine's routing and will send co-op traffic out through the VPN instead of to your partner.\n"
+"2 Ensure both machines are on the same network or VPN.  A \"Connected\" "
+"status in Tailscale/Radmin does not guarantee routing, so try the host's "
+"other listed address, or toggle the VPN off/on to reset its route.\n"
+"3 Turn off any commercial VPN (NordVPN, ExpressVPN, Proton, etc).  It takes "
+"over your machine's routing and will send co-op traffic out through the VPN "
+"instead of to your partner.\n"
 "4 Check the address and check the port isn't firewalled."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8505
+#. ~ %1$s is the host address, %2$d is the port number
+#: src/mp_gamestate.cpp:8516
 #, c-format
-msgid "Could not connect to %s:%d."
+msgid "Could not connect to %1$s:%2$d."
 msgstr ""
 
-#: src/mp_gamestate.cpp:8522
+#: src/mp_gamestate.cpp:8533
 msgid "Save as (optional label, e.g. 'Intel Mac' — blank to skip)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8534
+#: src/mp_gamestate.cpp:8545
 msgid "Co-op: armed — re-enter Host to pick world / character"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8536
+#: src/mp_gamestate.cpp:8547
 #, c-format
 msgid "Co-op: hosting on port %d — waiting for partner"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8540
+#: src/mp_gamestate.cpp:8551
 msgid "Co-op: connected to host — re-enter Join to pick character"
 msgstr ""
 
-#: src/mp_gamestate.cpp:8703
+#: src/mp_gamestate.cpp:8714
 #, c-format
 msgid ""
 "Your partner went silent (>%d s) — connection lost.  They'll rejoin "
 "automatically if they reconnect."
 msgstr ""
 
-#: src/mp_gamestate.cpp:9291
+#: src/mp_gamestate.cpp:9302
 msgid "Your partner is leaving.  The session will end shortly."
 msgstr ""
 
-#: src/mp_gamestate.cpp:9298
+#: src/mp_gamestate.cpp:9309
 msgid ""
-"The host saved the shared world — your progress is in sync.  (Your inventory"
-" isn't fully mirrored to the host yet — known limitation.)"
+"The host saved the shared world — your progress is in sync.  (Your inventory "
+"isn't fully mirrored to the host yet — known limitation.)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:9409
+#: src/mp_gamestate.cpp:9420
 msgid "Connection to host lost — reconnecting… (up to ~15s)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:9424
+#. ~ %1$d is the current attempt number, %2$d is the total or max attempts,
+#. like 1/5
+#: src/mp_gamestate.cpp:9436
 #, c-format
-msgid "Reconnecting to host… (try %d/%d)"
+msgid "Reconnecting to host… (try %1$d/%2$d)"
 msgstr ""
 
-#: src/mp_gamestate.cpp:9433
+#: src/mp_gamestate.cpp:9445
 msgid ""
 "Couldn't join: the connection dropped during char creation and could not be "
 "re-established.  You are NOT in the host's game."
 msgstr ""
 
-#: src/mp_gamestate.cpp:9439
+#: src/mp_gamestate.cpp:9451
 msgid ""
 "If either player is running a commercial VPN, turn it off and try again."
 msgstr ""
 
-#: src/mp_gamestate.cpp:9444
+#: src/mp_gamestate.cpp:9456
 msgid "Couldn't reconnect to the host after several tries — connection lost."
 msgstr ""
 
-#: src/mp_gamestate.cpp:9449
+#: src/mp_gamestate.cpp:9461
 msgid "Reconnected to the host — resuming."
 msgstr ""
 
-#: src/mp_gamestate.cpp:9624 src/mp_gamestate.cpp:9641
+#: src/mp_gamestate.cpp:9636 src/mp_gamestate.cpp:9653
 msgid "Your partner"
 msgstr ""
 
-#: src/mp_gamestate.cpp:11233
+#: src/mp_gamestate.cpp:11245
 msgid "You can't do that right now."
 msgstr ""
 
-#: src/mp_gamestate.cpp:11238
+#: src/mp_gamestate.cpp:11250
 msgid "Direct your character"
 msgstr ""
 
-#: src/mp_gamestate.cpp:11241
+#: src/mp_gamestate.cpp:11253
 msgid "Sort loot into zones"
 msgstr ""
 
-#: src/mp_gamestate.cpp:11242
+#: src/mp_gamestate.cpp:11254
 msgid "Stop what they're doing"
 msgstr ""
 
-#: src/mp_gamestate.cpp:13481 src/mp_gamestate.cpp:13559
+#: src/mp_gamestate.cpp:13493 src/mp_gamestate.cpp:13572
 msgid "Your partner is not connected."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13487
+#: src/mp_gamestate.cpp:13499
 msgid "You need to be adjacent to your partner."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13492
+#: src/mp_gamestate.cpp:13504
 msgid "Pass what?"
 msgstr ""
 
-#: src/mp_gamestate.cpp:13492
+#: src/mp_gamestate.cpp:13504
 msgid "You have no items to pass."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13507
+#. ~ %1$s is the item to pass, %2$s is the partner's name
+#: src/mp_gamestate.cpp:13520
 #, c-format
-msgid "You pass the %s to %s."
+msgid "You pass the %1$s to %2$s."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13568
+#: src/mp_gamestate.cpp:13581
 msgid "You need to be adjacent to your partner to high-five."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13576
+#: src/mp_gamestate.cpp:13589
 #, c-format
 msgid "%s is busy and leaves you hanging."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13578
+#. ~ %1$s is partner name, %2$s is the verb/activity they are doing
+#: src/mp_gamestate.cpp:13592
 #, c-format
-msgid "%s is busy %s and leaves you hanging."
+msgid "%1$s is busy %2$s and leaves you hanging."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13594
+#: src/mp_gamestate.cpp:13608
 #, c-format
 msgid "You high-five %s!"
 msgstr ""
 
-#: src/mp_gamestate.cpp:13660
+#: src/mp_gamestate.cpp:13674
 #, c-format
 msgid "%s yells"
 msgstr ""
 
-#: src/mp_gamestate.cpp:13689
+#: src/mp_gamestate.cpp:13703
 #, c-format
 msgid "%s high-fives you!"
 msgstr ""
 
-#: src/mp_gamestate.cpp:13786
+#: src/mp_gamestate.cpp:13800
 msgid "Your partner marked a spot on the map."
 msgstr ""
 
-#: src/mp_gamestate.cpp:13798
+#: src/mp_gamestate.cpp:13812
 msgid "Your partner marked an area as dangerous."
 msgstr ""
 
@@ -787,8 +818,8 @@ msgstr ""
 #: src/mp_mod_compat.cpp:55
 msgid ""
 "CO-OP: NOT COMPATIBLE.  Moves between the island and the mainland as "
-"separate dimensions; co-op shares one world and cannot place the two players"
-" in different dimensions."
+"separate dimensions; co-op shares one world and cannot place the two players "
+"in different dimensions."
 msgstr ""
 
 #: src/mp_mod_compat.cpp:60
@@ -807,9 +838,9 @@ msgstr ""
 
 #: src/mp_mod_compat.cpp:70
 msgid ""
-"CO-OP: NOT COMPATIBLE.  Psionic powers are scripted and run only on your own"
-" client; teleportation powers break the shared map and self-heals desync "
-"from the host."
+"CO-OP: NOT COMPATIBLE.  Psionic powers are scripted and run only on your own "
+"client; teleportation powers break the shared map and self-heals desync from "
+"the host."
 msgstr ""
 
 #: src/mp_mod_compat.cpp:75
@@ -827,10 +858,10 @@ msgstr ""
 
 #: src/mp_mod_compat.cpp:85
 msgid ""
-"CO-OP: NOT COMPATIBLE.  Aftershock's distinctive map specials (the exoplanet"
-" start pads, alien biomes) aren't streamed host->client; the joining "
-"player's world generates its own terrain at the same coordinates, so the two"
-" players stand on completely different maps."
+"CO-OP: NOT COMPATIBLE.  Aftershock's distinctive map specials (the exoplanet "
+"start pads, alien biomes) aren't streamed host->client; the joining player's "
+"world generates its own terrain at the same coordinates, so the two players "
+"stand on completely different maps."
 msgstr ""
 
 #: src/mp_mod_compat.cpp:92
@@ -860,8 +891,8 @@ msgstr ""
 
 #: src/mp_mod_compat.cpp:112
 msgid ""
-"CO-OP: may break.  The mutagen-gland system runs only on your own client and"
-" won't sync to the remote player."
+"CO-OP: may break.  The mutagen-gland system runs only on your own client and "
+"won't sync to the remote player."
 msgstr ""
 
 #: src/mp_mod_compat.cpp:117
@@ -896,8 +927,8 @@ msgstr ""
 
 #: src/mp_mod_compat.cpp:152
 msgid ""
-"CO-OP: minor issues.  Most works, but on-kill style buffs aren't credited to"
-" the remote player."
+"CO-OP: minor issues.  Most works, but on-kill style buffs aren't credited to "
+"the remote player."
 msgstr ""
 
 #: src/newcharacter.cpp:2761
@@ -939,10 +970,12 @@ msgstr ""
 msgid ""
 "This option is locked in the co-op fork.\n"
 "\n"
-"It must match between all players — differing world options can break multiplayer sync and cause the game states to diverge."
+"It must match between all players — differing world options can break "
+"multiplayer sync and cause the game states to diverge."
 msgstr ""
 
-#: src/player_activity.cpp:518
+#. ~ %s is the monster's name
+#: src/player_activity.cpp:519
 #, c-format
 msgid "Your partner is in danger! The %s is close!"
 msgstr ""

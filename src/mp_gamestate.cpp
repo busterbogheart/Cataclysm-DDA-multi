@@ -4675,16 +4675,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     // Generate a message so flush_action_msgs forwards it to the client.
                     if( !target_name.empty() ) {
                         if( smash_result_str == "destroyed" ) {
-                            //~ first %s is the player smashing, second %s is the monster name 
-                            add_msg( m_good, _( "%s smashes the %s to pieces!" ),
+                            //~ %1$s is the player smashing, %2$s is the monster name 
+                            add_msg( m_good, _( "%1$s smashes the %2$s to pieces!" ),
                                      remote->get_name(), target_name );
                         } else if( smash_result_str == "hit" ) {
-                            //~ first %s is the player smashing, second %s is the monster name 
-                            add_msg( _( "%s strikes the %s." ),
+                            //~ %1$s is the player smashing, %2$s is the monster name 
+                            add_msg( _( "%1$s strikes the %2$s." ),
                                      remote->get_name(), target_name );
                         } else if( smash_result_str == "impossible" ) {
-                            //~ first %s is the player smashing, second %s is the monster name 
-                            add_msg( m_info, _( "%s can't damage the %s." ),
+                            //~ %1$s is the player smashing, %2$s is the monster name 
+                            add_msg( m_info, _( "%1$s can't damage the %2$s." ),
                                      remote->get_name(), target_name );
                         }
                     }
@@ -4819,8 +4819,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     remote->controlling_vehicle = true;
                     mp_log( "[cdda-mp] control_vehicle: proxy took/started+took control of " + veh.name );
                     // Host log: NPC-form. Client: direct push (correct grammar, first-person).
-                    //~ first %s is the player, second %s is the vehicle name 
-                    add_msg( _( "%s takes control of the %s." ), remote->name, veh.name );
+                    //~ %1$s is the player, %2$s is the vehicle name 
+                    add_msg( _( "%1$s takes control of the %2$s." ), remote->name, veh.name );
                     g_action_msgs_pending.push_back(
                         string_format( _( "You take control of the %s." ), veh.name ) );
                     if( engine_was_off ) {
@@ -4830,8 +4830,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     }
                 } else {
                     mp_log( "[cdda-mp] control_vehicle: engine failed to start" );
-                    //~ first %s is the player, second %s is the vehicle name
-                    add_msg( m_bad, _( "%s can't start the %s's engine." ), remote->name, veh.name );
+                    //~ %1$s is the player, %2$s is the vehicle name
+                    add_msg( m_bad, _( "%1$s can't start the %2$s's engine." ), remote->name, veh.name );
                     g_action_msgs_pending.push_back(
                         //~ %s is the vehicle name
                         string_format( _( "You can't start the %s's engine." ), veh.name ) );
@@ -4963,8 +4963,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             if( veh.last_turn != 0_degrees &&
                 rng( 15, 60 ) * 100 < std::abs( veh.velocity ) ) {
                 veh.skidding = true;
-                //~ first %s is the player, second %s is the vehicle name 
-                add_msg( m_warning, _( "%s loses control of %s." ), remote->name, veh.name );
+                //~ %1$s is the player, %2$s is the vehicle name 
+                add_msg( m_warning, _( "%1$s loses control of %2$s." ), remote->name, veh.name );
                 //~ %s is the vehicle name 
                 g_action_msgs_pending.push_back( string_format( _( "You lose control of %s." ),
                                                  veh.name ) );
@@ -7925,8 +7925,8 @@ bool mp_menu_start_host_session()
                 g_host_port_loaded = true;
                 mp_host_port_save_disk( g_host_port_menu );
             } else {
-                //~ first %s is the wrong port, second %s is original one entered 
-                popup( _( "Invalid port \"%s\" — keeping %s." ), in, def );
+                //~ %1$s is the wrong port, %2$s is original one entered 
+                popup( _( "Invalid port \"%1$s\" — keeping %2$s." ), in, def );
             }
         }
     }
@@ -8495,8 +8495,8 @@ bool mp_menu_join_session()
         // Name the VPN-route gotcha explicitly: a "Connected" status in the VPN
         // app does NOT mean apps can route to the peer, and the host now shows
         // both its LAN and VPN addresses so the partner can try the other one.
-        //~ %s is the host address, %d is the port number 
-        popup( _( "Could not reach %s:%d ...\n\n"
+        //~ %1$s is the host address, %2$d is the port number 
+        popup( _( "Could not reach %1$s:%2$d ...\n\n"
                   "1 Make sure the host is in-game and hosting\n"
                   "2 Ensure both machines are on the same network or VPN.  A \"Connected\" "
                   "status in Tailscale/Radmin does not guarantee routing, so try the host's "
@@ -8512,8 +8512,8 @@ bool mp_menu_join_session()
     if( !client_connect( host, port, "player2", std::string(), getVersionString() ) ) {
         const std::string err = client_connect_error();
         popup( "%s", err.empty()
-               //~ %s is the host address, %d is the port number 
-               ? string_format( _( "Could not connect to %s:%d." ), host, static_cast<int>( port ) ).c_str()
+               //~ %1$s is the host address, %2$d is the port number 
+               ? string_format( _( "Could not connect to %1$s:%2$d." ), host, static_cast<int>( port ) ).c_str()
                : err.c_str() );
         set_client_mode( false );
         return false;
@@ -9432,8 +9432,8 @@ static bool apply_one_state_message( const std::string &msg )
         const int tot = grab( "\"reconnect_total\":" );
         mp_log( "[cdda-mp] RECONNECT: narrate attempt " + std::to_string( n ) + "/" +
                 std::to_string( tot ) );
-        //~ first %d is the current attempt number, second is the total or max attempts, like 1/5
-        add_msg( m_warning, _( "Reconnecting to host… (try %d/%d)" ), n, tot );
+        //~ %1$d is the current attempt number, %2$d is the total or max attempts, like 1/5
+        add_msg( m_warning, _( "Reconnecting to host… (try %1$d/%2$d)" ), n, tot );
         return true;
     }
     // The join itself never landed — the link died during character creation and
@@ -13516,8 +13516,8 @@ void mp_handle_pass_item()
     mp_post_trade( *partner, give_list, take_list );
 
     av.mod_moves( -100 );
-    //~ first %s is the item to pass, second %s is the partner's name
-    add_msg( _( "You pass the %s to %s." ), given.tname(), partner->get_name() );
+    //~ %1$s is the item to pass, %2$s is the partner's name
+    add_msg( _( "You pass the %1$s to %2$s." ), given.tname(), partner->get_name() );
 
     if( is_client_mode() ) {
         mp_client_post_action();
@@ -13588,8 +13588,8 @@ void mp_high_five()
         if( verb.empty() ) {
             add_msg( m_info, _( "%s is busy and leaves you hanging." ), partner->name );
         } else {
-            //~ first %s is partner name, second %s is the verb/activity they are doing
-            add_msg( m_info, _( "%s is busy %s and leaves you hanging." ),
+            //~ %1$s is partner name, %2$s is the verb/activity they are doing
+            add_msg( m_info, _( "%1$s is busy %2$s and leaves you hanging." ),
                      partner->name, verb );
         }
         return;

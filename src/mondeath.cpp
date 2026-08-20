@@ -69,8 +69,8 @@ item_location mdeath::normal( map *here, monster &z )
                            cata_mp::is_remote_player( killer->as_character()->getID() ) ) {
                     // Remote player kill: between-action filter forwards this to the client
                     // as "You kill the X!" because it contains the NPC's name.
-                    //~ this string for killing monsters: first %s is the killer, second %s is the monster name 
-                    add_msg_if_player_sees( z, m_good, _( "%s kills the %s!" ),
+                    //~ this string for killing monsters: %1$s is the killer, %2$s is the monster name 
+                    add_msg_if_player_sees( z, m_good, _( "%1$s kills the %2$s!" ),
                                             killer->get_name(), z.name() );
                 }
             }
