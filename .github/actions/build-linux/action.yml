@@ -70,7 +70,8 @@ runs:
         make -j"$(nproc)" \
           CCACHE=1 RELEASE=1 \
           TILES=1 SOUND=1 SDL3=0 LINTJSON=0 PCH=0 \
-          cataclysm-tiles
+          LOCALIZE=1 LANGUAGES=all \
+          cataclysm-tiles localization
 
     - name: ccache stats
       shell: bash
@@ -118,6 +119,9 @@ runs:
         # SOUND=1 still wants the sound/ tree for menu sounds; the CC-Sounds
         # pack proper is downloaded by the user later.
         [ -d data/sound ] && cp -r data/sound Cddacoop/data/ || true
+        # Translations: path_info.cpp resolves lang/mo/ as a sibling of the
+        # binary, same as data/ and gfx/ above.
+        if [ -d lang/mo ]; then mkdir -p Cddacoop/lang && cp -r lang/mo Cddacoop/lang/; fi
 
         # Bundle non-system shared libs (SDL2 + media/codec deps) next to the
         # binary; a launcher prepends ./lib to LD_LIBRARY_PATH. We deliberately

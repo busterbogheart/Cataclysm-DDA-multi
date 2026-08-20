@@ -1,0 +1,68 @@
+name: Build translations
+
+# Ported from upstream CleverRaven/Cataclysm-DDA (commit 113d0f04af, "Pull
+# translations in CI instead of using repo ones"). Upstream stopped
+# committing .po files to git (they'd grown to ~38MB each) in favor of
+# pulling fresh translations from Transifex at release-build time instead.
+# We inherited the "delete .po from git" half of that change through past
+# merges but never the CI half — this restores it so our releases actually
+# ship translated builds again. See ROADMAP.md 2026-08-19 for the full story.
+#
+# Requires a TX_TOKEN repo secret (a Transifex API token with read access to
+# the cataclysm-dda-translators/cataclysm-dda project — see .tx/config).
+# Without it this job no-ops (continue-on-error below) and produces the same
+# untranslated placeholder state as before.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      TX_TOKEN:
+        required: true
+
+jobs:
+  build-translations:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install gettext
+        run: sudo apt-get install gettext
+
+      - name: Install Transifex CLI
+        run: |
+          curl -sL https://github.com/transifex/cli/releases/download/v1.6.17/tx-linux-amd64.tar.gz | sudo tar zxvf - -C /usr/bin tx
+
+      - name: Checkout local repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          sparse-checkout: |
+            .tx
+            tools
+            lang
+          fetch-depth: 1
+
+      - name: Pull translations
+        continue-on-error: true
+        env:
+          TX_TOKEN: ${{ secrets.TX_TOKEN }}
+        run: |
+          if [ -z "${TX_TOKEN}" ]; then
+          echo "No TX_TOKEN secret set in this repo, not pulling translations from Transifex"
+          exit 1
+          fi
+          tx pull -a --force -w 2
+
+      - name: Discard invalid translations
+        run: ./lang/discard_invalid_po.sh
+
+      - name: Update translation statistics
+        run: ./lang/update_stats.sh
+
+      - name: Store translation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "translations"
+          path: |
+            lang/po
+            lang/mo
+            src/lang_stats.inc

@@ -274,6 +274,10 @@ runs:
         # binary depends on. Must carry the same UNIVERSAL_BINARY flag as the
         # build step so the linker flags match (otherwise `app` would relink
         # single-arch over the fat .o files).
+        # LANGUAGES=all triggers the Makefile's own `ifdef LANGUAGES` block in
+        # the `app` recipe, which compiles lang/mo and copies it into
+        # Contents/Resources/lang/mo — no manual copy needed here, unlike the
+        # Linux/Windows actions which package by hand.
         UNI=""
         [ "$ARCH" = "universal" ] && UNI="UNIVERSAL_BINARY=1"
         make app \
@@ -282,6 +286,7 @@ runs:
           FRAMEWORK=1 \
           USE_HOME_DIR=1 \
           RELEASE=1 \
+          LOCALIZE=1 LANGUAGES=all \
           $UNI
         # Rename post-hoc so the user-visible app inside the DMG matches the
         # site / DMG filename without patching the Makefile.
