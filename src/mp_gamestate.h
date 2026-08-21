@@ -244,6 +244,18 @@ void mp_client_dispatch_grab_if_changed( object_type pre_type,
 // forwards a toggle_haul action to the host when is_hauling() actually flipped.
 void mp_client_dispatch_hauling_if_changed( bool pre_hauling );
 
+// DIAGNOSTIC (2026-08-20, "can't craft in a moving car" report).
+// craft_activity_actor::check_if_craft_okay() bails on two quite different
+// conditions — the craft item_location resolving to nullptr, and the craft
+// simply being more than one tile away — but both emit the *same* player-facing
+// "You no longer have the in progress craft in your possession" text, so the
+// player log cannot tell them apart. In the reported session six aborts landed
+// four-while-the-truck-was-moving and two while parked, which is the shape of
+// two separate bugs wearing one message. Call this from the failure branch to
+// record which one fired and how far apart the two ended up.
+void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &craft_pos,
+                                   const tripoint_abs_ms &crafter_pos );
+
 // Client-only: "direct your character" menu, bound to ACTION_LOOT while in
 // client mode (the plain SP loot() the host uses would run against the
 // client's own non-authoritative local zone_manager/map and do nothing

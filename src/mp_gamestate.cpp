@@ -377,9 +377,26 @@ void mp_do_turn_update_body( Character &u )
     if( s_last_update_body != calendar::before_time_starts &&
         calendar::turn > s_last_update_body &&
         to_turns<int>( calendar::turn - s_last_update_body ) <= MAX_BODY_CATCHUP_TURNS ) {
+        // DIAGNOSTIC (2026-08-20, "client time runs faster / takes freeze damage"
+        // report): the per-call span is not the interesting number — the running
+        // total is. If the turns fed to update_body() ever exceed the host clock's
+        // own advance, the client is ageing its needs faster than the shared world
+        // and that difference is exactly the unexplained cold damage. drift should
+        // sit at 0; anything positive and growing is the bug.
+        const int span = to_turns<int>( calendar::turn - s_last_update_body );
+        static int s_body_turns_applied = 0;
+        static time_point s_body_first_turn = calendar::before_time_starts;
+        if( s_body_first_turn == calendar::before_time_starts ) {
+            s_body_first_turn = s_last_update_body;
+        }
+        s_body_turns_applied += span;
+        const int host_span = to_turns<int>( calendar::turn - s_body_first_turn );
         mp_log( "[cdda-mp] mp_do_turn_update_body: RANGE catch-up from=" +
                 to_string( s_last_update_body ) + " to=" + to_string( calendar::turn ) +
-                " (turns=" + std::to_string( to_turns<int>( calendar::turn - s_last_update_body ) ) + ")" );
+                " (turns=" + std::to_string( span ) + ")" +
+                " applied_total=" + std::to_string( s_body_turns_applied ) +
+                " host_span=" + std::to_string( host_span ) +
+                " drift=" + std::to_string( s_body_turns_applied - host_span ) );
         u.update_body( s_last_update_body, calendar::turn );
     } else {
         mp_log( "[cdda-mp] mp_do_turn_update_body: single-turn (first run/rewind/capped) turn=" +
@@ -8720,6 +8737,22 @@ void process_mp_events()
 static void apply_monster_sync( JsonObject &jo );
 static void apply_tile_changes( JsonObject &jo );
 static void apply_vehicle_sync( JsonObject &jo );
+
+void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &craft_pos,
+                                   const tripoint_abs_ms &crafter_pos )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    mp_log( std::string( "[cdda-mp] CRAFT-LOST: reason=" ) +
+            ( item_missing ? "item_gone" : "out_of_range" ) +
+            " craft_abs=" + std::to_string( craft_pos.x() ) + "," +
+            std::to_string( craft_pos.y() ) + "," + std::to_string( craft_pos.z() ) +
+            " crafter_abs=" + std::to_string( crafter_pos.x() ) + "," +
+            std::to_string( crafter_pos.y() ) + "," + std::to_string( crafter_pos.z() ) +
+            " dist=" + std::to_string( item_missing ? -1 : square_dist( craft_pos, crafter_pos ) ) +
+            " in_veh=" + std::to_string( get_avatar().in_vehicle ) );
+}
 
 // Move the client avatar to an absolute position, loading the map chunk if needed.
 static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )

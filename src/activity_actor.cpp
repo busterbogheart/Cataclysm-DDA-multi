@@ -6234,6 +6234,11 @@ bool craft_activity_actor::check_if_craft_okay( item_location &craft_item, Chara
 
     // item_location::get_item() will return nullptr if the item is lost
     if( !craft || square_dist( craft_item.pos_abs(), crafter.pos_abs() ) > 1 ) {
+        // MP diagnostic: these two conditions share one message, which made a
+        // player report indistinguishable. Record which fired. No-op in SP.
+        cata_mp::mp_log_craft_possession_lost( !craft,
+                                               craft ? craft_item.pos_abs() : crafter.pos_abs(),
+                                               crafter.pos_abs() );
         crafter.add_msg_player_or_npc(
             _( "You no longer have the in progress craft in your possession.  "
                "You stop crafting.  "
