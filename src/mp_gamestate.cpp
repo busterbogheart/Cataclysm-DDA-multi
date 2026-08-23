@@ -1461,16 +1461,23 @@ struct mp_hud_t {
             const int partner_kills = is_hosting() ? g_client_kills : g_host_kills;
             const std::string mk = std::to_string( my_kills );
             const std::string pk = std::to_string( partner_kills );
-            const std::string tally = "kills " + mk + "·" + pk;
+            //~ Label on the co-op panel's kill tally, drawn as "kills 3\u00b74"
+            //~ (your count, then your partner's).  KEEP THE TRAILING SPACE — it
+            //~ separates the label from the first number, which is printed
+            //~ immediately after it in a different color.
+            const std::string kills_label = _( "kills " );
+            const std::string tally = kills_label + mk + "·" + pk;
             const int tally_x = ping_x - 2 - utf8_width( tally );
             if( tally_x > x ) {   // draw only if it doesn't overrun the left content
                 // Color the two numbers apart so it's obvious which is which at a
                 // glance: partner's count in green to match their green '@' proxy
                 // glyph on the map; yours in white (your own '@' color), label +
-                // separator neutral gray.
+                // separator neutral gray.  The label's width must come from the
+                // TRANSLATED string, not the English literal, or the numbers land
+                // on top of it in any language whose word for "kills" is longer.
                 int tx = tally_x;
-                mvwprintz( win, point( tx, crow ), c_dark_gray, "kills " );
-                tx += utf8_width( "kills " );
+                mvwprintz( win, point( tx, crow ), c_dark_gray, "%s", kills_label.c_str() );
+                tx += utf8_width( kills_label );
                 mvwprintz( win, point( tx, crow ), c_white, "%s", mk.c_str() );
                 tx += utf8_width( mk );
                 mvwprintz( win, point( tx, crow ), c_light_gray, "·" );
@@ -9328,7 +9335,7 @@ static bool apply_one_state_message( const std::string &msg )
         if( !g_server_died ) {
             g_server_died = true;
             remove_client_host_npc();
-            add_msg( m_bad, "Your partner has died.  Waiting for them to respawn..." );
+            add_msg( m_bad, _( "Your partner has died.  Waiting for them to respawn..." ) );
         }
         return true;
     }
@@ -9530,7 +9537,7 @@ static bool apply_one_state_message( const std::string &msg )
         if( !g_server_died ) {
             g_server_died = true;
             remove_client_host_npc();
-            add_msg( m_bad, "Lost connection to server." );
+            add_msg( m_bad, _( "Lost connection to server." ) );
         }
         return true;
     }
@@ -10107,7 +10114,8 @@ static bool apply_one_state_message( const std::string &msg )
             const bool recompute_sig = n_dropped == n_parts && n_dropped >= 6 && uniform_drop;
             if( total_damage > 0 && !recompute_sig ) {
                 mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: total=" + std::to_string( total_damage ) );
-                add_msg( m_bad, "You are hit for %d damage!", total_damage );
+                //~ %d is the total damage taken across all body parts this tick.
+                add_msg( m_bad, _( "You are hit for %d damage!" ), total_damage );
             } else if( recompute_sig ) {
                 mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: suppressed uniform recompute (all "
                         + std::to_string( n_parts ) + " parts -" + std::to_string( first_delta )
