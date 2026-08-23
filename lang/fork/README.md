@@ -5,7 +5,7 @@ directory is for the strings **this fork adds**, which Transifex will never
 have — the co-op UI, the co-op tips, and the co-op section of the message of
 the day.
 
-There are 208 strings, about 2,000 words. Roughly an evening of work.
+There are 212 strings, about 2,000 words. Roughly an evening of work.
 
 ## For translators
 
@@ -35,7 +35,7 @@ Then:
 If you're editing as plain text rather than in Poedit, watch the quoting: a `"`
 inside the text has to be written `\"`, a line break has to be written `\n`, and
 longer strings are split across several quoted lines that all belong to the same
-entry. About 50 of the 208 are wrapped like that. Poedit and the GitHub editor
+entry. About 50 of the 212 are wrapped like that. Poedit and the GitHub editor
 both handle it for you; a plain editor does not.
 
 You do not need to finish it in one sitting, and you do not need to translate
@@ -46,7 +46,7 @@ English, nothing breaks.
 
 **Percent placeholders.** `%s`, `%d`, `%1$s` and friends get replaced with real
 values at runtime — a player name, a number, an item. Keep every one of them,
-and keep them in a sensible spot for your language. 70 of the 208 strings have
+and keep them in a sensible spot for your language. 71 of the 212 strings have
 these. Poedit warns you if one goes missing.
 
 > `Could not reach %s:%d` → `Не удалось подключиться к %s:%d`
