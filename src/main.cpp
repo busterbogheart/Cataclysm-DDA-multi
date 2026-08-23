@@ -487,11 +487,22 @@ cli_opts parse_commandline( int argc, const char **argv )
             },
             {
                 "--password", "<string>",
-                "Password required for players to join the multiplayer server",
+                "Multiplayer password.  With --host/--server it is the password "
+                "players must supply; with --client it is the password sent to the "
+                "host.  Both sides must pass it — the in-game Join menu has no "
+                "password field and always sends an empty one.",
                 section_default,
                 1,
                 [&result]( int, const char **params ) -> int {
+                    // One flag, both roles.  Only the matching mode reads its
+                    // copy, so setting both is harmless and makes the flag work
+                    // regardless of whether --host or --client came first on the
+                    // command line.  Before this, --password only ever reached
+                    // the server side and cli.client_password was dead storage,
+                    // so a password-protected host could not be joined by
+                    // anyone, by any route.
                     result.server_password = params[0];
+                    result.client_password = params[0];
                     return 1;
                 }
             },
