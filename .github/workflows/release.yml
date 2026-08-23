@@ -44,6 +44,10 @@ on:
         description: 'Make the release a DRAFT (collaborator-only; not public, not on the site — download from the release page or run artifacts while logged in). Needs Upload checked too.'
         type: boolean
         default: false
+      refresh_translations:
+        description: 'Pull fresh base translations from Transifex first (SLOW: adds ~45-60 min). Leave off unless you want newer upstream translations.'
+        type: boolean
+        default: false
       summary:
         description: 'Short headline for this build — one major fix/feature. Shown in the release title and the Actions run name (e.g. "co-op join fix"). Optional.'
         type: string
@@ -112,6 +116,8 @@ jobs:
   build-translations:
     name: Build translations
     uses: ./.github/workflows/build-translations.yml
+    with:
+      refresh_translations: ${{ inputs.refresh_translations == true }}
     secrets:
       TX_TOKEN: ${{ secrets.TX_TOKEN }}
 

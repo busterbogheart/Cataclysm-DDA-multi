@@ -27,7 +27,24 @@ name: Build translations
 
 on:
   workflow_dispatch:
+    inputs:
+      refresh_translations:
+        description: 'Pull fresh translations from Transifex (slow: ~45-60 min, 25 languages). Off = use the archived snapshot.'
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      refresh_translations:
+        # Opt-in, and deliberately default-false even though TX_TOKEN exists.
+        # A Transifex pull is ~2 min and ~33 MB PER LANGUAGE, and the archive
+        # cache below is skipped whenever we take that path, so leaving it on
+        # would add the better part of an hour to every single release build
+        # and hammer a volunteer project's API 25x each time. The archived
+        # snapshot is good enough for day-to-day builds; tick this when you
+        # actually want fresher base translations.
+        type: boolean
+        default: false
+        required: false
     secrets:
       TX_TOKEN:
         # Not required: without it the job takes the git-history path instead
@@ -62,25 +79,40 @@ jobs:
             lang
           fetch-depth: 1
 
+      # Skipped unless the caller asked for it. The bare `exit 1` this step
+      # used to end on was harmless (continue-on-error) but rendered as a red
+      # ##[error] on every build, which reads as a broken job in the log view.
+      # It reports through an output now instead.
       - name: Pull translations from Transifex
         id: tx
-        continue-on-error: true
+        if: inputs.refresh_translations
         env:
           TX_TOKEN: ${{ secrets.TX_TOKEN }}
         run: |
           if [ -z "${TX_TOKEN}" ]; then
-            echo "No TX_TOKEN secret set in this repo — will fall back to the archived translations in git history."
-            exit 1
+            echo "refresh_translations was requested but no TX_TOKEN secret is set —"
+            echo "falling back to the archived translations in git history."
+            exit 0
           fi
           tx pull -a --force -w 2
 
       # placeholder.po is a tracked 0-byte file, so "did we get anything" has to
       # mean "is there a non-empty .po", not "does lang/po contain a .po".
+      # A pull that half-succeeds (rate limit, expired token, network) can leave
+      # a handful of real .po behind, and this count would then happily accept
+      # them and ship a catalog far worse than the archive. Require most of the
+      # expected 25+ languages before trusting a pull.
       - name: Decide translation source
         id: source
         run: |
           count=$(find lang/po -name '*.po' -size +1k | wc -l)
           echo "Non-empty .po files after Transifex pull: ${count}"
+          if [ "${count}" -gt 0 ] && [ "${count}" -lt 20 ]; then
+            echo "::warning::Only ${count} .po came down from Transifex (expected 25+)."
+            echo "::warning::Treating this as a failed pull and using the archive instead."
+            rm -f lang/po/*.po
+            count=0
+          fi
           if [ "${count}" -gt 0 ]; then
             echo "use_archive=false" >> "$GITHUB_OUTPUT"
           else
