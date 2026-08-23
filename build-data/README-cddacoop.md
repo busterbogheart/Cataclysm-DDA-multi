@@ -2,29 +2,33 @@
      SECTION SYNC MAP — this file is the single source of truth.
      Surfaces each `## ` section is published to:
        [zip]  bundled verbatim in the release readme (EVERY section)
-       [git]  injected into GitHub README.md  (scripts/sync-readme.mjs, SYNC: markers)
        [site] rendered on cddacoop.com         (build-time fetch of master)
 
        First launch ...................... [zip][site]
        Playing co-op / Host / Join ....... [zip]
-       Connecting ........................ [zip][git] + site (NOT auto-synced —
+       Connecting ........................ [zip] + site (NOT auto-synced —
                                            the site's version is hand-written in
                                            catacoop-site/src/pages/index.astro
                                            with its own accordion/codeblocks;
                                            update BOTH when adding a method)
        Where things live ................. [zip]
        Sound ............................. [zip]
-       What works ........................ [zip][git][site]
-       Known limits ...................... [zip][git][site]
-       FAQ ............................... [zip][git][site]
+       What works ........................ [zip][site]
+       Known limits ...................... [zip][site]
+       FAQ ............................... [zip][site]
        Mods .............................. [zip]
        Changelog ......................... [zip][site]
-       Getting help / reporting bugs ..... [zip][git]
-       Donate ............................ [zip][git]
+       Getting help / reporting bugs ..... [zip]
+       Donate ............................ [zip]
        Credits ........................... [zip]
 
-     Editing a [git]/[site] section here propagates on the next
-     README sync (run scripts/sync-readme.mjs) / site build.
+     Editing a [site] section here propagates on the next site build.
+
+     NOTE ON MARKUP: the site renders a deliberately tiny subset —
+     `code`, [text](url) and **bold**, and nothing else (see
+     catacoop-site/src/lib/readme.ts renderInline). Italics, __bold__,
+     raw HTML and bare URLs do NOT render there; a bare URL stays plain
+     text, so links must use [text](url) form.
      ============================================================ -->
 # CDDA CO-OP
 
@@ -361,6 +365,12 @@ large scripted-effect/teleport power sets fall outside that model.
 <!-- Stage the NEXT release's notes under "### Unreleased". The site filters out any
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
+
+### 2026-08-23
+- **CDDA CO-OP finally has full language support 🌎🌍🌏.** Previously English-only, now all upstream translations are pulled from Transifex and even some co-op specific strings are translated (mainly RU, ES, & PT).  This means `eight languages are now over 90% translated`.  Big thanks to @nonstop, @Qxx, and @1giro for their translation help.  
+- **The "your partner is getting far away" warning gave a distance that never happens.**
+  The warning mentioned a range that nothing could ever match... so the warning didn't make sense.
+- **Boosty is linked now for donations.** Thanks to @nonstop for the first tip!  👉 [boosty.to/cddacoop](https://boosty.to/cddacoop)
 
 ### 2026-08-17
 
