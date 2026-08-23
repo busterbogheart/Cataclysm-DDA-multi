@@ -20,6 +20,14 @@
 //
 // No dependencies — plain Node ESM. Edit the canonical file, run this (or let
 // the pre-commit/CI check remind you), commit both.
+//
+// STATUS: as of 2026-08-22, README.md carries NO marker pairs — it was slimmed
+// to a landing page that points at cddacoop.com, and the player-facing sections
+// now live only in the canonical file (which ships in-zip as README.txt and is
+// fetched by the site at build time). With no markers to replace, this script
+// is a no-op that reports "already in sync", so the CI gate stays green. It is
+// kept, not deleted, so that re-adding a marker pair to README.md immediately
+// starts syncing again with no other setup.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
