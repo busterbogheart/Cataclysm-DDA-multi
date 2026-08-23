@@ -363,7 +363,7 @@ msgstr "Переподключение к хосту"
 #. ~ immediately after it in a different color.
 #: src/mp_gamestate.cpp:1468
 msgid "kills "
-msgstr ""
+msgstr "Убийства "
 
 #: src/mp_gamestate.cpp:1738
 msgid "No co-op partner connected."
@@ -758,13 +758,15 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:8618
 msgid "You and your partner are close enough again."
-msgstr ""
+msgstr "Вы с напарником снова находитесь достаточно близко друг к другу."
 
 #: src/mp_gamestate.cpp:8623
 #, c-format
 msgid ""
 "Your partner is getting far away (%d tiles).  Max safe range is about 60."
 msgstr ""
+"Ваш напарник отдаляется (%d клеток). Максимальная безопасная дистанция — "
+"около 60."
 
 #: src/mp_gamestate.cpp:8628
 #, c-format
@@ -772,6 +774,8 @@ msgid ""
 "Your partner is near the edge of the simulated zone (%d tiles)!  Brake or "
 "turn around."
 msgstr ""
+"Ваш напарник находится у края симулируемой зоны (%d клеток)! Притормозите "
+"или развернитесь."
 
 #: src/mp_gamestate.cpp:8633
 #, c-format
@@ -779,6 +783,8 @@ msgid ""
 "Your partner is past the edge (%d tiles)!  Vehicle physics will break — "
 "close the gap now."
 msgstr ""
+"Ваш напарник вышел за пределы симулируемой зоны (%d клеток)! Физика "
+"транспорта будет работать некорректно — немедленно сократите дистанцию."
 
 #: src/mp_gamestate.cpp:8748
 #, c-format
@@ -791,7 +797,7 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:9338
 msgid "Your partner has died.  Waiting for them to respawn..."
-msgstr ""
+msgstr "Ваш напарник погиб. Ожидание возрождения..."
 
 #: src/mp_gamestate.cpp:9352
 msgid "Your partner is leaving.  The session will end shortly."
@@ -843,7 +849,7 @@ msgstr "Переподключение к хосту - возобновлени�
 
 #: src/mp_gamestate.cpp:9540
 msgid "Lost connection to server."
-msgstr ""
+msgstr "Соединение с сервером потеряно."
 
 #: src/mp_gamestate.cpp:9686 src/mp_gamestate.cpp:9703
 msgid "Your partner"
@@ -853,7 +859,7 @@ msgstr "Ваш напарник"
 #: src/mp_gamestate.cpp:10118
 #, c-format
 msgid "You are hit for %d damage!"
-msgstr ""
+msgstr "Вы получили %d ед. урона."
 
 #: src/mp_gamestate.cpp:11296
 msgid "You can't do that right now."
@@ -906,7 +912,7 @@ msgstr "%s занят(а) и оставляет тебя."
 #: src/mp_gamestate.cpp:13643
 #, c-format
 msgid "%1$s is busy %2$s and leaves you hanging."
-msgstr ""
+msgstr "%1$s занят(а) %2$s и оставляет тебя ждать."
 
 #: src/mp_gamestate.cpp:13659
 #, c-format

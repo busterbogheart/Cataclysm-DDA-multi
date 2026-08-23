@@ -139,12 +139,12 @@ msgstr ""
 #: src/main_menu.cpp:502
 msgctxt "Main Menu"
 msgid "C<O|o>-OP"
-msgstr ""
+msgstr "C<O|o>-OP"
 
 #: src/main_menu.cpp:505
 msgctxt "Main Menu"
 msgid "T<u|U>torial"
-msgstr ""
+msgstr "T<u|U>torial"
 
 #: src/main_menu.cpp:509
 msgctxt "Main Menu"
@@ -363,7 +363,7 @@ msgstr "Reconectandose al host…"
 #. ~ immediately after it in a different color.
 #: src/mp_gamestate.cpp:1468
 msgid "kills "
-msgstr ""
+msgstr "muertes "
 
 #: src/mp_gamestate.cpp:1738
 msgid "No co-op partner connected."
@@ -756,13 +756,15 @@ msgstr "Co-op: conectado a un host — re-entra a Unirse para elegir personaje."
 
 #: src/mp_gamestate.cpp:8618
 msgid "You and your partner are close enough again."
-msgstr ""
+msgstr "Tu y tu compa estan lo suficientemente cerca de nuevo."
 
 #: src/mp_gamestate.cpp:8623
 #, c-format
 msgid ""
 "Your partner is getting far away (%d tiles).  Max safe range is about 60."
 msgstr ""
+"Tu compa se esta alejando demasiado (%d casillas). La distancia maxima "
+"segura son alrededor de 60."
 
 #: src/mp_gamestate.cpp:8628
 #, c-format
@@ -770,6 +772,8 @@ msgid ""
 "Your partner is near the edge of the simulated zone (%d tiles)!  Brake or "
 "turn around."
 msgstr ""
+"Tu compa esta cerca del borde de la zona simulada (%d casillas)! Frena o da "
+"la vuelta."
 
 #: src/mp_gamestate.cpp:8633
 #, c-format
@@ -777,6 +781,8 @@ msgid ""
 "Your partner is past the edge (%d tiles)!  Vehicle physics will break — "
 "close the gap now."
 msgstr ""
+"Tu compa esta pasado el borde (%d casillas)!  Las fisicas del vehiculo se "
+"van a romper - cierren el espacio ahora."
 
 #: src/mp_gamestate.cpp:8748
 #, c-format
@@ -789,7 +795,7 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:9338
 msgid "Your partner has died.  Waiting for them to respawn..."
-msgstr ""
+msgstr "Tu compa se murio.  Esperando que respawneen..."
 
 #: src/mp_gamestate.cpp:9352
 msgid "Your partner is leaving.  The session will end shortly."
@@ -842,7 +848,7 @@ msgstr "Reconectado al host — resumiendo."
 
 #: src/mp_gamestate.cpp:9540
 msgid "Lost connection to server."
-msgstr ""
+msgstr "Perdida la conexion al servidor."
 
 #: src/mp_gamestate.cpp:9686 src/mp_gamestate.cpp:9703
 msgid "Your partner"
@@ -852,7 +858,7 @@ msgstr "Tu compa"
 #: src/mp_gamestate.cpp:10118
 #, c-format
 msgid "You are hit for %d damage!"
-msgstr ""
+msgstr "Vos sos golpeado por %d de daño!"
 
 #: src/mp_gamestate.cpp:11296
 msgid "You can't do that right now."
