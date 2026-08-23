@@ -84,8 +84,8 @@ keep it — those strings get glued to other text.
 This is a survival horror game, and the co-op messages are written fairly dry
 and matter-of-fact. Match that rather than making it chirpier. Where a phrase
 is a game term the base game already translates ("survivor", "NPC", vehicle
-part names), reuse whatever the Russian base translation uses so the co-op UI
-doesn't read like a different game.
+part names), reuse whatever your language's existing base-game translation uses
+so the co-op UI doesn't read like a different game.
 
 ## The message of the day is separate
 
