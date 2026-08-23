@@ -1382,13 +1382,20 @@ struct mp_hud_t {
                 verb += " x" + std::to_string( g_partner_activity_batch );
             }
             // Compose "<verb> NN%" — clamp verb length so the % stays on row.
+            // Columns, not bytes: .size()/.substr() count UTF-8 bytes, so a
+            // Cyrillic verb (2 bytes/char) measured ~2x its real width, got
+            // truncated at half the room it actually had, and then advanced x
+            // by double — which is what shoved the "NN%" to the far right of
+            // the panel. substr() could also cut mid-codepoint and emit a
+            // broken glyph. utf8_width/utf8_truncate are codepoint-aware and
+            // are what the rest of this panel already uses.
             const int avail = W - x - 8; // reserve room for " NN%" + drift
             std::string vshown = verb;
-            if( static_cast<int>( vshown.size() ) > avail ) {
-                vshown = vshown.substr( 0, std::max( 0, avail - 2 ) ) + "..";
+            if( utf8_width( vshown ) > avail ) {
+                vshown = utf8_truncate( vshown, std::max( 0, avail - 2 ) ) + "..";
             }
             mvwprintz( win, point( x, crow ), c_yellow, "%s", vshown.c_str() );
-            x += static_cast<int>( vshown.size() ) + 1;
+            x += utf8_width( vshown ) + 1;
             // ACT_PULP has no real progress fraction (moves_total == moves_left,
             // see mp_compute_activity_pct) — it's an open-ended activity even in
             // SP. Showing a permanent "0%" reads as broken sync; omit it instead.
@@ -1454,7 +1461,7 @@ struct mp_hud_t {
                      : ping < 500 ? c_yellow : c_red;
                 ps = std::to_string( ping ) + "ms";
             }
-            const int ping_x = W - static_cast<int>( ps.size() ) - 1;
+            const int ping_x = W - utf8_width( ps ) - 1;
             mvwprintz( win, point( ping_x, crow ), pc, "%s", ps.c_str() );
 
             const int my_kills = is_hosting() ? g_host_kills : g_client_kills;
@@ -3160,6 +3167,13 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
     const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - pre_msg ) );
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
+        // DIAG (2026-08-23): these gates match ENGLISH literals against text
+        // that add_msg has already TRANSLATED, so in a non-English UI the
+        // "You " gate rejects everything and the exclusions below never fire.
+        // Log every candidate and the decision until the relay is reworked to
+        // carry msgid + args instead of rendered text.  See ROADMAP.
+        mp_log( "[cdda-mp] host_capture_avatar_msgs: CANDIDATE text=\"" + text +
+                "\" you_gate=" + std::string( text.rfind( "You ", 0 ) == 0 ? "PASS" : "REJECT" ) );
         // Only forward messages that look like avatar combat ("You " prefix).
         // Inventory, UI, and ambient messages are excluded.
         if( text.rfind( "You ", 0 ) != 0 ) {
@@ -11005,6 +11019,12 @@ static void client_capture_avatar_msgs()
         if( text.rfind( "You ", 0 ) != 0 && text.rfind( "Now ", 0 ) != 0 ) {
             continue;  // skip ambient/UI/inventory chatter
         }
+        // DIAG (2026-08-23): English-literal matching against translated text
+        // — see the matching note in host_capture_avatar_msgs().  Note this
+        // side has NO "You " gate at all, so in a non-English UI every message
+        // falls through to the else-branch below and gets forwarded.
+        mp_log( "[cdda-mp] client_capture_avatar_msgs: CANDIDATE text=\"" + text +
+                "\" you_prefix=" + std::string( text.rfind( "You ", 0 ) == 0 ? "yes" : "no" ) );
         // Swap and push are already shown on the host by their dedicated
         // handlers ("<client> swaps places with you" / "pushes you out of the
         // way"); relaying the client's own "You swap/push <host>" too would
@@ -14191,6 +14211,11 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
 
     // 1b. Host avatar combat messages forwarded with "You" → host name attribution.
     for( const std::string &text : g_host_action_msgs_pending ) {
+        // DIAG (2026-08-23): every string that reaches the wire "msgs" array,
+        // logged at the serialization point rather than the producer, so a
+        // message arriving on the client with no matching producer log is
+        // immediately visible as coming from somewhere else.
+        mp_log( "[cdda-mp] msgs-wire: host_action \"" + text + "\"" );
         append_msg( text );
     }
     g_host_action_msgs_pending.clear();
