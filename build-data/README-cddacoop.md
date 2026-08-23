@@ -183,8 +183,9 @@ it for you, or you can skip and play silently; it lands at
 `~/Library/Application Support/Cddacoop/sound/CC-Sounds/`. On **Windows**,
 download `cc-sounds.zip` from the
 [releases page](https://github.com/busterbogheart/Cataclysm-DDA-multi/releases/latest)
-and extract it into `%APPDATA%\Cataclysm\sound\` (so you have
-`...\sound\CC-Sounds\`). On **Linux**, download `cc-sounds.zip` from the
+and extract it into `Cddacoop\data\sound\` (so you have
+`Cddacoop\data\sound\CC-Sounds\`) — the Windows build is portable, so it all
+lives next to the exe. On **Linux**, download `cc-sounds.zip` from the
 releases page and extract it into `Cddacoop/data/sound/` (so you have
 `Cddacoop/data/sound/CC-Sounds/`).
 
@@ -197,6 +198,10 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 - Item pickup, drop, wear, wield, use (single-tile and adjacent)
 - Eating, drinking, short consumption activities (both players
   simultaneously)
+- Long activities for either player — crafting (including batches),
+  butchering, field dressing, skinning and dissecting, construction and
+  building, reading, disassembly, foraging, fishing, workouts and vehicle
+  repair
 - Host and client appear as NPC proxies in each other's world with
   correct clothing and skin tone
 - Monster sync with damage messages
@@ -205,20 +210,29 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 - Field sync (blood, fire, acid)
 - Tile sync (terrain, furniture, items, graffiti)
 - Trap sync — client triggers traps server-side
+- Shared overmap notes — a note either player adds or deletes shows up on the
+  other's overmap
 - Vehicle state sync — part HP, fuel, name messages
 - Vehicle construction — install and remove parts
 - Drop-into-vehicle (drop items into the storage of a vehicle you're
   standing on)
+- Vehicle extras — honking, cruise control, the handbrake and hotwiring
+- Grabbing and dragging furniture or vehicles, and toggling hauling
 - In-game text chat: bind `Co-op chat` to a key to message your
   partner... yelling still works too
 - Trading: full trade menu between players (in addition to the new "Pass item" action, below)
 - Different z-levels — ground and overmap stay in sync when players are
   on different levels; ramps and bridges work now as expected
 - Separate vehicles — both players can drive their own vehicles
+- Loot zones — the joining player's `Loot/sort` command runs on the host, so
+  it sorts into the zones the host actually drew
+- Quicksave — either player can trigger it, and both get an on-screen
+  confirmation once the host's copy is up to date
 - Fast-forward — turns skip ahead when both players are in long waits or long activities
-- Co-op HUD — bottom-left panel showing partner name, movement mode, mood, worst-body-part HP bar, 
-  current activity + progress, and ping in ms
-- Partner menu co-op special actions — bump into your partner to open i: "*Tap on shoulder*"
+- Co-op HUD — bottom-left panel showing partner name, movement mode, mood, worst-body-part HP bar,
+  what your partner is actually doing (recipe name, batch count and progress, like
+  `crafting bandage x5 12% ▶▶`, where the arrows mean fast-forward is engaged), and ping in ms
+- Partner menu co-op special actions — bump into your partner to open it: "*Tap on shoulder*"
  interrupts their wait, "*Help with task*" works like single-player NPC help, 
  "*Pass item*" quickly tosses them one thing and "*High five*" gives a small morale bonus (just like real life)
 
@@ -234,6 +248,11 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
   the warning shows. 
 - **The host has to stay running.** It's a listen server, not a dedicated one:
   if the host quits or loses connection, the session ends for both players.
+- **The joining player's bionics don't reach the host.** Stats, skills,
+  proficiencies, mutations, worn gear and martial-arts style all sync across to
+  your partner's copy of you — bionics don't. Passive CBM bonuses and active
+  bionic powers won't apply to anything the host resolves on your behalf, so a
+  heavily bionic character will underperform in shared combat.
 - **Sleep** should work, but isn't fully developed yet. Coordinate sleep times 
   with your partner or expect the occasional issue.
 
@@ -297,7 +316,7 @@ It's a fork of CDDA experimental, including all changes from 0.I (Ito).  Any spe
 It's open source. The whole networking layer is public, anyone can read exactly what a connection can and can't do.  The protocol only carries game actions and state like moves, chat, tile/monster deltas, and saves. 
 
 The connection itself isn't encrypted. It's plain TCP/JSON without TLS. On a LAN this is a non-issue (traffic never leaves your network). For internet play, running it over Tailscale or playit.gg (see `Connecting`) wraps it in an encrypted tunnel, which I'd recommend over basic router port-forwarding if that matters to you.
-Password protection exists but there's no UI yet for it.  A host launched from the command line can pass `--host --password <string>` and the server will reject any join attempt with the wrong one.  On Windows you can alternatively make a shortcut and add `--host --password <string>`.  For custom port use `--port <portnumber>`.
+Password protection exists, but there's no UI for it yet, so **both** players have to launch from the command line for it to work.  The host passes `--host --password <string>`; the joining player passes `--client <address>:<port> --password <string>`.  The server rejects any join attempt with the wrong one.  Joining from the in-game `CO-OP > Join` menu always sends an empty password, so don't set a password unless both of you are starting the game from the command line.  On Windows you can make a shortcut and add the flags to it.  For a custom port use `--port <portnumber>`.
 
 
 ---
@@ -311,12 +330,19 @@ in the list and the info panel explains why**.
 - **Red = won't work in co-op.** These can't be selected, and the host can't create a world that contains one.
 - **Orange = may break.** You can still enable these, after a heads-up dialog;
   some features just won't sync cleanly to the other player.  Or maybe it'll work perfectly. 
-- **Everything else works** as far as we know. If you find a mod that misbehaves
-  in co-op, please report it (see below) and we'll add it here.
+- **Everything else bundled with the game works** as far as we know. If you find
+  one that misbehaves in co-op, please report it (see below) and we'll add it here.
+- **Mods you installed yourself are always orange**, whatever they are. That's
+  not a verdict on the mod — we simply haven't tested it, and the game says so
+  rather than pretending it knows. Plenty of them will be perfectly fine.
 
 **Won't work (Red):** Sky Island, Isolation Protocol, Magiclysm, Mind Over
-Matter (and its Knacks-only variant), Xedra Evolved.  These rely on travel to
-separate map layers and/or sweeping scripted powers that can't be kept in sync.
+Matter (and its Knacks-only variant), Xedra Evolved, Aftershock.  Most of these
+rely on travel to separate map layers and/or sweeping scripted powers that can't
+be kept in sync.  Aftershock is the odd one out: its distinctive map specials
+(exoplanet start pads, alien biomes) aren't streamed host to client, so the
+joining player's world generates its own terrain at the same coordinates and the
+two of you end up standing on completely different maps.
 
 **May break (Orange):** Xedra Evolved: Innawoods, Bombastic Perks,
 Perk Melee System, Bionic Professions, the extra mutation scenarios, Sorcerer,
