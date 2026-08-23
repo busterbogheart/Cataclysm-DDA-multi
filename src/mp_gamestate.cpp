@@ -8608,13 +8608,23 @@ static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_a
     }
     if( g_separation_tier != prev ) {
         if( g_separation_tier == 0 ) {
-            add_msg( m_good, "You and your partner are close enough again." );
+            add_msg( m_good, _( "You and your partner are close enough again." ) );
         } else if( g_separation_tier == 1 ) {
-            add_msg( m_warning, "Your partner is getting far away (%d tiles). Max safe range is ~80.", dist );
+            //~ %d is the current separation in tiles.  60 is the tier-2 threshold
+            //~ above, and is the number the README quotes as the safe range.
+            add_msg( m_warning,
+                     _( "Your partner is getting far away (%d tiles).  Max safe range is about 60." ),
+                     dist );
         } else if( g_separation_tier == 2 ) {
-            add_msg( m_bad, "Your partner is near the edge of the simulated zone (%d tiles)! Brake or turn around.", dist );
+            //~ %d is the current separation in tiles.
+            add_msg( m_bad,
+                     _( "Your partner is near the edge of the simulated zone (%d tiles)!  Brake or turn around." ),
+                     dist );
         } else {
-            add_msg( m_bad, "Your partner is past the edge (%d tiles)! Vehicle physics will break — close the gap now.", dist );
+            //~ %d is the current separation in tiles.
+            add_msg( m_bad,
+                     _( "Your partner is past the edge (%d tiles)!  Vehicle physics will break — close the gap now." ),
+                     dist );
         }
     }
 }
