@@ -196,8 +196,7 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 - Movement, melee combat, smashing terrain and furniture
 - Vehicle driving by client and host (including being a passenger)
 - Item pickup, drop, wear, wield, use (single-tile and adjacent)
-- Eating, drinking, short consumption activities (both players
-  simultaneously)
+- Eating & drinking
 - Long activities for either player — crafting (including batches),
   butchering, field dressing, skinning and dissecting, construction and
   building, reading, disassembly, foraging, fishing, workouts and vehicle
