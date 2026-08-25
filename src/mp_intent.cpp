@@ -69,6 +69,8 @@ constexpr int intent_max_age_turns = 2;
 // frame, so the reason is only written when it CHANGES -- otherwise a hidden
 // hint would spew a line per frame.
 std::string g_last_skip_reason;
+// Same idea for the success path: report a given intent once, not once a frame.
+std::string g_last_draw_key;
 
 void log_skip( const std::string &reason )
 {
@@ -295,7 +297,7 @@ void mp_handle_intent_recv( const std::string &msg )
             std::to_string( g_partner_anchor.y() ) + ")" );
 }
 
-intent_kind mp_partner_intent( tripoint_bub_ms &hint_pos, point &dir )
+intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir )
 {
     if( g_partner_kind == intent_kind::none ) {
         return intent_kind::none;
@@ -325,6 +327,15 @@ intent_kind mp_partner_intent( tripoint_bub_ms &hint_pos, point &dir )
                                    ? ppos
                                    : ppos + tripoint_rel_ms( g_partner_dir.x, g_partner_dir.y, 0 );
 
+    // A hint on another z-level is dropped here rather than silently in the
+    // renderer -- that check used to live in cata_tiles.cpp with no logging,
+    // which made it a blind spot exactly like the one being chased.
+    if( target.z() != view_z ) {
+        log_skip( "z mismatch: target_z=" + std::to_string( target.z() ) +
+                  " view_z=" + std::to_string( view_z ) );
+        return intent_kind::none;
+    }
+
     // Never hint at a tile we cannot see: a marker behind a wall would leak both
     // the partner's position and the fact that a walkable tile exists there.
     if( !get_avatar().sees( get_map(), target ) ) {
@@ -336,6 +347,30 @@ intent_kind mp_partner_intent( tripoint_bub_ms &hint_pos, point &dir )
     g_last_skip_reason.clear();
     hint_pos = target;
     dir = g_partner_dir;
+
+    // Fires once per distinct intent (the draw path runs every frame, so it is
+    // keyed on kind+dir+target).  This is the line that separates "the arrow was
+    // never drawn" from "the arrow was drawn and you could not see it" -- the
+    // one distinction the earlier logging could not make.
+    const std::string draw_key =
+        std::to_string( static_cast<int>( g_partner_kind ) ) + ":" +
+        std::to_string( g_partner_dir.x ) + "," + std::to_string( g_partner_dir.y ) + ":" +
+        std::to_string( target.x() ) + "," + std::to_string( target.y() );
+    if( draw_key != g_last_draw_key ) {
+        g_last_draw_key = draw_key;
+        const tripoint_bub_ms me = get_avatar().pos_bub();
+        mp_log( "[cdda-mp] INTENT-DRAW-OK: kind=" +
+                std::string( g_partner_kind == intent_kind::wait ? "wait" : "move" ) +
+                " style=" + std::to_string( mp_intent_style_id( g_partner_dir ) ) +
+                " dir=(" + std::to_string( g_partner_dir.x ) + "," +
+                std::to_string( g_partner_dir.y ) + ")" +
+                " target_bub=(" + std::to_string( target.x() ) + "," +
+                std::to_string( target.y() ) + "," + std::to_string( target.z() ) + ")" +
+                " partner_bub=(" + std::to_string( ppos.x() ) + "," +
+                std::to_string( ppos.y() ) + "," + std::to_string( ppos.z() ) + ")" +
+                " me_bub=(" + std::to_string( me.x() ) + "," +
+                std::to_string( me.y() ) + "," + std::to_string( me.z() ) + ")" );
+    }
     return g_partner_kind;
 }
 

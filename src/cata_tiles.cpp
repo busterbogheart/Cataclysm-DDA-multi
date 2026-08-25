@@ -1616,8 +1616,9 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
         // channel, which makes it exactly wrong for a cue meant to be subtle.
         tripoint_bub_ms hint_pos;
         point intent_off;
-        const cata_mp::intent_kind ik = cata_mp::mp_partner_intent( hint_pos, intent_off );
-        if( ik != cata_mp::intent_kind::none && hint_pos.z() == center.z() ) {
+        const cata_mp::intent_kind ik =
+            cata_mp::mp_partner_intent( center.z(), hint_pos, intent_off );
+        if( ik != cata_mp::intent_kind::none ) {
             const point hs = player_to_screen( hint_pos.xy() );
             SDL_BlendMode prev_blend = SDL_BLENDMODE_NONE;
             SDL_GetRenderDrawBlendMode( renderer.get(), &prev_blend );

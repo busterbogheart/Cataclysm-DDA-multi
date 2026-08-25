@@ -50,7 +50,9 @@ void mp_handle_intent_recv( const std::string &msg );
 // visibility gate internally, logging the reason once per intent whenever it
 // decides NOT to draw -- so the renderer reduces to "draw this, here", and every
 // diagnostic for this feature lives in one fork-owned file.
-intent_kind mp_partner_intent( tripoint_bub_ms &hint_pos, point &dir );
+// `view_z` is the z-level currently being drawn; a hint on another level is
+// dropped (and logged) here rather than silently in the renderer.
+intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir );
 
 // SCAFFOLDING (2026-08-24): maps a direction offset to one of eight overlay
 // treatments so all eight can be compared in a single live session and one
