@@ -1601,13 +1601,14 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
         // mean to do while we are the one deliberating.  Purely a display hint
         // -- it never executes on their side.
         //
-        // SCAFFOLDING (2026-08-24): the arrow is the chosen family, so each of
-        // the eight directions now draws a different ARROW treatment -- size,
-        // weight, solid vs stroked, and placement -- so all eight can be judged
-        // in one live session.  Collapses to a single variant once picked, at
-        // which point mp_intent_style_id() goes away.  Alpha is held constant
-        // across all eight on purpose: it is a separate dial, and varying two
-        // things at once would make the comparison meaningless.
+        // PICKED 2026-08-25: the thin open caret with no base bar -- what the
+        // SW slot drew in the eight-way A/B -- for every direction.  It was the
+        // quietest of the eight, which is the whole design goal; the solid and
+        // tile-filling heads read as an object sitting on the tile rather than
+        // as a hint.  mp_intent_style_id() and the other seven are gone.
+        //
+        // Alpha was the deliberately-untouched second dial during the A/B and
+        // is now turned down 20% from the comparison value (150 -> 120).
         //
         // Grey rather than the ally green: saturated ally-hue reads as "the
         // partner is standing there", while desaturation is the established
@@ -1624,7 +1625,7 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
             SDL_GetRenderDrawBlendMode( renderer.get(), &prev_blend );
             SDL_SetRenderDrawBlendMode( renderer.get(), SDL_BLENDMODE_BLEND );
             const SDL_Color hint_base = curses_color_to_SDL( c_light_gray );
-            constexpr Uint8 hint_a = 150;
+            constexpr Uint8 hint_a = 120;
             const float hw = static_cast<float>( tile_width );
             const float hh = static_cast<float>( tile_height );
             // Tile centre, plus the local frame: u along the intended step, p
@@ -1642,23 +1643,8 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
             const float unit = std::min( hw, hh );
             const float stroke = std::max( 1.0f, unit / 16.0f );
 
-            // Filled triangle from three points.
-            const auto hint_tri = [&]( float ax, float ay, float bx, float by,
-            float ccx, float ccy ) {
-                SDL_Color tc = hint_base;
-                tc.a = hint_a;
-                SDL_Vertex vs[3];
-                vs[0].position = { ax, ay };
-                vs[1].position = { bx, by };
-                vs[2].position = { ccx, ccy };
-                for( SDL_Vertex &v : vs ) {
-                    v.color = to_vertex_color( tc );
-                    v.tex_coord = { 0.0f, 0.0f };
-                }
-                SDL_RenderGeometry( renderer.get(), nullptr, vs, 3, nullptr, 0 );
-            };
-            // Thick line as a rotated quad, so strokes work at any angle --
-            // this is what lets the stroked/caret/tailed variants exist at all.
+            // Thick line as a rotated quad, so the two caret strokes work at
+            // any of the eight angles.
             const auto hint_line = [&]( float ax, float ay, float bx, float by, float thick ) {
                 const float ldx = bx - ax;
                 const float ldy = by - ay;
@@ -1679,14 +1665,8 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
                 }
                 SDL_RenderGeometry( renderer.get(), nullptr, vs, 6, nullptr, 0 );
             };
-            // Solid arrowhead centred at (ox,oy), pointing along u.
-            const auto solid_head = [&]( float ox, float oy, float len, float halfw ) {
-                hint_tri( ox + ux * len, oy + uy * len,
-                          ox - ux * len + px * halfw, oy - uy * len + py * halfw,
-                          ox - ux * len - px * halfw, oy - uy * len - py * halfw );
-            };
             // Open caret ">" centred at (ox,oy): two strokes back from the tip,
-            // no base bar.
+            // no base bar.  The whole indicator, now.
             const auto caret = [&]( float ox, float oy, float len, float halfw, float thick ) {
                 const float tipx = ox + ux * len;
                 const float tipy = oy + uy * len;
@@ -1696,60 +1676,7 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
                            thick );
             };
 
-            if( ik == cata_mp::intent_kind::wait ) {
-                // Placeholder until a wait treatment is picked: thin outline on
-                // the partner's OWN tile.  Unambiguous by construction -- every
-                // movement hint lands on an adjacent tile, so a mark on their
-                // own tile can only mean "staying".  On the border, so it never
-                // occludes their sprite.
-                const float wx = static_cast<float>( hs.x );
-                const float wy = static_cast<float>( hs.y );
-                hint_line( wx, wy, wx + hw, wy, stroke );
-                hint_line( wx, wy + hh, wx + hw, wy + hh, stroke );
-                hint_line( wx, wy, wx, wy + hh, stroke );
-                hint_line( wx + hw, wy, wx + hw, wy + hh, stroke );
-            } else {
-                switch( cata_mp::mp_intent_style_id( intent_off ) ) {
-                    case 0: // N  -- solid arrowhead, medium.  The baseline.
-                        solid_head( cx, cy, unit * 0.30f, unit * 0.24f );
-                        break;
-                    case 1: // NE -- stroked arrowhead: same shape, outline only
-                        caret( cx, cy, unit * 0.30f, unit * 0.24f, stroke );
-                        hint_line( cx - ux * unit * 0.30f + px * unit * 0.24f,
-                                   cy - uy * unit * 0.30f + py * unit * 0.24f,
-                                   cx - ux * unit * 0.30f - px * unit * 0.24f,
-                                   cy - uy * unit * 0.30f - py * unit * 0.24f, stroke );
-                        break;
-                    case 2: // E  -- small solid arrowhead
-                        solid_head( cx, cy, unit * 0.18f, unit * 0.15f );
-                        break;
-                    case 3: // SE -- large solid arrowhead, nearly tile-filling
-                        solid_head( cx, cy, unit * 0.44f, unit * 0.36f );
-                        break;
-                    case 4: // S  -- double chevron ">>", stronger motion read
-                        caret( cx - ux * unit * 0.14f, cy - uy * unit * 0.14f,
-                               unit * 0.18f, unit * 0.20f, stroke );
-                        caret( cx + ux * unit * 0.14f, cy + uy * unit * 0.14f,
-                               unit * 0.18f, unit * 0.20f, stroke );
-                        break;
-                    case 5: // SW -- single thin caret, no base.  The quietest.
-                        caret( cx, cy, unit * 0.26f, unit * 0.26f, stroke );
-                        break;
-                    case 6: // W  -- arrowhead with a tail: the classic arrow
-                        solid_head( cx + ux * unit * 0.16f, cy + uy * unit * 0.16f,
-                                    unit * 0.18f, unit * 0.16f );
-                        hint_line( cx - ux * unit * 0.34f, cy - uy * unit * 0.34f,
-                                   cx + ux * unit * 0.10f, cy + uy * unit * 0.10f,
-                                   stroke * 1.4f );
-                        break;
-                    default: // NW -- small head pushed to the FAR edge of the
-                        // tile, sitting on the boundary they would cross,
-                        // rather than floating in the middle
-                        solid_head( cx + ux * unit * 0.34f, cy + uy * unit * 0.34f,
-                                    unit * 0.16f, unit * 0.14f );
-                        break;
-                }
-            }
+            caret( cx, cy, unit * 0.26f, unit * 0.26f, stroke );
             SDL_SetRenderDrawBlendMode( renderer.get(), prev_blend );
         }
 

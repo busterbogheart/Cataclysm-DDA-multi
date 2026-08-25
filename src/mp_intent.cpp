@@ -135,10 +135,10 @@ void mp_stage_intent_action( action_id act )
     }
 
     const auto it = intent_dirs().find( act );
-    const bool is_wait = act == ACTION_PAUSE;
-    if( it == intent_dirs().end() && !is_wait ) {
-        // Neither a step nor a hold.  Whatever they are doing now, they are no
-        // longer thinking about the thing we last advertised.
+    if( it == intent_dirs().end() ) {
+        // Not a step.  Whatever they are doing now -- including pausing, which
+        // used to stage its own hint -- they are no longer thinking about the
+        // thing we last advertised.
         mp_clear_intent();
         return;
     }
@@ -174,17 +174,6 @@ void mp_stage_intent_action( action_id act )
         return;
     }
 
-    if( is_wait ) {
-        if( g_sent_kind == intent_kind::wait ) {
-            return;
-        }
-        g_sent_kind = intent_kind::wait;
-        g_sent_dir = point( 0, 0 );
-        mp_log( "[cdda-mp] INTENT-STAGE: wait moves=" + std::to_string( av.get_moves() ) );
-        send_intent( "{\"type\":\"intent\",\"kind\":\"wait\"}" );
-        return;
-    }
-
     const tripoint_bub_ms target =
         av.pos_bub() + tripoint_rel_ms( it->second.x, it->second.y, 0 );
     if( step_is_wall_bump( target ) ) {
@@ -203,40 +192,11 @@ void mp_stage_intent_action( action_id act )
     g_sent_kind = intent_kind::move;
     mp_log( "[cdda-mp] INTENT-STAGE: dx=" + std::to_string( it->second.x ) +
             " dy=" + std::to_string( it->second.y ) +
-            " style=" + std::to_string( mp_intent_style_id( it->second ) ) +
             " moves=" + std::to_string( av.get_moves() ) +
             " ack=" + std::to_string( is_client_waiting_for_ack() ) );
     send_intent( "{\"type\":\"intent\",\"kind\":\"move\",\"dx\":" +
                  std::to_string( it->second.x ) + ",\"dy\":" +
                  std::to_string( it->second.y ) + "}" );
-}
-
-int mp_intent_style_id( const point &dir )
-{
-    // N, NE, E, SE, S, SW, W, NW -> 0..7.  See the style table in
-    // cata_tiles.cpp and the ROADMAP entry.
-    if( dir.y < 0 && dir.x == 0 ) {
-        return 0;
-    }
-    if( dir.y < 0 && dir.x > 0 ) {
-        return 1;
-    }
-    if( dir.y == 0 && dir.x > 0 ) {
-        return 2;
-    }
-    if( dir.y > 0 && dir.x > 0 ) {
-        return 3;
-    }
-    if( dir.y > 0 && dir.x == 0 ) {
-        return 4;
-    }
-    if( dir.y > 0 && dir.x < 0 ) {
-        return 5;
-    }
-    if( dir.y == 0 && dir.x < 0 ) {
-        return 6;
-    }
-    return 7;
 }
 
 void mp_handle_intent_recv( const std::string &msg )
@@ -260,15 +220,9 @@ void mp_handle_intent_recv( const std::string &msg )
         return;
     }
 
-    if( msg.find( "\"kind\":\"wait\"" ) != std::string::npos ) {
-        g_partner_dir = point( 0, 0 );
-        g_partner_anchor = get_map().get_abs( partner->pos_bub() );
-        g_partner_staged_turn = calendar::turn;
-        g_partner_kind = intent_kind::wait;
-        mp_log( "[cdda-mp] INTENT-RECV: wait" );
-        return;
-    }
-
+    // A "wait" packet from a build that still sends one falls through to the
+    // dx/dy parse below, reads as (0,0) and clears -- which is the behaviour we
+    // want now that the pause telegraph is gone.
     int dx = 0;
     int dy = 0;
     try {
@@ -292,7 +246,6 @@ void mp_handle_intent_recv( const std::string &msg )
     g_partner_kind = intent_kind::move;
     mp_log( "[cdda-mp] INTENT-RECV: dx=" + std::to_string( dx ) +
             " dy=" + std::to_string( dy ) +
-            " style=" + std::to_string( mp_intent_style_id( g_partner_dir ) ) +
             " anchor=(" + std::to_string( g_partner_anchor.x() ) + "," +
             std::to_string( g_partner_anchor.y() ) + ")" );
 }
@@ -323,9 +276,8 @@ intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir
     }
 
     const tripoint_bub_ms ppos = partner->pos_bub();
-    const tripoint_bub_ms target = g_partner_kind == intent_kind::wait
-                                   ? ppos
-                                   : ppos + tripoint_rel_ms( g_partner_dir.x, g_partner_dir.y, 0 );
+    const tripoint_bub_ms target =
+        ppos + tripoint_rel_ms( g_partner_dir.x, g_partner_dir.y, 0 );
 
     // A hint on another z-level is dropped here rather than silently in the
     // renderer -- that check used to live in cata_tiles.cpp with no logging,
@@ -359,9 +311,7 @@ intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir
     if( draw_key != g_last_draw_key ) {
         g_last_draw_key = draw_key;
         const tripoint_bub_ms me = get_avatar().pos_bub();
-        mp_log( "[cdda-mp] INTENT-DRAW-OK: kind=" +
-                std::string( g_partner_kind == intent_kind::wait ? "wait" : "move" ) +
-                " style=" + std::to_string( mp_intent_style_id( g_partner_dir ) ) +
+        mp_log( "[cdda-mp] INTENT-DRAW-OK: kind=move"
                 " dir=(" + std::to_string( g_partner_dir.x ) + "," +
                 std::to_string( g_partner_dir.y ) + ")" +
                 " target_bub=(" + std::to_string( target.x() ) + "," +

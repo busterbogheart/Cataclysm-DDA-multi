@@ -30,13 +30,19 @@ namespace cata_mp
 enum class intent_kind {
     none,
     move,   // stepping to an adjacent tile; `out` holds the offset
-    wait,   // holding position (numpad 5); the hint lands on their own tile
 };
 
+// There is deliberately no `wait` kind.  A pause (numpad 5) telegraph was
+// prototyped as a thin outline on the partner's own tile and rejected on sight
+// 2026-08-25: a box around a character reads as a selection/target marker, not
+// as "holding", and it fires constantly because pause is the key you mash while
+// thinking.  A pause key now simply clears any staged intent, which is honest --
+// they are no longer thinking about stepping anywhere.
+
 // Sender.  Call on every action that reaches a lock gate.  Stages `act` when it
-// is a movement direction or a pause, we are locked, and the step is plausible;
-// clears the staged intent otherwise.  Last press wins -- a single slot, not a
-// queue, so west-then-east shows east.
+// is a movement direction, we are locked, and the step is plausible; clears the
+// staged intent otherwise.  Last press wins -- a single slot, not a queue, so
+// west-then-east shows east.
 void mp_stage_intent_action( action_id act );
 
 // Sender.  Drop any staged intent and tell the partner to stop drawing it.
@@ -54,11 +60,9 @@ void mp_handle_intent_recv( const std::string &msg );
 // dropped (and logged) here rather than silently in the renderer.
 intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir );
 
-// SCAFFOLDING (2026-08-24): maps a direction offset to one of eight overlay
-// treatments so all eight can be compared in a single live session and one
-// picked.  Collapses to a single style -- and this function disappears -- once
-// the pick is made.
-int mp_intent_style_id( const point &dir );
+// The eight-style A/B scaffold (mp_intent_style_id) is gone as of 2026-08-25.
+// The pick was the thin open caret with no base bar -- what the SW slot drew --
+// and every direction now uses it.  See cata_tiles.cpp.
 
 } // namespace cata_mp
 
