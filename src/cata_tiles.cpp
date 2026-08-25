@@ -1601,148 +1601,155 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
         // mean to do while we are the one deliberating.  Purely a display hint
         // -- it never executes on their side.
         //
-        // SCAFFOLDING (2026-08-24): each of the eight directions currently draws
-        // a DIFFERENT treatment so all eight can be compared in one live session
-        // and one picked.  Once picked, this whole switch collapses to a single
-        // style and mp_intent_style_id() goes away.  Grey rather than the ally
-        // green on purpose: saturated ally-hue reads as "the partner is there",
-        // desaturation is the established "this is hypothetical" signal
-        // (Frozen Synapse's grey ghosts).
+        // SCAFFOLDING (2026-08-24): the arrow is the chosen family, so each of
+        // the eight directions now draws a different ARROW treatment -- size,
+        // weight, solid vs stroked, and placement -- so all eight can be judged
+        // in one live session.  Collapses to a single variant once picked, at
+        // which point mp_intent_style_id() goes away.  Alpha is held constant
+        // across all eight on purpose: it is a separate dial, and varying two
+        // things at once would make the comparison meaningless.
+        //
+        // Grey rather than the ally green: saturated ally-hue reads as "the
+        // partner is standing there", while desaturation is the established
+        // "this is hypothetical" signal (Frozen Synapse's grey ghosts).
+        // No animation of any kind -- motion is the most intrusive preattentive
+        // channel, which makes it exactly wrong for a cue meant to be subtle.
+        tripoint_bub_ms hint_pos;
         point intent_off;
-        const cata_mp::intent_kind ik = cata_mp::mp_partner_intent( intent_off );
-        if( ik != cata_mp::intent_kind::none && partner->pos_bub().z() == center.z() ) {
-            const tripoint_bub_ms hint_pos = ik == cata_mp::intent_kind::wait
-                                             ? partner->pos_bub()
-                                             : partner->pos_bub() +
-                                             tripoint_rel_ms( intent_off.x, intent_off.y, 0 );
-            // Never hint at a tile we cannot see: a marker behind a wall would
-            // leak both the partner's position and the fact that a walkable
-            // tile exists there.
-            if( get_avatar().sees( get_map(), hint_pos ) ) {
-                const point hs = player_to_screen( hint_pos.xy() );
-                SDL_BlendMode prev_blend = SDL_BLENDMODE_NONE;
-                SDL_GetRenderDrawBlendMode( renderer.get(), &prev_blend );
-                SDL_SetRenderDrawBlendMode( renderer.get(), SDL_BLENDMODE_BLEND );
-                const SDL_Color hint_base = curses_color_to_SDL( c_light_gray );
-                const float hx = static_cast<float>( hs.x );
-                const float hy = static_cast<float>( hs.y );
-                const float hw = static_cast<float>( tile_width );
-                const float hh = static_cast<float>( tile_height );
-                // Line weight and bracket arm scale with zoom so the treatment
-                // keeps its proportions at every tile size.
-                const float th = std::max( 1.0f, hw / 18.0f );
-                const float arm = hw * 0.28f;
-                constexpr Uint8 line_a = 150;
-                constexpr Uint8 fill_a = 45;
-                const auto hint_rect = [&]( float rx, float ry, float rw, float rh, Uint8 alpha ) {
-                    SDL_Color rc = hint_base;
-                    rc.a = alpha;
-                    const SDL_FPoint pts[6] = {
-                        { rx, ry }, { rx + rw, ry }, { rx + rw, ry + rh },
-                        { rx, ry }, { rx + rw, ry + rh }, { rx, ry + rh }
-                    };
-                    SDL_Vertex vs[6];
-                    for( int k = 0; k < 6; ++k ) {
-                        vs[k].position = pts[k];
-                        vs[k].color = to_vertex_color( rc );
-                        vs[k].tex_coord = { 0.0f, 0.0f };
-                    }
-                    SDL_RenderGeometry( renderer.get(), nullptr, vs, 6, nullptr, 0 );
-                };
-                if( ik == cata_mp::intent_kind::wait ) {
-                    // "Holding this tile": the same thin outline a step gets,
-                    // but drawn on the tile they are already standing on.  A
-                    // marker on their OWN tile is unambiguous -- every movement
-                    // hint lands on an adjacent one.  Sits on the tile border so
-                    // it never occludes their sprite.
-                    hint_rect( hx, hy, hw, th, line_a );
-                    hint_rect( hx, hy + hh - th, hw, th, line_a );
-                    hint_rect( hx, hy, th, hh, line_a );
-                    hint_rect( hx + hw - th, hy, th, hh, line_a );
-                } else {
-                    switch( cata_mp::mp_intent_style_id( intent_off ) ) {
-                        case 0: // N  -- corner brackets
-                            hint_rect( hx, hy, arm, th, line_a );
-                            hint_rect( hx, hy, th, arm, line_a );
-                            hint_rect( hx + hw - arm, hy, arm, th, line_a );
-                            hint_rect( hx + hw - th, hy, th, arm, line_a );
-                            hint_rect( hx, hy + hh - th, arm, th, line_a );
-                            hint_rect( hx, hy + hh - arm, th, arm, line_a );
-                            hint_rect( hx + hw - arm, hy + hh - th, arm, th, line_a );
-                            hint_rect( hx + hw - th, hy + hh - arm, th, arm, line_a );
-                            break;
-                        case 1: // NE -- thin full outline
-                            hint_rect( hx, hy, hw, th, line_a );
-                            hint_rect( hx, hy + hh - th, hw, th, line_a );
-                            hint_rect( hx, hy, th, hh, line_a );
-                            hint_rect( hx + hw - th, hy, th, hh, line_a );
-                            break;
-                        case 2: { // E -- dashed outline
-                            const float dw = hw / 5.0f;
-                            const float dh = hh / 5.0f;
-                            for( int k = 0; k < 5; k += 2 ) {
-                                hint_rect( hx + k * dw, hy, dw, th, line_a );
-                                hint_rect( hx + k * dw, hy + hh - th, dw, th, line_a );
-                                hint_rect( hx, hy + k * dh, th, dh, line_a );
-                                hint_rect( hx + hw - th, hy + k * dh, th, dh, line_a );
-                            }
-                            break;
-                        }
-                        case 3: { // SE -- chevron only, no border
-                            const float icx = hx + hw * 0.5f;
-                            const float icy = hy + hh * 0.5f;
-                            const float ilen = std::sqrt( static_cast<float>(
-                                                              intent_off.x * intent_off.x +
-                                                              intent_off.y * intent_off.y ) );
-                            const float iux = intent_off.x / ilen;
-                            const float iuy = intent_off.y / ilen;
-                            const float ihalf = std::min( hw, hh ) * 0.33f;
-                            SDL_Color cc = hint_base;
-                            cc.a = line_a;
-                            SDL_Vertex chev[3];
-                            chev[0].position = { icx + iux * ihalf, icy + iuy * ihalf };
-                            chev[1].position = { icx - iux * ihalf - iuy * ihalf * 0.7f,
-                                                 icy - iuy * ihalf + iux * ihalf * 0.7f };
-                            chev[2].position = { icx - iux * ihalf + iuy * ihalf * 0.7f,
-                                                 icy - iuy * ihalf - iux * ihalf * 0.7f };
-                            for( SDL_Vertex &v : chev ) {
-                                v.color = to_vertex_color( cc );
-                                v.tex_coord = { 0.0f, 0.0f };
-                            }
-                            SDL_RenderGeometry( renderer.get(), nullptr, chev, 3, nullptr, 0 );
-                            break;
-                        }
-                        case 4: // S -- bar on the far edge(s), direction by placement
-                            if( intent_off.x > 0 ) {
-                                hint_rect( hx + hw - th * 2, hy, th * 2, hh, line_a );
-                            }
-                            if( intent_off.x < 0 ) {
-                                hint_rect( hx, hy, th * 2, hh, line_a );
-                            }
-                            if( intent_off.y > 0 ) {
-                                hint_rect( hx, hy + hh - th * 2, hw, th * 2, line_a );
-                            }
-                            if( intent_off.y < 0 ) {
-                                hint_rect( hx, hy, hw, th * 2, line_a );
-                            }
-                            break;
-                        case 5: // SW -- faint fill (the original, desaturated)
-                            hint_rect( hx, hy, hw, hh, fill_a );
-                            break;
-                        case 6: { // W -- centre dot
-                            const float dd = hw * 0.2f;
-                            hint_rect( hx + ( hw - dd ) * 0.5f, hy + ( hh - dd ) * 0.5f,
-                                       dd, dd, line_a );
-                            break;
-                        }
-                        default: // NW -- underline only
-                            hint_rect( hx + hw * 0.15f, hy + hh - th * 2,
-                                       hw * 0.7f, th * 2, line_a );
-                            break;
-                    }
+        const cata_mp::intent_kind ik = cata_mp::mp_partner_intent( hint_pos, intent_off );
+        if( ik != cata_mp::intent_kind::none && hint_pos.z() == center.z() ) {
+            const point hs = player_to_screen( hint_pos.xy() );
+            SDL_BlendMode prev_blend = SDL_BLENDMODE_NONE;
+            SDL_GetRenderDrawBlendMode( renderer.get(), &prev_blend );
+            SDL_SetRenderDrawBlendMode( renderer.get(), SDL_BLENDMODE_BLEND );
+            const SDL_Color hint_base = curses_color_to_SDL( c_light_gray );
+            constexpr Uint8 hint_a = 150;
+            const float hw = static_cast<float>( tile_width );
+            const float hh = static_cast<float>( tile_height );
+            // Tile centre, plus the local frame: u along the intended step, p
+            // perpendicular to it.  Every variant below is built in this frame,
+            // so they all point correctly for all eight directions.
+            const float cx = static_cast<float>( hs.x ) + hw * 0.5f;
+            const float cy = static_cast<float>( hs.y ) + hh * 0.5f;
+            const float ilen = std::max( 1.0f, std::sqrt( static_cast<float>(
+                                             intent_off.x * intent_off.x +
+                                             intent_off.y * intent_off.y ) ) );
+            const float ux = intent_off.x / ilen;
+            const float uy = intent_off.y / ilen;
+            const float px = -uy;
+            const float py = ux;
+            const float unit = std::min( hw, hh );
+            const float stroke = std::max( 1.0f, unit / 16.0f );
+
+            // Filled triangle from three points.
+            const auto hint_tri = [&]( float ax, float ay, float bx, float by,
+            float ccx, float ccy ) {
+                SDL_Color tc = hint_base;
+                tc.a = hint_a;
+                SDL_Vertex vs[3];
+                vs[0].position = { ax, ay };
+                vs[1].position = { bx, by };
+                vs[2].position = { ccx, ccy };
+                for( SDL_Vertex &v : vs ) {
+                    v.color = to_vertex_color( tc );
+                    v.tex_coord = { 0.0f, 0.0f };
                 }
-                SDL_SetRenderDrawBlendMode( renderer.get(), prev_blend );
+                SDL_RenderGeometry( renderer.get(), nullptr, vs, 3, nullptr, 0 );
+            };
+            // Thick line as a rotated quad, so strokes work at any angle --
+            // this is what lets the stroked/caret/tailed variants exist at all.
+            const auto hint_line = [&]( float ax, float ay, float bx, float by, float thick ) {
+                const float ldx = bx - ax;
+                const float ldy = by - ay;
+                const float llen = std::max( 0.001f, std::sqrt( ldx * ldx + ldy * ldy ) );
+                const float lpx = -ldy / llen * thick * 0.5f;
+                const float lpy = ldx / llen * thick * 0.5f;
+                SDL_Color lc = hint_base;
+                lc.a = hint_a;
+                const SDL_FPoint pts[6] = {
+                    { ax + lpx, ay + lpy }, { bx + lpx, by + lpy }, { bx - lpx, by - lpy },
+                    { ax + lpx, ay + lpy }, { bx - lpx, by - lpy }, { ax - lpx, ay - lpy }
+                };
+                SDL_Vertex vs[6];
+                for( int k = 0; k < 6; ++k ) {
+                    vs[k].position = pts[k];
+                    vs[k].color = to_vertex_color( lc );
+                    vs[k].tex_coord = { 0.0f, 0.0f };
+                }
+                SDL_RenderGeometry( renderer.get(), nullptr, vs, 6, nullptr, 0 );
+            };
+            // Solid arrowhead centred at (ox,oy), pointing along u.
+            const auto solid_head = [&]( float ox, float oy, float len, float halfw ) {
+                hint_tri( ox + ux * len, oy + uy * len,
+                          ox - ux * len + px * halfw, oy - uy * len + py * halfw,
+                          ox - ux * len - px * halfw, oy - uy * len - py * halfw );
+            };
+            // Open caret ">" centred at (ox,oy): two strokes back from the tip,
+            // no base bar.
+            const auto caret = [&]( float ox, float oy, float len, float halfw, float thick ) {
+                const float tipx = ox + ux * len;
+                const float tipy = oy + uy * len;
+                hint_line( tipx, tipy, ox - ux * len + px * halfw, oy - uy * len + py * halfw,
+                           thick );
+                hint_line( tipx, tipy, ox - ux * len - px * halfw, oy - uy * len - py * halfw,
+                           thick );
+            };
+
+            if( ik == cata_mp::intent_kind::wait ) {
+                // Placeholder until a wait treatment is picked: thin outline on
+                // the partner's OWN tile.  Unambiguous by construction -- every
+                // movement hint lands on an adjacent tile, so a mark on their
+                // own tile can only mean "staying".  On the border, so it never
+                // occludes their sprite.
+                const float wx = static_cast<float>( hs.x );
+                const float wy = static_cast<float>( hs.y );
+                hint_line( wx, wy, wx + hw, wy, stroke );
+                hint_line( wx, wy + hh, wx + hw, wy + hh, stroke );
+                hint_line( wx, wy, wx, wy + hh, stroke );
+                hint_line( wx + hw, wy, wx + hw, wy + hh, stroke );
+            } else {
+                switch( cata_mp::mp_intent_style_id( intent_off ) ) {
+                    case 0: // N  -- solid arrowhead, medium.  The baseline.
+                        solid_head( cx, cy, unit * 0.30f, unit * 0.24f );
+                        break;
+                    case 1: // NE -- stroked arrowhead: same shape, outline only
+                        caret( cx, cy, unit * 0.30f, unit * 0.24f, stroke );
+                        hint_line( cx - ux * unit * 0.30f + px * unit * 0.24f,
+                                   cy - uy * unit * 0.30f + py * unit * 0.24f,
+                                   cx - ux * unit * 0.30f - px * unit * 0.24f,
+                                   cy - uy * unit * 0.30f - py * unit * 0.24f, stroke );
+                        break;
+                    case 2: // E  -- small solid arrowhead
+                        solid_head( cx, cy, unit * 0.18f, unit * 0.15f );
+                        break;
+                    case 3: // SE -- large solid arrowhead, nearly tile-filling
+                        solid_head( cx, cy, unit * 0.44f, unit * 0.36f );
+                        break;
+                    case 4: // S  -- double chevron ">>", stronger motion read
+                        caret( cx - ux * unit * 0.14f, cy - uy * unit * 0.14f,
+                               unit * 0.18f, unit * 0.20f, stroke );
+                        caret( cx + ux * unit * 0.14f, cy + uy * unit * 0.14f,
+                               unit * 0.18f, unit * 0.20f, stroke );
+                        break;
+                    case 5: // SW -- single thin caret, no base.  The quietest.
+                        caret( cx, cy, unit * 0.26f, unit * 0.26f, stroke );
+                        break;
+                    case 6: // W  -- arrowhead with a tail: the classic arrow
+                        solid_head( cx + ux * unit * 0.16f, cy + uy * unit * 0.16f,
+                                    unit * 0.18f, unit * 0.16f );
+                        hint_line( cx - ux * unit * 0.34f, cy - uy * unit * 0.34f,
+                                   cx + ux * unit * 0.10f, cy + uy * unit * 0.10f,
+                                   stroke * 1.4f );
+                        break;
+                    default: // NW -- small head pushed to the FAR edge of the
+                        // tile, sitting on the boundary they would cross,
+                        // rather than floating in the middle
+                        solid_head( cx + ux * unit * 0.34f, cy + uy * unit * 0.34f,
+                                    unit * 0.16f, unit * 0.14f );
+                        break;
+                }
             }
+            SDL_SetRenderDrawBlendMode( renderer.get(), prev_blend );
         }
 
         const point partner_screen_topleft = player_to_screen( partner->pos_bub().xy() );

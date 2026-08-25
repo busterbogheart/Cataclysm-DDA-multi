@@ -65,14 +65,34 @@ tripoint_abs_ms g_partner_anchor;
 time_point g_partner_staged_turn;
 constexpr int intent_max_age_turns = 2;
 
+// Last "why nothing is drawn" reason we logged.  The draw path runs every
+// frame, so the reason is only written when it CHANGES -- otherwise a hidden
+// hint would spew a line per frame.
+std::string g_last_skip_reason;
+
+void log_skip( const std::string &reason )
+{
+    if( g_last_skip_reason == reason ) {
+        return;
+    }
+    g_last_skip_reason = reason;
+    mp_log( "[cdda-mp] INTENT-DRAW-SKIP: " + reason );
+}
+
 void send_intent( const std::string &payload )
 {
     if( is_hosting() || is_server_mode() ) {
-        if( server *s = get_active_server() ) {
+        server *s = get_active_server();
+        mp_log( "[cdda-mp] INTENT-SEND: host broadcast srv=" +
+                std::to_string( s != nullptr ) + " " + payload );
+        if( s ) {
             s->post_broadcast( payload + "\n" );
         }
     } else if( is_client_mode() ) {
+        mp_log( "[cdda-mp] INTENT-SEND: client_send " + payload );
         client_send( payload );
+    } else {
+        mp_log( "[cdda-mp] INTENT-SEND: DROPPED, neither host nor client " + payload );
     }
 }
 
@@ -123,9 +143,20 @@ void mp_stage_intent_action( action_id act )
 
     avatar &av = get_avatar();
 
+    // Every early return below logs its reason.  This only runs for movement and
+    // pause keys, so it is low-frequency -- and without it, "nothing showed up"
+    // is unattributable between "never staged", "never sent" and "never drawn".
+    const std::string stage_ctx =
+        std::string( " role=" ) + ( is_hosting() ? "host" : "client" ) +
+        " act=" + std::to_string( act ) +
+        " moves=" + std::to_string( av.get_moves() ) +
+        " ack=" + std::to_string( is_client_waiting_for_ack() ) +
+        " activity=" + ( av.activity ? av.activity.id().str() : "none" );
+
     // A direction key during an activity means "interrupt me", not "I intend to
     // step".  Without this the hint would lie through every long action.
     if( av.activity ) {
+        mp_log( "[cdda-mp] INTENT-STAGE-SKIP: in_activity" + stage_ctx );
         mp_clear_intent();
         return;
     }
@@ -136,6 +167,7 @@ void mp_stage_intent_action( action_id act )
     // cleared, on the first key pressed after being granted.
     const bool locked = av.get_moves() <= 0 || is_client_waiting_for_ack();
     if( !locked ) {
+        mp_log( "[cdda-mp] INTENT-STAGE-SKIP: not_locked" + stage_ctx );
         mp_clear_intent();
         return;
     }
@@ -154,6 +186,7 @@ void mp_stage_intent_action( action_id act )
     const tripoint_bub_ms target =
         av.pos_bub() + tripoint_rel_ms( it->second.x, it->second.y, 0 );
     if( step_is_wall_bump( target ) ) {
+        mp_log( "[cdda-mp] INTENT-STAGE-SKIP: wall_bump" + stage_ctx );
         mp_clear_intent();
         return;
     }
@@ -206,6 +239,12 @@ int mp_intent_style_id( const point &dir )
 
 void mp_handle_intent_recv( const std::string &msg )
 {
+    // Unconditional, ahead of every guard: proves the packet crossed the wire
+    // and reached the dispatcher at all.  Without this, a hint that never
+    // appears is ambiguous between "never sent" and "arrived but rejected".
+    mp_log( "[cdda-mp] INTENT-RECV-RAW: role=" +
+            std::string( is_hosting() ? "host" : "client" ) + " " + msg );
+
     if( msg.find( "\"kind\":\"none\"" ) != std::string::npos ) {
         g_partner_kind = intent_kind::none;
         mp_log( "[cdda-mp] INTENT-RECV: clear" );
@@ -214,6 +253,7 @@ void mp_handle_intent_recv( const std::string &msg )
 
     npc *partner = get_partner_npc();
     if( !partner ) {
+        mp_log( "[cdda-mp] INTENT-RECV: REJECTED, no partner npc" );
         g_partner_kind = intent_kind::none;
         return;
     }
@@ -255,13 +295,14 @@ void mp_handle_intent_recv( const std::string &msg )
             std::to_string( g_partner_anchor.y() ) + ")" );
 }
 
-intent_kind mp_partner_intent( point &out )
+intent_kind mp_partner_intent( tripoint_bub_ms &hint_pos, point &dir )
 {
     if( g_partner_kind == intent_kind::none ) {
         return intent_kind::none;
     }
     npc *partner = get_partner_npc();
     if( !partner ) {
+        log_skip( "no partner npc" );
         g_partner_kind = intent_kind::none;
         return intent_kind::none;
     }
@@ -278,7 +319,23 @@ intent_kind mp_partner_intent( point &out )
         mp_log( "[cdda-mp] INTENT-EXPIRE: aged out" );
         return intent_kind::none;
     }
-    out = g_partner_dir;
+
+    const tripoint_bub_ms ppos = partner->pos_bub();
+    const tripoint_bub_ms target = g_partner_kind == intent_kind::wait
+                                   ? ppos
+                                   : ppos + tripoint_rel_ms( g_partner_dir.x, g_partner_dir.y, 0 );
+
+    // Never hint at a tile we cannot see: a marker behind a wall would leak both
+    // the partner's position and the fact that a walkable tile exists there.
+    if( !get_avatar().sees( get_map(), target ) ) {
+        log_skip( "target not visible at (" + std::to_string( target.x() ) + "," +
+                  std::to_string( target.y() ) + "," + std::to_string( target.z() ) + ")" );
+        return intent_kind::none;
+    }
+
+    g_last_skip_reason.clear();
+    hint_pos = target;
+    dir = g_partner_dir;
     return g_partner_kind;
 }
 

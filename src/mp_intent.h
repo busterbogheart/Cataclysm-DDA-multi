@@ -5,6 +5,7 @@
 #include <string>
 
 #include "action.h"
+#include "coordinates.h"
 #include "point.h"
 
 // Intent telegraph (v1, display-only).
@@ -44,10 +45,12 @@ void mp_clear_intent();
 // Receiver.  Handles a {"type":"intent",...} packet.
 void mp_handle_intent_recv( const std::string &msg );
 
-// Receiver.  Returns what the partner has staged, writing the tile offset into
-// `out` for intent_kind::move.  Also performs the lazy expiry (partner moved /
-// aged out), so callers need no separate tick hook.
-intent_kind mp_partner_intent( point &out );
+// Receiver.  Returns what the partner has staged and where the hint belongs.
+// Performs the lazy expiry (partner moved / aged out), the z-level check and the
+// visibility gate internally, logging the reason once per intent whenever it
+// decides NOT to draw -- so the renderer reduces to "draw this, here", and every
+// diagnostic for this feature lives in one fork-owned file.
+intent_kind mp_partner_intent( tripoint_bub_ms &hint_pos, point &dir );
 
 // SCAFFOLDING (2026-08-24): maps a direction offset to one of eight overlay
 // treatments so all eight can be compared in a single live session and one
