@@ -26,10 +26,16 @@
 namespace cata_mp
 {
 
+enum class intent_kind {
+    none,
+    move,   // stepping to an adjacent tile; `out` holds the offset
+    wait,   // holding position (numpad 5); the hint lands on their own tile
+};
+
 // Sender.  Call on every action that reaches a lock gate.  Stages `act` when it
-// is a movement direction, we are locked, and the step is plausible; clears the
-// staged intent otherwise.  Last press wins -- a single slot, not a queue, so
-// west-then-east shows east.
+// is a movement direction or a pause, we are locked, and the step is plausible;
+// clears the staged intent otherwise.  Last press wins -- a single slot, not a
+// queue, so west-then-east shows east.
 void mp_stage_intent_action( action_id act );
 
 // Sender.  Drop any staged intent and tell the partner to stop drawing it.
@@ -38,10 +44,16 @@ void mp_clear_intent();
 // Receiver.  Handles a {"type":"intent",...} packet.
 void mp_handle_intent_recv( const std::string &msg );
 
-// Receiver.  Writes the partner's staged direction offset into `out` and
-// returns true when there is a live hint to draw.  Also performs the lazy
-// expiry (partner moved / aged out), so callers need no separate tick hook.
-bool mp_partner_intent_offset( point &out );
+// Receiver.  Returns what the partner has staged, writing the tile offset into
+// `out` for intent_kind::move.  Also performs the lazy expiry (partner moved /
+// aged out), so callers need no separate tick hook.
+intent_kind mp_partner_intent( point &out );
+
+// SCAFFOLDING (2026-08-24): maps a direction offset to one of eight overlay
+// treatments so all eight can be compared in a single live session and one
+// picked.  Collapses to a single style -- and this function disappears -- once
+// the pick is made.
+int mp_intent_style_id( const point &dir );
 
 } // namespace cata_mp
 

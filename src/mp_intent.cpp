@@ -46,11 +46,11 @@ const std::map<action_id, point> &intent_dirs()
 // goes out when the staged direction actually changes: holding a movement key
 // repeats the same action and must not become one packet per key repeat.
 point g_sent_dir = point( 0, 0 );
-bool g_sent_any = false;
+intent_kind g_sent_kind = intent_kind::none;
 
 // --- receiver state -------------------------------------------------------
 point g_partner_dir = point( 0, 0 );
-bool g_partner_live = false;
+intent_kind g_partner_kind = intent_kind::none;
 // Where the partner stood when the intent arrived.  If they have moved since,
 // the intent resolved and the hint is stale.  We drop it locally rather than
 // waiting for the clear packet, because the position update and the clear are
@@ -97,10 +97,10 @@ bool step_is_wall_bump( const tripoint_bub_ms &target )
 
 void mp_clear_intent()
 {
-    if( !g_sent_any ) {
+    if( g_sent_kind == intent_kind::none ) {
         return;
     }
-    g_sent_any = false;
+    g_sent_kind = intent_kind::none;
     g_sent_dir = point( 0, 0 );
     mp_log( "[cdda-mp] INTENT-CLEAR: sending none" );
     send_intent( "{\"type\":\"intent\",\"kind\":\"none\"}" );
@@ -113,9 +113,10 @@ void mp_stage_intent_action( action_id act )
     }
 
     const auto it = intent_dirs().find( act );
-    if( it == intent_dirs().end() ) {
-        // Not a movement key.  Whatever they are doing now, they are no longer
-        // thinking about the direction we last advertised.
+    const bool is_wait = act == ACTION_PAUSE;
+    if( it == intent_dirs().end() && !is_wait ) {
+        // Neither a step nor a hold.  Whatever they are doing now, they are no
+        // longer thinking about the thing we last advertised.
         mp_clear_intent();
         return;
     }
@@ -139,6 +140,17 @@ void mp_stage_intent_action( action_id act )
         return;
     }
 
+    if( is_wait ) {
+        if( g_sent_kind == intent_kind::wait ) {
+            return;
+        }
+        g_sent_kind = intent_kind::wait;
+        g_sent_dir = point( 0, 0 );
+        mp_log( "[cdda-mp] INTENT-STAGE: wait moves=" + std::to_string( av.get_moves() ) );
+        send_intent( "{\"type\":\"intent\",\"kind\":\"wait\"}" );
+        return;
+    }
+
     const tripoint_bub_ms target =
         av.pos_bub() + tripoint_rel_ms( it->second.x, it->second.y, 0 );
     if( step_is_wall_bump( target ) ) {
@@ -148,14 +160,15 @@ void mp_stage_intent_action( action_id act )
 
     // Last press wins.  Same direction again (or a key repeat) is already on the
     // partner's screen, so it costs nothing.
-    if( g_sent_any && g_sent_dir == it->second ) {
+    if( g_sent_kind == intent_kind::move && g_sent_dir == it->second ) {
         return;
     }
 
     g_sent_dir = it->second;
-    g_sent_any = true;
+    g_sent_kind = intent_kind::move;
     mp_log( "[cdda-mp] INTENT-STAGE: dx=" + std::to_string( it->second.x ) +
             " dy=" + std::to_string( it->second.y ) +
+            " style=" + std::to_string( mp_intent_style_id( it->second ) ) +
             " moves=" + std::to_string( av.get_moves() ) +
             " ack=" + std::to_string( is_client_waiting_for_ack() ) );
     send_intent( "{\"type\":\"intent\",\"kind\":\"move\",\"dx\":" +
@@ -163,17 +176,54 @@ void mp_stage_intent_action( action_id act )
                  std::to_string( it->second.y ) + "}" );
 }
 
+int mp_intent_style_id( const point &dir )
+{
+    // N, NE, E, SE, S, SW, W, NW -> 0..7.  See the style table in
+    // cata_tiles.cpp and the ROADMAP entry.
+    if( dir.y < 0 && dir.x == 0 ) {
+        return 0;
+    }
+    if( dir.y < 0 && dir.x > 0 ) {
+        return 1;
+    }
+    if( dir.y == 0 && dir.x > 0 ) {
+        return 2;
+    }
+    if( dir.y > 0 && dir.x > 0 ) {
+        return 3;
+    }
+    if( dir.y > 0 && dir.x == 0 ) {
+        return 4;
+    }
+    if( dir.y > 0 && dir.x < 0 ) {
+        return 5;
+    }
+    if( dir.y == 0 && dir.x < 0 ) {
+        return 6;
+    }
+    return 7;
+}
+
 void mp_handle_intent_recv( const std::string &msg )
 {
     if( msg.find( "\"kind\":\"none\"" ) != std::string::npos ) {
-        g_partner_live = false;
+        g_partner_kind = intent_kind::none;
         mp_log( "[cdda-mp] INTENT-RECV: clear" );
         return;
     }
 
     npc *partner = get_partner_npc();
     if( !partner ) {
-        g_partner_live = false;
+        g_partner_kind = intent_kind::none;
+        return;
+    }
+
+    if( msg.find( "\"kind\":\"wait\"" ) != std::string::npos ) {
+        g_partner_dir = point( 0, 0 );
+        g_partner_anchor = get_map().get_abs( partner->pos_bub() );
+        g_partner_staged_turn = calendar::turn;
+        g_partner_kind = intent_kind::wait;
+        mp_log( "[cdda-mp] INTENT-RECV: wait" );
         return;
     }
 
@@ -190,45 +240,46 @@ void mp_handle_intent_recv( const std::string &msg )
         return;
     }
     if( dx == 0 && dy == 0 ) {
-        g_partner_live = false;
+        g_partner_kind = intent_kind::none;
         return;
     }
 
     g_partner_dir = point( dx, dy );
     g_partner_anchor = get_map().get_abs( partner->pos_bub() );
     g_partner_staged_turn = calendar::turn;
-    g_partner_live = true;
+    g_partner_kind = intent_kind::move;
     mp_log( "[cdda-mp] INTENT-RECV: dx=" + std::to_string( dx ) +
             " dy=" + std::to_string( dy ) +
+            " style=" + std::to_string( mp_intent_style_id( g_partner_dir ) ) +
             " anchor=(" + std::to_string( g_partner_anchor.x() ) + "," +
             std::to_string( g_partner_anchor.y() ) + ")" );
 }
 
-bool mp_partner_intent_offset( point &out )
+intent_kind mp_partner_intent( point &out )
 {
-    if( !g_partner_live ) {
-        return false;
+    if( g_partner_kind == intent_kind::none ) {
+        return intent_kind::none;
     }
     npc *partner = get_partner_npc();
     if( !partner ) {
-        g_partner_live = false;
-        return false;
+        g_partner_kind = intent_kind::none;
+        return intent_kind::none;
     }
     // Clear-on-move: the partner moving IS the intent resolving.  Done locally
     // so the hint dies on the same frame their position updates, whichever of
     // the two messages happens to land first.
     if( get_map().get_abs( partner->pos_bub() ) != g_partner_anchor ) {
-        g_partner_live = false;
+        g_partner_kind = intent_kind::none;
         mp_log( "[cdda-mp] INTENT-EXPIRE: partner moved" );
-        return false;
+        return intent_kind::none;
     }
     if( calendar::turn - g_partner_staged_turn > intent_max_age_turns * 1_turns ) {
-        g_partner_live = false;
+        g_partner_kind = intent_kind::none;
         mp_log( "[cdda-mp] INTENT-EXPIRE: aged out" );
-        return false;
+        return intent_kind::none;
     }
     out = g_partner_dir;
-    return true;
+    return g_partner_kind;
 }
 
 } // namespace cata_mp

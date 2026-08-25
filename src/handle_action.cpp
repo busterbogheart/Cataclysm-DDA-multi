@@ -2932,6 +2932,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 g->cancel_activity_query( _( "Confirm:" ) );
                 return true;
             }
+            // Intent telegraph: pressing 5 while locked means "I am holding
+            // position", which is worth showing the partner just as much as a
+            // step is.  No-op when we have a grant.
+            cata_mp::mp_stage_intent_action( act );
             mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
             return true;
         }
