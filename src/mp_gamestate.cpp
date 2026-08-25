@@ -10164,13 +10164,32 @@ static bool apply_one_state_message( const std::string &msg )
                 const int local_hp = av.get_part_hp_cur( bp );
                 if( local_hp != new_hp ) {
                     const int since = mp_turns_since_last_cast();
-                    if( ( since >= 0 && since <= 3 ) || new_hp > local_hp ) {
+                    if( since >= 0 && since <= 3 ) {
                         mp_log( "[cdda-mp] MAGIC-HP-AUTHORITY: bp=" + bp_str +
                                 " client_local=" + std::to_string( local_hp ) +
                                 " host_says=" + std::to_string( new_hp ) +
                                 " delta=" + std::to_string( new_hp - local_hp ) +
                                 " since_cast=" + std::to_string( since ) +
                                 " last_spell=" + mp_last_cast_spell() );
+                    } else {
+                        // Background divergence, counted rather than printed.
+                        // Measured 2026-08-25: this fires CONSTANTLY (2448 lines
+                        // in one session, deltas of +1..+5) because the client's
+                        // avatar and the host's proxy each run their own natural
+                        // regen and the host wins.  Printing every one buried the
+                        // two lines that actually correlated with a cast.  The
+                        // periodic summary keeps the signal that the overwrite
+                        // mechanism is live -- which is exactly the mechanism a
+                        // heal or an HP-cost spell rides -- without the flood.
+                        static int s_bg_diverge = 0;
+                        static int s_bg_total = 0;
+                        s_bg_total += std::abs( new_hp - local_hp );
+                        if( ++s_bg_diverge % 250 == 0 ) {
+                            mp_log( "[cdda-mp] HP-AUTHORITY-BG: " + std::to_string( s_bg_diverge ) +
+                                    " silent overwrites so far, cumulative |delta|=" +
+                                    std::to_string( s_bg_total ) +
+                                    " (client-local regen diverging from the host proxy)" );
+                        }
                     }
                 }
                 g_last_bodypart_hp[bp_str] = new_hp;
