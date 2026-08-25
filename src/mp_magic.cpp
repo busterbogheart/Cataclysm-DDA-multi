@@ -7,13 +7,19 @@
 #include "character.h"
 #include "creature.h"
 #include "effect.h"
+#include "coordinates.h"
 #include "event.h"
 #include "event_bus.h"
 #include "event_subscriber.h"
+#include "flexbuffer_json.h"
 #include "game.h"
+#include "json_loader.h"
 #include "magic.h"
+#include "map.h"
+#include "monster.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "mtype.h"
 #include "npc.h"
 #include "type_id.h"
 
@@ -172,6 +178,99 @@ int mp_turns_since_last_cast()
 std::string mp_last_cast_spell()
 {
     return g_last_cast_spell.empty() ? std::string( "none" ) : g_last_cast_spell;
+}
+
+void mp_on_summon_placed( monster &mon, int summon_turns, bool permanent )
+{
+    if( !is_client_mode() ) {
+        return;   // host is already authoritative; nothing to do
+    }
+    const tripoint_abs_ms abs = mon.pos_abs();
+    const std::string payload =
+        std::string( "{\"type\":\"client_summon\",\"mtype\":\"" ) + mon.type->id.str() +
+        "\",\"x\":" + std::to_string( abs.x() ) +
+        ",\"y\":" + std::to_string( abs.y() ) +
+        ",\"z\":" + std::to_string( abs.z() ) +
+        ",\"friendly\":" + std::to_string( mon.friendly ) +
+        ",\"turns\":" + std::to_string( permanent ? 0 : summon_turns ) +
+        ",\"no_drops\":" + ( mon.no_extra_death_drops ? "true" : "false" ) +
+        ",\"quiet\":" + ( mon.no_corpse_quiet ? "true" : "false" ) + "}";
+    mp_log( "[cdda-mp] CLI-SUMMON-SEND: " + payload );
+    client_send( payload );
+    // Drop our copy immediately.  Keeping it would either double-spawn when the
+    // host's real one arrives, or be culled anyway before the round-trip
+    // completes -- the exact failure this is fixing.  remove_zombie despawns
+    // cleanly with no corpse, which is what the cull path itself uses.
+    g->remove_zombie( mon );
+}
+
+void mp_handle_client_summon( const std::string &msg )
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    std::string mtype_str;
+    tripoint_abs_ms abs;
+    int friendly = 0;
+    int turns = 0;
+    bool no_drops = true;
+    bool quiet = false;
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        mtype_str = jo.get_string( "mtype", "" );
+        abs = tripoint_abs_ms{ jo.get_int( "x", 0 ), jo.get_int( "y", 0 ), jo.get_int( "z", 0 ) };
+        friendly = jo.get_int( "friendly", 0 );
+        turns = jo.get_int( "turns", 0 );
+        no_drops = jo.get_bool( "no_drops", true );
+        quiet = jo.get_bool( "quiet", false );
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] HOST-SUMMON parse error: " ) + e.what() );
+        return;
+    }
+    const mtype_id mid( mtype_str );
+    if( mtype_str.empty() || !mid.is_valid() ) {
+        mp_log( "[cdda-mp] HOST-SUMMON: REJECTED, invalid mtype '" + mtype_str + "'" );
+        return;
+    }
+    map &here = get_map();
+    if( !here.inbounds( abs ) ) {
+        // Out of the host's bubble.  The client already paid the mana and the
+        // components, so this is a real loss for them -- log it loudly rather
+        // than dropping silently, because it is the signature of the pair being
+        // too far apart rather than of a bug in this path.
+        mp_log( "[cdda-mp] HOST-SUMMON: REJECTED, out of bubble abs=(" +
+                std::to_string( abs.x() ) + "," + std::to_string( abs.y() ) + "," +
+                std::to_string( abs.z() ) + ")" );
+        return;
+    }
+    monster *placed = g->place_critter_at( mid, here.get_bub( abs ) );
+    if( placed == nullptr ) {
+        mp_log( "[cdda-mp] HOST-SUMMON: REJECTED, no room for " + mtype_str );
+        return;
+    }
+    placed->friendly = friendly;
+    if( turns > 0 ) {
+        placed->set_summon_time( time_duration::from_turns( turns ) );
+    }
+    placed->no_extra_death_drops = no_drops;
+    placed->no_corpse_quiet = quiet;
+    // Summoner is the client's proxy NPC, so SP's own summon bookkeeping
+    // (ownership, death cleanup) treats it as that character's summon -- which
+    // is what it is.
+    if( npc *proxy = get_partner_npc() ) {
+        placed->set_summoner( proxy );
+    }
+    // Deliberately NOT assigning a net id here: build_monster_list() gives one
+    // to any monster with mp_net_id == 0 on the next broadcast, which is the
+    // single place that allocation happens.  Duplicating it here would be a
+    // second allocator to keep in step.
+    mp_log( "[cdda-mp] HOST-SUMMON-PLACE: " + mtype_str +
+            " abs=(" + std::to_string( abs.x() ) + "," + std::to_string( abs.y() ) + "," +
+            std::to_string( abs.z() ) + ")" +
+            " friendly=" + std::to_string( friendly ) +
+            " turns=" + std::to_string( turns ) );
 }
 
 void mp_log_proxy_magic_state()

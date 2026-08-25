@@ -53,6 +53,7 @@
 #include "mongroup.h"
 #include "monster.h"
 #include "monstergenerator.h"
+#include "mp_magic.h"
 #include "mtype.h"
 #include "npc.h"
 #include "overmapbuffer.h"
@@ -1370,6 +1371,13 @@ static bool add_summoned_mon( const tripoint_bub_ms &pos, const time_duration &t
     spawned_mon.no_extra_death_drops = !sp.has_flag( spell_flag::SPAWN_WITH_DEATH_DROPS );
     spawned_mon.no_corpse_quiet = sp.has_flag( spell_flag::NO_CORPSE_QUIET );
     spawned_mon.set_summoner( &caster );
+    // MP: on the client this monster has no network id and would be culled by
+    // the next monster sync, so hand it to the host to place for real.  No-op
+    // on the host and in single player.  Must be last -- it removes the local
+    // copy.  Body in mp_magic.cpp.
+    if( caster.is_avatar() ) {
+        cata_mp::mp_on_summon_placed( spawned_mon, to_turns<int>( time ), permanent );
+    }
     return true;
 }
 

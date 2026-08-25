@@ -6,6 +6,7 @@
 
 class Creature;
 class event_bus;
+class monster;
 
 // Co-op diagnostics for spell content (Magiclysm, Sorcerer, Xedra, anything else
 // that casts).  Magiclysm was downgraded from mod_coop::incompatible to
@@ -43,6 +44,32 @@ std::string mp_last_cast_spell();
 // evaluating to 0 for the joining player (ROADMAP B4); log it rather than
 // asserting it.
 void mp_log_proxy_magic_state();
+
+// --- Client summon registration (ROADMAP B1) ------------------------------
+//
+// Measured 2026-08-25: a spell-summoned monster on the client is placed with
+// mp_net_id == 0, and apply_monster_sync's in-region cull removes it on the
+// very next sync -- 42ms after the cast, with the mana and material components
+// already spent.  Net ids are only ever assigned host-side, so a client summon
+// can never survive on its own.
+//
+// Fix is host authority, matching how the fork already handles vehicles and
+// melee: the client does NOT keep its local copy.  It tells the host what to
+// place and deletes its own, the host places the real monster and assigns the
+// net id, and the ordinary monster broadcast delivers it back a tick later as a
+// normal shared monster.  Costs one round-trip (~40ms local, ~100ms WAN)
+// against a multi-thousand-move cast, and needs no new sync machinery or cull
+// exemption afterwards.
+//
+// Called from add_summoned_mon() (magic_spell_effect.cpp), which every
+// Magiclysm summon funnels through -- EOC_SUMMON_ZOMBIE and friends are only
+// level-based selectors that re-cast a sub-spell with a plain `summon` effect.
+// `summon_turns` is 0 for a PERMANENT summon.  No-op unless we are the client
+// and the caster is our own avatar.
+void mp_on_summon_placed( monster &mon, int summon_turns, bool permanent );
+
+// Host: apply a {"type":"client_summon",...} packet.
+void mp_handle_client_summon( const std::string &msg );
 
 } // namespace cata_mp
 

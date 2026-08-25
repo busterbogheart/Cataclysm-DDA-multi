@@ -3555,6 +3555,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Client cast a summon spell.  Out-of-band with the other state packets:
+    // the summon is a side effect of a cast that is already being paid for by
+    // the client's own activity, so it must not consume a host turn or take
+    // part in the grant/ack cycle.  Body in mp_magic.cpp.
+    if( msg.find( "\"type\":\"client_summon\"" ) != std::string::npos ) {
+        mp_handle_client_summon( msg );
+        return;
+    }
+
     if( msg.find( "\"type\":\"chat\"" ) != std::string::npos ) {
         mp_handle_chat_msg( msg );
         return;
