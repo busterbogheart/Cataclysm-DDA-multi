@@ -61,11 +61,6 @@ const std::map<std::string, coop_entry> &coop_table()
             }
         },
         {
-            "magiclysm", { mod_coop::incompatible,
-                translate_marker( "CO-OP: NOT COMPATIBLE.  Leans heavily on teleport spells and scripted (effect-on-condition) effects that don't apply to the remote player, and long-range teleports break the shared map." )
-            }
-        },
-        {
             "mindovermatter", { mod_coop::incompatible,
                 translate_marker( "CO-OP: NOT COMPATIBLE.  Psionic powers are scripted and run only on your own client; teleportation powers break the shared map and self-heals desync from the host." )
             }
@@ -87,6 +82,16 @@ const std::map<std::string, coop_entry> &coop_table()
         },
 
         // -- Plays, but breaks or desyncs for the client. -------------------
+        {
+            // Downgraded from `incompatible` 2026-08-25 so the mod can be picked
+            // and its co-op behaviour actually measured.  Direct-damage spells
+            // ride the existing melee/ranged dispatch, but summons, fields,
+            // spawned items and self-buffs resolve only in the caster's own
+            // world, and long-range teleports leave the host's reality bubble.
+            "magiclysm", { mod_coop::warn,
+                translate_marker( "CO-OP: EXPERIMENTAL.  Spells cast by the joining player resolve in their own world: direct damage reaches shared monsters, but summons, spawned items, terrain changes and buffs may not.  Teleport spells can move you outside the host's simulated area and strand you.  Both players must run the same mod list." )
+            }
+        },
         {
             "xedra_evolved_innawoods", { mod_coop::warn,
                 translate_marker( "CO-OP: may break.  Inherits Xedra Evolved's scripted powers, which don't apply to the remote player." )
