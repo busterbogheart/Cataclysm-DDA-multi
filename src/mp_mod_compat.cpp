@@ -81,17 +81,28 @@ const std::map<std::string, coop_entry> &coop_table()
             }
         },
 
-        // -- Plays, but breaks or desyncs for the client. -------------------
+        // -- Note only: informational, no popup and no host-time gate. ------
+        //    `ok` here is deliberate, not an oversight.  mod_coop_note() and
+        //    mod_coop_info_suffix() ignore the status and still render the text
+        //    in the mod description panel, so the player is told what to expect.
+        //    Only the INTERRUPTING paths key off `warn` — the create-screen
+        //    CONFIRM popup and the "--- may break in co-op" list label
+        //    (worldfactory.cpp), and mp_world_coop_block()'s "Host it anyway?"
+        //    prompt — and those go quiet for `ok`.
         {
-            // Downgraded from `incompatible` 2026-08-25 so the mod can be picked
-            // and its co-op behaviour actually measured.  Direct-damage spells
-            // ride the existing melee/ranged dispatch, but summons, fields,
-            // spawned items and self-buffs resolve only in the caster's own
-            // world, and long-range teleports leave the host's reality bubble.
-            "magiclysm", { mod_coop::warn,
+            // 2026-08-25: incompatible -> warn -> ok, all in one day, on
+            // purpose.  Blocking it made the real behaviour unmeasurable, and
+            // then warning on every single host of a world we are actively
+            // developing against was pure friction.  This is an open work item
+            // with a written spec, not an unknown — see ROADMAP "MAGICLYSM IN
+            // CO-OP".  Revisit the status when the summon / HP-authority /
+            // effect-sync work lands or is abandoned.
+            "magiclysm", { mod_coop::ok,
                 translate_marker( "CO-OP: EXPERIMENTAL.  Spells cast by the joining player resolve in their own world: direct damage reaches shared monsters, but summons, spawned items, terrain changes and buffs may not.  Teleport spells can move you outside the host's simulated area and strand you.  Both players must run the same mod list." )
             }
         },
+
+        // -- Plays, but breaks or desyncs for the client. -------------------
         {
             "xedra_evolved_innawoods", { mod_coop::warn,
                 translate_marker( "CO-OP: may break.  Inherits Xedra Evolved's scripted powers, which don't apply to the remote player." )
