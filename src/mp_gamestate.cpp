@@ -1,4 +1,5 @@
 #include "mp_gamestate.h"
+#include "mp_intent.h"
 
 #include "uistate.h"   // uistate.consume_uistate (mp_prune_dead_item_ui_refs)
 
@@ -3565,6 +3566,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     if( msg.find( "\"type\":\"shout\"" ) != std::string::npos ) {
         mp_handle_shout_recv( msg );
+        return;
+    }
+
+    // Intent telegraph.  Deliberately handled up here with the other
+    // out-of-band packets, well before the generic action-name extraction
+    // below: it is a display hint, it is never acked, and it must not be able
+    // to fall into the turn-consuming path.
+    if( msg.find( "\"type\":\"intent\"" ) != std::string::npos ) {
+        mp_handle_intent_recv( msg );
         return;
     }
 
@@ -9412,6 +9422,13 @@ static bool apply_one_state_message( const std::string &msg )
 
     if( msg.find( "\"type\":\"high_five\"" ) != std::string::npos ) {
         mp_handle_high_five_recv( msg );
+        return true;
+    }
+
+    // Intent telegraph — display hint only, never acked.  See the twin clause
+    // in handle_remote_action().
+    if( msg.find( "\"type\":\"intent\"" ) != std::string::npos ) {
+        mp_handle_intent_recv( msg );
         return true;
     }
 

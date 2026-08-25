@@ -92,6 +92,7 @@
 #include "weather_type.h"
 #include "weighted_list.h"
 #include "mp_gamestate.h"
+#include "mp_intent.h"
 
 static const efftype_id effect_ridden( "ridden" );
 
@@ -1595,6 +1596,68 @@ void cata_tiles::draw( const point &dest, const tripoint_bub_ms &center, int wid
     // separation tier. Works at any zoom level because player_to_screen and
     // tile_width are already zoom-scaled.
     if( npc *partner = cata_mp::get_partner_npc() ) {
+        // MP intent telegraph: the partner is locked out of acting and pressed a
+        // direction.  Draw a faint hint tile one step that way so we can see
+        // which way they mean to go while we are the one deliberating.  Purely
+        // a display hint -- it never executes on their side.
+        point intent_off;
+        if( partner->pos_bub().z() == center.z() &&
+            cata_mp::mp_partner_intent_offset( intent_off ) ) {
+            const tripoint_bub_ms ghost_pos =
+                partner->pos_bub() + tripoint_rel_ms( intent_off.x, intent_off.y, 0 );
+            // Never hint at a tile we cannot see: a marker behind a wall would
+            // leak both the partner's position and the fact that a walkable
+            // tile exists there.
+            if( get_avatar().sees( get_map(), ghost_pos ) ) {
+                const point gs = player_to_screen( ghost_pos.xy() );
+                SDL_BlendMode prev_blend = SDL_BLENDMODE_NONE;
+                SDL_GetRenderDrawBlendMode( renderer.get(), &prev_blend );
+                SDL_SetRenderDrawBlendMode( renderer.get(), SDL_BLENDMODE_BLEND );
+                const float gx0 = static_cast<float>( gs.x );
+                const float gy0 = static_cast<float>( gs.y );
+                const float gx1 = gx0 + tile_width;
+                const float gy1 = gy0 + tile_height;
+                // Faint fill so the terrain underneath stays readable.
+                SDL_Color fill_col = curses_color_to_SDL( c_light_green );
+                fill_col.a = 60;
+                const SDL_FPoint quad_pts[6] = {
+                    { gx0, gy0 }, { gx1, gy0 }, { gx1, gy1 },
+                    { gx0, gy0 }, { gx1, gy1 }, { gx0, gy1 }
+                };
+                SDL_Vertex quad[6];
+                for( int k = 0; k < 6; ++k ) {
+                    quad[k].position = quad_pts[k];
+                    quad[k].color = to_vertex_color( fill_col );
+                    quad[k].tex_coord = { 0.0f, 0.0f };
+                }
+                SDL_RenderGeometry( renderer.get(), nullptr, quad, 6, nullptr, 0 );
+                // Chevron pointing the way they mean to go, brighter than the
+                // fill so the direction reads at a glance.
+                const float icx = ( gx0 + gx1 ) * 0.5f;
+                const float icy = ( gy0 + gy1 ) * 0.5f;
+                const float ilen = std::sqrt( static_cast<float>(
+                                                  intent_off.x * intent_off.x +
+                                                  intent_off.y * intent_off.y ) );
+                const float iux = intent_off.x / ilen;
+                const float iuy = intent_off.y / ilen;
+                const float ihalf = std::min( tile_width, tile_height ) * 0.35f;
+                SDL_Color chev_col = curses_color_to_SDL( c_light_green );
+                chev_col.a = 210;
+                SDL_Vertex chev[3];
+                chev[0].position = { icx + iux * ihalf, icy + iuy * ihalf };
+                chev[1].position = { icx - iux * ihalf - iuy * ihalf * 0.7f,
+                                     icy - iuy * ihalf + iux * ihalf * 0.7f };
+                chev[2].position = { icx - iux * ihalf + iuy * ihalf * 0.7f,
+                                     icy - iuy * ihalf - iux * ihalf * 0.7f };
+                for( SDL_Vertex &v : chev ) {
+                    v.color = to_vertex_color( chev_col );
+                    v.tex_coord = { 0.0f, 0.0f };
+                }
+                SDL_RenderGeometry( renderer.get(), nullptr, chev, 3, nullptr, 0 );
+                SDL_SetRenderDrawBlendMode( renderer.get(), prev_blend );
+            }
+        }
+
         const point partner_screen_topleft = player_to_screen( partner->pos_bub().xy() );
         const SDL_FPoint partner_pt{
             static_cast<float>( partner_screen_topleft.x + tile_width / 2 ),

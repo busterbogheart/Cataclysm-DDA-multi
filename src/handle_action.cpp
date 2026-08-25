@@ -107,6 +107,7 @@
 #include "worldfactory.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "mp_intent.h"
 #include "npc.h"
 #include "line.h" // TEMP diag: trigdist global for CLI-MOVE-COST logging
 
@@ -2770,6 +2771,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 }
             }
 
+            // MP intent telegraph: while locked this move is about to be dropped
+            // by mp_dispatch below.  Stage it so the partner -- who is the one
+            // deliberating, by construction -- can see which way we mean to go.
+            // Display-only; it never executes.  No-op when we have a grant.
+            cata_mp::mp_stage_intent_action( act );
+
             // Commit any pending move_mode transition (run, crouch, prone) before
             // dispatching so the server receives the intended mode, not the stale one.
             // Normally this commit happens at line ~2756, but the client intercept
@@ -3275,6 +3282,10 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
     // not mutate world state or advance the simulation.
     if( cata_mp::is_hosting() && player_character.get_moves() <= 0 ) {
         if( !host_ui_actions.count( act ) ) {
+            // MP intent telegraph: this keypress is about to be discarded.  If
+            // it is a direction, stage it for the partner to see instead of
+            // losing it silently; anything else clears a stale hint.
+            cata_mp::mp_stage_intent_action( act );
             cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-BLOCK: act=" + std::to_string( act ) );
             return false;
         }
