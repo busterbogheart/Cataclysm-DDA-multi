@@ -72,6 +72,7 @@
 #include "skill.h"
 #include "popup.h"
 #include "mod_manager.h"
+#include "mp_magic.h"
 #include "mp_mod_compat.h"
 #include "string_input_popup.h"
 #include "uilist.h"
@@ -3750,6 +3751,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             "' (id=" + std::to_string( get_avatar().getID().get_value() ) +
                             ") partner=CLIENT '" + cname + "' (proxy_id=" +
                             std::to_string( remote_player_npc_id.get_value() ) + ")" );
+                    // One-shot: what does the proxy know about magic?  Expected
+                    // to be nothing — see ROADMAP B4.
+                    mp_log_proxy_magic_state();
                 }
             }
         }
@@ -10131,6 +10135,27 @@ static bool apply_one_state_message( const std::string &msg )
                     }
                     ++n_dropped;
                 }
+                // MAGIC diagnostic (ROADMAP B2): the host's proxy HP is
+                // authoritative and overwrites whatever this client did
+                // locally, so a self-heal or an HP-cost (Animist blood magic)
+                // spell round-trips away — the heal is reverted, the HP cost is
+                // refunded.  Ordinary combat damage produces the same
+                // "host is lower than us" signal, so log how far we are from
+                // the last resolved cast to tell the two apart.  The reverse
+                // case (host RAISING our HP) can't come from combat at all, so
+                // always log that one.
+                const int local_hp = av.get_part_hp_cur( bp );
+                if( local_hp != new_hp ) {
+                    const int since = mp_turns_since_last_cast();
+                    if( ( since >= 0 && since <= 3 ) || new_hp > local_hp ) {
+                        mp_log( "[cdda-mp] MAGIC-HP-AUTHORITY: bp=" + bp_str +
+                                " client_local=" + std::to_string( local_hp ) +
+                                " host_says=" + std::to_string( new_hp ) +
+                                " delta=" + std::to_string( new_hp - local_hp ) +
+                                " since_cast=" + std::to_string( since ) +
+                                " last_spell=" + mp_last_cast_spell() );
+                    }
+                }
                 g_last_bodypart_hp[bp_str] = new_hp;
                 av.set_part_hp_cur( bp, new_hp );
             }
@@ -13340,7 +13365,13 @@ static void apply_monster_sync( JsonObject &jo )
             }
         }
         for( monster *mon : local_cull ) {
-            culled_log += mon->type->id.str() + "(local) ";
+            // Tag summons explicitly (ROADMAP B1): a spell-summoned monster on
+            // the client has mp_net_id == 0 because net ids are only ever
+            // assigned host-side, so it lands in this cull the turn it appears.
+            // Without the tag it's indistinguishable in the log from an
+            // ordinary local-mapgen critter.
+            culled_log += mon->type->id.str() +
+                          ( mp_is_summoned( *mon ) ? "(local,SUMMON) " : "(local) " );
             ++n_culled;
             g->remove_zombie( *mon );
         }
@@ -13396,7 +13427,8 @@ static void apply_monster_sync( JsonObject &jo )
         }
         s_phantom_strikes.swap( seen_now );   // drop keys not seen this sync
         for( monster *mon : phantom_cull ) {
-            culled_log += mon->type->id.str() + "(phantom) ";
+            culled_log += mon->type->id.str() +
+                          ( mp_is_summoned( *mon ) ? "(phantom,SUMMON) " : "(phantom) " );
             ++n_culled;
             g->remove_zombie( *mon );          // clean despawn, no corpse
         }

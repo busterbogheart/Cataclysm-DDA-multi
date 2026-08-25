@@ -163,6 +163,7 @@
 #include "move_mode.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "mp_magic.h"
 #include "mtype.h"
 #include "npc.h"
 #include "npctrade.h"
@@ -480,6 +481,10 @@ game::game() :
     events().subscribe( &*achievements_tracker_ptr );
     events().subscribe( &*spell_events_ptr );
     events().subscribe( &*eoc_events_ptr );
+    // MP: co-op spell diagnostics.  Named callout, body in mp_magic.cpp — the
+    // event bus is the only hook that lets us observe spell resolution without
+    // editing activity_actor.cpp / magic.cpp.
+    cata_mp::mp_subscribe_magic_events( events() );
     debug_menu::debug_capture::instance().on_game_load( events() );
     world_generator = std::make_unique<worldfactory>();
     // do nothing, everything that was in here is moved to init_data() which is called immediately after g = new game; in main.cpp
