@@ -7581,6 +7581,14 @@ bool is_partner_npc( character_id id )
            id == client_host_npc_id;
 }
 
+bool mp_partner_shares_friendly( const Character &guy )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return false;   // single player: SP behaviour untouched
+    }
+    return guy.is_npc() && is_partner_npc( guy.getID() );
+}
+
 bool is_client_host_at( const tripoint_abs_ms &abs )
 {
     if( !client_host_npc_spawned || !client_host_npc_id.is_valid() ) {
@@ -12159,6 +12167,14 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
                + ",\"y\":" + std::to_string( mp.y() )
                + ",\"z\":" + std::to_string( mp.z() )
                + ",\"hp\":" + std::to_string( mon_ptr->get_hp() )
+               // Friendliness.  Without this every monster arrives on the client
+               // as a default instance of its mtype — i.e. hostile — so summons,
+               // tamed pets and anything else with friendly != 0 read as enemies
+               // over there (measured 2026-08-25: a client-summoned zombie the
+               // host placed came back hostile on the client's own screen).
+               // Part of the record string, so the delta gate re-sends a monster
+               // whose friendliness changes.
+               + ",\"fr\":" + std::to_string( mon_ptr->friendly )
                + ",\"facing\":" + std::to_string( mon_facing ) + rider_field + "}";
         // Delta gate: emit only if new or changed since last broadcast. nid + id
         // are stable, so an identical record string means x/y/z/hp/facing are all
@@ -13275,6 +13291,19 @@ static void apply_monster_sync( JsonObject &jo )
         }
 
         matched.insert( best );
+
+        // Host is authoritative on friendliness, for spawned and matched alike.
+        // "friendly" is per-instance state, not part of the mtype, so a monster
+        // rebuilt from its id alone is always hostile until told otherwise.
+        if( mo.has_int( "fr" ) ) {
+            const int fr = mo.get_int( "fr" );
+            if( best->friendly != fr ) {
+                mp_log( "[cdda-mp] MON-FRIENDLY: nid=" + std::to_string( nid ) +
+                        " " + best->type->id.str() +
+                        " " + std::to_string( best->friendly ) + " -> " + std::to_string( fr ) );
+                best->friendly = fr;
+            }
+        }
 
         // Silent-drop diagnostic: remember live nids; forget ones the host reports
         // dead (server_hp<=0) so a later revival re-spawn isn't mis-flagged.

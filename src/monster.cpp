@@ -63,6 +63,7 @@
 #include "mondefense.h"
 #include "monfaction.h"
 #include "mongroup.h"
+#include "mp_gamestate.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "npc.h"
@@ -1750,6 +1751,14 @@ monster_attitude monster::attitude( const Character *u ) const
                 return MATT_FRIEND;
             }
             if( u->is_npc() ) {
+                // MP: the co-op partner is a player wearing an NPC proxy, so a
+                // monster friendly to one player is friendly to the other --
+                // zombies included.  The species_ZOMBIE carve-out below is the
+                // right call for a bystander NPC and the wrong one for a
+                // teammate.  No-op in single player.
+                if( cata_mp::mp_partner_shares_friendly( *u ) ) {
+                    return MATT_FRIEND;
+                }
                 // Zombies don't understand not attacking NPCs, but dogs and bots should.
                 if( u->get_attitude() != NPCATT_KILL && !type->in_species( species_ZOMBIE ) ) {
                     return MATT_FRIEND;

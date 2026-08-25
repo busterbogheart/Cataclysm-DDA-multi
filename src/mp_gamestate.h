@@ -108,6 +108,20 @@ bool is_remote_player( character_id id );
 // (host: matches the client's proxy; client: matches the host's proxy.)
 bool is_partner_npc( character_id id );
 
+// A monster friendly to one player must be friendly to the other.
+//
+// SP draws a hard line between "the avatar" and "an NPC" when deciding whether
+// a friendly monster stays friendly: monster::attitude() grants MATT_FRIEND to
+// the avatar unconditionally, but to an NPC only when the monster is not of
+// species ZOMBIE ("Zombies don't understand not attacking NPCs").  That rule is
+// right for a bystander NPC and wrong for a co-op partner, who is a player
+// wearing an NPC proxy — so an Animist's summoned undead would maul their own
+// teammate while behaving perfectly toward the summoner.
+//
+// True when `guy` is the other player's proxy in an active co-op session.
+// False in single player, so SP behaviour is untouched.
+bool mp_partner_shares_friendly( const Character &guy );
+
 // True when the partner (on the other end of the connection) is currently
 // in an interruptible "wait several minutes" activity.  Reads the activity
 // id last broadcast over the wire — works in either direction (client sees
