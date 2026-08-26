@@ -931,6 +931,13 @@ static std::string g_last_host_action_label = "\xe2\x80\x94";
 // activity ticks on the side that owns the player.  Used by the Co-op HUD and
 // transition-edge messages.
 static std::string g_partner_activity;
+// Defined further down next to should_fast_forward(); forward-declared here so the
+// activity_start handler can log the verdict alongside the id.
+static bool is_fast_forwardable_activity( const std::string &id );
+// Remaining moves of the partner's current activity, forwarded alongside
+// g_partner_activity.  -1 = unknown (older peer, or no activity).  Read only by
+// should_fast_forward()'s duration floor — see FF_MIN_ACTIVITY_MOVES.
+static int g_partner_activity_moves = -1;
 // Progress % (0-100) of the partner's current activity.  Forwarded each
 // action/state packet alongside g_partner_activity.  Read by the Co-op panel.
 static int g_partner_activity_pct = 0;
@@ -3753,6 +3760,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_string( "client_activity" ) ) {
         g_partner_activity = jo.get_string( "client_activity" );
         mp_partner_activity_transition_check();
+        // Paired with the id: absent field leaves -1 = unknown, so a peer that
+        // predates client_activity_moves still fast-forwards as it used to.
+        g_partner_activity_moves = jo.get_int( "client_activity_moves", -1 );
     }
     if( jo.has_int( "client_pulp" ) ) {
         g_partner_pulp_packed = jo.get_int( "client_pulp" );
@@ -3794,15 +3804,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         if( !id.empty() ) {
             g_partner_activity = id;
             mp_partner_activity_transition_check();
+            // Signal-only packet carries no duration; clear to unknown so the FF
+            // floor does not judge a NEW activity by the PREVIOUS one's remaining
+            // moves.  The next enriched action refreshes it with the real number.
+            g_partner_activity_moves = -1;
         }
         mp_log( "[cdda-mp] ACT-START RECV: id=" + id
-                + " g_partner_activity prev=" + prev + " now=" + g_partner_activity );
+                + " g_partner_activity prev=" + prev + " now=" + g_partner_activity
+                + " passive=" + std::to_string( is_passive_activity( id ) )
+                + " ff_eligible=" + std::to_string( is_fast_forwardable_activity( id ) ) );
         return;
     }
     if( msg.find( "\"action\":\"activity_end\"" ) != std::string::npos ) {
         const std::string id = jo.get_string( "activity_id", "" );
         const std::string prev = g_partner_activity;
         g_partner_activity.clear();
+        g_partner_activity_moves = -1;
         mp_partner_activity_transition_check();
         mp_log( "[cdda-mp] ACT-END RECV: id=" + id
                 + " g_partner_activity prev=" + prev + " now=" + g_partner_activity );
@@ -6638,7 +6655,11 @@ void wait_for_client_action()
     {
         static std::string last_reason;
         const std::string reason = ff_now ? std::string() : mp_ff_decline_reason();
-        if( reason != last_reason ) {
+        // Dedupe on the reason with any "@<moves>" suffix stripped: the duration
+        // reasons carry a number that changes every turn, which would otherwise
+        // defeat the once-per-change gate and log a line per turn.
+        const std::string key = reason.substr( 0, reason.find( '@' ) );
+        if( key != last_reason ) {
             if( !reason.empty() && reason != "self_idle" && reason != "not_mp" ) {
                 mp_log( "[cdda-mp] FF-DECLINED: " + reason
                         + " (host_act=" + ( get_avatar().activity ?
@@ -6646,7 +6667,7 @@ void wait_for_client_action()
                         + " partner_act=" + ( g_partner_activity.empty() ?
                                               "(none)" : g_partner_activity ) + ")" );
             }
-            last_reason = reason;
+            last_reason = key;
         }
     }
     if( ff_now ) {
@@ -6973,49 +6994,61 @@ bool should_advance_calendar()
 
 bool is_passive_activity( const std::string &activity_id_str )
 {
-    // Activities where the avatar is committed turn-after-turn without
-    // per-turn user input.  Once entered, SP's activity_actor::do_turn ticks
-    // the activity on every game turn at machine speed.  Excludes:
-    //  - ACT_AIM, ACT_AUTOATTACK, ACT_AUTODRIVE — interactive: their do_turn
-    //    opens a blocking local UI (target_ui via mode_fire, etc.) every turn.
-    //  - ACT_NULL / empty — not in an activity
-    // ACT_FIRSTAID IS passive: its target/limb are chosen up front in iuse
-    // heal(), firstaid_activity_actor has no do_turn and no UI (heal applies in
-    // finish()), so it's a pure timer.  Classifying it interactive stranded the
-    // client at moves=0 forever (host skipped granting, client never ticked —
-    // the "using first aid stuck at 0%" deadlock, 2026-07-19).
-    static const std::set<std::string> passive = {
-        "ACT_CRAFT", "ACT_LONG_CRAFT", "ACT_DISASSEMBLE", "ACT_DISMEMBER",
-        "ACT_READ", "ACT_FIRSTAID",
-        "ACT_EAT", "ACT_DRINK", "ACT_CONSUME", "ACT_CONSUME_DRINK_MENU",
-        "ACT_CONSUME_FOOD_MENU", "ACT_CONSUME_MEDS_MENU",
-        "ACT_BUTCHER", "ACT_BUTCHER_FULL", "ACT_FIELD_DRESS",
-        "ACT_SKIN", "ACT_DISSECT", "ACT_QUARTER",
-        "ACT_CONSTRUCTION", "ACT_BUILD",
-        "ACT_VEHICLE", "ACT_VEHICLE_REPAIR",
-        "ACT_WORKOUT_LIGHT", "ACT_WORKOUT_MODERATE", "ACT_WORKOUT_ACTIVE",
-        "ACT_WORKOUT_HARD", "ACT_WORKOUT",
-        "ACT_FORAGE", "ACT_FISH",
-        "ACT_FILL_LIQUID", "ACT_PICKUP", "ACT_MOVE_ITEMS",
-        "ACT_WAIT", "ACT_WAIT_STAMINA", "ACT_WAIT_WEATHER", "ACT_WAIT_NPC",
-        "ACT_SLEEP", "ACT_TRY_SLEEP",
-        "ACT_HELP_PARTNER",
-        // Added 2026-08-16 after a live report: host crafting + client hotwiring a
-        // vehicle crawled. Not a perf bug — should_fast_forward() needs BOTH sides
-        // in a listed activity, so ONE unlisted activity on EITHER side drops the
-        // pair back to strict 1:1 lockstep no matter how long the other side's
-        // action is. The side that kills FF need not be the side being watched.
-        //
-        // Each of these was checked the same way ACT_FIRSTAID was: its actor's
-        // do_turn opens no UI and is a pure timer (several have no do_turn at all).
-        // Terrain mutation, where it happens, is entirely in finish() — zero in
-        // do_turn — so nothing lands on the partner mid-activity and the batch
-        // lateness under FF batching is bounded by the one broadcast after finish.
-        "ACT_HOTWIRE_CAR", "ACT_LOCKPICK", "ACT_PICKAXE",
-        "ACT_BOLTCUTTING", "ACT_HACKSAW", "ACT_OXYTORCH", "ACT_PRYING",
-        "ACT_CHOP_TREE", "ACT_CLEAR_RUBBLE", "ACT_MILK",
+    // Passive = the avatar is committed turn-after-turn without per-turn user
+    // input, so the client may tick it once per host grant from inside
+    // client_process_incoming (see CLI-GRANT-ACT-ACK) instead of waiting for the
+    // main input loop.  SP's activity_actor::do_turn then runs at machine speed.
+    //
+    // INVERTED 2026-08-26 — this was a hand-maintained ALLOW-list of 49 ids, and
+    // the fork paid for the gap three times: ACT_FIRSTAID stranded the client at
+    // moves=0 forever (2026-07-19), ACT_HOTWIRE_CAR + 10 others crawled at one
+    // network round trip per game turn (2026-08-16), and ACT_RELOAD / ACT_BASH /
+    // ACT_UNLOAD / ACT_DROP did the same on the 2026-08-23 stream (server log
+    // dayman-cdda-mp-server.log: FF-DECLINED self_not_ff_eligible:ACT_RELOAD,
+    // fast-forward engaged exactly once in 67 minutes, 30-second SRV-WAIT blocks
+    // during a two-player reload).  data/json defines 157 ACT_ ids; the allow-list
+    // covered 49, so 108 activities defaulted to the wrong answer and each one was
+    // a latent crawl or stall waiting for a player to try it.
+    //
+    // The deny-list below is derived, not remembered.  Every per-turn hook in the
+    // tree was scanned: 61 `X_activity_actor::do_turn` bodies in activity_actor.cpp
+    // plus 3 `activity_handlers::*_do_turn` legacy handlers.  Two classes must NOT
+    // be ticked from the network-recv path:
+    //
+    //  (a) BLOCKING UI in do_turn — ticking it inside client_process_incoming runs
+    //      the UI re-entrantly and crashes (target_ui::run / ~display_buffer_draw_scope).
+    //      Scan hits: aim_activity_actor (avatar_action::fire), atm_activity_actor
+    //      (popup), craft_activity_actor (query_yn).  ACT_CRAFT stays passive by an
+    //      earlier deliberate decision — its query_yn only fires on practice recipes
+    //      crossing a proficiency threshold, tracked separately.  ACT_AUTOATTACK and
+    //      ACT_AUTODRIVE have no actor here but drive a local UI/route the same way.
+    //
+    //  (b) The activity MOVES THE CHARACTER on its own.  In MP the client's position
+    //      only reaches the host through an explicit "move" action; an activity that
+    //      walks the avatar from the recv path would desync the proxy silently.
+    //      Scan hits: glide_activity_actor (move_to), find_mount_activity_actor and
+    //      multi_zone_activity_actor (route) — the latter backing the whole
+    //      ACT_MULTIPLE_* / ACT_MOVE_LOOT / ACT_TIDY_UP / ACT_FETCH_REQUIRED family —
+    //      plus ACT_TRAVELLING (activity_handlers::travel_do_turn).
+    //
+    // Anything else is a timer.  ~96 of the 157 ids have no per-turn hook at all.
+    // Getting a NEW id wrong now costs an activity that ticks slightly too eagerly,
+    // which is recoverable; under the allow-list it cost a crawl or a hard stall.
+    if( activity_id_str.empty() || activity_id_str == "ACT_NULL" ) {
+        return false;
+    }
+    static const std::set<std::string> interactive = {
+        // (a) blocking UI in do_turn
+        "ACT_AIM", "ACT_ATM", "ACT_AUTOATTACK", "ACT_AUTODRIVE",
+        // (b) moves the character on its own
+        "ACT_TRAVELLING", "ACT_GLIDE", "ACT_FIND_MOUNT",
+        "ACT_MOVE_LOOT", "ACT_TIDY_UP", "ACT_FETCH_REQUIRED",
+        "ACT_MULTIPLE_BUTCHER", "ACT_MULTIPLE_CHOP_PLANKS", "ACT_MULTIPLE_CHOP_TREES",
+        "ACT_MULTIPLE_CONSTRUCTION", "ACT_MULTIPLE_CRAFT", "ACT_MULTIPLE_DIS",
+        "ACT_MULTIPLE_FARM", "ACT_MULTIPLE_FISH", "ACT_MULTIPLE_MINE",
+        "ACT_MULTIPLE_MOP", "ACT_MULTIPLE_READ", "ACT_MULTIPLE_STUDY",
     };
-    return passive.count( activity_id_str ) > 0;
+    return interactive.count( activity_id_str ) == 0;
 }
 
 // Fast-forward is for genuinely LONG actions (sleep, crafting) where bursting
@@ -7027,6 +7060,33 @@ bool is_passive_activity( const std::string &activity_id_str )
 // excluded from FF.  Keeping the exclusion separate from is_passive_activity so
 // the grant handler / LOCKED-DISPATCH / partner-interactive logic still treat
 // them as the passive activities they are.
+// Fast-forward is worth a batch only for activities long enough that the other
+// player would otherwise sit and wait.  Bursting a SHORT one is actively harmful:
+// first aid is a few turns, and bursting ~300 grants for it built a move backlog
+// the client could not resync when the activity abruptly ended (2026-07-19).
+//
+// That used to be handled by naming short activities in the no_ff set below, which
+// has the same "remembered, not derived" failure mode the passive allow-list had —
+// and inverting is_passive_activity() widened FF's reach from 49 ids to ~140, so a
+// list would now have to be complete to be safe.  Measure the duration instead: an
+// activity only fast-forwards while it still has FF_MIN_ACTIVITY_MOVES of work left.
+//
+// 3000 moves = 30 turns at speed 100.  Below that, normal lockstep costs the other
+// player well under a minute even at stream-grade latency, so there is nothing to
+// win and a backlog to lose.  The check is applied to BOTH sides from the same
+// number: each side forwards its own activity's moves_left as
+// client_activity_moves / host_activity_moves, so host and client reach the same
+// verdict instead of one bursting while the other stays in lockstep.
+static constexpr int FF_MIN_ACTIVITY_MOVES = 3000;
+
+// -1 means the partner never sent a duration (older peer, or the field was dropped
+// from a packet).  Treat unknown as "long enough" so a missing field degrades to the
+// pre-2026-08-26 behaviour rather than silently disabling fast-forward.
+static bool ff_duration_ok( int moves_left )
+{
+    return moves_left < 0 || moves_left >= FF_MIN_ACTIVITY_MOVES;
+}
+
 static bool is_fast_forwardable_activity( const std::string &id )
 {
     if( !is_passive_activity( id ) ) {
@@ -7088,11 +7148,18 @@ std::string mp_ff_decline_reason()
     if( !is_fast_forwardable_activity( mine ) ) {
         return "self_not_ff_eligible:" + mine;
     }
+    if( !ff_duration_ok( av_act.moves_left ) ) {
+        return "self_too_short:" + mine + "@" + std::to_string( av_act.moves_left );
+    }
     if( g_partner_activity.empty() ) {
         return "partner_idle";
     }
     if( !is_fast_forwardable_activity( g_partner_activity ) ) {
         return "partner_not_ff_eligible:" + g_partner_activity;
+    }
+    if( !ff_duration_ok( g_partner_activity_moves ) ) {
+        return "partner_too_short:" + g_partner_activity + "@" +
+               std::to_string( g_partner_activity_moves );
     }
     return "";
 }
@@ -7109,10 +7176,18 @@ bool should_fast_forward()
     if( !av_act || !is_fast_forwardable_activity( av_act.id().str() ) ) {
         return false;
     }
+    // Duration floor — see FF_MIN_ACTIVITY_MOVES.  Kept in the same order as
+    // mp_ff_decline_reason() so the logged reason always matches the verdict.
+    if( !ff_duration_ok( av_act.moves_left ) ) {
+        return false;
+    }
     // Partner's reported activity must also be fast-forwardable.  g_partner_activity
     // is set by the heartbeat / per-action enrich on the other side — empty when
     // partner is idle (input loop) which means strict lockstep applies.
     if( g_partner_activity.empty() || !is_fast_forwardable_activity( g_partner_activity ) ) {
+        return false;
+    }
+    if( !ff_duration_ok( g_partner_activity_moves ) ) {
         return false;
     }
     // No explicit combat-mode gate here: SP's activity_actor::do_turn already
@@ -9846,6 +9921,7 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_string( "host_activity" ) ) {
             g_partner_activity = jo.get_string( "host_activity" );
             mp_partner_activity_transition_check();
+            g_partner_activity_moves = jo.get_int( "host_activity_moves", -1 );
         }
         if( jo.has_int( "host_activity_pct" ) ) {
             const int new_pct = jo.get_int( "host_activity_pct" );
@@ -11467,6 +11543,11 @@ std::string client_enrich_action( const std::string &json )
         }
         const std::string client_act_id = g_client_turn_activity;
         enriched += ",\"client_activity\":\"" + client_act_id + "\"";
+        // Remaining work, so the host applies the same FF duration floor we do
+        // (FF_MIN_ACTIVITY_MOVES).  -1 when idle = "unknown", which the floor
+        // treats as long enough; the id check above already gates that case.
+        enriched += ",\"client_activity_moves\":" + std::to_string(
+                        av.activity ? av.activity.moves_left : -1 );
         // Progress percentage of the live activity, for the host's Co-op panel.
         // mp_compute_activity_pct handles crafting (item_counter-based) as
         // well as standard moves_total-based activities.
@@ -11868,10 +11949,17 @@ void client_send_activity_start( const std::string &activity_id_str )
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_start\","
                              "\"activity_id\":\"" + activity_id_str + "\"}";
     const player_activity &cur = get_avatar().activity;
+    // Classification is the single most common cause of "co-op felt slow" reports
+    // (ACT_FIRSTAID 2026-07-19, ACT_HOTWIRE_CAR 2026-08-16, ACT_RELOAD 2026-08-23),
+    // and until now a player log showed the activity but never the verdict on it.
+    // One line per activity start answers it without a repro.
     mp_log( "[cdda-mp] ACT-START SEND: id=" + activity_id_str
             + " g_client_turn_activity=" + g_client_turn_activity
             + " av.activity=" + ( cur ? cur.id().str() : "none" )
-            + " moves=" + std::to_string( get_avatar().get_moves() ) );
+            + " moves=" + std::to_string( get_avatar().get_moves() )
+            + " passive=" + std::to_string( is_passive_activity( activity_id_str ) )
+            + " ff_eligible=" + std::to_string( is_fast_forwardable_activity( activity_id_str ) )
+            + " moves_left=" + std::to_string( cur ? cur.moves_left : -1 ) );
     client_send( json );
 }
 
@@ -14882,6 +14970,8 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
            "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
+           "\"host_activity_moves\":" + std::to_string(
+               host.activity ? host.activity.moves_left : -1 ) + ","
            "\"host_activity_pct\":" + std::to_string(
                mp_compute_activity_pct( host.activity ) ) + ","
            "\"host_activity_batch\":" + std::to_string(
