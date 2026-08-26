@@ -1,6 +1,9 @@
 #include "mp_magic.h"
 
+#include <map>
 #include <string>
+
+#include "bodypart.h"
 
 #include "avatar.h"
 #include "calendar.h"
@@ -271,6 +274,110 @@ void mp_handle_client_summon( const std::string &msg )
             std::to_string( abs.z() ) + ")" +
             " friendly=" + std::to_string( friendly ) +
             " turns=" + std::to_string( turns ) );
+}
+
+// --- Deliberate client HP changes (ROADMAP B2) ----------------------------
+
+namespace
+{
+// Arming depth rather than a bool: spell::heal() calls healall(), which calls
+// heal() per part, and a future caller could nest scopes.  Only the outermost
+// destructor sends.
+int g_hp_scope_depth = 0;
+std::string g_hp_scope_source;
+std::map<std::string, int> g_hp_pending;   // bodypart id -> accumulated delta
+} // namespace
+
+mp_hp_event_scope::mp_hp_event_scope( const std::string &source )
+{
+    if( g_hp_scope_depth == 0 ) {
+        g_hp_scope_source = source;
+        g_hp_pending.clear();
+    }
+    ++g_hp_scope_depth;
+}
+
+mp_hp_event_scope::~mp_hp_event_scope()
+{
+    if( --g_hp_scope_depth > 0 ) {
+        return;   // inner scope; the outermost one sends
+    }
+    if( !is_client_mode() || g_hp_pending.empty() ) {
+        g_hp_pending.clear();
+        return;
+    }
+    std::string parts;
+    for( const auto &kv : g_hp_pending ) {
+        if( kv.second == 0 ) {
+            continue;
+        }
+        if( !parts.empty() ) {
+            parts += ',';
+        }
+        parts += "{\"bp\":\"" + kv.first + "\",\"d\":" + std::to_string( kv.second ) + "}";
+    }
+    g_hp_pending.clear();
+    if( parts.empty() ) {
+        return;
+    }
+    const std::string payload = "{\"type\":\"client_hp\",\"src\":\"" + g_hp_scope_source +
+                                "\",\"parts\":[" + parts + "]}";
+    mp_log( "[cdda-mp] CLI-HP-EVENT: " + payload );
+    client_send( payload );
+}
+
+void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta )
+{
+    if( g_hp_scope_depth == 0 || delta == 0 || !is_client_mode() || !who.is_avatar() ) {
+        return;
+    }
+    g_hp_pending[bp.id().str()] += delta;
+}
+
+void mp_handle_client_hp( const std::string &msg )
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    npc *proxy = get_partner_npc();
+    if( proxy == nullptr ) {
+        mp_log( "[cdda-mp] HOST-HP-EVENT: no proxy, dropped" );
+        return;
+    }
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        const std::string src = jo.get_string( "src", "?" );
+        if( !jo.has_array( "parts" ) ) {
+            return;
+        }
+        std::string applied;
+        for( const JsonValue &pv : jo.get_array( "parts" ) ) {
+            JsonObject po = pv.get_object();
+            po.allow_omitted_members();
+            const std::string bp_str = po.get_string( "bp", "" );
+            const int d = po.get_int( "d", 0 );
+            if( bp_str.empty() || d == 0 ) {
+                continue;
+            }
+            const bodypart_id bp = bodypart_str_id( bp_str ).id();
+            // The proxy is built from the client's real stats, so it has the
+            // same parts -- but a mutation that grants one may not have synced
+            // yet, and mod_part_hp_cur on a missing part debugmsgs.
+            if( !bp.is_valid() || !proxy->has_part( bp ) ) {
+                mp_log( "[cdda-mp] HOST-HP-EVENT: proxy lacks bp=" + bp_str + ", skipped" );
+                continue;
+            }
+            const int before = proxy->get_part_hp_cur( bp );
+            proxy->mod_part_hp_cur( bp, d );
+            applied += bp_str + ":" + std::to_string( before ) + "->" +
+                       std::to_string( proxy->get_part_hp_cur( bp ) ) + " ";
+        }
+        mp_log( "[cdda-mp] HOST-HP-EVENT: src=" + src + " [" + applied + "]" );
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] HOST-HP-EVENT parse error: " ) + e.what() );
+    }
 }
 
 void mp_log_proxy_magic_state()

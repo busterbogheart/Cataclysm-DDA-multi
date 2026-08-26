@@ -91,6 +91,7 @@
 #include "weighted_list.h"
 #include "wound.h"
 #include "mp_gamestate.h"
+#include "mp_magic.h"
 
 static const activity_id ACT_READ( "ACT_READ" );
 static const activity_id ACT_TREE_COMMUNION( "ACT_TREE_COMMUNION" );
@@ -340,6 +341,11 @@ void Character::set_part_hp_cur( const bodypart_id &id, int set )
 
 void Character::mod_part_hp_cur( const bodypart_id &id, int set )
 {
+    // MP: report only while a cata_mp::mp_hp_event_scope is armed.  Natural
+    // regen reaches this same function via heal(), so an unarmed hook would
+    // report the client's regen to a host already computing its own and the
+    // character would double-heal.  Body in mp_magic.cpp; no-op in SP.
+    cata_mp::mp_note_hp_event( *this, id, set );
     bool is_broken_before = get_part_hp_cur( id ) <= 0;
     Creature::mod_part_hp_cur( id, set );
     bool is_broken_after = get_part_hp_cur( id ) <= 0;

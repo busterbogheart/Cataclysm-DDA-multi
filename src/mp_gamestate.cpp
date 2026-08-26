@@ -3564,6 +3564,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Deliberate client-side HP change (blood magic cost, spell heal).  Applied
+    // to the proxy HERE, which process_mp_events() drains before
+    // grant_client_turn() -- so the absolute HP the next state packet carries
+    // already includes it and the round-trip agrees with itself instead of
+    // reverting what the client just did.  Body in mp_magic.cpp.
+    if( msg.find( "\"type\":\"client_hp\"" ) != std::string::npos ) {
+        mp_handle_client_hp( msg );
+        return;
+    }
+
     if( msg.find( "\"type\":\"chat\"" ) != std::string::npos ) {
         mp_handle_chat_msg( msg );
         return;

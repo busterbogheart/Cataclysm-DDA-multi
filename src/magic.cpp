@@ -48,6 +48,7 @@
 #include "messages.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "mp_magic.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "npc.h"
@@ -1815,7 +1816,12 @@ static void blood_magic( Character *you, int cost )
     while( action < 0 ) {
         action = uilist( _( "Choose part\nto draw blood from." ), uile );
     }
-    you->mod_part_hp_cur( parts[action], - cost );
+    {
+        // MP: blood magic is a deliberate HP change and must survive the host's
+        // authoritative overwrite, or the cost is silently refunded.
+        cata_mp::mp_hp_event_scope hp_scope( "blood_magic" );
+        you->mod_part_hp_cur( parts[action], - cost );
+    }
     you->mod_pain( std::max( 1, cost / 3 ) );
 }
 
@@ -2133,6 +2139,9 @@ int spell::heal( const tripoint_bub_ms &target, Creature &caster ) const
     }
     Character *const p = creatures.creature_at<Character>( target );
     if( p ) {
+        // MP: same reasoning as blood magic, opposite sign -- an unreported
+        // heal is reverted by the next bodyparts sync.
+        cata_mp::mp_hp_event_scope hp_scope( "spell_heal" );
         p->healall( -damage( caster ) );
         return -damage( caster );
     }

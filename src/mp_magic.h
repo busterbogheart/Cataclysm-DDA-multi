@@ -4,6 +4,9 @@
 
 #include <string>
 
+#include "type_id.h"
+
+class Character;
 class Creature;
 class event_bus;
 class monster;
@@ -70,6 +73,49 @@ void mp_on_summon_placed( monster &mon, int summon_turns, bool permanent );
 
 // Host: apply a {"type":"client_summon",...} packet.
 void mp_handle_client_summon( const std::string &msg );
+
+// --- Deliberate client HP changes (ROADMAP B2) ----------------------------
+//
+// The host's proxy HP is authoritative: apply_monster_sync's sibling, the
+// bodyparts applier, does an unconditional set_part_hp_cur() with the host's
+// value.  So anything the CLIENT does to its own HP is discarded on the next
+// sync -- a Restoration self-heal is reverted, and an Animist HP cost is
+// refunded, which is a cheat rather than a mere break.
+//
+// Measured 2026-08-25: that overwrite fires CONSTANTLY, 2448 times in one
+// session with deltas of +1..+5, because the client's avatar and the host's
+// proxy each run their own natural regen.  That measurement is why this is an
+// EXPLICIT EVENT channel and not the HP-diff channel originally specced:
+// natural regen goes through Character::heal() -> mod_part_hp_cur(), the very
+// same chokepoint spells use, so a diff (or a blind hook) would report the
+// client's regen to a host that is already computing its own and the character
+// would double-heal.  Contamination is continuous, so no threshold filters it.
+//
+// Instead, reporting is ARMED only around genuinely deliberate changes.  Scope
+// one of these around the mutation and nothing else is ever reported.
+class mp_hp_event_scope
+{
+    public:
+        explicit mp_hp_event_scope( const std::string &source );
+        ~mp_hp_event_scope();
+        mp_hp_event_scope( const mp_hp_event_scope & ) = delete;
+        mp_hp_event_scope &operator=( const mp_hp_event_scope & ) = delete;
+        mp_hp_event_scope( mp_hp_event_scope && ) = delete;
+        mp_hp_event_scope &operator=( mp_hp_event_scope && ) = delete;
+};
+
+// Called from Character::mod_part_hp_cur().  No-op unless a scope is armed, we
+// are the client, and `who` is our own avatar.  Accumulates per-bodypart; the
+// scope's destructor sends one packet for the whole change (healall touches
+// every part, and that should not be a dozen packets).
+void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta );
+
+// Host: apply a {"type":"client_hp",...} packet to the proxy.  Runs in
+// handle_remote_action, which process_mp_events() drains before
+// grant_client_turn() and therefore before serialize_remote_player_state() --
+// so the absolute HP the host broadcasts back already includes this, and the
+// round-trip is consistent instead of fighting itself.
+void mp_handle_client_hp( const std::string &msg );
 
 } // namespace cata_mp
 
