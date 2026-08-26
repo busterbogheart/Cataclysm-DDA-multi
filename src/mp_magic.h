@@ -140,6 +140,14 @@ void mp_log_ally_target_check( const Creature &caster, const Creature &target,
 // spells accepting `ally`, 18 are support and 106 are area attacks.
 bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &target );
 
+// Co-op guard for long casts.  SP's safe-mode warns about hostiles near YOU; this
+// asks about hostiles near your PARTNER, which is the half of the shared world you
+// cannot see and the half that decides whether committing to a multi-minute cast is
+// suicide for the pair.  True = go ahead (the overwhelmingly common answer): outside
+// MP, with no partner, for casts under MP_LONG_CAST_MOVES, or when the partner is
+// clear.  False only when the player answered "no" to the prompt.
+bool mp_confirm_long_cast( const spell &sp, Character &caster );
+
 // Receiver: apply a {"type":"partner_spell",...} packet to our own avatar.
 // Symmetric -- host and client both send and both receive.
 void mp_handle_partner_spell( const std::string &msg );

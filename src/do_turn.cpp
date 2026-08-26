@@ -1281,13 +1281,10 @@ bool game::do_turn()
             // warn them regardless of previous safemode warnings
             if( u.activity ) {
                 const std::map<distraction_type, std::string> dists = u.activity.get_distractions();
-                // DIAGNOSTIC (#5 assist-distraction): does the activity see a hostile,
-                // and does the cancel actually fire? MP-only, only logs when non-empty.
-                if( !dists.empty() && ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) ) {
-                    cata_mp::mp_log( "[cdda-mp] ACT-DISTRACT: act=" + u.activity.id().str() +
-                                     " n=" + std::to_string( dists.size() ) +
-                                     " moves_left=" + std::to_string( u.activity.moves_left ) );
-                }
+                // DIAGNOSTIC: does each side of a co-op pair see the SAME hostiles
+                // for cancel purposes?  Body lives in mp_gamestate.cpp — do_turn.cpp
+                // is upstream-hot, so this stays a one-line callout.
+                cata_mp::mp_log_distraction_check( u, dists );
                 for( const std::pair<const distraction_type, std::string> &dist : dists ) {
                     if( cancel_activity_or_ignore_query( dist.first, dist.second ) ) {
                         if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {

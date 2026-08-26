@@ -28,6 +28,8 @@
 #include "mp_server.h"
 #include "mtype.h"
 #include "npc.h"
+#include "output.h"
+#include "string_formatter.h"
 #include "translations.h"
 #include "type_id.h"
 
@@ -528,6 +530,56 @@ void mp_log_proxy_magic_state()
             " mana=" + std::to_string( proxy->magic->available_mana() ) +
             "/" + std::to_string( proxy->magic->max_mana( *proxy ) ) +
             " known=[" + ( known.empty() ? "none" : known ) + "]" );
+}
+
+// Casts shorter than this never prompt.  3000 moves = 30 turns at speed 100, the
+// same floor fast-forward uses (FF_MIN_ACTIVITY_MOVES) and for the same reason:
+// below it the partner's wait is measured in seconds, so the interruption is worth
+// more than the information.  Magic missile is one turn; the rituals this is for
+// are hundreds.
+static constexpr int MP_LONG_CAST_MOVES = 3000;
+// How far from the partner a hostile still counts.  Deliberately wider than the
+// distraction diagnostic's radius: the question here is "will something reach them
+// during the cast", and a 30+ turn cast gives a zombie plenty of time to close.
+static constexpr int MP_LONG_CAST_DANGER_RADIUS = 30;
+
+bool mp_confirm_long_cast( const spell &sp, Character &caster )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return true;
+    }
+    if( !caster.is_avatar() ) {
+        return true;
+    }
+    const int cast_moves = sp.casting_time( caster );
+    if( cast_moves < MP_LONG_CAST_MOVES ) {
+        return true;
+    }
+    const npc *partner = get_partner_npc();
+    if( !partner ) {
+        return true;
+    }
+    const int near_partner = mp_count_hostiles_near( partner->pos_abs(),
+                             MP_LONG_CAST_DANGER_RADIUS );
+    if( near_partner <= 0 ) {
+        return true;
+    }
+    // Deliberately NOT gated on hostiles near the caster: SP's safe-mode already
+    // covers that case and would double-prompt.  The novel information is the half
+    // of the shared world the player cannot see.
+    const int turns = cast_moves / 100;
+    mp_log( "[cdda-mp] LONG-CAST-GATE: spell='" + sp.id().str() +
+            "' cast_moves=" + std::to_string( cast_moves ) +
+            " turns=" + std::to_string( turns ) +
+            " hostiles_near_partner=" + std::to_string( near_partner ) +
+            " partner='" + partner->name + "'" );
+    const bool proceed = query_yn( string_format(
+            n_gettext( "%1$s has %2$d hostile nearby and %3$s takes about %4$d turns.  Cast anyway?",
+                       "%1$s has %2$d hostiles nearby and %3$s takes about %4$d turns.  Cast anyway?",
+                       near_partner ),
+            partner->get_name(), near_partner, sp.name(), turns ) );
+    mp_log( std::string( "[cdda-mp] LONG-CAST-GATE: answer=" ) + ( proceed ? "cast" : "abort" ) );
+    return proceed;
 }
 
 } // namespace cata_mp

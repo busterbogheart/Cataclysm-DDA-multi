@@ -107,6 +107,7 @@
 #include "worldfactory.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "mp_magic.h"
 #include "mp_intent.h"
 #include "npc.h"
 #include "line.h" // TEMP diag: trigdist global for CLI-MOVE-COST logging
@@ -2047,6 +2048,13 @@ static void cast_spell( bool recast_spell = false )
         return;
     }
     player_character.magic->last_spell = sp.id();
+    // MP: a long cast commits this character for minutes of co-op wall clock, and
+    // SP's own safe-mode only ever warns about danger near YOU.  Ask once if the
+    // PARTNER has hostiles closing on them.  Body in mp_magic.cpp; no-op in SP and
+    // for short casts.  Returns false only when the player chose to back out.
+    if( !cata_mp::mp_confirm_long_cast( sp, player_character ) ) {
+        return;
+    }
     player_character.cast_spell( sp, false, std::nullopt );
 }
 

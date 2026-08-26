@@ -7427,6 +7427,103 @@ void mp_log_safemode_check( int newseen, int mostseen, int safe_mode )
                                       ( nearest_synced ? "(synced)" : "(PHANTOM)" ) ) ) );
 }
 
+// Radius the parity diagnostic reports on.  Matches SP's own "dangerously close"
+// framing in mon_info_update rather than the whole 84-tile bubble: a zombie 60
+// tiles away is not what cancels a cast, and counting it would make every line
+// look like a disagreement.
+static constexpr int DISTRACT_PARITY_RADIUS = 20;
+
+// Count live hostiles within `radius` (chebyshev) of an absolute tile, as seen by
+// THIS side's simulation.  Presence, not visibility: the host has every monster in
+// the bubble, the client has the ones the host has synced, and both already share
+// that list — so asking "is something hostile near my partner" needs no protocol.
+// Shared by the distraction-parity diagnostic and mp_confirm_long_cast().
+int mp_count_hostiles_near( const tripoint_abs_ms &around, int radius )
+{
+    if( radius <= 0 ) {
+        return 0;
+    }
+    avatar &u = get_avatar();
+    int n = 0;
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        monster *mon = ptr.get();
+        if( !mon || mon->is_dead() ) {
+            continue;
+        }
+        if( u.attitude_to( *mon ) != Creature::Attitude::HOSTILE ) {
+            continue;
+        }
+        const tripoint_abs_ms mp = mon->pos_abs();
+        if( mp.z() != around.z() ) {
+            continue;
+        }
+        const int d = std::max( std::abs( mp.x() - around.x() ), std::abs( mp.y() - around.y() ) );
+        if( d <= radius ) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+void mp_log_distraction_check( const Character &who,
+                               const std::map<distraction_type, std::string> &dists )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    if( !who.activity ) {
+        return;
+    }
+    const tripoint_abs_ms apos = who.pos_abs();
+    const int mine = mp_count_hostiles_near( apos, DISTRACT_PARITY_RADIUS );
+    const npc *partner = get_partner_npc();
+    const int theirs = partner
+                       ? mp_count_hostiles_near( partner->pos_abs(), DISTRACT_PARITY_RADIUS )
+                       : -1;
+
+    // Emit when there is something to compare: a distraction fired, or a hostile is
+    // in range of either player.  Silence otherwise — an activity ticking in an
+    // empty field is not a parity question and would flood the log under FF.
+    if( dists.empty() && mine == 0 && theirs <= 0 ) {
+        return;
+    }
+    // One line per (turn, verdict) at most: an activity is ticked more than once per
+    // turn on some paths, and a 200-turn/sec fast-forward would otherwise bury the
+    // log in restatements of the same frame.
+    const int turn = to_turn<int>( calendar::turn );
+    const std::string verdict = std::to_string( dists.size() ) + "/" + std::to_string( mine )
+                                + "/" + std::to_string( theirs );
+    static int s_last_turn = -1;
+    static std::string s_last_verdict;
+    if( turn == s_last_turn && verdict == s_last_verdict ) {
+        return;
+    }
+    s_last_turn = turn;
+    s_last_verdict = verdict;
+
+    // Distraction TYPES are logged as the enum's integer values, not their messages:
+    // the messages are translated, so a French client and an English host would look
+    // like a parity failure when they agree perfectly.
+    std::string types;
+    for( const std::pair<const distraction_type, std::string> &d : dists ) {
+        if( !types.empty() ) {
+            types += ",";
+        }
+        types += std::to_string( static_cast<int>( d.first ) );
+    }
+
+    mp_log( "[cdda-mp] ACT-DISTRACT: side=" + std::string( is_hosting() ? "HOST" : "CLIENT" )
+            + " turn=" + std::to_string( turn )
+            + " act=" + who.activity.id().str()
+            + " moves_left=" + std::to_string( who.activity.moves_left )
+            + " n=" + std::to_string( dists.size() )
+            + " types=[" + types + "]"
+            + " hostiles_near_me=" + std::to_string( mine )
+            + " hostiles_near_partner=" + std::to_string( theirs )
+            + " partner=" + ( partner ? "yes" : "no" ) );
+}
+
+
 void set_last_monmove_ms( int ms )
 {
     g_last_monmove_ms = ms;

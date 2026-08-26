@@ -7,6 +7,7 @@
 #include "coordinates.h"
 #include "enums.h" // object_type — used by mp_client_dispatch_grab_if_changed
 #include <functional>
+#include <map>
 #include <string>
 
 class npc;
@@ -719,6 +720,25 @@ void mp_log_lighting_sample();
 // No-op outside MP. Throttled internally (emits only when newseen / nearest-hostile
 // distance / safe_mode change) so it never floods the log during 200-turn/sec FF.
 void mp_log_safemode_check( int newseen, int mostseen, int safe_mode );
+
+// DIAGNOSTIC 2026-08-26 — interrupt PARITY between the two players.  SP evaluates
+// activity distractions locally, against whatever that side can see, and cancels
+// the activity independently on each machine.  Whether both sides reach the same
+// verdict on the same game turn has never been measured, and the failure it hides
+// is not subtle: one player's long cast breaks on an approaching zombie while the
+// partner's runs on.  Body lives in mp_gamestate.cpp; do_turn.cpp is upstream-hot
+// so the SP site carries a one-line call.  No-op outside MP.  Logs both the
+// distraction verdict AND the hostile counts behind it, so "no distraction" can be
+// told apart from "no hostiles", and keys every line to the game turn so the two
+// logs line up directly.
+void mp_log_distraction_check( const Character &who,
+                               const std::map<distraction_type, std::string> &dists );
+
+// Live hostiles within `radius` (chebyshev, same z) of an absolute tile, as this
+// side's simulation sees them.  Presence, not visibility — both sides already hold
+// the same synced monster list, so "is something hostile near my partner" is a
+// local question needing no protocol.  Returns 0 outside MP.
+int mp_count_hostiles_near( const tripoint_abs_ms &around, int radius );
 
 // DIAGNOSTIC (temporary, 2026-07-02, for the "host proxy vanished from client
 // screen" bug): named callout (rule 4) from Creature::deal_damage (creature.cpp,
