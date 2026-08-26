@@ -3995,6 +3995,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( jo.has_array( "client_msgs" ) ) {
         for( const JsonValue &mv : jo.get_array( "client_msgs" ) ) {
             const std::string text = mv.get_string();
+            // DIAGNOSTIC 2026-08-26 — pairs with CRAFT-TOOL-SHORTFALL /
+            // client_capture_avatar_msgs's own "forwarding" line. If a message
+            // shows up on the host's screen and this line is ABSENT for it, the
+            // message did not arrive via this relay -- it was generated locally
+            // on the host's own side (see the hotplate-duplication report).
+            mp_log( "[cdda-mp] CLIENT-MSG-APPLIED: text=\"" + text + "\"" );
             add_msg( m_info, text );
         }
         // Loop-break: messages forwarded FROM the client must not be picked
@@ -9206,6 +9212,30 @@ void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &cra
             std::to_string( crafter_pos.y() ) + "," + std::to_string( crafter_pos.z() ) +
             " dist=" + std::to_string( item_missing ? -1 : square_dist( craft_pos, crafter_pos ) ) +
             " in_veh=" + std::to_string( get_avatar().in_vehicle ) );
+}
+
+void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
+                                  const itype_id &tool_type, int count_needed )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    const tripoint_abs_ms cpos = crafter.pos_abs();
+    // is_avatar() tells us whether THIS side's simulation thinks the LOCAL
+    // player (not the proxy) is the one advancing the craft -- the crux of the
+    // duplication question: if both sides log is_avatar=1 for the SAME recipe
+    // at the SAME abs position around the same wall-clock moment, that's a
+    // shared craft being independently advanced by both local simulations.
+    mp_log( "[cdda-mp] CRAFT-TOOL-SHORTFALL: side=" +
+            std::string( is_hosting() ? "HOST" : "CLIENT" ) +
+            " crafter='" + crafter.get_name() + "' is_avatar=" +
+            std::to_string( crafter.is_avatar() ) +
+            " crafter_abs=" + std::to_string( cpos.x() ) + "," +
+            std::to_string( cpos.y() ) + "," + std::to_string( cpos.z() ) +
+            " recipe='" + craft.get_making().result_name() + "'" +
+            " tool='" + tool_type.str() + "' count_needed=" + std::to_string( count_needed ) +
+            " count_have=" + std::to_string( crafter.charges_of( tool_type ) ) +
+            " in_veh=" + std::to_string( crafter.in_vehicle ) );
 }
 
 // Move the client avatar to an absolute position, loading the map chunk if needed.

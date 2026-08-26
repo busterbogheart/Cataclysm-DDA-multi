@@ -3538,6 +3538,26 @@ bool Character::craft_consume_tools( item &craft, int multiplier, bool start_cra
             switch( tool_sel.use_from ) {
                 case usage_from::player:
                     if( !has_charges( type, count ) ) {
+                        // MP DIAGNOSTIC 2026-08-26 — a player-visible "You have
+                        // insufficient X charges" for a SHARED (vehicle-cargo)
+                        // craft appeared verbatim first-person on BOTH host and
+                        // client screens for what looked like the same craft,
+                        // with no matching line in either side's message-relay
+                        // log — meaning it did not travel through the relay.
+                        // Leading theory: unattended/passive craft advancement
+                        // picks "the nearest eligible character" independently
+                        // on each side's own local simulation (see Rule 1 /
+                        // Rule 2 in CLAUDE.md — there is no single shared-world
+                        // authority for this path today), so host and client can
+                        // each believe THEY are the one advancing the same craft
+                        // and each run out of THEIR OWN local copy of the tool's
+                        // charges. This line settles it: if both sides log the
+                        // same craft (by recipe + abs position) as "mine" at
+                        // roughly the same moment, that confirms the duplication;
+                        // named callout kept in mp_gamestate.cpp since
+                        // crafting.cpp is not an upstream-hot file but is still
+                        // an SP file — see ROADMAP "message-relay/hotplate" entry.
+                        cata_mp::mp_log_craft_tool_shortfall( *this, craft, type, count );
                         add_msg_player_or_npc(
                             _( "You have insufficient %s charges and can't continue crafting." ),
                             _( "<npcname> has insufficient %s charges and can't continue crafting." ),

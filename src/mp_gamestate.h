@@ -6,6 +6,7 @@
 #include "character_id.h"
 #include "coordinates.h"
 #include "enums.h" // object_type — used by mp_client_dispatch_grab_if_changed
+#include "type_id.h" // itype_id — used by mp_log_craft_tool_shortfall
 #include <functional>
 #include <map>
 #include <string>
@@ -13,6 +14,7 @@
 class npc;
 class Character;
 class Creature;
+class item;
 class player_activity;
 struct WORLD;
 
@@ -318,6 +320,15 @@ void mp_client_dispatch_hauling_if_changed( bool pre_hauling );
 // record which one fired and how far apart the two ended up.
 void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &craft_pos,
                                    const tripoint_abs_ms &crafter_pos );
+
+// DIAGNOSTIC 2026-08-26 — see the call site in crafting.cpp for the full report
+// this exists to settle: a shared vehicle-cargo craft's "insufficient charges"
+// message appeared identically on both host and client, first-person, with no
+// relay-log line on either side. Logs who this side's simulation believes is
+// advancing the craft, and with what charge count, so two logs from the same
+// repro can be compared directly. No-op outside MP.
+void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
+                                  const itype_id &tool_type, int count_needed );
 
 // Client-only: "direct your character" menu, bound to ACTION_LOOT while in
 // client mode (the plain SP loot() the host uses would run against the

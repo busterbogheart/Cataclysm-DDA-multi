@@ -91,6 +91,13 @@ std::string effect_ids( const Character &who )
 class mp_magic_events : public event_subscriber
 {
     public:
+        // Un-hides event_subscriber's 3-arg notify() overload (talker-pair variant),
+        // which we don't use. Without this, declaring the 1-arg override below hides
+        // ALL base overloads of the name per C++ name lookup, not just the one being
+        // overridden. GCC's -Woverloaded-virtual flags that (-Werror on Linux CI);
+        // clang's is more lenient and let this through silently. Pre-existing since
+        // this class was written -- unrelated to any change in this file today.
+        using event_subscriber::notify;
         void notify( const cata::event &e ) override {
             // Only instrument when we're actually in a co-op session; solo play
             // shouldn't pay for this or pollute the log.
