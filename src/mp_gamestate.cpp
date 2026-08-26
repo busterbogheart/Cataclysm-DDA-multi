@@ -7027,19 +7027,38 @@ bool is_passive_activity( const std::string &activity_id_str )
     //      only reaches the host through an explicit "move" action; an activity that
     //      walks the avatar from the recv path would desync the proxy silently.
     //      Scan hits: glide_activity_actor (move_to), find_mount_activity_actor and
-    //      multi_zone_activity_actor (route) — the latter backing the whole
-    //      ACT_MULTIPLE_* / ACT_MOVE_LOOT / ACT_TIDY_UP / ACT_FETCH_REQUIRED family —
-    //      plus ACT_TRAVELLING (activity_handlers::travel_do_turn).
+    //      multi_zone_activity_actor (route_to_destination) — the latter backing all
+    //      15 subclasses' ids, see below — plus zone_activity_actor's two subclasses
+    //      (zone_sort = ACT_MOVE_LOOT, unload_loot = ACT_UNLOAD_LOOT, both via
+    //      stage_think), plus ACT_TRAVELLING (activity_handlers::travel_do_turn).
     //
-    // Anything else is a timer.  ~96 of the 157 ids have no per-turn hook at all.
+    // CORRECTED 2026-08-26 — the first pass of this scan matched do_turn bodies by
+    // literal text and missed two things it should not have: (1) a do_turn that
+    // DELEGATES to a base-class method or a stage_think/stage_do helper doesn't
+    // contain the keyword itself, so multi_zone's 15 subclasses were undercounted at
+    // first (2 of 15 ids were briefly absent from this set before a second, callgraph
+    // pass caught them) and zone_activity_actor's two subclasses were missed entirely
+    // the same way; (2) "all 61 do_turn bodies" was the wrong count to begin with —
+    // ACT_UNLOAD_LOOT's move happens in stage_think(), a non-do_turn method, so it was
+    // never in scope of a do_turn-only scan.  Re-audited by following the call graph
+    // instead of grepping method bodies: is_passive_activity() reflects that, not the
+    // narrower original text-match pass.  This class of miss is real and repeatable —
+    // it is exactly the kind of gap that produced the ACT_SPELLCASTING finding one
+    // commit later.  Trust the current set below, not the literal wording above it.
+    //
+    // Anything else is a timer.  ~93 of the 130 real (registered) activity ids have
+    // no per-turn hook that touches UI or movement at all.
     // Getting a NEW id wrong now costs an activity that ticks slightly too eagerly,
     // which is recoverable; under the allow-list it cost a crawl or a hard stall.
     if( activity_id_str.empty() || activity_id_str == "ACT_NULL" ) {
         return false;
     }
     static const std::set<std::string> interactive = {
-        // (a) blocking UI in do_turn
-        "ACT_AIM", "ACT_ATM", "ACT_AUTOATTACK", "ACT_AUTODRIVE",
+        // (a) blocking UI in do_turn.  ACT_AUTOATTACK was here too but is not a
+        // registered activity_id anywhere in this tree (no
+        // `static const activity_id ACT_AUTOATTACK(...)` exists) -- dropped as dead,
+        // 2026-08-26, rather than imply a live mechanic that no longer exists.
+        "ACT_AIM", "ACT_ATM", "ACT_AUTODRIVE",
         // (a2) blocking UI in FINISH.  Same hazard, later in the activity: a
         //      passive activity is ticked from client_process_incoming once per
         //      grant, so the tick that COMPLETES it runs finish() in the recv
@@ -7060,11 +7079,21 @@ bool is_passive_activity( const std::string &activity_id_str )
         "ACT_SPELLCASTING", "ACT_HAIRCUT",
         // (b) moves the character on its own
         "ACT_TRAVELLING", "ACT_GLIDE", "ACT_FIND_MOUNT",
-        "ACT_MOVE_LOOT", "ACT_TIDY_UP", "ACT_FETCH_REQUIRED",
+        // zone_activity_actor's two subclasses (both move via stage_think)
+        "ACT_MOVE_LOOT", "ACT_UNLOAD_LOOT",
+        // multi_zone_activity_actor's full 15-id subclass family (all move via the
+        // shared do_turn/simulate_turn -> route_to_destination path). Confirmed
+        // complete by enumerating "class X : public multi_zone_activity_actor" in
+        // activity_actor_definitions.h, not by re-deriving it from data/json — most
+        // of these ids are never spelled out as a JSON string, so a data/json scan
+        // silently drops them (that is how ACT_VEHICLE_DECONSTRUCTION / _REPAIR and
+        // ACT_UNLOAD_LOOT were first missed here).
+        "ACT_FETCH_REQUIRED",
         "ACT_MULTIPLE_BUTCHER", "ACT_MULTIPLE_CHOP_PLANKS", "ACT_MULTIPLE_CHOP_TREES",
         "ACT_MULTIPLE_CONSTRUCTION", "ACT_MULTIPLE_CRAFT", "ACT_MULTIPLE_DIS",
         "ACT_MULTIPLE_FARM", "ACT_MULTIPLE_FISH", "ACT_MULTIPLE_MINE",
         "ACT_MULTIPLE_MOP", "ACT_MULTIPLE_READ", "ACT_MULTIPLE_STUDY",
+        "ACT_VEHICLE_DECONSTRUCTION", "ACT_VEHICLE_REPAIR",
     };
     return interactive.count( activity_id_str ) == 0;
 }
@@ -7132,15 +7161,24 @@ static bool is_fast_forwardable_activity( const std::string &id )
     // (crash.log 2026-08-17). Same shape as f5a0eb5c77, which had to defer the
     // smash prompt out of this same recv path.
     //
-    // The EAT/DRINK/*_MENU ids are precautionary rather than proven: they are pure
-    // JSON timers with no actor code, but they are the selection stage of the same
-    // flow and are short activities — the duration-mismatch class that stranded the
-    // client on 2026-07-19. ACT_CRAFT stays FF-eligible: its query_yn only fires on
-    // practice recipes crossing a proficiency threshold, tracked separately.
+    // ACT_CRAFT stays FF-eligible: its query_yn only fires on practice recipes
+    // crossing a proficiency threshold, tracked separately.
+    //
+    // PRUNED 2026-08-26 — ACT_EAT, ACT_DRINK, ACT_EAT_MENU, ACT_CONSUME_FOOD_MENU,
+    // ACT_CONSUME_DRINK_MENU and ACT_CONSUME_MEDS_MENU used to be here as
+    // "precautionary." None of the six is a real activity id today: the four *_MENU
+    // ids are listed in player_activity::deserialize's obs_activities
+    // (savegame_json.cpp, "Remove after 0.J") and deserialize to a null activity, and
+    // ACT_EAT / ACT_DRINK have no `static const activity_id` declaration anywhere in
+    // the tree — food and drink both consume through consume_activity_actor, which
+    // registers only as ACT_CONSUME. u.activity.id().str() can never equal any of the
+    // six, so leaving them cost nothing functionally, but it implied six live
+    // mechanics that do not exist. Confirmed dead by checking every other reference to
+    // each string in the tree (mp_gamestate.cpp:3496's short_item_acts set carries the
+    // same three fossils and should be pruned in the same pass — not done here, out of
+    // scope for this file's activity classification).
     static const std::set<std::string> no_ff = {
-        "ACT_FIRSTAID",
-        "ACT_CONSUME", "ACT_EAT", "ACT_DRINK",
-        "ACT_CONSUME_FOOD_MENU", "ACT_CONSUME_DRINK_MENU", "ACT_CONSUME_MEDS_MENU",
+        "ACT_FIRSTAID", "ACT_CONSUME",
     };
     return no_ff.count( id ) == 0;
 }
