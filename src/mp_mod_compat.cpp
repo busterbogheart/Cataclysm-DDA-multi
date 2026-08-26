@@ -91,7 +91,7 @@ const std::map<std::string, coop_entry> &coop_table()
         //    prompt — and those go quiet for `ok`.
         {
             // 2026-08-25: incompatible -> warn -> ok, all in one day, on
-            // purpose.  Blocking it made the real behaviour unmeasurable, and
+            // purpose.  Blocking it made the real behavior unmeasurable, and
             // then warning on every single host of a world we are actively
             // developing against was pure friction.  This is an open work item
             // with a written spec, not an unknown — see ROADMAP "MAGICLYSM IN

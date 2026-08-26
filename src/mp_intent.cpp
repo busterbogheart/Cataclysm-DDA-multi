@@ -221,7 +221,7 @@ void mp_handle_intent_recv( const std::string &msg )
     }
 
     // A "wait" packet from a build that still sends one falls through to the
-    // dx/dy parse below, reads as (0,0) and clears -- which is the behaviour we
+    // dx/dy parse below, reads as (0,0) and clears -- which is the behavior we
     // want now that the pause telegraph is gone.
     int dx = 0;
     int dy = 0;

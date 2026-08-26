@@ -167,7 +167,7 @@ void mp_hp_baseline_adjust( const std::string &bp_str, int delta );
 // teammate while behaving perfectly toward the summoner.
 //
 // True when `guy` is the other player's proxy in an active co-op session.
-// False in single player, so SP behaviour is untouched.
+// False in single player, so SP behavior is untouched.
 bool mp_partner_shares_friendly( const Character &guy );
 
 // True when the partner (on the other end of the connection) is currently
