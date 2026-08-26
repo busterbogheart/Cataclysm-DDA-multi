@@ -108,6 +108,37 @@ bool is_remote_player( character_id id );
 // (host: matches the client's proxy; client: matches the host's proxy.)
 bool is_partner_npc( character_id id );
 
+// Suppress relaying messages emitted inside this scope to the partner.
+//
+// The relay forwards anything add_msg'd with a "You " prefix, on the assumption
+// that it describes something the avatar DID.  Some messages are pure local UI
+// advisories about a menu the player just opened, and mean nothing to the other
+// player: opening the cast dialog prints one "cannot_cast_message" per magic
+// school with no currently-castable spell, so the partner sees "<name> can'ts
+// cast that spell right now!" every time you press # — before any spell is even
+// chosen, and mangled by the third-person verb conjugation on the way.
+//
+// Suppression is by PROVENANCE, not by matching the rendered text.  The existing
+// exclusions in the capture functions compare English literals against strings
+// add_msg has already translated, so they silently stop working in a translated
+// UI (see the 2026-08-23 ROADMAP entry).  A scope has no such problem.
+class mp_local_msg_scope
+{
+    public:
+        mp_local_msg_scope() = default;
+        ~mp_local_msg_scope();
+        mp_local_msg_scope( const mp_local_msg_scope & ) = delete;
+        mp_local_msg_scope &operator=( const mp_local_msg_scope & ) = delete;
+        mp_local_msg_scope( mp_local_msg_scope && ) = delete;
+        mp_local_msg_scope &operator=( mp_local_msg_scope && ) = delete;
+};
+
+// Progress suffix for the co-op parity fix: the partner's HUD already shows a
+// percentage for a timed activity, so the player doing it should see the same
+// number.  Returns "" in single player and whenever the activity has no
+// meaningful duration, so SP display is untouched.
+std::string mp_activity_percent_suffix( int moves_total, int moves_left );
+
 // A monster friendly to one player must be friendly to the other.
 //
 // SP draws a hard line between "the avatar" and "an NPC" when deciding whether

@@ -2013,15 +2013,24 @@ static void cast_spell( bool recast_spell = false )
     }
 
     std::map<magic_type_id, bool> success_tracker = {};
-    for( const spell_id &sp : spells ) {
-        spell &temp_spell = player_character.magic->get_spell( sp );
-        temp_spell.can_cast( player_character, success_tracker );
-    }
+    {
+        // MP: everything below is a local advisory about the menu the player
+        // just opened -- one line per magic school that currently has nothing
+        // castable, printed before any spell is chosen.  It says nothing about
+        // what this character DID, so it must not reach the partner, who would
+        // otherwise get a mangled "<name> can'ts cast that spell right now!"
+        // every time their teammate presses #.
+        cata_mp::mp_local_msg_scope mp_no_relay;
+        for( const spell_id &sp : spells ) {
+            spell &temp_spell = player_character.magic->get_spell( sp );
+            temp_spell.can_cast( player_character, success_tracker );
+        }
 
-    for( auto const& [m_type, any_success] : success_tracker ) {
-        if( !any_success && m_type->cannot_cast_message.has_value() ) {
-            add_msg( game_message_params{ m_bad, gmf_bypass_cooldown },
-                     m_type->cannot_cast_message.value() );
+        for( auto const& [m_type, any_success] : success_tracker ) {
+            if( !any_success && m_type->cannot_cast_message.has_value() ) {
+                add_msg( game_message_params{ m_bad, gmf_bypass_cooldown },
+                         m_type->cannot_cast_message.value() );
+            }
         }
     }
 

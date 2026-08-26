@@ -3156,6 +3156,35 @@ static void mp_addressee_to_you( std::string &s, const std::string &own_name )
     }
 }
 
+// Absolute Messages::appended_total() index below which nothing is relayed to
+// the partner.  Raised by mp_local_msg_scope's destructor; see the header.
+static unsigned long long g_msg_relay_floor = 0;
+
+mp_local_msg_scope::~mp_local_msg_scope()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    const unsigned long long now = Messages::appended_total();
+    if( now > g_msg_relay_floor ) {
+        mp_log( "[cdda-mp] MSG-SUPPRESS: relay floor " +
+                std::to_string( g_msg_relay_floor ) + " -> " + std::to_string( now ) );
+        g_msg_relay_floor = now;
+    }
+}
+
+std::string mp_activity_percent_suffix( int moves_total, int moves_left )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return std::string();
+    }
+    if( moves_total <= 0 || moves_left < 0 || moves_left > moves_total ) {
+        return std::string();
+    }
+    const int pct = ( ( moves_total - moves_left ) * 100 ) / moves_total;
+    return " " + std::to_string( pct ) + "%";
+}
+
 void host_capture_avatar_msgs( unsigned long long pre_msg )
 {
     if( !is_hosting() || !remote_player_connected ) {
@@ -3167,8 +3196,14 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
     }
     const std::string host_name = get_avatar().name;
     const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - pre_msg ) );
+    // recent_messages(n) returns the last n, so the first corresponds to
+    // absolute index cur - n.  Used to drop anything below the relay floor.
+    unsigned long long msg_idx = cur - new_msgs.size();
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
+        if( msg_idx++ < g_msg_relay_floor ) {
+            continue;   // emitted inside an mp_local_msg_scope
+        }
         // DIAG (2026-08-23): these gates match ENGLISH literals against text
         // that add_msg has already TRANSLATED, so in a non-English UI the
         // "You " gate rejects everything and the exclusions below never fire.
@@ -11102,8 +11137,14 @@ static void client_capture_avatar_msgs()
     const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - g_client_msg_watermark ) );
     g_client_msg_watermark = cur;
     const std::string client_name = get_avatar().name;
+    // See the matching note in host_capture_avatar_msgs(): first entry is at
+    // absolute index cur - n, so the relay floor can be applied by position.
+    unsigned long long msg_idx = cur - new_msgs.size();
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
+        if( msg_idx++ < g_msg_relay_floor ) {
+            continue;   // emitted inside an mp_local_msg_scope
+        }
         if( text.rfind( "You ", 0 ) != 0 && text.rfind( "Now ", 0 ) != 0 ) {
             continue;  // skip ambient/UI/inventory chatter
         }
