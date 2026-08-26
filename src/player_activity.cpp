@@ -47,6 +47,7 @@ static const activity_id ACT_HEATING( "ACT_HEATING" );
 static const activity_id ACT_INVOKE_ITEM( "ACT_INVOKE_ITEM" );
 static const activity_id ACT_JACKHAMMER( "ACT_JACKHAMMER" );
 static const activity_id ACT_MIGRATION_CANCEL( "ACT_MIGRATION_CANCEL" );
+static const activity_id ACT_SPELLCASTING( "ACT_SPELLCASTING" );
 static const activity_id ACT_NULL( "ACT_NULL" );
 static const activity_id ACT_PICKAXE( "ACT_PICKAXE" );
 static const activity_id ACT_READ( "ACT_READ" );
@@ -179,14 +180,18 @@ std::optional<std::string> player_activity::get_progress_message( const avatar &
     }
 
     if( actor ) {
-        // NOTE: this REPLACES the percentage computed above rather than adding
-        // to it, which is why an actor-driven activity (spellcasting, crafting)
-        // shows only its name where a hardcoded one shows "45%".
         extra_info = actor->get_progress_message( *this );
-        // MP: the partner's co-op HUD already renders a percentage for this
-        // exact activity, so the player actually doing it should see the same
-        // number instead of less information than their teammate.  Empty in SP.
-        if( !extra_info.empty() ) {
+        // MP: activity_actor's BASE get_progress_message already returns a
+        // percentage, so almost every actor-driven activity has one -- and the
+        // handful that override it either keep the number or deliberately show
+        // something better (rounds fired, reading progress).  spellcasting is
+        // the odd one out: it replaces the percentage with a bare spell name,
+        // so the caster saw less than their partner's co-op HUD did.
+        //
+        // Scoped to ACT_SPELLCASTING for exactly that reason.  Appending
+        // unconditionally is what produced "butchering: 34% 34%" -- butchery
+        // does not override, so the base class had already supplied the number.
+        if( type == ACT_SPELLCASTING && !extra_info.empty() ) {
             extra_info += cata_mp::mp_activity_percent_suffix( moves_total, moves_left );
         }
     }
