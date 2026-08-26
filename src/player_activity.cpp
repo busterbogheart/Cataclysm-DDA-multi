@@ -179,7 +179,16 @@ std::optional<std::string> player_activity::get_progress_message( const avatar &
     }
 
     if( actor ) {
+        // NOTE: this REPLACES the percentage computed above rather than adding
+        // to it, which is why an actor-driven activity (spellcasting, crafting)
+        // shows only its name where a hardcoded one shows "45%".
         extra_info = actor->get_progress_message( *this );
+        // MP: the partner's co-op HUD already renders a percentage for this
+        // exact activity, so the player actually doing it should see the same
+        // number instead of less information than their teammate.  Empty in SP.
+        if( !extra_info.empty() ) {
+            extra_info += cata_mp::mp_activity_percent_suffix( moves_total, moves_left );
+        }
     }
 
     return extra_info.empty() ? string_format( _( "%s…" ),
