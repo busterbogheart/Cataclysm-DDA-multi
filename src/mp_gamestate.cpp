@@ -7040,6 +7040,24 @@ bool is_passive_activity( const std::string &activity_id_str )
     static const std::set<std::string> interactive = {
         // (a) blocking UI in do_turn
         "ACT_AIM", "ACT_ATM", "ACT_AUTOATTACK", "ACT_AUTODRIVE",
+        // (a2) blocking UI in FINISH.  Same hazard, later in the activity: a
+        //      passive activity is ticked from client_process_incoming once per
+        //      grant, so the tick that COMPLETES it runs finish() in the recv
+        //      path — no fast-forward required.  Excluding these from FF alone
+        //      (the no_ff set below) is therefore not enough; they must never be
+        //      ticked from that path at all.
+        //      Scanning all 83 X_activity_actor::finish bodies found exactly
+        //      four: consume and firstaid (already handled, and already passive
+        //      by earlier deliberate decisions — see no_ff), plus these two.
+        //      ACT_SPELLCASTING's finish calls spell::select_target(), which is
+        //      target_handler::mode_spell + query_yn (magic.cpp:768).
+        //      ACT_HAIRCUT's finish opens a uilist.
+        //      Both were already non-passive under the old allow-list, so this
+        //      keeps their behaviour exactly as it shipped rather than changing
+        //      it. The earlier "only FOUR actors have blocking UI" audit missed
+        //      these two because neither id was passive then, so both were out
+        //      of that audit's scope.
+        "ACT_SPELLCASTING", "ACT_HAIRCUT",
         // (b) moves the character on its own
         "ACT_TRAVELLING", "ACT_GLIDE", "ACT_FIND_MOUNT",
         "ACT_MOVE_LOOT", "ACT_TIDY_UP", "ACT_FETCH_REQUIRED",
