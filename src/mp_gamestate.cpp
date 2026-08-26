@@ -100,6 +100,8 @@
 #include <locale>
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
+#include <utility>
 #include <vector>
 
 // ── ACT_PULP progress, host and client side ───────────────────────────────────
@@ -342,6 +344,7 @@ struct mp_apply_step {
 // potentially days of accumulated thirst/hunger applied in a single tick.
 static time_point s_last_update_body = calendar::before_time_starts;
 static time_point s_last_proc = calendar::before_time_starts;
+static time_point s_last_upkeep = calendar::before_time_starts;
 
 // File-local: only the fresh-join reset path below (mp_gamestate.cpp) calls
 // this, and it resets the two static catch-up timers above. Marked static so
@@ -352,6 +355,40 @@ static void mp_reset_turn_catchup_state()
 {
     s_last_update_body = calendar::before_time_starts;
     s_last_proc = calendar::before_time_starts;
+    s_last_upkeep = calendar::before_time_starts;
+}
+
+// True once per GAME TURN, not once per do_turn() call.
+//
+// Measured 2026-08-25: with both players idle the host's calendar sat frozen at
+// turn 5220508 for over two minutes of wall clock while the client's do_turn()
+// kept cycling every ~11ms -- roughly 90 iterations of "per-turn" work for a
+// turn that never happened.  Everything at the tail of do_turn() that is not
+// calendar-gated therefore ran ~90x per turn on the client and once per turn on
+// the host: body temperature, wetness, wetness morale and weather effects.
+//
+// Two consequences, one cosmetic and one not.  Temperature drifts across a
+// message threshold and narrates every crossing, which is the "you feel your
+// right foot getting warm" pump (three identical lines inside a single
+// millisecond in the log).  And the client's body state diverges from the
+// host's continuously, which is a strong candidate for both the 2448
+// HP-AUTHORITY-BG drift events and the older "client takes freeze damage"
+// report noted on mp_do_turn_update_body().
+//
+// The invariant this restores: a frozen turn does no per-turn work at all.
+// Gated for host as well as client -- the host's clock also stops (separation
+// tier 3 pauses the world), and running upkeep against a stopped clock is
+// wrong for whoever is doing it.
+bool mp_should_run_per_turn_upkeep()
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return true;   // single player: do_turn already runs once per turn
+    }
+    if( calendar::turn == s_last_upkeep ) {
+        return false;
+    }
+    s_last_upkeep = calendar::turn;
+    return true;
 }
 
 // Per-turn body update, called from do_turn.cpp. SP/host: one plain update.
@@ -3156,9 +3193,43 @@ static void mp_addressee_to_you( std::string &s, const std::string &own_name )
     }
 }
 
-// Absolute Messages::appended_total() index below which nothing is relayed to
-// the partner.  Raised by mp_local_msg_scope's destructor; see the header.
-static unsigned long long g_msg_relay_floor = 0;
+// Half-open [begin, end) ranges of Messages::appended_total() indices that must
+// never be relayed.  Ranges rather than a single floor so a scope suppresses
+// only what was emitted INSIDE it -- see the note in the header.  Drained by
+// the capture functions once they have passed the range.
+static std::vector<std::pair<unsigned long long, unsigned long long>> g_msg_suppress_ranges;
+
+static bool mp_msg_suppressed( unsigned long long idx )
+{
+    for( const auto &r : g_msg_suppress_ranges ) {
+        if( idx >= r.first && idx < r.second ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Drop ranges entirely below `idx`; the capture pass has moved past them.
+// Also hard-caps the list: a scope that somehow never gets drained (no partner
+// connected, say) must not grow it without bound.
+static void mp_msg_prune_suppressed( unsigned long long idx )
+{
+    g_msg_suppress_ranges.erase(
+        std::remove_if( g_msg_suppress_ranges.begin(), g_msg_suppress_ranges.end(),
+    [idx]( const std::pair<unsigned long long, unsigned long long> &r ) {
+        return r.second <= idx;
+    } ), g_msg_suppress_ranges.end() );
+    constexpr size_t MAX_RANGES = 64;
+    if( g_msg_suppress_ranges.size() > MAX_RANGES ) {
+        g_msg_suppress_ranges.erase( g_msg_suppress_ranges.begin(),
+                                     g_msg_suppress_ranges.end() - MAX_RANGES );
+    }
+}
+
+mp_local_msg_scope::mp_local_msg_scope()
+    : start( Messages::appended_total() )
+{
+}
 
 mp_local_msg_scope::~mp_local_msg_scope()
 {
@@ -3166,10 +3237,10 @@ mp_local_msg_scope::~mp_local_msg_scope()
         return;
     }
     const unsigned long long now = Messages::appended_total();
-    if( now > g_msg_relay_floor ) {
-        mp_log( "[cdda-mp] MSG-SUPPRESS: relay floor " +
-                std::to_string( g_msg_relay_floor ) + " -> " + std::to_string( now ) );
-        g_msg_relay_floor = now;
+    if( now > start ) {
+        mp_log( "[cdda-mp] MSG-SUPPRESS: [" + std::to_string( start ) + "," +
+                std::to_string( now ) + ") not relayed" );
+        g_msg_suppress_ranges.emplace_back( start, now );
     }
 }
 
@@ -3201,7 +3272,7 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
     unsigned long long msg_idx = cur - new_msgs.size();
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
-        if( msg_idx++ < g_msg_relay_floor ) {
+        if( mp_msg_suppressed( msg_idx++ ) ) {
             continue;   // emitted inside an mp_local_msg_scope
         }
         // DIAG (2026-08-23): these gates match ENGLISH literals against text
@@ -3243,6 +3314,7 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
                 host_name + "\" -> out=\"" + out + "\"" );
         g_host_action_msgs_pending.push_back( out );
     }
+    mp_msg_prune_suppressed( cur );
 }
 
 void host_broadcast_post_action()
@@ -11142,7 +11214,7 @@ static void client_capture_avatar_msgs()
     unsigned long long msg_idx = cur - new_msgs.size();
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
-        if( msg_idx++ < g_msg_relay_floor ) {
+        if( mp_msg_suppressed( msg_idx++ ) ) {
             continue;   // emitted inside an mp_local_msg_scope
         }
         if( text.rfind( "You ", 0 ) != 0 && text.rfind( "Now ", 0 ) != 0 ) {
@@ -11183,6 +11255,7 @@ static void client_capture_avatar_msgs()
                 client_name + "\" -> out=\"" + out + "\"" );
         g_client_msgs_pending.push_back( out );
     }
+    mp_msg_prune_suppressed( cur );
 }
 
 std::string client_enrich_action( const std::string &json )

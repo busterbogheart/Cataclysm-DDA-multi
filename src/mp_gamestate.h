@@ -125,13 +125,25 @@ bool is_partner_npc( character_id id );
 class mp_local_msg_scope
 {
     public:
-        mp_local_msg_scope() = default;
+        mp_local_msg_scope();
         ~mp_local_msg_scope();
         mp_local_msg_scope( const mp_local_msg_scope & ) = delete;
         mp_local_msg_scope &operator=( const mp_local_msg_scope & ) = delete;
         mp_local_msg_scope( mp_local_msg_scope && ) = delete;
         mp_local_msg_scope &operator=( mp_local_msg_scope && ) = delete;
+    private:
+        // Message count at scope entry.  Only [entry, exit) is suppressed --
+        // an earlier version raised a single floor at scope exit, which also
+        // swallowed anything emitted before the scope but not yet drained by
+        // the relay (a real combat line in the same window would have been
+        // lost).
+        unsigned long long start = 0;
 };
+
+// True once per GAME turn rather than once per do_turn() call, so per-turn work
+// is not repeated while a player is locked and the calendar is frozen.  Always
+// true in single player.  See the definition for the measurement behind it.
+bool mp_should_run_per_turn_upkeep();
 
 // Progress suffix for the co-op parity fix: the partner's HUD already shows a
 // percentage for a timed activity, so the player doing it should see the same

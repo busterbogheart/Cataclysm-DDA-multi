@@ -1394,7 +1394,14 @@ bool game::do_turn()
         refresh_display();
     }
 
-    if( levz >= 0 && !u.is_underwater() ) {
+    // MP: everything in this block is per-GAME-TURN work, but do_turn() spins
+    // many times per turn while a player is locked waiting for a grant and the
+    // calendar is frozen.  Run it exactly once per turn instead of once per
+    // call; a frozen turn should do no work and produce no messages at all.
+    // Always true in single player.  Body in mp_gamestate.cpp.
+    const bool mp_upkeep_due = cata_mp::mp_should_run_per_turn_upkeep();
+
+    if( mp_upkeep_due && levz >= 0 && !u.is_underwater() ) {
         handle_weather_effects( weather.weather_id );
     }
 
@@ -1403,9 +1410,11 @@ bool game::do_turn()
 
     m.invalidate_visibility_cache();
 
-    u.update_bodytemp();
-    u.update_body_wetness( *weather.weather_precise );
-    u.apply_wetness_morale( weather.temperature );
+    if( mp_upkeep_due ) {
+        u.update_bodytemp();
+        u.update_body_wetness( *weather.weather_precise );
+        u.apply_wetness_morale( weather.temperature );
+    }
 
     if( calendar::once_every( 1_minutes ) ) {
         u.update_morale();
