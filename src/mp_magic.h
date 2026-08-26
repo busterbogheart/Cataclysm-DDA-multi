@@ -10,12 +10,13 @@ class Character;
 class Creature;
 class event_bus;
 class monster;
+class spell;
 
 // Co-op diagnostics for spell content (Magiclysm, Sorcerer, Xedra, anything else
 // that casts).  Magiclysm was downgraded from mod_coop::incompatible to
-// mod_coop::warn on 2026-08-25 specifically so its real co-op behaviour could be
+// mod_coop::warn on 2026-08-25 specifically so its real co-op behavior could be
 // MEASURED rather than theorized — this file is that measurement.  Nothing in
-// here changes game behaviour; it only logs.
+// here changes game behavior; it only logs.
 //
 // Lives in an MP-only file (merge rule 1) so it can't conflict with upstream
 // magic or event-bus churn.  The one SP-side touch is a single named callout in
@@ -118,6 +119,30 @@ void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta );
 void mp_log_ally_target_check( const Creature &caster, const Creature &target,
                                const std::string &spell_id_str, int attitude,
                                bool accepts_ally, bool verdict );
+
+// --- Partner-targeted spells (ROADMAP B5) --------------------------------
+//
+// The other player is an NPC proxy in your world -- a puppet.  A support spell
+// aimed at them heals/buffs the puppet and the real person never learns of it.
+// Measured 2026-08-25: druidic_healing billed the caster 15 HP
+// (CLI-HP-EVENT arm_l -15) and emitted no corresponding heal event at all,
+// because the thing healed was not an avatar.
+//
+// Returns true when it has taken responsibility for this target: the spell was
+// forwarded and the caller must NOT apply it locally.  False means "not mine",
+// and the normal SP path runs unchanged.
+//
+// v1 forwards DELIBERATE SUPPORT ONLY -- spells that accept `ally` but not
+// `hostile`.  A spell that accepts both is an area attack that caught the
+// partner incidentally, and forwarding it would need the whole blast geometry
+// re-resolved on the far side to be correct; those keep today's behavior
+// (partner untouched) until that is worth building.  Of the 124 Magiclysm
+// spells accepting `ally`, 18 are support and 106 are area attacks.
+bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &target );
+
+// Receiver: apply a {"type":"partner_spell",...} packet to our own avatar.
+// Symmetric -- host and client both send and both receive.
+void mp_handle_partner_spell( const std::string &msg );
 
 // Host: apply a {"type":"client_hp",...} packet to the proxy.  Runs in
 // handle_remote_action, which process_mp_events() drains before

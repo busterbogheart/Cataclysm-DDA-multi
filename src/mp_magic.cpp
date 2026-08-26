@@ -25,8 +25,10 @@
 #include "monster.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "mp_server.h"
 #include "mtype.h"
 #include "npc.h"
+#include "translations.h"
 #include "type_id.h"
 
 namespace cata_mp
@@ -369,6 +371,88 @@ void mp_log_ally_target_check( const Creature &caster, const Creature &target,
             " (0=hostile 1=neutral 2=friendly)" +
             " player_ally=" + std::to_string( tgt_npc != nullptr && tgt_npc->is_player_ally() ) +
             " VALID=" + std::to_string( verdict ) );
+}
+
+namespace
+{
+// Set while we are applying a spell that arrived from the partner, so the
+// application cannot dispatch straight back and ping-pong.
+bool g_applying_partner_spell = false;
+} // namespace
+
+bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &target )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return false;
+    }
+    if( g_applying_partner_spell ) {
+        return false;   // re-entrancy: we ARE the far side, apply locally
+    }
+    if( !caster.is_avatar() ) {
+        return false;   // only our own casts can be forwarded
+    }
+    const Character *tgt = target.as_character();
+    if( tgt == nullptr || !is_partner_npc( tgt->getID() ) ) {
+        return false;
+    }
+    // Support only, for now -- see the note in the header.
+    if( !sp.is_valid_target( spell_target::ally ) ||
+        sp.is_valid_target( spell_target::hostile ) ) {
+        return false;
+    }
+    const std::string payload = "{\"type\":\"partner_spell\",\"spell\":\"" + sp.id().str() +
+                                "\",\"level\":" + std::to_string( sp.get_level() ) + "}";
+    mp_log( "[cdda-mp] PARTNER-SPELL-SEND: " + payload );
+    if( is_client_mode() ) {
+        client_send( payload );
+    } else if( server *srv = get_active_server() ) {
+        srv->post_broadcast( payload + "\n" );
+    }
+    // The caster still sees something happen -- without this the spell reads as
+    // a no-op on their own screen even though it worked.
+    caster.add_msg_if_player( m_good, _( "Your magic reaches %s." ), tgt->name );
+    return true;
+}
+
+void mp_handle_partner_spell( const std::string &msg )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    std::string sp_str;
+    int level = 0;
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        sp_str = jo.get_string( "spell", "" );
+        level = jo.get_int( "level", 0 );
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] PARTNER-SPELL parse error: " ) + e.what() );
+        return;
+    }
+    const spell_id sid( sp_str );
+    if( sp_str.empty() || !sid.is_valid() ) {
+        mp_log( "[cdda-mp] PARTNER-SPELL: REJECTED, invalid spell '" + sp_str + "'" );
+        return;
+    }
+    avatar &av = get_avatar();
+    spell sp( sid );
+    sp.set_level( av, level );
+    // Cast on ourselves, at our own position, with the caster's level.  Runs the
+    // real SP effect path rather than a reimplementation of it, so heals,
+    // effect_str, DOTs and extra_effects all behave exactly as in single player.
+    //
+    // Known v1 limitation: an area support spell re-centres on the receiver
+    // rather than preserving the original blast geometry.  Acceptable while
+    // this is restricted to deliberate support -- the receiver IS the intended
+    // beneficiary and any splash lands where the caster was aiming anyway.
+    g_applying_partner_spell = true;
+    sp.cast_all_effects( av, av.pos_bub() );
+    g_applying_partner_spell = false;
+    mp_log( "[cdda-mp] PARTNER-SPELL-APPLY: spell=" + sp_str +
+            " level=" + std::to_string( level ) +
+            " dmg=" + std::to_string( sp.damage( av ) ) );
 }
 
 void mp_handle_client_hp( const std::string &msg )

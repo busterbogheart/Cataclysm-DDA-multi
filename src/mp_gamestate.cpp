@@ -195,7 +195,7 @@ void mp_log( const std::string &msg )
     // across reboots and the OS's temp-cleanup. The old /tmp location is wiped
     // on every boot on Linux (systemd clears /tmp) — a real player who reboots
     // to recover from a crash loses the log before they can attach it to a bug
-    // report. HOME matches Windows' %USERPROFILE% behaviour (which already
+    // report. HOME matches Windows' %USERPROFILE% behavior (which already
     // worked: C:\Users\<name>\cdda-mp-client.log). Falls back to /tmp only if
     // HOME/USERPROFILE is somehow unset.
     std::string log_dir = "/tmp/";
@@ -3383,7 +3383,7 @@ static int g_mp_ui_item_ref_depth = 0;
 // MP DIAGNOSTIC 2026-08-17 — see mp_inv_ui_probe in mp_gamestate.h. Tracks whether
 // an inventory selector is open so the item-apply sites can report mutating out
 // from under one. Deliberately does NOT defer anything yet — the point is to prove
-// the overlap happens before changing behaviour.
+// the overlap happens before changing behavior.
 static int g_mp_inv_ui_depth = 0;
 mp_inv_ui_probe::mp_inv_ui_probe()
 {
@@ -3693,6 +3693,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // reverting what the client just did.  Body in mp_magic.cpp.
     if( msg.find( "\"type\":\"client_hp\"" ) != std::string::npos ) {
         mp_handle_client_hp( msg );
+        return;
+    }
+
+    // Partner cast a support spell at us.  Symmetric packet -- both roles send
+    // and receive it.  Out-of-band: the caster already paid for it with their
+    // own turn.  Body in mp_magic.cpp.
+    if( msg.find( "\"type\":\"partner_spell\"" ) != std::string::npos ) {
+        mp_handle_partner_spell( msg );
         return;
     }
 
@@ -5519,7 +5527,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // must not lock the client — they get a "free":true response instead.
     bool acted = false;
 
-    // Move or attack, matching single-player bump-to-attack behaviour.
+    // Move or attack, matching single-player bump-to-attack behavior.
     // Check for a creature first — melee_attack applies regardless of tile passability.
     if( next != cur ) {
         const tripoint_abs_ms next_abs = m.get_abs( next );
@@ -6339,7 +6347,7 @@ void grant_client_turn()
     // one batched grant legitimately covers FF_BATCH_TURNS turns and must carry that
     // many turns of AP, which the per-grant cap would clamp to a single turn's worth
     // and silently starve the client's craft. So cap against the turns the next
-    // packet will actually represent. Outside FF that is 1 and the behaviour is
+    // packet will actually represent. Outside FF that is 1 and the behavior is
     // identical to before.
     const bool ff_now_for_cap = should_fast_forward();
     const int ap_cap = remote->get_speed() * ( ff_now_for_cap ? FF_BATCH_TURNS : 1 );
@@ -7740,7 +7748,7 @@ bool is_partner_npc( character_id id )
 bool mp_partner_shares_friendly( const Character &guy )
 {
     if( !is_hosting() && !is_client_mode() ) {
-        return false;   // single player: SP behaviour untouched
+        return false;   // single player: SP behavior untouched
     }
     return guy.is_npc() && is_partner_npc( guy.getID() );
 }
@@ -9594,6 +9602,13 @@ static bool apply_one_state_message( const std::string &msg )
 
     if( msg.find( "\"type\":\"chat\"" ) != std::string::npos ) {
         mp_handle_chat_msg( msg );
+        return true;
+    }
+
+    // Partner cast a support spell at us.  Symmetric with the host-side handler
+    // in handle_remote_action.  Body in mp_magic.cpp.
+    if( msg.find( "\"type\":\"partner_spell\"" ) != std::string::npos ) {
+        mp_handle_partner_spell( msg );
         return true;
     }
 

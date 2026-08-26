@@ -550,6 +550,15 @@ static void damage_targets( const spell &sp, Creature &caster,
         }
         Creature *const cr = creatures.creature_at<Creature>( target );
 
+        // MP: this tile holds the partner's proxy, which is a puppet -- applying
+        // here would heal or buff a local copy and the real player would never
+        // learn of it.  Forward the spell instead and skip local application, so
+        // the effect lands exactly once, on the actual person.  Returns false in
+        // SP and for every other target.  Body in mp_magic.cpp.
+        if( cr != nullptr && cata_mp::mp_dispatch_spell_at_partner( sp, caster, *cr ) ) {
+            continue;
+        }
+
         if( sp.has_flag( spell_flag::TOUCH_REQUIRED ) && cr && !touch_required_hit( caster, *cr ) ) {
             caster.add_msg_if_player( m_bad, _( "Your target avoids your attempt to touch them!" ) );
             continue;
