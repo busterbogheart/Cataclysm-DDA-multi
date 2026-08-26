@@ -3244,6 +3244,21 @@ mp_local_msg_scope::~mp_local_msg_scope()
     }
 }
 
+void mp_hp_baseline_adjust( const std::string &bp_str, int delta )
+{
+    // The client just changed its own HP deliberately (blood magic cost, spell
+    // heal) and reported it to the host.  The host will apply it to the proxy
+    // and echo the new absolute value back.  Without moving our baseline the
+    // bodyparts applier compares that echo against the PRE-change value, sees a
+    // drop, and narrates our own spell cost as "You are hit for 10 damage!"
+    // (measured: BP-DELTA arm_l 87->77 matching HOST-HP-EVENT arm_l:87->77).
+    // Only shifts the narration baseline; it does not touch actual HP.
+    const auto it = g_last_bodypart_hp.find( bp_str );
+    if( it != g_last_bodypart_hp.end() ) {
+        it->second += delta;
+    }
+}
+
 std::string mp_activity_percent_suffix( int moves_total, int moves_left )
 {
     if( !is_hosting() && !is_client_mode() ) {
@@ -4085,20 +4100,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     mp_log( "[cdda-mp] worn_sync: remove_weapon (client empty-handed)" );
                 }
             }
-            // Apply all mutations from the client's "appearance" array to the
-            // remote NPC proxy.  Full state sync: clear every mutation on the
-            // proxy first, then apply the client's list.  This covers chargen
-            // cosmetics AND physical mutations (Fangs, Sleek Fur, Spines, etc.)
-            // which the old per-type clearing missed.
+            // Apply the client's "appearance" mutations to the proxy as a DIFF.
+            //
+            // This used to clear every mutation and re-apply the whole list on
+            // each sync.  Measured 2026-08-25: 16 rebuilds in one short session
+            // client-side and 3 host-side, each one tearing down and rebuilding
+            // a set that had not changed.  Visible symptom was a stream of "All
+            // knowledge of Druid Rune leaves you." / "<name> learned Druid
+            // Rune!" pairs, because the DRUID class mutation carries
+            // spells_learned and every rebuild forgot then re-granted the
+            // spell.  The costlier part is invisible: any mutation carrying an
+            // enchantment was torn down and rebuilt every packet, invalidating
+            // the enchantment cache continuously.
             if( jo.has_array( "appearance" ) ) {
-                std::vector<trait_id> to_unset;
-                for( const trait_id &existing : remote->get_mutations() ) {
-                    to_unset.push_back( existing );
-                }
-                for( const trait_id &old : to_unset ) {
-                    remote->unset_mutation( old );
-                }
-                int applied = 0;
+                std::vector<std::pair<trait_id, const mutation_variant *>> want;
+                std::set<trait_id> want_ids;
                 for( const JsonValue &av : jo.get_array( "appearance" ) ) {
                     JsonObject ao = av.get_object();
                     ao.allow_omitted_members();
@@ -4112,15 +4128,38 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         continue;
                     }
                     const std::string var_str = ao.get_string( "var", "" );
-                    const mutation_variant *var = var_str.empty()
-                                                  ? nullptr
-                                                  : tid.obj().variant( var_str );
-                    remote->set_mutation( tid, var );
-                    ++applied;
+                    want.emplace_back( tid, var_str.empty() ? nullptr : tid.obj().variant( var_str ) );
+                    want_ids.insert( tid );
                 }
-                mp_log( "[cdda-mp] worn_sync: appearance cleared "
-                        + std::to_string( to_unset.size() )
-                        + " applied " + std::to_string( applied ) );
+                int removed = 0;
+                int added = 0;
+                std::vector<trait_id> to_unset;
+                for( const trait_id &existing : remote->get_mutations() ) {
+                    if( !want_ids.count( existing ) ) {
+                        to_unset.push_back( existing );
+                    }
+                }
+                for( const trait_id &old : to_unset ) {
+                    remote->unset_mutation( old );
+                    ++removed;
+                }
+                for( const auto &[tid, var] : want ) {
+                    if( !remote->has_trait( tid ) ) {
+                        remote->set_mutation( tid, var );
+                        ++added;
+                    } else if( var != nullptr ) {
+                        // Already present: update the variant in place rather
+                        // than unset+set, which would re-fire the mutation's
+                        // side effects (spells_learned, enchantments) for a
+                        // purely cosmetic change.
+                        remote->set_mut_variant( tid, var );
+                    }
+                }
+                if( removed > 0 || added > 0 ) {
+                    mp_log( "[cdda-mp] worn_sync: appearance diff removed "
+                            + std::to_string( removed ) + " added " + std::to_string( added )
+                            + " (unchanged " + std::to_string( want.size() - added ) + ")" );
+                }
             }
             std::string ma_style_str;
             jo.read( "ma_style", ma_style_str );
@@ -10007,15 +10046,13 @@ static bool apply_one_state_message( const std::string &msg )
                     // physical mutations (Fangs, Sleek Fur, Spines, etc.) since
                     // they have different type tags than the chargen cosmetics.
                     if( jo.has_array( "host_appearance" ) ) {
-                        // Snapshot then clear — modifying the set while iterating crashes.
-                        std::vector<trait_id> to_unset;
-                        for( const trait_id &existing : host_npc->get_mutations() ) {
-                            to_unset.push_back( existing );
-                        }
-                        for( const trait_id &old : to_unset ) {
-                            host_npc->unset_mutation( old );
-                        }
-                        int applied = 0;
+                        // DIFF, not clear-and-reapply.  This side is the worse
+                        // of the two: it runs on every state packet carrying
+                        // host_appearance with no signature guard, so the old
+                        // code rebuilt the host proxy's entire mutation set
+                        // every turn.  See the matching note in worn_sync.
+                        std::vector<std::pair<trait_id, const mutation_variant *>> want;
+                        std::set<trait_id> want_ids;
                         for( const JsonValue &av : jo.get_array( "host_appearance" ) ) {
                             JsonObject ao = av.get_object();
                             ao.allow_omitted_members();
@@ -10024,15 +10061,36 @@ static bool apply_one_state_message( const std::string &msg )
                             const trait_id tid( mid );
                             if( !tid.is_valid() ) { continue; }
                             const std::string var_str = ao.get_string( "var", "" );
-                            const mutation_variant *var = var_str.empty()
-                                                          ? nullptr
-                                                          : tid.obj().variant( var_str );
-                            host_npc->set_mutation( tid, var );
-                            ++applied;
+                            want.emplace_back( tid,
+                                               var_str.empty() ? nullptr : tid.obj().variant( var_str ) );
+                            want_ids.insert( tid );
                         }
-                        mp_log( "[cdda-mp] host_appearance: cleared "
-                                + std::to_string( to_unset.size() )
-                                + " applied " + std::to_string( applied ) );
+                        int removed = 0;
+                        int added = 0;
+                        // Snapshot then unset — modifying the set while iterating crashes.
+                        std::vector<trait_id> to_unset;
+                        for( const trait_id &existing : host_npc->get_mutations() ) {
+                            if( !want_ids.count( existing ) ) {
+                                to_unset.push_back( existing );
+                            }
+                        }
+                        for( const trait_id &old : to_unset ) {
+                            host_npc->unset_mutation( old );
+                            ++removed;
+                        }
+                        for( const auto &[tid, var] : want ) {
+                            if( !host_npc->has_trait( tid ) ) {
+                                host_npc->set_mutation( tid, var );
+                                ++added;
+                            } else if( var != nullptr ) {
+                                host_npc->set_mut_variant( tid, var );
+                            }
+                        }
+                        if( removed > 0 || added > 0 ) {
+                            mp_log( "[cdda-mp] host_appearance: diff removed "
+                                    + std::to_string( removed ) + " added " + std::to_string( added )
+                                    + " (unchanged " + std::to_string( want.size() - added ) + ")" );
+                        }
                         std::string ov_log;
                         for( const auto &ov : host_npc->get_overlay_ids() ) {
                             ov_log += ov.first + ' ';

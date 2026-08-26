@@ -110,6 +110,15 @@ class mp_hp_event_scope
 // every part, and that should not be a dozen packets).
 void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta );
 
+// Diagnostic for ally-targeted spells (ROADMAP B5).  Called from
+// spell::is_valid_target's creature branch.  Fires only in co-op, only when the
+// spell accepts allies, and only for the partner's proxy -- otherwise every
+// targeting sweep over every creature would spam.  Rate-limited to one line per
+// distinct (spell, verdict) so holding the cursor still does not flood.
+void mp_log_ally_target_check( const Creature &caster, const Creature &target,
+                               const std::string &spell_id_str, int attitude,
+                               bool accepts_ally, bool verdict );
+
 // Host: apply a {"type":"client_hp",...} packet to the proxy.  Runs in
 // handle_remote_action, which process_mp_events() drains before
 // grant_client_turn() and therefore before serialize_remote_player_state() --

@@ -1,9 +1,12 @@
 #include "mp_magic.h"
 
 #include <map>
+#include <set>
 #include <string>
+#include <utility>
 
 #include "bodypart.h"
+#include "line.h"
 
 #include "avatar.h"
 #include "calendar.h"
@@ -315,6 +318,10 @@ mp_hp_event_scope::~mp_hp_event_scope()
             parts += ',';
         }
         parts += "{\"bp\":\"" + kv.first + "\",\"d\":" + std::to_string( kv.second ) + "}";
+        // Move the damage-narration baseline by the same amount, so when the
+        // host echoes this change back as an absolute value the client does not
+        // announce its own spell cost as "You are hit for N damage!".
+        mp_hp_baseline_adjust( kv.first, kv.second );
     }
     g_hp_pending.clear();
     if( parts.empty() ) {
@@ -332,6 +339,36 @@ void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta )
         return;
     }
     g_hp_pending[bp.id().str()] += delta;
+}
+
+void mp_log_ally_target_check( const Creature &caster, const Creature &target,
+                               const std::string &spell_id_str, int attitude,
+                               bool accepts_ally, bool verdict )
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;
+    }
+    if( !accepts_ally ) {
+        return;
+    }
+    const Character *tgt_ch = target.as_character();
+    if( tgt_ch == nullptr || !is_partner_npc( tgt_ch->getID() ) ) {
+        return;   // only the partner proxy is interesting here
+    }
+    static std::string s_last;
+    const std::string key = spell_id_str + ":" + std::to_string( verdict );
+    if( key == s_last ) {
+        return;
+    }
+    s_last = key;
+    const npc *tgt_npc = dynamic_cast<const npc *>( &target );
+    mp_log( "[cdda-mp] MAGIC-ALLY-TARGET: spell=" + spell_id_str +
+            " target='" + tgt_ch->name + "'" +
+            " dist=" + std::to_string( rl_dist( caster.pos_abs(), target.pos_abs() ) ) +
+            " attitude=" + std::to_string( attitude ) +
+            " (0=hostile 1=neutral 2=friendly)" +
+            " player_ally=" + std::to_string( tgt_npc != nullptr && tgt_npc->is_player_ally() ) +
+            " VALID=" + std::to_string( verdict ) );
 }
 
 void mp_handle_client_hp( const std::string &msg )

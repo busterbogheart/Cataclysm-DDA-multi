@@ -1616,6 +1616,13 @@ bool spell::is_valid_target( const Creature &caster, const tripoint_bub_ms &p ) 
         valid = valid || ( cr_att == Creature::Attitude::FRIENDLY &&
                            is_valid_target( spell_target::ally ) &&
                            p != caster.pos_bub() );
+        // MP diagnostic (ROADMAP B5): "Targets: 0" on an ally-only spell aimed
+        // at the partner.  Two candidates that cannot be told apart by reading
+        // code — the proxy sitting outside the spell's min/max range band, or
+        // the proxy not evaluating as FRIENDLY.  Log both.  No-op in SP.
+        cata_mp::mp_log_ally_target_check( caster, *cr, id().str(),
+                                           static_cast<int>( cr_att ),
+                                           is_valid_target( spell_target::ally ), valid );
         valid = valid || ( is_valid_target( spell_target::self ) && p == caster.pos_bub() );
         valid = valid && target_by_monster_id( p );
         valid = valid && target_by_species_id( p );

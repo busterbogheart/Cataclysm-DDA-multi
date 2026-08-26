@@ -151,6 +151,11 @@ bool mp_should_run_per_turn_upkeep();
 // meaningful duration, so SP display is untouched.
 std::string mp_activity_percent_suffix( int moves_total, int moves_left );
 
+// Shift the "was I hit?" narration baseline for one bodypart by `delta`, so the
+// host's echo of an HP change the CLIENT itself caused is not reported as
+// incoming damage.  Narration only; does not change HP.
+void mp_hp_baseline_adjust( const std::string &bp_str, int delta );
+
 // A monster friendly to one player must be friendly to the other.
 //
 // SP draws a hard line between "the avatar" and "an NPC" when deciding whether
