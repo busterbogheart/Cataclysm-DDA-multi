@@ -896,6 +896,14 @@ bool game::do_turn()
     // Client: if a wait activity consumed the server-granted moves this turn,
     // dispatch "wait" so the server advances its timeline in sync.
     bool mp_wait_dispatched = false;
+    // Set once the in-loop orphan path has already sent this turn's activity_end,
+    // so the post-loop path does not send a second one for the same activity.
+    // Both paths can legitimately fire in one do_turn: the in-loop path clears
+    // g_client_turn_activity, but the post-loop test also accepts pre_activity_id,
+    // which was captured at do_turn entry and is still set.  Measured on WAN
+    // 2026-08-27 — one ACT_SPELLCASTING end produced two ACT-END SEND packets in
+    // the same millisecond (paths mid_iter_orphan then pre_activity_id).
+    bool mp_activity_end_sent = false;
     if( cata_mp::is_client_mode() && pre_activity_moves > 0 && u.get_moves() <= 0 ) {
         cata_mp::mp_log( "[cdda-mp] pre-loop dispatch: pre_moves=" + std::to_string( pre_activity_moves ) +
                          " act=" + ( pre_activity_id ? pre_activity_id.str() : "none" ) );
@@ -1084,6 +1092,7 @@ bool game::do_turn()
                                      + " moves=" + std::to_string( u.get_moves() ) );
                     cata_mp::set_client_turn_activity( std::string() );
                     cata_mp::client_send_activity_end( ended_id );
+                    mp_activity_end_sent = true;
                     if( !cata_mp::is_client_waiting_for_ack() ) {
                         cata_mp::mp_log( "[cdda-mp] in-loop activity-end: burning "
                                          + std::to_string( u.get_moves() )
@@ -1121,7 +1130,7 @@ bool game::do_turn()
             const bool post_orphan = !post_loop_act.empty() && !u.activity;
             const bool activity_just_ended = ( pre_activity_id || post_orphan ) && !u.activity;
             const bool moves_consumed = pre_activity_moves > 0 && u.get_moves() <= 0;
-            if( cata_mp::is_client_mode() && activity_just_ended ) {
+            if( cata_mp::is_client_mode() && activity_just_ended && !mp_activity_end_sent ) {
                 // Explicit end-of-activity signal — closes the host's lockstep
                 // bypass immediately so the next host turn re-enters lockstep.
                 // Also clear the per-turn snapshot so the next enrich sends
