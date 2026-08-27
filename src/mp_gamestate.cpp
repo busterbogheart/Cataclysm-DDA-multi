@@ -11164,9 +11164,51 @@ void client_process_incoming()
     }
 }
 
+// How far the next tile scan must reach, in tiles, because a spell we just cast
+// could have changed ground further out than the default box.  Set by
+// mp_note_spell_tile_reach() at spellcasting_finish, consumed by the next scan.
+static int g_spell_tile_reach = 0;
+
+// The scan is O(r^2) with a full item serialize per tile, so a 60-tile spell
+// would mean 121x121 = 14641 tiles against the usual 21x21 = 441.  Cap it: past
+// this we accept losing the outermost ground rather than stalling the client's
+// turn.  Raise it if a real spell is observed losing terrain inside the cap.
+static constexpr int MAX_SPELL_TILE_REACH = 40;
+
+void mp_note_spell_tile_reach( int reach )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    g_spell_tile_reach = std::max( g_spell_tile_reach, std::min( reach, MAX_SPELL_TILE_REACH ) );
+}
+
+// Returns the radius the next scan should use and clears the pending bump, so a
+// widened scan happens exactly once per cast rather than for the rest of the
+// session.  Never narrower than the default.
+static int mp_take_spell_tile_reach()
+{
+    const int r = std::max( 10, g_spell_tile_reach );
+    if( g_spell_tile_reach > 0 ) {
+        mp_log( "[cdda-mp] TILE-SCAN-WIDEN: radius=" + std::to_string( r ) +
+                " tiles=" + std::to_string( ( 2 * r + 1 ) * ( 2 * r + 1 ) ) +
+                " (default would scan 441)" );
+        g_spell_tile_reach = 0;
+    }
+    return r;
+}
+
 // Scan tiles around the client avatar for field changes (blood, etc.) since the
 // last action was sent.  Returns a JSON array of changed tile entries suitable
 // for inclusion as "client_tile_changes" in an action packet.
+//
+// The default 10 is a 21x21 box centred on the CLIENT's avatar, and anything it
+// misses is invisible to the host forever — the host's map is authoritative and
+// never learns the change happened.  That is fine for walking around, where the
+// client only ever alters ground it is standing on or next to, but 114 Magiclysm
+// spells have a numeric max_range greater than 10, so a spell that transforms
+// terrain at range 18 silently did nothing as far as the shared world is
+// concerned.  Callers pass a wider radius on the turn such a spell resolves.
 static std::string build_client_tile_changes( int radius = 10 )
 {
     const avatar &av = get_avatar();
@@ -11627,7 +11669,7 @@ std::string client_enrich_action( const std::string &json )
     bleed_json += "]";
 
     const float cl = av.active_light();
-    const std::string tile_changes = build_client_tile_changes();
+    const std::string tile_changes = build_client_tile_changes( mp_take_spell_tile_reach() );
     const std::string veh_cargo_changes = build_client_veh_cargo_changes();
 
     // Worn-list baseline check: if the avatar's worn list (or wielded item)

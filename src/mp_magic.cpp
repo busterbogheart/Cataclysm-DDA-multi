@@ -149,6 +149,23 @@ class mp_magic_events : public event_subscriber
                 if( who->is_avatar() ) {
                     g_last_cast_turn = to_turn<int>( calendar::turn );
                     g_last_cast_spell = sp.str();
+                    // B13: tell the tile scan how far this spell could have
+                    // reached, so ground it changed outside the default 10-tile
+                    // box still reaches the host.  Read off the caster's OWN
+                    // copy of the spell rather than the type, because range and
+                    // aoe are both level-scaled — the type's maximum would
+                    // over-scan by a lot at low levels.  A spell cast from an
+                    // item or scroll is not in the spellbook; log that rather
+                    // than silently under-scanning, since it is the case most
+                    // likely to look like this fix "not working".
+                    if( who->magic->knows_spell( sp ) ) {
+                        const spell &cast_sp = who->magic->get_spell( sp );
+                        const int reach = cast_sp.range( *who ) + cast_sp.aoe( *who );
+                        line += " reach=" + std::to_string( reach );
+                        mp_note_spell_tile_reach( reach );
+                    } else {
+                        line += " reach=unknown(not-in-spellbook)";
+                    }
                 }
             } else {
                 line += " caster=<not found>";

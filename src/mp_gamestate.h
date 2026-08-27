@@ -500,6 +500,12 @@ void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
 // frame pacing).  No-ops outside an MP session.
 void mp_log_do_turn_exit();
 
+// Client only: called when our own avatar finishes a spell, with how far that
+// spell could have reached (range + aoe).  The next client tile-change scan
+// widens to cover it, so ground the spell changed outside the default 10-tile
+// box still reaches the host.  See mp_take_spell_tile_reach().
+void mp_note_spell_tile_reach( int reach );
+
 // Client only: returns true when the client host-NPC proxy occupies the given
 // absolute map position.  Used by handle_action to block walk-through-host.
 bool is_client_host_at( const tripoint_abs_ms &abs );
