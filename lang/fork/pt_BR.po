@@ -367,7 +367,7 @@ msgstr "Reconectando-se ao host..."
 #. ~ immediately after it in a different color.
 #: src/mp_gamestate.cpp:1468
 msgid "kills "
-msgstr ""
+msgstr "mortes "
 
 #: src/mp_gamestate.cpp:1738
 msgid "No co-op partner connected."
@@ -805,7 +805,7 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:9338
 msgid "Your partner has died.  Waiting for them to respawn..."
-msgstr ""
+msgstr "Seu parceiro morreu.  Aguardando o ressurgimento dele..."
 
 #: src/mp_gamestate.cpp:9352
 msgid "Your partner is leaving.  The session will end shortly."
@@ -861,7 +861,7 @@ msgstr "Reconectado ao host — continuando."
 
 #: src/mp_gamestate.cpp:9540
 msgid "Lost connection to server."
-msgstr ""
+msgstr "Perdeu a conexão com o servidor."
 
 #: src/mp_gamestate.cpp:9686 src/mp_gamestate.cpp:9703
 msgid "Your partner"
@@ -871,7 +871,7 @@ msgstr "Seu parceiro"
 #: src/mp_gamestate.cpp:10118
 #, c-format
 msgid "You are hit for %d damage!"
-msgstr ""
+msgstr "Você foi acertado e sofreu %d de dano!"
 
 #: src/mp_gamestate.cpp:11296
 msgid "You can't do that right now."
