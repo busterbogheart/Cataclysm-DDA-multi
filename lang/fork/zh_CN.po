@@ -93,7 +93,7 @@ msgid ""
 "host will also save the shared world when you leave, so your progress there "
 "stays in sync."
 msgstr ""
-"保存并断开连接？您与主机都将进行一次存档，"
+"存档并断开连接？您与主机都将进行一次存档，"
 "以确保您下次加入时的数据同步。"
 "您的角色数据将被保存在本地。"
 
@@ -102,7 +102,7 @@ msgid ""
 "Save and quit?  This is the authoritative co-op save — the shared world will "
 "be saved.  Your partner will be disconnected."
 msgstr ""
-"保存并退出？鉴于此为CO-OP模式存档，您与客机"
+"存档并退出？鉴于此为CO-OP模式存档，您与客机"
 "都将进行一次存档，随后客机将被断开。"
 
 #: src/handle_action.cpp:4444
@@ -345,13 +345,13 @@ msgid ""
 "Partner not connected  (join IP address hidden, use keybind \"Copy co-op "
 "join address\")"
 msgstr ""
-"同伴尚未连接加入  （连接IP被隐藏，请使用“复制CO-OP房间地址”"
+"同伴尚未连接加入（连接IP被隐藏，请使用“复制CO-OP房间地址”"
 快捷键获取地址）"
 
 #: src/mp_gamestate.cpp:1275
 #, c-format
 msgid "Partner not connected   %s"
-msgstr "同伴尚未连接加入   %s"
+msgstr "同伴尚未连接加入 %s"
 
 #: src/mp_gamestate.cpp:1290
 msgid "Reconnecting to host…"
@@ -729,30 +729,31 @@ msgstr "无法连接至 %1$s:%2$d。"
 
 #: src/mp_gamestate.cpp:8557
 msgid "Save as (optional label, e.g. 'Intel Mac' — blank to skip)"
-msgstr ""
+msgstr "备注名称（可选，例如：“英特尔Mac” — 不输入则跳过）"
 
 #: src/mp_gamestate.cpp:8569
 msgid "Co-op: armed — re-enter Host to pick world / character"
-msgstr ""
+msgstr "CO-OP：连接已建立 — 重新主持游戏以选择世界/角色"
 
 #: src/mp_gamestate.cpp:8571
 #, c-format
 msgid "Co-op: hosting on port %d — waiting for partner"
-msgstr ""
+msgstr "CO-OP：已于%d端口主持游戏 — 等待同伴"
 
 #: src/mp_gamestate.cpp:8575
 msgid "Co-op: connected to host — re-enter Join to pick character"
-msgstr ""
+msgstr "CO-OP：已连接至主机 — 重新加入以选择角色"
 
 #: src/mp_gamestate.cpp:8618
 msgid "You and your partner are close enough again."
-msgstr ""
+msgstr "同伴回到了你的身边。"
 
 #: src/mp_gamestate.cpp:8623
 #, c-format
 msgid ""
 "Your partner is getting far away (%d tiles).  Max safe range is about 60."
 msgstr ""
+"你的同伴正在逐渐走远（%d格）。最大安全距离为约60格。"
 
 #: src/mp_gamestate.cpp:8628
 #, c-format
@@ -760,6 +761,7 @@ msgid ""
 "Your partner is near the edge of the simulated zone (%d tiles)!  Brake or "
 "turn around."
 msgstr ""
+"你的同伴即将走出渲染范围（%d格）！提醒他停下或折返。"
 
 #: src/mp_gamestate.cpp:8633
 #, c-format
@@ -767,6 +769,7 @@ msgid ""
 "Your partner is past the edge (%d tiles)!  Vehicle physics will break — "
 "close the gap now."
 msgstr ""
+"你的同伴走出了渲染范围（%d格）！这将导致载具物理异常 — 立刻靠近彼此！"
 
 #: src/mp_gamestate.cpp:8748
 #, c-format
@@ -774,31 +777,35 @@ msgid ""
 "Your partner went silent (>%d s) — connection lost.  They'll rejoin "
 "automatically if they reconnect."
 msgstr ""
+"你的同伴突然没了反应（>%d秒） — 连接已丢失。"
+"你的同伴将在重新连接后自动加入。"
 
 #: src/mp_gamestate.cpp:9338
 msgid "Your partner has died.  Waiting for them to respawn..."
-msgstr ""
+msgstr "你的同伴已死亡。等待其重生..."
 
 #: src/mp_gamestate.cpp:9352
 msgid "Your partner is leaving.  The session will end shortly."
-msgstr ""
+msgstr "你的同伴已离开。会话即将自动结束。"
 
 #: src/mp_gamestate.cpp:9359
 msgid ""
 "The host saved the shared world — your progress is in sync.  (Your inventory "
 "isn't fully mirrored to the host yet — known limitation.)"
 msgstr ""
+"主机已进行存档 — 已同步你的数据"
+"（已知限制 — 你的物品栏数据并未被主机完全保存。）"
 
 #: src/mp_gamestate.cpp:9470
 msgid "Connection to host lost — reconnecting… (up to ~15s)"
-msgstr ""
+msgstr "与主机的连接丢失 — 正在重新连接...（至多~15秒）"
 
 #. ~ %1$d is the current attempt number, %2$d is the total or max attempts,
 #. like 1/5
 #: src/mp_gamestate.cpp:9486
 #, c-format
 msgid "Reconnecting to host… (try %1$d/%2$d)"
-msgstr ""
+msgstr "重新连接至主机...（%1$d/%2$d）"
 
 #: src/mp_gamestate.cpp:9495
 msgid ""
