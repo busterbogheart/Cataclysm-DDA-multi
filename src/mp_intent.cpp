@@ -71,6 +71,9 @@ constexpr int intent_max_age_turns = 2;
 std::string g_last_skip_reason;
 // Same idea for the success path: report a given intent once, not once a frame.
 std::string g_last_draw_key;
+// DIAG (2026-08-27): how many times the draw path has been entered since the
+// last INTENT-RECV.  See the note at the INTENT-RECV log for what it settles.
+int g_draw_calls = 0;
 
 void log_skip( const std::string &reason )
 {
@@ -244,14 +247,29 @@ void mp_handle_intent_recv( const std::string &msg )
     g_partner_anchor = get_map().get_abs( partner->pos_bub() );
     g_partner_staged_turn = calendar::turn;
     g_partner_kind = intent_kind::move;
+    // DIAG (2026-08-27): draws_since_recv is the measurement that settles the
+    // "arrows are delayed / do not update / only update when the host moves"
+    // report.  The WAN logs already proved it is NOT the wire: 116 of 116
+    // intents arrived, p50 99ms, max 377ms, zero drops.  So the question is
+    // whether the draw path is being CALLED between receives, and neither
+    // INTENT-DRAW-OK nor INTENT-DRAW-SKIP can answer that — both dedupe on
+    // last-key/last-reason, so a stable arrow logs once no matter how many
+    // frames run.  A count near 0 here means the host simply is not rendering
+    // frames while it waits (fix the invalidation); a healthy count means the
+    // draw runs and something inside it is rejecting the hint (fix the gate).
     mp_log( "[cdda-mp] INTENT-RECV: dx=" + std::to_string( dx ) +
             " dy=" + std::to_string( dy ) +
             " anchor=(" + std::to_string( g_partner_anchor.x() ) + "," +
-            std::to_string( g_partner_anchor.y() ) + ")" );
+            std::to_string( g_partner_anchor.y() ) + ")" +
+            " draws_since_recv=" + std::to_string( g_draw_calls ) );
+    g_draw_calls = 0;
 }
 
 intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir )
 {
+    // DIAG (2026-08-27): counts every entry into the draw path, including the
+    // early-out below.  Read and reset at each INTENT-RECV — see the note there.
+    ++g_draw_calls;
     if( g_partner_kind == intent_kind::none ) {
         return intent_kind::none;
     }
