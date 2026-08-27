@@ -144,7 +144,7 @@ msgstr "<O>CO-OP联机"
 #: src/main_menu.cpp:505
 msgctxt "Main Menu"
 msgid "T<u|U>torial"
-msgstr "<U>游戏教程"
+msgstr "<u|U>游戏教程"
 
 #: src/main_menu.cpp:509
 msgctxt "Main Menu"
@@ -337,8 +337,8 @@ msgstr "%1$s开始%2$s。"
 
 #: src/mp_gamestate.cpp:1071
 #, c-format
-msgid "%1$s完成了%2$s。"
-msgstr ""
+msgid "%1$s has finished %2$s."
+msgstr "%1$s完成了%2$s。"
 
 #: src/mp_gamestate.cpp:1273
 msgid ""
@@ -346,7 +346,7 @@ msgid ""
 "join address\")"
 msgstr ""
 "同伴尚未连接加入（连接IP被隐藏，请使用“复制CO-OP房间地址”"
-快捷键获取地址）"
+"快捷键获取地址）"
 
 #: src/mp_gamestate.cpp:1275
 #, c-format
@@ -488,7 +488,7 @@ msgstr "%1$s无法启动%2$s的引擎。"
 #: src/mp_gamestate.cpp:4861
 #, c-format
 msgid "You can't start the %s's engine."
-msgstr "你无法启动%2$s的引擎。"
+msgstr "你无法启动%s的引擎。"
 
 #: src/mp_gamestate.cpp:4865
 #, c-format
@@ -655,12 +655,12 @@ msgstr "无法准备CO-OP世界。"
 #: src/mp_gamestate.cpp:8180
 #, c-format
 msgid "Mod \"%s\" is not co-op compatible."
-msgstr "模组“%s”无法兼容CP-OP模式。"
+msgstr "模组“%s”无法兼容CO-OP模式。"
 
 #: src/mp_gamestate.cpp:8184
 #, c-format
 msgid "Mod \"%s\" may break in co-op."
-msgstr "模组“%s”在CP-OP模式下可能引发问题。"
+msgstr "模组“%s”在CO-OP模式下可能引发问题。"
 
 #: src/mp_gamestate.cpp:8207
 msgid ""
@@ -827,7 +827,7 @@ msgstr "多次尝试重新连接至主机失败 — 连接已丢失。"
 
 #: src/mp_gamestate.cpp:9511
 msgid "Reconnected to the host — resuming."
-msgstr "恢复与主机的重新连接尝试。"
+msgstr "已重新连接至主机 — 继续游戏。"
 
 #: src/mp_gamestate.cpp:9540
 msgid "Lost connection to server."
@@ -1139,7 +1139,7 @@ msgid ""
 msgstr ""
 "该选项已于CO-OP禁用\n"
 "\n"
-"玩家间的世界设置必须保存相同 — 不同的世界设置将导致联机
+"玩家间的世界设置必须保存相同 — 不同的世界设置将导致联机"
 "过程中的各种同步问题。"
 
 #. ~ %s is the monster's name
