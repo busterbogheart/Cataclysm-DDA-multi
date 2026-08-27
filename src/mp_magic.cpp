@@ -447,21 +447,60 @@ void mp_handle_partner_spell( const std::string &msg )
     }
     avatar &av = get_avatar();
     spell sp( sid );
-    sp.set_level( av, level );
-    // Cast on ourselves, at our own position, with the caster's level.  Runs the
-    // real SP effect path rather than a reimplementation of it, so heals,
-    // effect_str, DOTs and extra_effects all behave exactly as in single player.
+
+    // The caster is the PARTNER, not us, and that distinction is load-bearing
+    // rather than bookkeeping.  spell::damage() builds its dialogue from
+    // whichever Creature it is handed (magic.cpp:677), so a `math` formula like
+    // druidic_healing's
+    //     min_damage: (u_spell_level('druidic_healing') * -1) - 2
+    // reads the level out of THAT character's spellbook.  Handing it our own
+    // avatar made every level-scaled partner spell resolve at the level WE know
+    // it — 0 for a spell we have never learned.  Measured on WAN 2026-08-27:
+    //     PARTNER-SPELL-SEND  {"spell":"druidic_healing","level":10}
+    //     PARTNER-SPELL-APPLY  spell=druidic_healing level=10 dmg=-2
+    // -2 is exactly the level-0 minimum; level 10 should be -12..-25.  The
+    // caster paid the full 35 HP and the receiver got 2 HP back.
+    //
+    // sp.set_level() does NOT fix this.  That sets the spell OBJECT's level,
+    // which only feeds the damage_increment term of min_leveled_damage(), and
+    // druidic_healing declares no damage_increment — all of its scaling lives
+    // inside the math formula.  The level has to be visible on the caster.
+    npc *proxy = get_partner_npc();
+    Character &caster = proxy ? static_cast<Character &>( *proxy )
+                        : static_cast<Character &>( av );
+    if( proxy ) {
+        // Mirror the caster's level onto the proxy, the same way the fork
+        // already mirrors str/dex/int/per, skills and proficiencies so that
+        // host-side SP handlers see real values instead of the proxy's blanks.
+        // Only write when it actually differs: set_spell_level() emits
+        // character_learns_spell the first time it adds an unknown spell, and
+        // there is no reason to re-fire that on every cast.
+        if( !proxy->magic->knows_spell( sid ) ||
+            proxy->magic->get_spell( sid ).get_level() != level ) {
+            proxy->magic->set_spell_level( sid, level, proxy );
+        }
+    }
+    sp.set_level( caster, level );
+    // Cast at our own position, with the caster's level.  Runs the real SP
+    // effect path rather than a reimplementation of it, so heals, effect_str,
+    // DOTs and extra_effects all behave exactly as in single player.
     //
     // Known v1 limitation: an area support spell re-centres on the receiver
     // rather than preserving the original blast geometry.  Acceptable while
     // this is restricted to deliberate support -- the receiver IS the intended
     // beneficiary and any splash lands where the caster was aiming anyway.
     g_applying_partner_spell = true;
-    sp.cast_all_effects( av, av.pos_bub() );
+    sp.cast_all_effects( caster, av.pos_bub() );
     g_applying_partner_spell = false;
+    // Log the damage resolved against BOTH characters.  caster_dmg is what the
+    // spell is now worth; self_dmg is what the old code would have produced.
+    // While this is fresh, a log line showing the two still equal means the
+    // proxy did not carry the level and the fix did not take.
     mp_log( "[cdda-mp] PARTNER-SPELL-APPLY: spell=" + sp_str +
             " level=" + std::to_string( level ) +
-            " dmg=" + std::to_string( sp.damage( av ) ) );
+            " caster=" + std::string( proxy ? "proxy" : "self" ) +
+            " caster_dmg=" + std::to_string( sp.damage( caster ) ) +
+            " self_dmg=" + std::to_string( sp.damage( av ) ) );
 }
 
 void mp_handle_client_hp( const std::string &msg )
