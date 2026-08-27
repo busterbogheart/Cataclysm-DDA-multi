@@ -1116,6 +1116,22 @@ static void mp_partner_activity_transition_check()
         // finished reading." instead of the generic "<name> has finished."
         add_msg( m_info, _( "%1$s has finished %2$s." ), partner_name,
                  mp_activity_verb_phrase( g_partner_activity_prev ) );
+    } else {
+        // Non-empty -> a DIFFERENT non-empty.  The partner went straight from one
+        // activity into the next with no idle turn between them, which the two
+        // branches above both miss: the first wants an empty prev, the second an
+        // empty new.  Before this existed the transition was silently swallowed
+        // and BOTH messages were lost — measured on WAN 2026-08-27, where a
+        // client going ACT_PICKUP -> ACT_SPELLCASTING produced no message at all
+        // and the host never learned their partner had started casting.
+        //
+        // Emitted as the existing two sentences rather than a new "switches to"
+        // string on purpose: it keeps this change out of the .pot, so the six
+        // language catalogs that are already complete stay complete.
+        add_msg( m_info, _( "%1$s has finished %2$s." ), partner_name,
+                 mp_activity_verb_phrase( g_partner_activity_prev ) );
+        add_msg( m_info, _( "%1$s begins %2$s." ), partner_name,
+                 mp_activity_verb_phrase( g_partner_activity ) );
     }
     g_partner_activity_prev = g_partner_activity;
     // Partner's activity changed — if we were helping with the OLD one and
