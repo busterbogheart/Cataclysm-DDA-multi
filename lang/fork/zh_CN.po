@@ -10,82 +10,82 @@ msgstr ""
 
 #: src/activity_actor.cpp:780
 msgid "Autodrive is disabled in multiplayer."
-msgstr ""
+msgstr "自动驾驶已于多人模式禁用"
 
 #: src/debug_menu.cpp:1063
 msgid "Spawn a random item"
-msgstr ""
+msgstr "生成随机物品"
 
 #: src/debug_menu.cpp:1069 src/debug_menu.cpp:4321
 msgid "Spawn random monster"
-msgstr ""
+msgstr "生成随机怪物"
 
 #: src/debug_menu.cpp:4278
 msgid "Spawn random item"
-msgstr ""
+msgstr "生成随机物品"
 
 #: src/debug_menu.cpp:4298
 #, c-format
 msgid "Spawned random item: %s"
-msgstr ""
+msgstr "已生成随机物品：%s"
 
 #: src/debug_menu.cpp:4340
 #, c-format
 msgid "Spawned random monster: %s"
-msgstr ""
+msgstr "生成随机怪物：%s"
 
 #: src/debug_menu.cpp:4342
 #, c-format
 msgid "Could not spawn %s here."
-msgstr ""
+msgstr "无法在此处生成%s"
 
 #. ~ this string is for the progress display: %1$s is the activity verb and
 #. %2$d is the percent (number) complete.  %% is a literal percent sign.
 #: src/do_turn.cpp:635
 #, c-format
 msgid "%1$s: %2$d%%"
-msgstr ""
+msgstr "%1$s：%2$d%%"
 
 #: src/game.cpp:5368
 msgid "Tap on shoulder"
-msgstr ""
+msgstr "拍拍肩膀"
 
 #: src/game.cpp:5385
 msgid "Help with task"
-msgstr ""
+msgstr "协助完成工作"
 
 #: src/game.cpp:5389
 msgid "Pass item"
-msgstr ""
+msgstr "递交物品"
 
 #: src/game.cpp:5390
 msgid "High five"
-msgstr ""
+msgstr "击掌"
 
 #: src/game.cpp:5458
 #, c-format
 msgid "You push %s."
-msgstr ""
+msgstr "你推开了%s。"
 
 #: src/game.cpp:5485 src/game.cpp:5491
 #, c-format
 msgid "You tap %s on the shoulder."
-msgstr ""
+msgstr "你拍了拍%s的肩膀。"
 
 #: src/game.cpp:5517
 #, c-format
 msgid "You join %s to help with their task."
-msgstr ""
+msgstr "你加入到了%s进行的任务之中。"
 
 #: src/handle_action.cpp:3141
 #, c-format
 msgid "Now dropping items, %s to interrupt."
-msgstr ""
+msgstr "正在丢下物品，按 %s 中断。"
 
 #: src/handle_action.cpp:3207
 #, c-format
 msgid "Now consuming, %s to interrupt."
-msgstr ""
+msgstr "正在进食/消耗，按 %s 中断。"
 
 #: src/handle_action.cpp:4109
 msgid ""
@@ -93,24 +93,29 @@ msgid ""
 "host will also save the shared world when you leave, so your progress there "
 "stays in sync."
 msgstr ""
+"保存并断开连接？您与主机都将进行一次存档，"
+"以确保您下次加入时的数据同步。"
+"您的角色数据将被保存在本地。"
 
 #: src/handle_action.cpp:4123
 msgid ""
 "Save and quit?  This is the authoritative co-op save — the shared world will "
 "be saved.  Your partner will be disconnected."
 msgstr ""
+"保存并退出？鉴于此为CO-OP模式存档，您与客机"
+"都将进行一次存档，随后客机将被断开。"
 
 #: src/handle_action.cpp:4444
 msgid "Waiting for partner — can't do that yet."
-msgstr ""
+msgstr "等待队友 — 无法进行该行为。"
 
 #: src/item_location.cpp:1177
 msgid "containers are nested too deeply"
-msgstr ""
+msgstr "容器嵌套过深"
 
 #: src/main_menu.cpp:203
 msgid "Donate"
-msgstr ""
+msgstr "支持我们"
 
 #: src/main_menu.cpp:491
 #, c-format
@@ -123,79 +128,86 @@ msgid ""
 "\n"
 "Thanks for playing!"
 msgstr ""
+"CDDA CO-OP 是一个免费的玩家自制项目。\n"
+"\n"
+"打赏将支持我们产出后续更新：\n"
+"\n"
+"    %s\n"
+"\n"
+"感谢您的游玩！"
 
 #: src/main_menu.cpp:502
 msgctxt "Main Menu"
 msgid "C<O|o>-OP"
-msgstr ""
+msgstr "<O>CO-OP联机"
 
 #: src/main_menu.cpp:505
 msgctxt "Main Menu"
 msgid "T<u|U>torial"
-msgstr ""
+msgstr "<U>游戏教程"
 
 #: src/main_menu.cpp:509
 msgctxt "Main Menu"
 msgid "<D|d>onate"
-msgstr ""
+msgstr "<D>支持我们"
 
 #: src/main_menu.cpp:542
 msgctxt "Main Menu|Co-op"
 msgid "<H|h>ost a session"
-msgstr ""
+msgstr "<H>主持游戏（主机）"
 
 #: src/main_menu.cpp:543
 msgctxt "Main Menu|Co-op"
 msgid "<J|j>oin a session"
-msgstr ""
+msgstr "<J>加入游戏（客机）"
 
 #: src/main_menu.cpp:1015
 msgid "Co-op: choose character"
-msgstr ""
+msgstr "CO-OP：选择角色"
 
 #: src/main_menu.cpp:1016
 msgid "Custom Character"
-msgstr ""
+msgstr "新角色"
 
 #: src/main_menu.cpp:1017
 msgid "Preset Character"
-msgstr ""
+msgstr "预设角色"
 
 #: src/main_menu.cpp:1018
 msgid "Random Character"
-msgstr ""
+msgstr "随机角色"
 
 #: src/main_menu.cpp:1041
 msgid "Co-op: host a session"
-msgstr ""
+msgstr "CO-OP：主持游戏"
 
 #: src/main_menu.cpp:1042 src/main_menu.cpp:1219
 msgid "New character"
-msgstr ""
+msgstr "新角色"
 
 #: src/main_menu.cpp:1043
 msgid "Load saved world"
-msgstr ""
+msgstr "加载存在数据的世界"
 
 #: src/main_menu.cpp:1044
 msgid "Cancel co-op"
-msgstr ""
+msgstr "取消CO-OP"
 
 #: src/main_menu.cpp:1054
 msgid "Co-op: world for new character"
-msgstr ""
+msgstr "CO-OP：为新角色选择世界"
 
 #: src/main_menu.cpp:1056
 msgid "No existing worlds yet — create a new one."
-msgstr ""
+msgstr "未找到已创建的世界 — 请新建世界。"
 
 #: src/main_menu.cpp:1058
 msgid "Use existing world"
-msgstr ""
+msgstr "使用已创建的世界"
 
 #: src/main_menu.cpp:1059
 msgid "Create new world"
-msgstr ""
+msgstr "新建世界"
 
 #: src/main_menu.cpp:1074
 #, c-format
@@ -204,6 +216,9 @@ msgid ""
 "\n"
 "Continue to character creation?"
 msgstr ""
+"世界“%s”已创建。\n"
+"\n"
+"继续创建新角色？"
 
 #: src/main_menu.cpp:1108
 msgid ""
@@ -211,14 +226,17 @@ msgid ""
 "\n"
 "Create one from Host > New character, or from the main menu under World."
 msgstr ""
+"未找到可载入的世界\n"
+"\n"
+"请前往[主机->新角色]，或从主菜单的世界分栏中创建世界"
 
 #: src/main_menu.cpp:1117
 msgid "Co-op: load saved world"
-msgstr ""
+msgstr "CO-OP：加载存在数据的世界"
 
 #: src/main_menu.cpp:1142
 msgid "This world can't be hosted in co-op:"
-msgstr ""
+msgstr "该世界无法用于CO-OP模式主持："
 
 #: src/main_menu.cpp:1146
 msgid ""
@@ -226,10 +244,13 @@ msgid ""
 "\n"
 "Pick a different world or create a new one."
 msgstr ""
+"\n"
+"\n"
+"请新建或选择其他世界。"
 
 #: src/main_menu.cpp:1151
 msgid "This world may not work fully in co-op:"
-msgstr ""
+msgstr "该世界在CO-OP模式中可能引发问题："
 
 #: src/main_menu.cpp:1155
 msgid ""
@@ -237,6 +258,9 @@ msgid ""
 "\n"
 "Host it anyway?"
 msgstr ""
+"\n"
+"\n"
+"是否仍要主持？"
 
 #: src/main_menu.cpp:1197
 #, c-format
@@ -244,6 +268,8 @@ msgid ""
 "Connected to world \"%s\".\n"
 "Press a key to continue."
 msgstr ""
+"已连接至世界“%s”。\n"
+"请按任意键..."
 
 #. ~ %1$s is the host's name (player name), %2$s is the world name
 #: src/main_menu.cpp:1201
@@ -253,62 +279,65 @@ msgid ""
 "World: \"%2$s\"\n"
 "Press a key to continue."
 msgstr ""
+"已连接至%1$s主持的游戏。\n"
+"世界名称：“%2$s”\n"
+"请按任意键..."
 
 #: src/main_menu.cpp:1208 src/mp_gamestate.cpp:8465
 msgid "Co-op: join a session"
-msgstr ""
+msgstr "CO-OP：加入游戏"
 
 #. ~ %s is the world's name
 #: src/main_menu.cpp:1211
 #, c-format
 msgid "Joining \"%s\""
-msgstr ""
+msgstr "正在加入世界“%s”"
 
 #. ~ %1$s is the world name, %2$s is the host's player name
 #: src/main_menu.cpp:1214
 #, c-format
 msgid "Joining \"%1$s\" — %2$s's game"
-msgstr ""
+msgstr "正在加入%2$s主持的世界“%1$s”"
 
 #: src/main_menu.cpp:1221
 msgid "Load existing character"
-msgstr ""
+msgstr "加载存在数据的角色"
 
 #. ~ %1$s is the passenger, %2$s is the player trying to get on the vehicle
 #: src/map.cpp:1691
 #, c-format
 msgid "%1$s is already in that seat. [%2$s tried to board it]"
-msgstr ""
+msgstr "%1$s已坐在该座位。[%2$s试图从此处上车]"
 
 #: src/mondeath.cpp:67
 #, c-format
 msgid "You kill the %s!"
-msgstr ""
+msgstr "你杀死了%s！"
 
 #. ~ this string for killing monsters: %1$s is the killer, %2$s is the monster
 #. name
 #: src/mondeath.cpp:73
 #, c-format
 msgid "%1$s kills the %2$s!"
-msgstr ""
+msgstr "%1$s杀死了%2$s！"
 
 #: src/mp_gamestate.cpp:580
 #, c-format
 msgid "port %d"
-msgstr ""
+msgstr "端口 %d"
 
 #: src/mp_gamestate.cpp:1016
 msgid "Partner"
-msgstr ""
+msgstr "同伴"
 
 #: src/mp_gamestate.cpp:1066
 #, c-format
 msgid "%1$s begins %2$s."
-msgstr ""
+msgstr "%1$s开始%2$s。"
 
 #: src/mp_gamestate.cpp:1071
 #, c-format
-msgid "%1$s has finished %2$s."
+msgid "%1$s完成了%2$s。"
 msgstr ""
 
 #: src/mp_gamestate.cpp:1273
@@ -316,15 +345,17 @@ msgid ""
 "Partner not connected  (join IP address hidden, use keybind \"Copy co-op "
 "join address\")"
 msgstr ""
+"同伴尚未连接加入  （连接IP被隐藏，请使用“复制CO-OP房间地址”"
+快捷键获取地址）"
 
 #: src/mp_gamestate.cpp:1275
 #, c-format
 msgid "Partner not connected   %s"
-msgstr ""
+msgstr "同伴尚未连接加入   %s"
 
 #: src/mp_gamestate.cpp:1290
 msgid "Reconnecting to host…"
-msgstr ""
+msgstr "正在重连至主机..."
 
 #. ~ Label on the co-op panel's kill tally, drawn as "kills 3\u00b74"
 #. ~ (your count, then your partner's).  KEEP THE TRAILING SPACE — it
@@ -332,82 +363,82 @@ msgstr ""
 #. ~ immediately after it in a different color.
 #: src/mp_gamestate.cpp:1468
 msgid "kills "
-msgstr ""
+msgstr "击杀数 "
 
 #: src/mp_gamestate.cpp:1738
 msgid "No co-op partner connected."
-msgstr ""
+msgstr "无CO-OP同伴连接加入。"
 
 #: src/mp_gamestate.cpp:1742
 msgid "Co-op chat: "
-msgstr ""
+msgstr "CO-OP聊天室："
 
 #: src/mp_gamestate.cpp:1783
 msgid "Join IP address copied to clipboard."
-msgstr ""
+msgstr "房间地址已复制到剪切板。"
 
 #: src/mp_gamestate.cpp:1784
 msgid "Couldn't copy to clipboard."
-msgstr ""
+msgstr "无法复制到剪切板。"
 
 #: src/mp_gamestate.cpp:1788
 msgid "Clipboard copy isn't available in this build."
-msgstr ""
+msgstr "当前版本的CO-OP无法将地址复制到剪切板。"
 
 #: src/mp_gamestate.cpp:1804
 msgid "Only the host has a join address to share."
-msgstr ""
+msgstr "只有主机可以获取房间地址。"
 
 #: src/mp_gamestate.cpp:1808
 msgid "Your partner is already connected."
-msgstr ""
+msgstr "你的同伴已连接加入。"
 
 #: src/mp_gamestate.cpp:2819
 msgid "Your partner disconnected."
-msgstr ""
+msgstr "你的同伴已断开连接。"
 
 #: src/mp_gamestate.cpp:3644
 msgid "Your partner is leaving.  The game has been saved."
-msgstr ""
+msgstr "你的同伴已离开房间。游戏已进行存档。"
 
 #: src/mp_gamestate.cpp:3655
 msgid "Your partner saved — the shared world was saved too."
-msgstr ""
+msgstr "你的同伴进行了存档。游戏已进行存档。"
 
 #: src/mp_gamestate.cpp:3716
 #, c-format
 msgid "%s reconnected."
-msgstr ""
+msgstr "%s已重连。"
 
 #: src/mp_gamestate.cpp:3720
 #, c-format
 msgid "%s has connected and joined the game."
-msgstr ""
+msgstr "%s已连接并加入游戏。"
 
 #: src/mp_gamestate.cpp:4450 src/mp_gamestate.cpp:9710
 #, c-format
 msgid "%s swaps places with you."
-msgstr ""
+msgstr "%s和你互换了位置。"
 
 #: src/mp_gamestate.cpp:4475 src/mp_gamestate.cpp:9713
 #, c-format
 msgid "%s pushes you out of the way."
-msgstr ""
+msgstr "%s把你推开到一旁。"
 
 #: src/mp_gamestate.cpp:4477
 #, c-format
 msgid "%s tries to push you but you have nowhere to go."
-msgstr ""
+msgstr "%s试图把你推开，但周围没有空间。"
 
 #: src/mp_gamestate.cpp:4499 src/mp_gamestate.cpp:9692
 #, c-format
 msgid "%s taps you on the shoulder, snapping you out of your wait."
-msgstr ""
+msgstr "%s拍了拍你的肩膀，你从发呆中回过神来。"
 
 #: src/mp_gamestate.cpp:4502
 #, c-format
 msgid "%s taps you on the shoulder."
-msgstr ""
+msgstr "%s拍了拍你的肩膀。"
 
 #: src/mp_gamestate.cpp:4683
 #, c-format
@@ -415,131 +446,133 @@ msgid ""
 "%s can't pulp corpses in co-op yet — not supported over the network.  The "
 "corpse is untouched."
 msgstr ""
+"受限于网络原因，CO-OP还无法做到让%s捣碎尸体。"
+"尸体毫发无伤。"
 
 #. ~ %1$s is the player smashing, %2$s is the monster name
 #: src/mp_gamestate.cpp:4703
 #, c-format
 msgid "%1$s smashes the %2$s to pieces!"
-msgstr ""
+msgstr "%1$s将%2$s捣成碎块！"
 
 #. ~ %1$s is the player smashing, %2$s is the monster name
 #: src/mp_gamestate.cpp:4707
 #, c-format
 msgid "%1$s strikes the %2$s."
-msgstr ""
+msgstr "%1$s击中了%2$s。"
 
 #. ~ %1$s is the player smashing, %2$s is the monster name
 #: src/mp_gamestate.cpp:4711
 #, c-format
 msgid "%1$s can't damage the %2$s."
-msgstr ""
+msgstr "%1$s无法对%2$s造成伤害。"
 
 #: src/mp_gamestate.cpp:4804
 #, c-format
 msgid "%s lets go of the controls."
-msgstr ""
+msgstr "%s放开了车辆的控制。"
 
 #. ~ %1$s is the player, %2$s is the vehicle name
 #: src/mp_gamestate.cpp:4847
 #, c-format
 msgid "%1$s takes control of the %2$s."
-msgstr ""
+msgstr "%1$s开始控制%2$s。"
 
 #. ~ %1$s is the player, %2$s is the vehicle name
 #: src/mp_gamestate.cpp:4858
 #, c-format
 msgid "%1$s can't start the %2$s's engine."
-msgstr ""
+msgstr "%1$s无法启动%2$s的引擎。"
 
 #. ~ %s is the vehicle name
 #: src/mp_gamestate.cpp:4861
 #, c-format
 msgid "You can't start the %s's engine."
-msgstr ""
+msgstr "你无法启动%2$s的引擎。"
 
 #: src/mp_gamestate.cpp:4865
 #, c-format
 msgid "%s can't drive from here — no controls."
-msgstr ""
+msgstr "由于身边没有载具控制器，%s无法驾驶载具。"
 
 #: src/mp_gamestate.cpp:4866
 msgid "You can't drive from here — no controls."
-msgstr ""
+msgstr "由于身边没有载具控制器，你无法驾驶载具。"
 
 #: src/mp_gamestate.cpp:4870
 #, c-format
 msgid "No vehicle here for %s to control."
-msgstr ""
+msgstr "没有%s可驾驶的载具。"
 
 #: src/mp_gamestate.cpp:4871
 msgid "No vehicle here to control."
-msgstr ""
+msgstr "没有可驾驶的载具。"
 
 #: src/mp_gamestate.cpp:4984
 #, c-format
 msgid "%s pulls a handbrake."
-msgstr ""
+msgstr "%s拉下了手刹。"
 
 #. ~ %1$s is the player, %2$s is the vehicle name
 #: src/mp_gamestate.cpp:4991
 #, c-format
 msgid "%1$s loses control of %2$s."
-msgstr ""
+msgstr "%1$s无法控制%2$s。"
 
 #: src/mp_gamestate.cpp:5024
 #, c-format
 msgid "%s turns off the engine and lets go of the controls."
-msgstr ""
+msgstr "%s关闭了引擎，并放开了控制。"
 
 #: src/mp_gamestate.cpp:5044
 #, c-format
 msgid "%s turns off the engine."
-msgstr ""
+msgstr "%s关闭了引擎。"
 
 #: src/mp_gamestate.cpp:5048
 #, c-format
 msgid "%s starts the engine."
-msgstr ""
+msgstr "%s启动了引擎。"
 
 #: src/mp_gamestate.cpp:5049
 msgid "You start the engine."
-msgstr ""
+msgstr "你启动了引擎。"
 
 #: src/mp_gamestate.cpp:5110
 #, c-format
 msgid "%s triggers the alarm!"
-msgstr ""
+msgstr "%s触发了警报！"
 
 #: src/mp_gamestate.cpp:5153
 #, c-format
 msgid "%s finds the wire that starts the engine."
-msgstr ""
+msgstr "%s找到了启动引擎的线路。"
 
 #: src/mp_gamestate.cpp:5157
 #, c-format
 msgid "%s finds a wire that looks like the right one."
-msgstr ""
+msgstr "%s找到一根像是能启动引擎的线路。"
 
 #: src/mp_gamestate.cpp:5244
 msgid "You stop what you were doing."
-msgstr ""
+msgstr "你停下了手头的工作。"
 
 #: src/mp_gamestate.cpp:5247
 msgid "You start sorting loot into the zones."
-msgstr ""
+msgstr "你开始将物资整理到对应的区域里。"
 
 #: src/mp_gamestate.cpp:7199
 #, c-format
 msgid "You can no longer reach %s and stop treating them."
-msgstr ""
+msgstr "%s已离开你身边，你无法再为其治疗伤势。"
 
 #: src/mp_gamestate.cpp:7200
 msgid "your patient"
-msgstr ""
+msgstr "治疗对象"
 
 #: src/mp_gamestate.cpp:7482
 msgid "Your partner finished — you stop helping."
-msgstr ""
+msgstr "你的同伴已完成工作 — 你停止了协助。"
 
 #: src/mp_gamestate.cpp:7591
 msgid ""
@@ -547,40 +580,46 @@ msgid ""
 "partner's character.  (Your partner also keeps a local copy of their own "
 "character.)"
 msgstr ""
+"你与同伴的角色数据已存档至该世界（CO-OP模式）存档。"
+"（同伴的角色数据也有一份备份在客机本地。）"
 
 #: src/mp_gamestate.cpp:7594
 msgid ""
 "Saved your character locally.  Asking the host to save the shared world so "
 "you stay in sync…"
 msgstr ""
+"已将您的角色数据保存至本地。正在提示主机进行存档，"
+"以确保数据同步..."
 
 #: src/mp_gamestate.cpp:7798
 msgid "received template"
-msgstr ""
+msgstr "已获得预设"
 
 #: src/mp_gamestate.cpp:7929
 msgid "Listen port (CDDA_MP_PORT env override active)"
-msgstr ""
+msgstr "监听端口（已启用CDDA_MP_PORT环境覆盖）"
 
 #: src/mp_gamestate.cpp:7930
 msgid "Listen port (default 8080)"
-msgstr ""
+msgstr "监听端口（默认8080）"
 
 #. ~ %1$s is the wrong port, %2$s is original one entered
 #: src/mp_gamestate.cpp:7953
 #, c-format
 msgid "Invalid port \"%1$s\" — keeping %2$s."
-msgstr ""
+msgstr "无效端口\"%1$s\" — 保留%2$s。"
 
 #: src/mp_gamestate.cpp:7965
 msgid "Hide join IP address on game screen? (was hidden last session)"
-msgstr ""
+msgstr "于游戏画面隐藏房间的IP地址？（上次游戏选择隐藏）"
 
 #: src/mp_gamestate.cpp:7966
 msgid ""
 "Hide join IP address on game screen?  (recommended for streaming. bindable "
 "during play as \"Copy co-op join address\" "
 msgstr ""
+"于游戏画面隐藏房间的IP地址？（建议主播开启，"
+"通过“复制CO-OP房间地址”快捷键获取地址）"
 
 #: src/mp_gamestate.cpp:7990
 msgid ""
@@ -591,6 +630,12 @@ msgid ""
 "So finish world and character creation first.  Once you're in the world your "
 "partner can join."
 msgstr ""
+"游戏只在玩家进入世界后才会开放端口，在此之前"
+"客机即便输入正确的地址并尝试加入，也只会收到"
+"“连接拒绝”的提示。\n"
+"\n"
+"请先完成创建世界和角色，待你进入世界后，你的"
+"同伴便可加入。"
 
 #: src/mp_gamestate.cpp:8130
 #, c-format
@@ -599,54 +644,57 @@ msgid ""
 "\n"
 "Install the missing mod(s), then rejoin."
 msgstr ""
+"无法加入：主机正在使用你未安装的模组：%s\n"
+"\n"
+"请在安装对应模组后再尝试加入。"
 
 #: src/mp_gamestate.cpp:8158
 msgid "Couldn't prepare the co-op world."
-msgstr ""
+msgstr "无法准备CO-OP世界。"
 
 #: src/mp_gamestate.cpp:8180
 #, c-format
 msgid "Mod \"%s\" is not co-op compatible."
-msgstr ""
+msgstr "模组“%s”无法兼容CP-OP模式。"
 
 #: src/mp_gamestate.cpp:8184
 #, c-format
 msgid "Mod \"%s\" may break in co-op."
-msgstr ""
+msgstr "模组“%s”在CP-OP模式下可能引发问题。"
 
 #: src/mp_gamestate.cpp:8207
 msgid ""
 "Random NPCs are enabled — co-op can't sync them to the other player yet."
-msgstr ""
+msgstr "“生成随机NPC”已开启 — CO-OP模式暂时无法将它们同步到客机。"
 
 #: src/mp_gamestate.cpp:8302
 msgid "This world has co-op history"
-msgstr ""
+msgstr "该世界存在CO-OP模式的记录"
 
 #: src/mp_gamestate.cpp:8303
 msgid "Load as solo, or arm Host so your partner can Join?"
-msgstr ""
+msgstr "以单人模式加载存档，还是作为主机等待同伴加入？"
 
 #: src/mp_gamestate.cpp:8309
 msgid "Load solo"
-msgstr ""
+msgstr "单人模式"
 
 #: src/mp_gamestate.cpp:8310
 msgid "Arm Host (co-op)"
-msgstr ""
+msgstr "成为主机（CO-OP）"
 
 #: src/mp_gamestate.cpp:8445
 #, c-format
 msgid "Invalid port in '%s'."
-msgstr ""
+msgstr "无效端口（%s）"
 
 #: src/mp_gamestate.cpp:8475
 msgid "Enter new address…"
-msgstr ""
+msgstr "输入新地址..."
 
 #: src/mp_gamestate.cpp:8490
 msgid "Host address  (e.g. 192.168.1.5  or  100.64.0.5:8080)"
-msgstr ""
+msgstr "主持地址（如：192.168.1.5 或 100.64.0.5:8080）"
 
 #. ~ %1$s is the host address, %2$d is the port number
 #: src/mp_gamestate.cpp:8523
@@ -663,12 +711,21 @@ msgid ""
 "instead of to your partner.\n"
 "4 Check the address and check the port isn't firewalled."
 msgstr ""
+"无法访问 %1$s:%2$d...\n"
+"\n"
+"1. 请确认主机已经进入游戏\n"
+"2. 请确保主客机已连入同一网络或VPN，部分VPN（例如：Tailscale、Radmin）"
+"的“已连接”状态并不能保证双方联通，建议尝试主机的其他可用线路进行连接，或"
+"重启VPN以重置线路连接。\n"
+"3. 关闭商用VPN（例如：NordVPN、ExpressVPN，Proton等）。此类VPN将覆盖"
+"设备的端口，并将CO-OP的数据发送到VPN端而非你的同伴。\n"
+"4. 请确认地址是否正确，以及端口是否已于防火墙开放"
 
 #. ~ %1$s is the host address, %2$d is the port number
 #: src/mp_gamestate.cpp:8540
 #, c-format
 msgid "Could not connect to %1$s:%2$d."
-msgstr ""
+msgstr "无法连接至 %1$s:%2$d。"
 
 #: src/mp_gamestate.cpp:8557
 msgid "Save as (optional label, e.g. 'Intel Mac' — blank to skip)"
