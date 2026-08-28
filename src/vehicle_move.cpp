@@ -471,9 +471,12 @@ void vehicle::thrust( map &here, int thd, int z )
     }
     bool pl_ctrl = player_is_driving_this_veh( &here );
     if( cata_mp::is_hosting() ) {
+        Character &player_character = get_player_character();
         cata_mp::mp_log( "[veh-move] pl_ctrl=" + std::to_string( pl_ctrl ) +
                          " veh=" + name +
-                         " valid_wheels=" + std::to_string( valid_wheel_config( here ) ) );
+                         " valid_wheels=" + std::to_string( valid_wheel_config( here ) ) +
+                         " avatar_in_vehicle=" + std::to_string( player_character.in_vehicle ) +
+                         " avatar_ctrl_veh=" + std::to_string( player_character.controlling_vehicle ) );
     }
 
     // No need to change velocity if there are no wheels
