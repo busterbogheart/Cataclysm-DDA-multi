@@ -263,6 +263,25 @@ void mp_handle_intent_recv( const std::string &msg )
             std::to_string( g_partner_anchor.y() ) + ")" +
             " draws_since_recv=" + std::to_string( g_draw_calls ) );
     g_draw_calls = 0;
+
+    // Mark the map dirty so the hint is painted on the next frame this side
+    // draws.  Measured 2026-08-27: on the host, 23 of 55 intents arrived with
+    // draws_since_recv=0 -- cata_tiles::draw() had not run at all between them,
+    // because the host's idle state is a blocking wait for its own player's
+    // keypress with no repaint pump, while the CLIENT's idle state is a
+    // pump-and-render loop (6562 CLI-RENDER in the same session, and never a
+    // zero on that side).  That asymmetry is the whole bug.
+    //
+    // DELIBERATELY invalidation only -- this does NOT wake a blocked input call.
+    // Waking the host's input loop on every inbound packet would repaint
+    // promptly but risks frames and input jitter on the host's own turn, and
+    // this is a subtle cosmetic hint: not worth spending responsiveness on.
+    // The consequence is an honestly slower refresh on the host -- the arrow
+    // appears on the next frame that happens for any other reason rather than
+    // immediately. If that proves too slow to be useful, the next step is an
+    // idle repaint pump on the host mirroring the client's, NOT a per-packet
+    // wake.
+    g->invalidate_main_ui_adaptor();
 }
 
 intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir )
