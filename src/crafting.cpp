@@ -3557,7 +3557,7 @@ bool Character::craft_consume_tools( item &craft, int multiplier, bool start_cra
                         // named callout kept in mp_gamestate.cpp since
                         // crafting.cpp is not an upstream-hot file but is still
                         // an SP file — see ROADMAP "message-relay/hotplate" entry.
-                        cata_mp::mp_log_craft_tool_shortfall( *this, craft, type, count );
+                        cata_mp::mp_log_craft_tool_shortfall( *this, craft, type, count, "player" );
                         add_msg_player_or_npc(
                             _( "You have insufficient %s charges and can't continue crafting." ),
                             _( "<npcname> has insufficient %s charges and can't continue crafting." ),
@@ -3568,6 +3568,9 @@ bool Character::craft_consume_tools( item &craft, int multiplier, bool start_cra
                     break;
                 case usage_from::map:
                     if( !map_inv.has_charges( type, count ) ) {
+                        // The branch the 2026-08-27 hotplate repro actually takes:
+                        // a tool in vehicle cargo is map inventory, not carried.
+                        cata_mp::mp_log_craft_tool_shortfall( *this, craft, type, count, "map" );
                         add_msg_player_or_npc(
                             _( "You have insufficient %s charges and can't continue crafting." ),
                             _( "<npcname> has insufficient %s charges and can't continue crafting." ),
@@ -3578,6 +3581,7 @@ bool Character::craft_consume_tools( item &craft, int multiplier, bool start_cra
                     break;
                 case usage_from::both:
                     if( !crafting_inventory().has_charges( type, count ) ) {
+                        cata_mp::mp_log_craft_tool_shortfall( *this, craft, type, count, "both" );
                         add_msg_player_or_npc(
                             _( "You have insufficient %s charges and can't continue crafting." ),
                             _( "<npcname> has insufficient %s charges and can't continue crafting." ),

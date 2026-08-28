@@ -4331,15 +4331,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             jo.allow_omitted_members();
             if( jo.has_array( "client_tile_changes" ) ) {
                 map &m = get_map();
+                int seen = 0;      // DIAG (2026-08-27): see TILE-APPLY-RESULT below.
+                int applied = 0;
+                int oob = 0;
                 for( const JsonValue &entry : jo.get_array( "client_tile_changes" ) ) {
                     JsonObject to = entry.get_object();
                     to.allow_omitted_members();
+                    ++seen;
                     const tripoint_abs_ms abs{
                         to.get_int( "x" ), to.get_int( "y" ), to.get_int( "z" )
                     };
                     if( !m.inbounds( abs ) ) {
+                        ++oob;
                         continue;
                     }
+                    ++applied;
                     const tripoint_bub_ms bub = m.get_bub( abs );
                     bool touched = false;
                     if( to.has_string( "ter" ) ) {
@@ -4473,6 +4479,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         g_tile_baseline[abs] = compute_tile_state( abs );
                     }
                 }
+                // DIAG (2026-08-27): B13 verification, host half.  The packet log
+                // above truncates before "client_tile_changes" ever appears, so
+                // arrival was previously unreadable from this side.  oob counts the
+                // entries dropped by the inbounds check — a silent `continue` that
+                // is the prime suspect for client-side ground changes that never
+                // land, since the reality bubble is centred on the HOST and a
+                // change made near a distant client can fall outside it.
+                mp_log( "[cdda-mp] TILE-APPLY-RESULT: seen=" + std::to_string( seen ) +
+                        " applied=" + std::to_string( applied ) +
+                        " out_of_bounds=" + std::to_string( oob ) );
             }
         } catch( const JsonError & ) {}
     }
@@ -9231,7 +9247,8 @@ void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &cra
 }
 
 void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
-                                  const itype_id &tool_type, int count_needed )
+                                  const itype_id &tool_type, int count_needed,
+                                  const char *from )
 {
     if( !is_client_mode() && !is_hosting() ) {
         return;
@@ -9244,6 +9261,7 @@ void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
     // shared craft being independently advanced by both local simulations.
     mp_log( "[cdda-mp] CRAFT-TOOL-SHORTFALL: side=" +
             std::string( is_hosting() ? "HOST" : "CLIENT" ) +
+            " from=" + std::string( from ) +
             " crafter='" + crafter.get_name() + "' is_avatar=" +
             std::to_string( crafter.is_avatar() ) +
             " crafter_abs=" + std::to_string( cpos.x() ) + "," +
@@ -11216,6 +11234,7 @@ static std::string build_client_tile_changes( int radius = 10 )
     map &m = get_map();
     std::string out = "[";
     bool first = true;
+    int emitted = 0;   // DIAG (2026-08-27): see TILE-SCAN-RESULT at the return.
 
     for( int dy = -radius; dy <= radius; ++dy ) {
         for( int dx = -radius; dx <= radius; ++dx ) {
@@ -11367,9 +11386,22 @@ static std::string build_client_tile_changes( int radius = 10 )
                 }
             }
             out += "}";
+            ++emitted;
         }
     }
     out += ']';
+    // DIAG (2026-08-27): B13 verification.  TILE-SCAN-WIDEN proves the radius was
+    // applied, but not that the scan FOUND anything, and the host truncates logged
+    // packets before "client_tile_changes" so its arrival cannot be read there
+    // either.  This line splits send-side from apply-side: entries=0 on a widened
+    // scan means the scan produced nothing (look at ordering — did the terrain
+    // transform land before the scan ran?), while entries>0 with nothing applied
+    // host-side moves the problem to the applier's inbounds check.
+    if( radius > 10 || emitted > 0 ) {
+        mp_log( "[cdda-mp] TILE-SCAN-RESULT: radius=" + std::to_string( radius ) +
+                " entries=" + std::to_string( emitted ) +
+                " bytes=" + std::to_string( out.size() ) );
+    }
     return out;
 }
 

@@ -327,8 +327,14 @@ void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &cra
 // relay-log line on either side. Logs who this side's simulation believes is
 // advancing the craft, and with what charge count, so two logs from the same
 // repro can be compared directly. No-op outside MP.
+// `from` is the usage_from branch that fired ("player", "map" or "both").  The
+// 2026-08-26 version instrumented only the player branch, which is why the
+// 2026-08-27 hotplate repro produced 75 player-visible messages and zero log
+// lines: a tool sitting in vehicle cargo is MAP inventory, so it takes a branch
+// that had no diagnostic on it at all.
 void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
-                                  const itype_id &tool_type, int count_needed );
+                                  const itype_id &tool_type, int count_needed,
+                                  const char *from );
 
 // Client-only: "direct your character" menu, bound to ACTION_LOOT while in
 // client mode (the plain SP loot() the host uses would run against the
