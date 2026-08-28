@@ -1002,6 +1002,9 @@ static std::pair<int, int> mp_worst_limb_hp( const Character &c )
 // both sides should always advance together; nonzero drift is a useful sanity
 // indicator for the player.
 static int g_partner_calendar_turn = 0;
+// Partner's own green/red state as they last reported it (mp_turn_show_green()
+// inverted).  Sent both directions.  See mp_partner_is_waiting().
+static bool g_partner_waiting = false;
 // Last name the partner reported.  Used by the Co-op panel as a fallback when
 // the local proxy NPC isn't (yet) resolvable — proxy spawn races the panel on
 // first connect; this lets the panel still show *something* instead of
@@ -3807,6 +3810,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // (Ping now measured on the io thread via heartbeat — see mp_server.cpp.)
     if( jo.has_int( "client_calendar_turn" ) ) {
         g_partner_calendar_turn = jo.get_int( "client_calendar_turn" );
+    }
+    if( jo.has_bool( "client_waiting" ) ) {
+        g_partner_waiting = jo.get_bool( "client_waiting" );
     }
 
     // Explicit lifecycle markers for the client's passive activities.  These
@@ -7679,6 +7685,11 @@ bool is_partner_in_wait_activity()
            g_partner_activity == "ACT_WAIT_NPC";
 }
 
+bool mp_partner_is_waiting()
+{
+    return g_partner_waiting;
+}
+
 bool is_partner_helping_us()
 {
     return g_partner_activity == "ACT_HELP_PARTNER";
@@ -10179,6 +10190,9 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_int( "calendar_turn" ) ) {
             g_partner_calendar_turn = jo.get_int( "calendar_turn" );
         }
+        if( jo.has_bool( "host_waiting" ) ) {
+            g_partner_waiting = jo.get_bool( "host_waiting" );
+        }
 
         // Host→client tap-on-shoulder: cancel local wait activity if the
         // host's bump menu invoked Tap. Only ACT_WAIT variants are
@@ -11841,6 +11855,10 @@ std::string client_enrich_action( const std::string &json )
         // Local calendar turn so the host can show a sync-drift indicator.
         enriched += ",\"client_calendar_turn\":" + std::to_string(
                         to_turn<int>( calendar::turn ) );
+        // Green/red, so the host knows whether a staged intent hint is still
+        // live.  Cannot be inferred host-side: lockstep slaves our calendar to
+        // theirs, so both clocks advance together regardless of who can act.
+        enriched += ",\"client_waiting\":" + std::string( mp_turn_show_green() ? "false" : "true" );
         // Morale level for the host's Co-op panel mood indicator.
         enriched += ",\"client_morale\":" + std::to_string( av.get_morale_level() );
         // Worst-limb real cur/max HP so the host's panel bar matches our sidebar.
@@ -15215,6 +15233,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
     std::string srp_out = "{\"type\":\"state\","
            "\"client_rejoin\":" + std::string( client_rejoin ? "true" : "false" ) + ","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
+           "\"host_waiting\":" + std::string( mp_turn_show_green() ? "false" : "true" ) + ","
            // Host's game-start anchors so the client's "survived N days" (and any
            // date-since-start math) measure from the HOST's world start, not the
            // client's throwaway scratch world — otherwise survival is inflated by

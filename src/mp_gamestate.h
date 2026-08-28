@@ -179,6 +179,13 @@ bool mp_partner_shares_friendly( const Character &guy );
 // host's wait; host sees client's wait).
 bool is_partner_in_wait_activity();
 
+// True when the partner reported themselves RED — no free turn, waiting on the
+// grant/lockstep cycle.  Carried explicitly on the wire in both directions
+// because it cannot be derived locally: under lockstep the two calendars are
+// the same clock, so "has the partner had turns" is unanswerable from timing
+// alone.  Used by the intent hint to know when a staged arrow is still true.
+bool mp_partner_is_waiting();
+
 // Minimum moves_total for the partner's activity to surface the "Help with
 // task" bump-menu entry.  Below this threshold the activity is short enough
 // that the menu interaction friction outweighs the helper bonus.  ~10000

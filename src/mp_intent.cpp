@@ -16,6 +16,7 @@
 #include "mp_gamestate.h"
 #include "mp_server.h"
 #include "npc.h"
+#include "options.h"
 #include "player_activity.h"
 
 namespace cata_mp
@@ -62,6 +63,25 @@ tripoint_abs_ms g_partner_anchor;
 // the turn counter is not advancing (the game is blocked on the thinker), so a
 // turn-based age-out correctly persists the hint for the whole pause.  A
 // seconds-based timeout would expire it precisely when it is wanted.
+// Local turn the hint was staged on.  Only ever consulted once the partner is
+// GREEN -- see the age-out below.
+//
+// The original comment here defended measuring in turns rather than wall-clock:
+//
+//   "During a long deliberation the turn counter is not advancing (the game is
+//    blocked on the thinker), so a turn-based age-out correctly persists the
+//    hint for the whole pause."
+//
+// True on the CLIENT, whose turns stall while it waits.  False on the HOST,
+// which keeps taking its own turns while the client sits red, so the host aged
+// out the client's hint after two of the HOST's turns even though the client
+// had not moved or acted at all.
+//
+// NOT fixable by measuring against the partner's calendar instead: under
+// lockstep the client's calendar is slaved to the host's (mp_gamestate.cpp:
+// calendar::turn = state packet's calendar_turn), so it advances in step with
+// ours and the two clocks are the same clock.  The distinction that actually
+// matters is green/red, which is now carried explicitly on the wire.
 time_point g_partner_staged_turn;
 constexpr int intent_max_age_turns = 2;
 
@@ -289,6 +309,13 @@ intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir
     // DIAG (2026-08-27): counts every entry into the draw path, including the
     // early-out below.  Read and reset at each INTENT-RECV — see the note there.
     ++g_draw_calls;
+    // Gated here rather than at the call site: that site is in cata_tiles.cpp,
+    // one of the fork's upstream-hot files, and this keeps the option out of it
+    // entirely.  Checked before g_partner_kind so turning the option off also
+    // stops the draw for an intent that is already staged.
+    if( !get_option<bool>( "COOP_PARTNER_INTENT" ) ) {
+        return intent_kind::none;
+    }
     if( g_partner_kind == intent_kind::none ) {
         return intent_kind::none;
     }
@@ -306,7 +333,13 @@ intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir
         mp_log( "[cdda-mp] INTENT-EXPIRE: partner moved" );
         return intent_kind::none;
     }
-    if( calendar::turn - g_partner_staged_turn > intent_max_age_turns * 1_turns ) {
+    // While the partner is RED the hint never ages out: they have pressed a
+    // direction and are waiting for their turn, so the hint is still true no
+    // matter how many turns WE take in the meantime.  The age-out is kept as a
+    // backstop for the green case, where a stale hint would otherwise survive a
+    // dropped "kind":"none" packet forever.
+    if( !mp_partner_is_waiting() &&
+        calendar::turn - g_partner_staged_turn > intent_max_age_turns * 1_turns ) {
         g_partner_kind = intent_kind::none;
         mp_log( "[cdda-mp] INTENT-EXPIRE: aged out" );
         return intent_kind::none;
