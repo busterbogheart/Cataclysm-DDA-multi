@@ -2062,6 +2062,8 @@ void options_manager::add_options_interface()
     { { "bottom", to_translation( "Bottom" ) }, { "top", to_translation( "Top" ) } },
     "bottom" );
 
+    add_empty_line();
+
     add( "COOP_PARTNER_INTENT", "interface",
          to_translation( "Show co-op partner's intended move" ),
          to_translation( "Draw a faint grey arrow on the tile your co-op partner is about to step onto, while they are still waiting for their turn.  Purely a display hint; it changes nothing about the game." ),
