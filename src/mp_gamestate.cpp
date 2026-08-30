@@ -3703,6 +3703,42 @@ static bool mp_wire_item_ok( const JsonObject &jo, std::set<std::string> &missin
     return false;
 }
 
+// MP 2026-08-30 — see mp_world_mods_ok() in the header for why this exists.
+bool mp_world_mods_ok( const std::string &worldname, std::string &missing_out )
+{
+    missing_out.clear();
+    const std::vector<std::string> host_mods = mp_client_host_mods();
+    if( host_mods.empty() ) {
+        // Older host, or the welcome has not landed yet.  Permissive on purpose:
+        // refusing on absent information would block legitimate joins.
+        return true;
+    }
+    if( !world_generator ) {
+        return true;
+    }
+    WORLD *w = world_generator->get_world( worldname );
+    if( !w ) {
+        return true;
+    }
+    const std::set<std::string> host_set( host_mods.begin(), host_mods.end() );
+    for( const mod_id &m : w->active_mod_order ) {
+        if( host_set.count( m.str() ) == 0 ) {
+            missing_out += ( missing_out.empty() ? "" : ", " ) + m.str();
+        }
+    }
+    return missing_out.empty();
+}
+
+// Set by the worn_sync item screens when an id had to be dropped; cleared when a
+// packet comes through clean, so recovering (host enables the mod, client swaps
+// character) un-blocks trade without a reconnect.
+static bool g_partner_items_incomplete = false;
+
+bool mp_partner_items_incomplete()
+{
+    return g_partner_items_incomplete;
+}
+
 static void srv_emit_ack( const char *action_name )
 {
     g_client_acted_this_turn = true;
@@ -4397,6 +4433,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
         // Report only what was ACTUALLY dropped, once per distinct id — worn_sync
         // re-fires on every weight change, so per-packet reporting would spam.
+        g_partner_items_incomplete = !dropped_ids.empty();
         if( !dropped_ids.empty() ) {
             mp_report_missing_itypes( dropped_ids );
         }

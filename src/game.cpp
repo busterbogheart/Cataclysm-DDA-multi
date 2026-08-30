@@ -5409,7 +5409,18 @@ bool game::npc_menu( npc &who )
         amenu.addentry( disarm, who.is_armed(), 'd', _( "Disarm" ) );
         amenu.addentry( steal, !who.is_enemy(), 'S', _( "Steal" ) );
     } else {
-        amenu.addentry( trade, true, 'b', _( "Trade" ) );
+        // MP 2026-08-30 — do not offer trade against a proxy whose inventory the
+        // host could not fully reconstruct.  worn_sync drops items whose itype
+        // this world has no template for, so the list would be silently PARTIAL
+        // and the player would conclude their partner is carrying nothing.  A
+        // greyed entry that says why beats a wrong one.  (Measured: a Magiclysm
+        // character on a vanilla host traded as empty-handed.)
+        const bool mp_items_partial = cata_mp::mp_partner_items_incomplete() &&
+                                      cata_mp::is_partner_npc( who.getID() );
+        amenu.addentry( trade, !mp_items_partial, 'b',
+                        mp_items_partial
+                        ? _( "Trade  (unavailable — their gear uses mods this world doesn't have)" )
+                        : _( "Trade" ) );
     }
 
     amenu.query();

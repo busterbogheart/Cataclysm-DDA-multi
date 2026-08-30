@@ -673,6 +673,27 @@ bool mp_world_has_history( const std::string &worldname );
 // One-line plain-text badge for picker display, e.g. "  (co-op, host)".
 // Empty when the world has no co-op history.  Caller chooses the color.
 std::string mp_world_marker_badge( const std::string &worldname );
+
+// MP 2026-08-30 — MOD-COMPATIBILITY GATE (client-side, join flow).
+//
+// A character whose world carries mods the HOST does not have cannot work in the
+// host's world: the host must instantiate every item by itype_id and has no
+// template for them.  Measured 2026-08-30 — a Magiclysm character joined a
+// vanilla host, its `rune_animist` crashed the host outright, and after the crash
+// guard landed the same character simply had no tradeable inventory.  There is no
+// repair for this; the item cannot exist host-side.  So gate it at selection.
+//
+// True when every mod in `worldname` is also active on the host.  `missing_out`
+// receives a comma-separated list of the ones that are not, for the UI label.
+// Returns true (permissive) when the host advertised no mod list at all — an
+// older host, where blocking would be a guess.
+bool mp_world_mods_ok( const std::string &worldname, std::string &missing_out );
+
+// Host-side: true when the partner proxy's inventory is known to be INCOMPLETE
+// because worn_sync carried item ids this world cannot resolve and they had to be
+// dropped.  Anything that reads the proxy's inventory as if it were the truth —
+// trade above all — must refuse rather than silently present a partial one.
+bool mp_partner_items_incomplete();
 // Host-time co-op validation for a world the host is about to host.  A world
 // made via the standalone World > Create World path never went through the
 // co-op create-screen's mod/NPC restrictions, so re-check it here.  Fills

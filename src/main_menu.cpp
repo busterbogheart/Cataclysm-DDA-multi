@@ -1235,20 +1235,60 @@ bool main_menu::opening_screen()
                                     wnames.push_back( kv.first );
                                 }
                             }
+                            // MP 2026-08-30 — MOD-COMPATIBILITY GATE.  Until now the
+                            // only filter here was "has saves", so a character from a
+                            // Magiclysm world was offered when joining a vanilla host.
+                            // The host cannot instantiate items it has no template for:
+                            // that crashed the host outright, and after the crash guard
+                            // it left the partner with no tradeable inventory.  Nothing
+                            // downstream can repair it, so refuse at selection.
+                            std::map<std::string, std::string> world_missing;
+                            size_t n_compatible = 0;
+                            for( const std::string &name : wnames ) {
+                                std::string missing;
+                                if( cata_mp::mp_world_mods_ok( name, missing ) ) {
+                                    ++n_compatible;
+                                } else {
+                                    world_missing[name] = missing;
+                                }
+                            }
+                            if( n_compatible == 0 && !wnames.empty() ) {
+                                std::string detail;
+                                for( const auto &kv : world_missing ) {
+                                    detail += "\n  - " + kv.first + "  (needs: " + kv.second + ")";
+                                }
+                                popup( _( "None of your saved characters can join this host.\n\n"
+                                          "They were made in worlds using mods this host isn't "
+                                          "running:%s\n\nStart a new character instead, or ask the "
+                                          "host to enable those mods." ), detail );
+                                break;
+                            }
                             std::string chosen_world;
-                            if( wnames.size() == 1 ) {
+                            // Only auto-skip the picker when the single candidate is
+                            // actually usable — otherwise the old code silently selected
+                            // an incompatible world with no menu shown at all.
+                            if( wnames.size() == 1 && world_missing.empty() ) {
                                 chosen_world = wnames[0];
                             } else {
                                 uilist wpick;
                                 wpick.title = join_title;
                                 int idx = 0;
                                 for( const std::string &name : wnames ) {
+                                    const auto miss_it = world_missing.find( name );
+                                    const bool usable = miss_it == world_missing.end();
                                     const bool has_coop = cata_mp::mp_world_has_history( name );
-                                    const std::string display = name +
-                                                                ( has_coop ? colorize( cata_mp::mp_world_marker_badge( name ),
-                                                                        c_light_green )
-                                                                  : "  " + colorize( "(solo)", c_dark_gray ) );
-                                    wpick.entries.emplace_back( idx++, true, MENU_AUTOASSIGN, display );
+                                    std::string display = name +
+                                                          ( has_coop ? colorize( cata_mp::mp_world_marker_badge( name ),
+                                                                  c_light_green )
+                                                            : "  " + colorize( "(solo)", c_dark_gray ) );
+                                    if( !usable ) {
+                                        // Say WHY, not just "no" — the player can act on
+                                        // a named mod, and this is the same badge pattern
+                                        // the co-op/solo markers already use.
+                                        display += "  " + colorize( string_format( _( "(needs: %s)" ),
+                                                                    miss_it->second ), c_red );
+                                    }
+                                    wpick.entries.emplace_back( idx++, usable, MENU_AUTOASSIGN, display );
                                 }
                                 wpick.entries.emplace_back( -1, true, 'q', _( "Cancel" ) );
                                 wpick.query();
