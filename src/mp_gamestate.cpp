@@ -3599,6 +3599,79 @@ void mp_defer_item_apply( std::function<void()> fn )
 // exposed the latent bug: subtracting less than the grant left moves > 0 and
 // the client interpreted the broadcast as a new grant instead of an ack-clear,
 // wedging lockstep.
+// ---------------------------------------------------------------------------
+// MP 2026-08-30 — HOST CRASH GUARD.  Wire item payloads can name an itype this
+// world does not define, and until now that KILLED THE HOST.
+//
+// Measured: a client loaded a character built in a Magiclysm world and joined a
+// host whose world was plain dda + no_npc_food + personal_portal_storms.  Its
+// worn_sync carried `rune_animist`; 1 ms after `worn_sync recv` the host logged
+//   ERROR item_factory.cpp:3080 Missing item definition: rune_animist
+// and aborted:  find_template -> realDebugmsg -> debug_error_prompt ->
+// ui_adaptor ctor -> SIGABRT.  Host dead mid-session, client fine.
+//
+// Two things made it fatal rather than cosmetic:
+//   1. The "Load existing character" client path is ungated (open since
+//      2026-07-19) — it loads the character from ITS OWN world, activating that
+//      world's mods, bypassing the host-mod matching that 407919d635 added for
+//      every other join path.  That entry predicted "phantom/dropped-item
+//      behavior"; the real consequence is a host crash.
+//   2. debugmsg hardening is ASYMMETRIC.  realDebugmsg early-returns for
+//      is_client_mode() (2026-06-17) but there is no host equivalent, so an
+//      unresolvable id off the wire is fatal to the host specifically.
+//
+// This guard is containment, not the fix — the root fix is the mod-subset check
+// on that load path.  But containment is worth having on its own: ANY future id
+// the host cannot resolve (version skew, a mod update, a third-party mod) takes
+// the same path, and the host must never die because of what a client sent it.
+// Per the architecture rules the host cannot trust client data.
+//
+// Scans the RAW message rather than the parsed JSON because the payload nests
+// (pockets contain items contain pockets) and every level writes "typeid".
+static std::set<std::string> mp_wire_missing_itypes( const std::string &msg )
+{
+    std::set<std::string> missing;
+    static const std::string key = "\"typeid\":\"";
+    size_t p = 0;
+    while( ( p = msg.find( key, p ) ) != std::string::npos ) {
+        p += key.size();
+        const size_t e = msg.find( '"', p );
+        if( e == std::string::npos ) {
+            break;
+        }
+        const std::string id = msg.substr( p, e - p );
+        p = e;
+        if( !id.empty() && !itype_id( id ).is_valid() ) {
+            missing.insert( id );
+        }
+    }
+    return missing;
+}
+
+// Tell the host player once per distinct id, not once per worn_sync — the sync
+// re-fires on every weight change and would otherwise spam.  Player-visible on
+// purpose: this is a screenshot-able explanation of why their partner looks
+// unarmed, which beats a silent skip.
+static void mp_report_missing_itypes( const std::set<std::string> &missing )
+{
+    static std::set<std::string> reported;
+    std::string fresh;
+    for( const std::string &id : missing ) {
+        if( reported.insert( id ).second ) {
+            fresh += ( fresh.empty() ? "" : ", " ) + id;
+        }
+    }
+    mp_log( "[cdda-mp] WIRE-ITEM-UNKNOWN: skipping partner item sync — this world "
+            "has no definition for: " + fresh );
+    if( !fresh.empty() ) {
+        add_msg( m_bad,
+                 _( "Your partner is carrying items this world doesn't have (%s).  "
+                    "Their gear won't show correctly — their character was made with "
+                    "mods this world isn't running." ),
+                 fresh );
+    }
+}
+
 static void srv_emit_ack( const char *action_name )
 {
     g_client_acted_this_turn = true;
@@ -4037,6 +4110,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // wear/take-off) so the remote NPC reflects the client's actual equipment.
     if( msg.find( "\"action\":\"worn_sync\"" ) != std::string::npos ) {
         mp_log( "[cdda-mp] worn_sync recv: " + msg.substr( 0, 120 ) );
+        // MP 2026-08-30 — see mp_wire_missing_itypes().  A single unresolvable
+        // itype in this payload used to abort the host inside item::deserialize.
+        // Skip only the ITEM blocks, not the whole packet: appearance/mutation/
+        // gender sync below is id-safe and still worth applying, so the partner
+        // keeps rendering as the right person with stale gear rather than
+        // desyncing entirely.
+        const std::set<std::string> wire_missing = mp_wire_missing_itypes( msg );
+        const bool items_ok = wire_missing.empty();
+        if( !items_ok ) {
+            mp_report_missing_itypes( wire_missing );
+        }
         try {
             JsonValue jv = json_loader::from_string( msg );
             JsonObject jo = jv.get_object();
@@ -4045,7 +4129,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             if( jo.has_bool( "male" ) ) {
                 remote->male = jo.get_bool( "male" );
             }
-            if( jo.has_array( "worn" ) ) {
+            if( items_ok && jo.has_array( "worn" ) ) {
                 // Parse now; clear_worn()+wear_item() below destructively rebuilds
                 // remote->worn, which is exactly the mp_ui_item_ref_guard hazard
                 // (mp_gamestate.h) if the host has a UI open that holds
@@ -4120,7 +4204,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             std::string wielded_str;
             jo.read( "wielded", wielded_str );
             bool applied_full = false;
-            if( jo.has_object( "wielded_obj" ) ) {
+            // MP 2026-08-30 — third deserialization site, gated for the same
+            // reason as worn/client_inv.  Falling through leaves applied_full
+            // false, so the "wielded" string fallback below still runs and it
+            // already validity-checks the id — the proxy ends up holding the base
+            // item if the host knows it, and empty-handed if it doesn't.
+            if( items_ok && jo.has_object( "wielded_obj" ) ) {
                 try {
                     JsonObject wo = jo.get_object( "wielded_obj" );
                     wo.allow_omitted_members();
@@ -4228,7 +4317,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // client's serialized blob.  This makes tools, books, guns-in-bag,
             // currency, and any other carried items visible in the trade menu and
             // available to host-side skill / activity checks.
-            if( jo.has_array( "client_inv" ) ) {
+            if( items_ok && jo.has_array( "client_inv" ) ) {
                 try {
                     // Same defer-while-a-guarded-UI-is-open treatment as the worn
                     // rebuild above — parse now, mutate remote->inv later if needed.
