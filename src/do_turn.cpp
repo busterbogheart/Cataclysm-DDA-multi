@@ -954,7 +954,12 @@ bool game::do_turn()
         cata_mp::mp_log( "[cdda-mp] HOST-INPUT-GATE: avatar_moves=" + std::to_string( u.get_moves() ) +
                          " has_act=" + ( u.activity ? u.activity.id().str() : "none" ) +
                          " sleep=" + std::to_string( u.has_effect( effect_sleep ) ) +
-                         " enter_loop=" + std::to_string( u.get_moves() > 0 || uquit == QUIT_WATCH ) );
+                         // Must mirror the guard BELOW, sleep effect included: printing
+                         // only moves>0 reported enter_loop=1 for a sleeping host that
+                         // provably never entered the loop (2026-08-30 stall hunt).
+                         " enter_loop=" + std::to_string(
+                             ( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) &&
+                             ( u.get_moves() > 0 || uquit == QUIT_WATCH ) ) );
     }
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {

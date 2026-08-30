@@ -274,6 +274,18 @@ static std::mutex g_apply_step_mtx;
 static std::string g_apply_step_label;       // active step, "" when idle
 static std::chrono::steady_clock::time_point g_apply_step_started;
 
+// DIAG 2026-08-30 — second slot, same watchdog thread, for the HOST TURN phase.
+// The apply-step slot above only covers client state application, so it is
+// structurally blind to a host stalled mid-turn: measured on a host that fell
+// asleep, HOST-INPUT-GATE stopped at 18:32:22 and no HOST-DO-TURN-ENTRY, SRV-WAIT
+// or grant_client_turn followed, while the game thread kept resolving input —
+// alive, pumping, never starting another turn, and nothing in the log naming
+// where it parked.  mp_turn_phase() already marks every phase of the turn but
+// mp_turn_phase_flush() only prints them at turn END, which never arrives on a
+// stall.  Feeding the same marks to the watchdog makes the stall name itself.
+static std::string g_turn_phase_label;       // active phase, "" between turns
+static std::chrono::steady_clock::time_point g_turn_phase_started;
+
 static void mp_start_apply_watchdog()
 {
     static std::once_flag once;
@@ -289,6 +301,12 @@ static void mp_start_apply_watchdog()
                     std::lock_guard<std::mutex> lk( g_apply_step_mtx );
                     label = g_apply_step_label;
                     started = g_apply_step_started;
+                    // An apply step is the more specific answer, so it wins; the
+                    // turn phase is the fallback that covers the rest of the turn.
+                    if( label.empty() && !g_turn_phase_label.empty() ) {
+                        label = "turn-phase=" + g_turn_phase_label;
+                        started = g_turn_phase_started;
+                    }
                 }
                 if( label.empty() ) {
                     warned_for = {};
@@ -7759,11 +7777,24 @@ void mp_turn_phase( const char *name )
     if( g_turn_marks.empty() ) {
         return;
     }
-    g_turn_marks.push_back( { name, std::chrono::steady_clock::now() } );
+    const auto now = std::chrono::steady_clock::now();
+    g_turn_marks.push_back( { name, now } );
+    // Publish for the stall watchdog — see g_turn_phase_label.
+    mp_start_apply_watchdog();
+    {
+        std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+        g_turn_phase_label = name;
+        g_turn_phase_started = now;
+    }
 }
 
 void mp_turn_phase_flush( int threshold_ms )
 {
+    {
+        // Turn finished — nothing is stalled, so retire the watchdog label.
+        std::lock_guard<std::mutex> lk( g_apply_step_mtx );
+        g_turn_phase_label.clear();
+    }
     if( g_turn_marks.size() < 2 ) {
         g_turn_marks.clear();
         return;
