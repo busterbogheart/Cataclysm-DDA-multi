@@ -10,6 +10,7 @@
 #include "color.h"
 #include "imgui/imgui.h"
 #include "input_context.h"
+#include "mp_gamestate.h"
 #include "output.h"
 #include "string_formatter.h"
 #include "ui_manager.h"
@@ -399,6 +400,10 @@ std::shared_ptr<query_popup_impl> query_popup::create_or_get_impl()
 query_popup::result query_popup::query()
 {
     std::shared_ptr<query_popup_impl> ui = create_or_get_impl();
+
+    // MP: tell the co-op partner we are stopped, so their fast-forward cannot
+    // run turns out while this dialog is open.  Inert outside a session.
+    cata_mp::peer_modal_hold mp_hold;
 
     result res;
     do {

@@ -3739,6 +3739,90 @@ bool mp_partner_items_incomplete()
     return g_partner_items_incomplete;
 }
 
+// ---------------------------------------------------------------------------
+// PEER MODAL INTERLOCK — see peer_modal_hold in mp_gamestate.h for why.
+static bool g_peer_modal_held = false;
+static int64_t g_peer_modal_since_ms = 0;
+static bool g_peer_modal_expiry_logged = false;
+static int g_local_modal_depth = 0;
+
+// A hold is released by the guard's destructor, so the only way one can be left
+// standing is the far side dying — which drops the connection and is already
+// handled by the remote_player_connected check at the top of every wait.  This
+// cap exists solely so a future UI path that somehow escapes the guard degrades
+// to today's behaviour instead of freezing the session.  60s is far longer than
+// any dialog a player actually reads, so it cannot fire on the case being fixed.
+static constexpr int64_t MP_PEER_MODAL_MAX_MS = 60000;
+
+bool mp_peer_modal_held()
+{
+    if( !g_peer_modal_held ) {
+        return false;
+    }
+    if( mp_now_ms() - g_peer_modal_since_ms > MP_PEER_MODAL_MAX_MS ) {
+        if( !g_peer_modal_expiry_logged ) {
+            g_peer_modal_expiry_logged = true;
+            mp_log( "[cdda-mp] PEER-MODAL: hold outlived " +
+                    std::to_string( MP_PEER_MODAL_MAX_MS ) +
+                    "ms — ignoring it; no release was ever received" );
+        }
+        return false;
+    }
+    return true;
+}
+
+// Host and client have different send paths; the message on the wire is the
+// same.  Both are posted to their io thread, so this is safe to call from the
+// main thread while it is blocked inside the modal loop.
+static void mp_send_local_modal_state( bool held )
+{
+    const std::string json = std::string( "{\"type\":\"peer_modal\",\"held\":" ) +
+                             ( held ? "1" : "0" ) + "}";
+    if( is_client_mode() ) {
+        client_send( json );
+    } else if( is_hosting() ) {
+        if( server *srv = get_active_server() ) {
+            srv->post_broadcast( json + "\n" );
+        }
+    }
+}
+
+static void mp_set_peer_modal_held( bool held )
+{
+    if( held == g_peer_modal_held ) {
+        return;
+    }
+    g_peer_modal_held = held;
+    g_peer_modal_since_ms = mp_now_ms();
+    g_peer_modal_expiry_logged = false;
+    mp_log( std::string( "[cdda-mp] PEER-MODAL: partner " ) +
+            ( held ? "entered" : "left" ) +
+            " a blocking modal — fast-forward " + ( held ? "held" : "resumed" ) );
+}
+
+peer_modal_hold::peer_modal_hold()
+{
+    if( !is_hosting() && !is_client_mode() ) {
+        return;   // main menu, SP, pre-join: nothing to tell anyone
+    }
+    counted = true;
+    if( ++g_local_modal_depth == 1 ) {
+        mp_send_local_modal_state( true );
+    }
+}
+
+peer_modal_hold::~peer_modal_hold()
+{
+    if( !counted ) {
+        return;
+    }
+    if( --g_local_modal_depth == 0 ) {
+        // Sent unconditionally on the closing edge, including when the session
+        // ended under us — mp_send_local_modal_state() no-ops off-session.
+        mp_send_local_modal_state( false );
+    }
+}
+
 static void srv_emit_ack( const char *action_name )
 {
     g_client_acted_this_turn = true;
@@ -3784,6 +3868,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     g_last_client_msg_ms = mp_now_ms();
     // Heartbeat carries no body — it exists only to keep the link measurable.
     if( msg.find( "\"type\":\"heartbeat\"" ) != std::string::npos ) {
+        return;
+    }
+
+    // Client entered/left a blocking modal — see peer_modal_hold.  Handled here,
+    // ahead of the connected/proxy guards, because it is pure link state: it must
+    // apply even mid-respawn, and a hold that failed to land would let the host
+    // burst through a dialog the client is still reading.
+    if( msg.find( "\"type\":\"peer_modal\"" ) != std::string::npos ) {
+        mp_set_peer_modal_held( msg.find( "\"held\":1" ) != std::string::npos );
         return;
     }
 
@@ -7503,6 +7596,9 @@ std::string mp_ff_decline_reason()
     if( !is_hosting() && !is_client_mode() ) {
         return "not_mp";
     }
+    if( mp_peer_modal_held() ) {
+        return "partner_modal";
+    }
     const player_activity &av_act = get_avatar().activity;
     if( !av_act ) {
         return "self_idle";
@@ -7532,6 +7628,14 @@ bool should_fast_forward()
     // Need to be in an MP session.  SP never fast-forwards — SP runs activities
     // at machine speed already.
     if( !is_hosting() && !is_client_mode() ) {
+        return false;
+    }
+    // Partner is sitting in a blocking modal and cannot consume grants.  Fall
+    // back to ordinary lockstep rather than adding a second timing rule: its
+    // lead is 0 by construction, which is the very property that makes every
+    // non-FF dialog stop both players correctly.  Kept in the same order as
+    // mp_ff_decline_reason() so the logged reason always matches the verdict.
+    if( mp_peer_modal_held() ) {
         return false;
     }
     // Local avatar must be in a fast-forwardable (long, passive) activity.
@@ -8086,6 +8190,12 @@ bool mp_in_burst_mode()
     // user input this turn).  Skip the lockstep throttle so the calendar
     // doesn't crawl at 1 turn/sec when nobody is actually playing.
     if( !is_hosting() && !is_client_mode() ) {
+        return false;
+    }
+    // A partner in a modal is not "non-interactive" — it is stopped.  Bursting
+    // here is what dropped the 16ms pump and let the host spin turns out while
+    // the other player read a dialog.
+    if( mp_peer_modal_held() ) {
         return false;
     }
     if( !get_avatar().activity ) {
@@ -9516,6 +9626,7 @@ void process_mp_events()
                || data.find( "\"type\":\"templates_list\"" ) != std::string::npos
                || data.find( "\"type\":\"resync_request\"" ) != std::string::npos
                || data.find( "\"type\":\"heartbeat\"" ) != std::string::npos
+               || data.find( "\"type\":\"peer_modal\"" ) != std::string::npos
                || data.find( "\"client_tile_changes\":" ) != std::string::npos;
     };
     mp_event event;
@@ -9998,6 +10109,13 @@ static bool apply_one_state_message( const std::string &msg )
     // recv clock for the stall watchdog).  Drop it first, before the per-packet
     // log, so the ~1.5s cadence doesn't spam the log or get parsed as state.
     if( msg.find( "\"type\":\"heartbeat\"" ) != std::string::npos ) {
+        return true;
+    }
+    // Host entered/left a blocking modal — see peer_modal_hold.  Dropped up here
+    // with the heartbeat: link state, not world state, and it must not be parsed
+    // as a state packet.
+    if( msg.find( "\"type\":\"peer_modal\"" ) != std::string::npos ) {
+        mp_set_peer_modal_held( msg.find( "\"held\":1" ) != std::string::npos );
         return true;
     }
     // Log a preview of every received packet so we can confirm moves=90 packets arrive.

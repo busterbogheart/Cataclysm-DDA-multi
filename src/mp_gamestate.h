@@ -694,6 +694,46 @@ bool mp_world_mods_ok( const std::string &worldname, std::string &missing_out );
 // dropped.  Anything that reads the proxy's inventory as if it were the truth —
 // trade above all — must refuse rather than silently present a partial one.
 bool mp_partner_items_incomplete();
+
+// ---------------------------------------------------------------------------
+// PEER MODAL INTERLOCK (2026-08-30)
+//
+// Fast-forward is the only regime in which one side can bank turns and keep
+// going while the other is stopped, and a blocking modal is how a side stops
+// without saying so.  Measured on the host log for 5cbef82ccb: the client sat on
+// a proficiency dialog while the host's lead climbed 189 -> 349 -> 509 -> 717
+// turns, MP_FF_HOLD_MAX_MS firing every 2s and bursting 160 turns each time.
+//
+// The FF lead window cannot fix that on its own.  A client inside a modal and a
+// client whose lead accounting is broken look identical from the far side --
+// both simply stop reporting -- so any finite valve resumes bursting with the
+// dialog still open, and an infinite one reintroduces the deadlock the valve
+// exists to prevent.  The missing information is the modal itself, so send it.
+//
+// Symmetric on purpose: b97599beee measured BOTH halves of this, the host's own
+// "Keep practicing?" modal letting the client train on for seven more seconds.
+//
+// Scope-guard one of these over a blocking modal loop.  It tells the far side on
+// entry and releases on exit, including on exception.  Nesting is counted, so
+// only the outermost pair reaches the wire, and a guard constructed outside an
+// MP session is inert.
+class peer_modal_hold
+{
+    public:
+        peer_modal_hold();
+        ~peer_modal_hold();
+        peer_modal_hold( const peer_modal_hold & ) = delete;
+        peer_modal_hold &operator=( const peer_modal_hold & ) = delete;
+    private:
+        bool counted = false;
+};
+
+// True while the far side has told us it is sitting in a blocking modal.  Both
+// should_fast_forward() and mp_in_burst_mode() return false while it is set,
+// which drops the pair back into ordinary lockstep -- proven code whose lead is
+// 0 by construction, which is exactly the property that makes every non-FF
+// dialog stop both players correctly -- rather than adding a second timing rule.
+bool mp_peer_modal_held();
 // Host-time co-op validation for a world the host is about to host.  A world
 // made via the standalone World > Create World path never went through the
 // co-op create-screen's mod/NPC restrictions, so re-check it here.  Fills

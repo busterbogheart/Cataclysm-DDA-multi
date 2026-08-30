@@ -22,6 +22,7 @@
 #include "translations.h"
 #include "ui_manager.h"
 #include "cata_imgui.h"
+#include "mp_gamestate.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 
@@ -900,6 +901,8 @@ shared_ptr_fast<uilist_impl> uilist::query( bool loop, int timeout, bool allow_u
     if( !query_setup() ) {
         return nullptr;
     }
+    // MP: see the identical guard in query_popup::query().
+    cata_mp::peer_modal_hold mp_hold;
     shared_ptr_fast<uilist_impl> ui = create_or_get_ui();
     do {
         ui_manager::redraw();
