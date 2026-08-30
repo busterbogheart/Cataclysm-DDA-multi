@@ -3666,15 +3666,41 @@ static void mp_report_missing_itypes( const std::set<std::string> &missing )
             fresh += ( fresh.empty() ? "" : ", " ) + id;
         }
     }
-    mp_log( "[cdda-mp] WIRE-ITEM-UNKNOWN: skipping partner item sync — this world "
-            "has no definition for: " + fresh );
-    if( !fresh.empty() ) {
+    if( fresh.empty() ) {
+        return;   // every id here has already been reported; don't log an empty list
+    }
+    mp_log( "[cdda-mp] WIRE-ITEM-UNKNOWN: dropping partner items this world has no "
+            "definition for: " + fresh );
+    {
         add_msg( m_bad,
                  _( "Your partner is carrying items this world doesn't have (%s).  "
                     "Their gear won't show correctly — their character was made with "
                     "mods this world isn't running." ),
                  fresh );
     }
+}
+
+// MP 2026-08-30 (revised same day) — per-ITEM check, not per-packet.
+//
+// The first cut of this guard skipped the whole worn/inv/wielded block whenever
+// ANY id in the payload was unresolvable.  That was far too coarse: measured on
+// a live join, the partner arrived on the host with no clothes and no inventory
+// at all, because one `rune_animist` invalidated their entire kit.  The commit
+// message claimed the proxy would keep "stale gear" — which is wrong on a FIRST
+// join, where there is no previous state to keep, so it is simply empty.
+//
+// TextJsonObject::str() hands back the raw JSON for one item INCLUDING its
+// nested pockets, so each item can be screened on its own and only the genuinely
+// unrepresentable ones dropped.  A Magiclysm character now joins a vanilla host
+// wearing their clothes, minus the runes.
+static bool mp_wire_item_ok( const JsonObject &jo, std::set<std::string> &missing_acc )
+{
+    const std::set<std::string> missing = mp_wire_missing_itypes( jo.str() );
+    if( missing.empty() ) {
+        return true;
+    }
+    missing_acc.insert( missing.begin(), missing.end() );
+    return false;
 }
 
 static void srv_emit_ack( const char *action_name )
@@ -4121,11 +4147,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         // gender sync below is id-safe and still worth applying, so the partner
         // keeps rendering as the right person with stale gear rather than
         // desyncing entirely.
-        const std::set<std::string> wire_missing = mp_wire_missing_itypes( msg );
-        const bool items_ok = wire_missing.empty();
-        if( !items_ok ) {
-            mp_report_missing_itypes( wire_missing );
-        }
+        // Accumulates the ids actually dropped by the per-item screens below, so
+        // the player is told about real drops rather than about every unknown id
+        // that happened to appear anywhere in the packet.
+        std::set<std::string> dropped_ids;
         try {
             JsonValue jv = json_loader::from_string( msg );
             JsonObject jo = jv.get_object();
@@ -4134,7 +4159,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             if( jo.has_bool( "male" ) ) {
                 remote->male = jo.get_bool( "male" );
             }
-            if( items_ok && jo.has_array( "worn" ) ) {
+            if( jo.has_array( "worn" ) ) {
                 // Parse now; clear_worn()+wear_item() below destructively rebuilds
                 // remote->worn, which is exactly the mp_ui_item_ref_guard hazard
                 // (mp_gamestate.h) if the host has a UI open that holds
@@ -4148,6 +4173,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     // Full item deserialization — preserves pocket contents (items
                     // inside jacket, fanny pack, etc.) so trade menu and skill
                     // checks see the client's actual carried items.
+                    // MP 2026-08-30 — screen THIS item only.  An unresolvable
+                    // id anywhere in it (including its pockets) would abort the
+                    // host inside deserialize; dropping just this entry keeps the
+                    // rest of the outfit.
+                    if( !mp_wire_item_ok( wo, dropped_ids ) ) {
+                        continue;
+                    }
                     item worn_item;
                     try {
                         worn_item.deserialize( wo );
@@ -4214,10 +4246,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // false, so the "wielded" string fallback below still runs and it
             // already validity-checks the id — the proxy ends up holding the base
             // item if the host knows it, and empty-handed if it doesn't.
-            if( items_ok && jo.has_object( "wielded_obj" ) ) {
+            if( jo.has_object( "wielded_obj" ) ) {
                 try {
                     JsonObject wo = jo.get_object( "wielded_obj" );
                     wo.allow_omitted_members();
+                    if( !mp_wire_item_ok( wo, dropped_ids ) ) {
+                        throw JsonError( "mp: wielded item type unknown to this world" );
+                    }
                     item tmp;
                     tmp.deserialize( wo );
                     remote->set_wielded_item( tmp );
@@ -4322,7 +4357,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // client's serialized blob.  This makes tools, books, guns-in-bag,
             // currency, and any other carried items visible in the trade menu and
             // available to host-side skill / activity checks.
-            if( items_ok && jo.has_array( "client_inv" ) ) {
+            if( jo.has_array( "client_inv" ) ) {
                 try {
                     // Same defer-while-a-guarded-UI-is-open treatment as the worn
                     // rebuild above — parse now, mutate remote->inv later if needed.
@@ -4330,6 +4365,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     JsonArray inv_ja = jo.get_array( "client_inv" );
                     inv_items.reserve( inv_ja.size() );
                     for( JsonObject iobj : inv_ja ) {
+                        iobj.allow_omitted_members();
+                        if( !mp_wire_item_ok( iobj, dropped_ids ) ) {
+                            continue;   // see mp_wire_item_ok
+                        }
                         item tmp;
                         tmp.deserialize( iobj );
                         inv_items.emplace_back( std::move( tmp ) );
@@ -4355,6 +4394,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             }
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] worn_sync parse error: " ) + e.what() );
+        }
+        // Report only what was ACTUALLY dropped, once per distinct id — worn_sync
+        // re-fires on every weight change, so per-packet reporting would spam.
+        if( !dropped_ids.empty() ) {
+            mp_report_missing_itypes( dropped_ids );
         }
         return;
     }
