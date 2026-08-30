@@ -171,6 +171,10 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     // Outgoing write queue — only one async_write may be in flight at a time.
     // All send() / do_write() calls happen on the single Asio thread so no mutex needed.
     std::deque<std::string> write_queue_;
+    // MP DIAG 2026-08-30 — HB probe.  Wall-clock ms at which the OLDEST unflushed
+    // heartbeat entered write_queue_, or 0 when none is queued.  See the block
+    // above do_write() for what this is diagnosing.
+    int64_t hb_enqueued_ms_ = 0;
     bool writing_ = false;
     bool disconnected_ = false;   // see disconnect()
 
@@ -215,7 +219,32 @@ struct client_session : public std::enable_shared_from_this<client_session> {
     }
 
     void send( const std::string &msg ) {
-        write_queue_.push_back( mp_compress_frame( msg ) );
+        const std::string framed = mp_compress_frame( msg );
+        // MP DIAG 2026-08-30 — HB probe, half 1 of 2: prove the beat is even
+        // ENQUEUED.  The 2026-08-29 health-restore host log contains zero
+        // heartbeat evidence, and we cannot currently tell "the timer never
+        // fired" from "the beat was queued but never reached the wire".  Absence
+        // of HB-SEND => arm_heartbeat() is not running for this session.
+        const bool is_hb = msg.find( "\"type\":\"heartbeat\"" ) != std::string::npos;
+        if( is_hb ) {
+            const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch() ).count();
+            if( hb_enqueued_ms_ == 0 ) {
+                hb_enqueued_ms_ = now_ms;
+            }
+            mp_log( "[cdda-mp] HB-SEND: enqueued writing_in_flight=" +
+                    std::to_string( static_cast<int>( writing_ ) ) +
+                    " queue_depth=" + std::to_string( write_queue_.size() ) );
+        }
+        // MP DIAG 2026-08-30 — reconcile SRP-BREAKDOWN's uncompressed "BYTES out="
+        // against what actually hits the socket.  Compression happens HERE, before
+        // the queue, which is why a >64KB gate on the post-compression size never
+        // fired for a 1.16MB broadcast.
+        if( msg.size() > 65536 ) {
+            mp_log( "[cdda-mp] HOST-FRAME: raw=" + std::to_string( msg.size() ) +
+                    " wire=" + std::to_string( framed.size() ) );
+        }
+        write_queue_.push_back( framed );
         if( !writing_ ) {
             do_write();
         }
@@ -241,26 +270,74 @@ struct client_session : public std::enable_shared_from_this<client_session> {
             buf->append( m );
         }
         const size_t buf_bytes = buf->size();
+        // MP DIAG 2026-08-30 — HB probe, half 2 of 2.  do_write() coalesces the
+        // ENTIRE queue into one buffer, so any heartbeat sitting in the queue right
+        // now is in THIS buffer; that makes "how long did the beat wait" exactly
+        // measurable.  Answers the open question from the 2026-08-29 health-restore
+        // entry: the client reconnected because it saw >8s of host silence, which
+        // respawned its proxy at full HP.  Five beats should have landed in that
+        // window and reset the client's g_last_recv_ms.  None did.
+        //   HB-SEND absent            => arm_heartbeat() is not firing at all.
+        //   HB-SEND present, HB-FLUSH queued_ms large => beat stuck behind a write
+        //                                (the 2026-07-03 write-queue hypothesis).
+        //   Both present and prompt    => the beat left the host; look client-side.
+        bool buf_has_hb = false;
+        for( const std::string &m : write_queue_ ) {
+            if( m.find( "\"type\":\"heartbeat\"" ) != std::string::npos ) {
+                buf_has_hb = true;
+                break;
+            }
+        }
+        const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch() ).count();
+        const int64_t hb_queued_ms = ( buf_has_hb && hb_enqueued_ms_ != 0 )
+                                     ? now_ms - hb_enqueued_ms_ : 0;
+        if( buf_has_hb ) {
+            hb_enqueued_ms_ = 0;
+        }
         write_queue_.clear();
         // Diagnostic for the 2026-07-03 "host crafting -> server times out" report:
         // a heartbeat enqueued behind a huge FF-broadcast buffer can't reach the
-        // wire until this async_write completes.  Only log large/slow flushes
-        // (skip the steady-state tiny-grant traffic) so this doesn't flood the log.
-        const bool track_flush = buf_bytes > 65536;
+        // wire until this async_write completes.
+        //
+        // ⚠ 2026-08-30 — the old gate was `buf_bytes > 65536` and NEVER FIRED, not
+        // once in a 226k-line host log containing a broadcast that SRP-BREAKDOWN
+        // reported as 1,158,697 bytes.  Cause: mp_compress_frame() runs in send(),
+        // BEFORE the queue, so buf_bytes here is the COMPRESSED size and a gate
+        // written against the uncompressed figure is unreachable in practice.  The
+        // hypothesis this instrument exists to test has therefore been shipped as
+        // "instrumented" since a987453742 while being structurally unable to fire.
+        // Threshold lowered to a post-compression-realistic value, and any buffer
+        // carrying a heartbeat is always tracked regardless of size.
+        static constexpr size_t MP_WRITE_LOG_BYTES = 8192;
+        const bool track_flush = buf_bytes > MP_WRITE_LOG_BYTES || buf_has_hb;
         const auto flush_start = track_flush ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
         if( track_flush ) {
             mp_log( "[cdda-mp] HOST-WRITE-BEGIN: bytes=" + std::to_string( buf_bytes ) );
         }
         asio::async_write( socket, asio::buffer( *buf ),
-        [self, buf, buf_bytes, track_flush, flush_start]( std::error_code ec, std::size_t ) {
+        [self, buf, buf_bytes, track_flush, flush_start, buf_has_hb,
+              hb_queued_ms]( std::error_code ec, std::size_t ) {
             if( track_flush ) {
                 const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                             std::chrono::steady_clock::now() - flush_start ).count();
                 mp_log( "[cdda-mp] HOST-WRITE-DONE: bytes=" + std::to_string( buf_bytes ) +
                         " elapsed_ms=" + std::to_string( elapsed_ms ) +
                         " ec=" + ec.message() +
+                        " has_hb=" + std::to_string( static_cast<int>( buf_has_hb ) ) +
                         " queued_after=" + std::to_string( self->write_queue_.size() ) );
+                // MP DIAG 2026-08-30 — HB probe: queued_ms is how long the beat sat
+                // behind other traffic; write_ms is how long the socket write took.
+                // Either one exceeding the client's 8s MP_STALL_MS explains a
+                // spurious "host silent" reconnect.
+                if( buf_has_hb ) {
+                    mp_log( "[cdda-mp] HB-FLUSH: on the wire queued_ms=" +
+                            std::to_string( hb_queued_ms ) +
+                            " write_ms=" + std::to_string( elapsed_ms ) +
+                            " bytes=" + std::to_string( buf_bytes ) +
+                            " ec=" + ec.message() );
+                }
             }
             if( ec ) {
                 self->disconnect();
