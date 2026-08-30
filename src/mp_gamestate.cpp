@@ -7633,6 +7633,28 @@ static bool is_fast_forwardable_activity( const std::string &id )
 // which is exactly what it turned out to be. Because the gate is a pure AND of two
 // INDEPENDENT per-side predicates, naming the side and the activity is a complete
 // explanation; there is no pairwise term to consider.
+// MP 2026-08-30 (same day, second cut) — the LOCAL side needs the same treatment
+// the wire got.  Reporting MP_ASLEEP to the peer was only half of it: these two
+// predicates read get_avatar().activity directly, which is empty while asleep, so
+// the SLEEPING side declined FF as "self_idle" while the AWAKE side — which had
+// been told MP_ASLEEP and was itself crafting — accepted it.  Asymmetric FF is the
+// documented deadlock: the side in FF stops dispatching waits, the side in lockstep
+// blocks on an ack that never comes.  Measured: client crafting + host asleep, no
+// movement on either screen until the client cancelled its craft (client log
+// "HOSTACT RECV prev=ACT_TRY_SLEEP now=MP_ASLEEP" with the host still self_idle).
+static std::string mp_local_ff_activity()
+{
+    return mp_wire_activity_id( get_avatar() );
+}
+
+// Moves left of the local activity, or -1 when there is none to read (asleep).
+// ff_duration_ok() treats -1 as "unknown, long enough", which is right for sleep.
+static int mp_local_ff_moves()
+{
+    const player_activity &act = get_avatar().activity;
+    return act ? act.moves_left : -1;
+}
+
 std::string mp_ff_decline_reason()
 {
     if( !is_hosting() && !is_client_mode() ) {
@@ -7641,16 +7663,15 @@ std::string mp_ff_decline_reason()
     if( mp_peer_modal_held() ) {
         return "partner_modal";
     }
-    const player_activity &av_act = get_avatar().activity;
-    if( !av_act ) {
+    const std::string mine = mp_local_ff_activity();
+    if( mine.empty() ) {
         return "self_idle";
     }
-    const std::string mine = av_act.id().str();
     if( !is_fast_forwardable_activity( mine ) ) {
         return "self_not_ff_eligible:" + mine;
     }
-    if( !ff_duration_ok( av_act.moves_left ) ) {
-        return "self_too_short:" + mine + "@" + std::to_string( av_act.moves_left );
+    if( !ff_duration_ok( mp_local_ff_moves() ) ) {
+        return "self_too_short:" + mine + "@" + std::to_string( mp_local_ff_moves() );
     }
     if( g_partner_activity.empty() ) {
         return "partner_idle";
@@ -7680,14 +7701,17 @@ bool should_fast_forward()
     if( mp_peer_modal_held() ) {
         return false;
     }
-    // Local avatar must be in a fast-forwardable (long, passive) activity.
-    const player_activity &av_act = get_avatar().activity;
-    if( !av_act || !is_fast_forwardable_activity( av_act.id().str() ) ) {
+    // Local avatar must be in a fast-forwardable (long, passive) activity — or
+    // asleep, which mp_local_ff_activity() reports as MP_ASLEEP.  Read through that
+    // helper, never off get_avatar().activity: the two must agree or FF goes
+    // asymmetric and deadlocks.
+    const std::string mine = mp_local_ff_activity();
+    if( mine.empty() || !is_fast_forwardable_activity( mine ) ) {
         return false;
     }
     // Duration floor — see FF_MIN_ACTIVITY_MOVES.  Kept in the same order as
     // mp_ff_decline_reason() so the logged reason always matches the verdict.
-    if( !ff_duration_ok( av_act.moves_left ) ) {
+    if( !ff_duration_ok( mp_local_ff_moves() ) ) {
         return false;
     }
     // Partner's reported activity must also be fast-forwardable.  g_partner_activity
@@ -8240,8 +8264,8 @@ bool mp_in_burst_mode()
     if( mp_peer_modal_held() ) {
         return false;
     }
-    if( !get_avatar().activity ) {
-        return false;
+    if( mp_local_ff_activity().empty() ) {
+        return false;   // idle — and asleep is NOT idle, see mp_wire_activity_id()
     }
     if( g_partner_activity.empty() ) {
         return false;
