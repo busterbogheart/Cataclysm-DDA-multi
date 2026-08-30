@@ -6340,6 +6340,8 @@ void grant_client_turn()
     if( !remote_player_connected ) {
         return;
     }
+    // MP DIAG 2026-08-30 — HOSTACT probe (host activity edge vs. sample rate).
+    mp_host_activity_tick();
     // MP DIAGNOSTIC 2026-08-14 — bracket starts BEFORE critter_by_id. Placing it
     // after was the third repeat of one error: naming a suspect, then instrumenting
     // past it. Everything above the connected-check also runs solo-host (2ms turns),
@@ -7727,6 +7729,95 @@ int partner_activity_moves_total()
 int partner_activity_pct()
 {
     return g_partner_activity_pct;
+}
+
+// ---------------------------------------------------------------------------
+// MP DIAG 2026-08-30 — HOSTACT probe.  Full rationale + how to read the output
+// is in mp_gamestate.h above mp_log_host_activity_start().
+//
+// QUESTION: can a HOST activity begin and end between two state broadcasts, so
+// the client never observes the transition?  host->client activity is sampled
+// (a "host_activity" field on each packet), unlike client->host which is edge
+// driven, so a short host activity could in principle slip through unseen.
+//
+// This tracks one INSTANCE at a time: opened on the first sighting from any of
+// the three call sites, closed when the id changes, and reported as DROPPED if
+// no broadcast ever carried it.
+// ---------------------------------------------------------------------------
+static const char *HOSTACT_TAG = "[cdda-mp] HOSTACT[edge-vs-sample] ";
+
+static std::string g_hostact_cur;        // instance currently being tracked
+static int     g_hostact_open_turn = 0;  // calendar turn it opened
+static int     g_hostact_sends     = 0;  // broadcasts that carried it
+static int64_t g_hostact_open_ms   = 0;  // wall clock of the open
+
+// Open/close bookkeeping shared by all three entry points, so whichever one
+// notices the change first is the one that reports it.
+static void hostact_transition( const std::string &now, const char *src )
+{
+    if( now == g_hostact_cur ) {
+        return;
+    }
+    const int turn = to_turn<int>( calendar::turn );
+    if( !g_hostact_cur.empty() ) {
+        const int lived = turn - g_hostact_open_turn;
+        // sends == 0 is the whole point of this probe: the activity existed on
+        // the host and no packet ever carried it, so the client's HUD and the
+        // begins/finished announcements could not have seen it.
+        mp_log( std::string( HOSTACT_TAG ) +
+                ( g_hostact_sends == 0 ? "DROPPED" : "CLOSE" ) +
+                " id=" + g_hostact_cur +
+                " turn=" + std::to_string( turn ) +
+                " lived_turns=" + std::to_string( lived ) +
+                " lived_ms=" + std::to_string( mp_now_ms() - g_hostact_open_ms ) +
+                " sends=" + std::to_string( g_hostact_sends ) );
+    }
+    g_hostact_cur = now;
+    g_hostact_open_turn = turn;
+    g_hostact_sends = 0;
+    g_hostact_open_ms = mp_now_ms();
+    if( !now.empty() ) {
+        mp_log( std::string( HOSTACT_TAG ) + "OPEN id=" + now +
+                " turn=" + std::to_string( turn ) + " src=" + src );
+    }
+}
+
+void mp_log_host_activity_start( const std::string &activity_id_str )
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    hostact_transition( activity_id_str, "assign" );
+}
+
+void mp_host_activity_tick()
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    const player_activity &act = get_avatar().activity;
+    hostact_transition( act ? act.id().str() : std::string(), "poll" );
+}
+
+void mp_note_host_activity_sent( const std::string &activity_id_str )
+{
+    if( !is_hosting() || !remote_player_connected ) {
+        return;
+    }
+    // A broadcast can be built before the poll has seen a brand-new activity,
+    // so adopt here too rather than dropping the send on the floor.
+    hostact_transition( activity_id_str, "send" );
+    if( g_hostact_cur.empty() ) {
+        return;
+    }
+    if( ++g_hostact_sends == 1 ) {
+        // Latency from the activity opening to the first packet that carried
+        // it — the number that says how coarse the sampling actually is.
+        mp_log( std::string( HOSTACT_TAG ) + "SENT id=" + g_hostact_cur +
+                " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) +
+                " first_send_after_ms=" +
+                std::to_string( mp_now_ms() - g_hostact_open_ms ) );
+    }
 }
 
 bool mp_in_burst_mode()
@@ -10245,7 +10336,19 @@ static bool apply_one_state_message( const std::string &msg )
 
         // Track the host's current activity for HUD + partner-notice display.
         if( jo.has_string( "host_activity" ) ) {
-            g_partner_activity = jo.get_string( "host_activity" );
+            // MP DIAG 2026-08-30 — HOSTACT probe, client half.  Logs only on a
+            // CHANGE, so the count of these is the number of host-activity
+            // transitions the client actually observed.  Compare against the
+            // host's OPEN count: a shortfall means broadcasts are too coarse to
+            // carry every host activity.  See mp_gamestate.h.
+            const std::string hostact_now = jo.get_string( "host_activity" );
+            if( hostact_now != g_partner_activity ) {
+                mp_log( "[cdda-mp] HOSTACT[edge-vs-sample] RECV prev=" +
+                        ( g_partner_activity.empty() ? "(none)" : g_partner_activity ) +
+                        " now=" + ( hostact_now.empty() ? "(none)" : hostact_now ) +
+                        " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) );
+            }
+            g_partner_activity = hostact_now;
             mp_partner_activity_transition_check();
             g_partner_activity_moves = jo.get_int( "host_activity_moves", -1 );
         }
@@ -15326,6 +15429,11 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
             s_last_craft_counter = hc;
         }
     }
+
+    // MP DIAG 2026-08-30 — HOSTACT probe: record that this broadcast is about to
+    // carry the host's current activity id, so an instance that never reached
+    // the wire can be told from one that did.
+    mp_note_host_activity_sent( host.activity ? host.activity.id().str() : std::string() );
 
     const auto srp_t_prebuild = srpclk::now();
     std::string srp_out = "{\"type\":\"state\","

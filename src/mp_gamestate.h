@@ -857,6 +857,62 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id(
 void client_send_activity_start( const std::string &activity_id_str );
 void client_send_activity_end( const std::string &activity_id_str );
 
+// ---------------------------------------------------------------------------
+// MP DIAG 2026-08-30 — HOSTACT probe.
+//
+// DIAGNOSING: "can a HOST activity begin and end between two state broadcasts,
+// so the client never observes the transition?"
+//
+// Why the question exists: the two directions of the partner-activity sync use
+// different mechanisms.  client->host is EDGE driven — assign_activity emits an
+// explicit activity_start action and the tick path emits activity_end, so an
+// edge cannot be missed.  host->client is LEVEL driven — the host stamps
+// "host_activity" into serialize_remote_player_state() and the client samples
+// whatever the last packet happened to carry.  A host activity whose whole life
+// falls between two broadcasts is therefore invisible to the client: no
+// "<host> begins ...", no "<host> has finished ...".
+//
+// This is NOT the (retracted) "host never sends its activity" claim — the field
+// is written at mp_gamestate.cpp, in serialize_remote_player_state().  This
+// probe measures whether the SAMPLING RATE is ever too coarse for it.
+//
+// Reading the output — host log:
+//   HOSTACT[edge-vs-sample] OPEN   id=X turn=N src=assign|poll|send
+//   HOSTACT[edge-vs-sample] SENT   id=X turn=N first_send_after_ms=K
+//   HOSTACT[edge-vs-sample] CLOSE  id=X turn=N lived_turns=L sends=S   <- S>0 = fine
+//   HOSTACT[edge-vs-sample] DROPPED id=X turn=N lived_turns=L sends=0  <- THE BUG
+// client log:
+//   HOSTACT[edge-vs-sample] RECV   prev=X now=Y turn=N
+//
+// A single DROPPED line proves the defect and names the activity.  Zero DROPPED
+// over a session with plenty of short host activities (pickup, drop, wield,
+// reload) falsifies it — and note that a DROPPED for an id nobody cares about
+// is not automatically worth fixing; weigh it against what the client's HUD and
+// the "begins/finished" announcements actually need.
+//
+// Cross-check without reading individual lines:
+//   grep -c 'HOSTACT.*OPEN' ~/cdda-mp-server.log   # host activity instances
+//   grep -c 'HOSTACT.*RECV' ~/cdda-mp-client.log   # transitions the client saw
+// A large shortfall on the client side is the same finding in aggregate.
+//
+// Volume: one line per activity INSTANCE (not per turn, not per packet), plus
+// one RECV per observed change.  Safe to leave in.
+// ---------------------------------------------------------------------------
+
+// Host only, true start edge.  Called from Character::assign_activity next to
+// the existing client_send_activity_start() callout.  No-op off-host.
+void mp_log_host_activity_start( const std::string &activity_id_str );
+
+// Host only, per-turn poll.  Called from grant_client_turn() once a client is
+// connected; detects the end (and any assign_activity path that bypassed the
+// edge hook above).  No-op off-host.
+void mp_host_activity_tick();
+
+// Host only.  Called from serialize_remote_player_state() with the id it is
+// about to stamp into the packet, so an instance can be told apart from one
+// that never reached the wire.  No-op off-host.
+void mp_note_host_activity_sent( const std::string &activity_id_str );
+
 // Client only: returns the luminance emitted by the host player (flashlight,
 // mutations, etc.) as received in the last state packet.  Used by lightmap.cpp
 // to inject a point light at the host NPC position during build_map_cache().

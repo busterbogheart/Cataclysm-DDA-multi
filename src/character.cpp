@@ -5298,6 +5298,14 @@ void Character::assign_activity( const player_activity &act )
         cata_mp::set_client_turn_activity( activity.id().str() );
         cata_mp::client_send_activity_start( activity.id().str() );
     }
+    // MP DIAG 2026-08-30 — HOSTACT probe: the host-side twin of the signal
+    // above.  The host has no equivalent edge event (its activity reaches the
+    // client only as a sampled field on the state packet), so this marks the
+    // true start so the probe can measure how long it takes to reach the wire —
+    // and catch an activity that ends before any broadcast carries it.
+    if( is_avatar() && cata_mp::is_hosting() && activity ) {
+        cata_mp::mp_log_host_activity_start( activity.id().str() );
+    }
 
     if( is_npc() ) {
         cancel_stashed_activity();
