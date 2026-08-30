@@ -899,6 +899,11 @@ static uint32_t g_client_last_grant_seq = 0;
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
 
+// MP 2026-08-30 — FF LEAD CONTROL.  Highest grant_seq the client says it has
+// applied, echoed as "cseq" on every action/wait.  0 = never reported (older
+// client), which makes mp_ff_lead_turns() return 0 and disables the window.
+static uint32_t g_client_reported_seq = 0;
+
 // Server: set whenever a client_stamina sync was just applied to the proxy
 // (handle_remote_action, run via process_mp_events() before grant_client_turn()
 // each host turn — see do_turn.cpp). Consumed and cleared by grant_client_turn()
@@ -4385,6 +4390,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     }
 
     // Sync client light level so the host lighting pass can inject it at the proxy NPC.
+    // MP 2026-08-30 — FF LEAD CONTROL: adopt the client's reported progress.
+    // Older clients omit "cseq"; the lead then reads 0 and the window never
+    // engages, so a version-skewed pair behaves exactly as it does today.
+    if( msg.find( "\"cseq\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_int( "cseq" ) ) {
+                g_client_reported_seq = static_cast<uint32_t>( jo.get_int( "cseq" ) );
+            }
+        } catch( const JsonError & ) {
+            // Non-fatal: lead just stays stale for a packet.
+        }
+    }
     if( msg.find( "\"client_light\":" ) != std::string::npos ) {
         try {
             JsonValue jv = json_loader::from_string( msg );
@@ -6712,6 +6732,39 @@ void grant_client_turn()
     }
 }
 
+// ---------------------------------------------------------------------------
+// MP 2026-08-30 — FF LEAD CONTROL.
+//
+// How far ahead of the client the host has granted, in turns.  g_grant_seq
+// increments once per granted turn; the client echoes the highest one it has
+// applied as "cseq".  0 when the client has never reported (older build), which
+// disables the window rather than clamping a pair that cannot participate.
+static int mp_ff_lead_turns()
+{
+    if( g_client_reported_seq == 0 || g_grant_seq <= g_client_reported_seq ) {
+        return 0;
+    }
+    return static_cast<int>( g_grant_seq - g_client_reported_seq );
+}
+
+// The window.  Lockstep's natural lead is 0 — the host cannot outrun an ack it
+// is waiting for — and every dialog behaves correctly there because the partner
+// has nothing banked to keep going on.  Fast-forward is the ONLY regime that
+// breaks that invariant, so this restores it rather than inventing a new rule.
+// 30 turns is three FF batches: enough that bursting still pays, small enough
+// that a modal on either side stops the other within a second.
+static constexpr int MP_FF_MAX_LEAD_TURNS = 30;
+
+// Safety valve, and the reason this is not the 2026-06-21 mistake.  d1fdf8691e
+// throttled the BROADCAST during FF and deadlocked co-op, because the grant
+// rides inside serialize_remote_player_state and skipping the send skipped the
+// grant.  This does not touch the send path at all — it only declines to BURST,
+// falling through to the same blocking wait the non-FF path already uses.  But
+// if the lead accounting were ever wrong the host could hold forever, so cap the
+// hold: past this, burst anyway.  Worst case this degrades to exactly today's
+// behaviour instead of deadlocking.
+static constexpr int64_t MP_FF_HOLD_MAX_MS = 2000;
+
 void wait_for_client_action()
 {
     if( !remote_player_connected ) {
@@ -6807,8 +6860,45 @@ void wait_for_client_action()
         }
     }
     if( ff_now ) {
-        process_mp_events();
-        return;
+        // MP 2026-08-30 — FF LEAD CONTROL.  Bursting unconditionally is what let
+        // the host grant ~4000 turns ahead; the client then kept playing for
+        // seconds after the host froze on a "Keep practicing?" modal, and the
+        // roles inverted when the client hit its own.  Hold the burst while the
+        // client is more than a window behind, so FF keeps lockstep's property
+        // that neither player can run away from the other.
+        //
+        // Held here rather than by skipping the grant: the client must still
+        // RECEIVE its grants promptly (see the do-not-throttle note in
+        // grant_client_turn), it just must not be handed unbounded turns.
+        static int64_t s_hold_start_ms = 0;
+        const int lead = mp_ff_lead_turns();
+        if( lead >= MP_FF_MAX_LEAD_TURNS ) {
+            const int64_t now_ms = mp_now_ms();
+            if( s_hold_start_ms == 0 ) {
+                s_hold_start_ms = now_ms;
+                mp_log( "[cdda-mp] FF-LEAD: holding burst, client " +
+                        std::to_string( lead ) + " turns behind (window " +
+                        std::to_string( MP_FF_MAX_LEAD_TURNS ) + ")" );
+            }
+            if( now_ms - s_hold_start_ms < MP_FF_HOLD_MAX_MS ) {
+                // Fall through to the ordinary blocking wait below — proven code
+                // that pumps events and returns as soon as the client acks.
+            } else {
+                mp_log( "[cdda-mp] FF-LEAD: hold exceeded " +
+                        std::to_string( MP_FF_HOLD_MAX_MS ) + "ms with lead=" +
+                        std::to_string( lead ) + " — bursting anyway (safety valve)" );
+                s_hold_start_ms = 0;
+                process_mp_events();
+                return;
+            }
+        } else {
+            if( s_hold_start_ms != 0 ) {
+                mp_log( "[cdda-mp] FF-LEAD: released, lead=" + std::to_string( lead ) );
+                s_hold_start_ms = 0;
+            }
+            process_mp_events();
+            return;
+        }
     }
 
     // FIX #2/#3: deficit turn — the client is still paying off an expensive move's
@@ -12094,6 +12184,15 @@ std::string client_enrich_action( const std::string &json )
     std::string enriched = json;
     if( !enriched.empty() && enriched.back() == '}' ) {
         enriched.pop_back();
+        // MP 2026-08-30 — FF LEAD CONTROL.  The host had no way to know how far
+        // behind the client was: nothing in the client's action/wait payload
+        // reported its progress, so the host granted blind.  Measured 2026-08-30:
+        // lead is 0 in lockstep (the host cannot outrun an ack it waits for) but
+        // reached 3931 turns during fast-forward, which is what let one player
+        // keep crafting for ~7s while the other sat frozen on a modal.
+        // Echo the highest grant we have actually applied; the host subtracts.
+        enriched += ",\"cseq\":" + std::to_string(
+                        static_cast<unsigned long long>( g_client_last_grant_seq ) );
         enriched += ",\"client_light\":" + mp_json_num( cl );
         enriched += ",\"client_bleed\":" + bleed_json;
         enriched += ",\"client_tile_changes\":" + tile_changes;
