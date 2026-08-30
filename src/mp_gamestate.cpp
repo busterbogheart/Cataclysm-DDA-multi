@@ -1075,10 +1075,52 @@ static std::string mp_partner_display_name()
 // for "<name> begins <X>." sentences.  Prefers the activity_type::verb()
 // translation maintained in JSON ("constructing a vehicle", "reading", etc.).
 // Falls back to a stripped/lowercased id when no verb is registered.
+// MP 2026-08-30 — SLEEP ON THE WIRE.
+//
+// Sleep is an EFFECT, not a player_activity.  The moment a character actually
+// falls asleep its activity empties, so the peer saw partner_act=(none) — read as
+// IDLE — and should_fast_forward() declined for the entire night.  Measured on the
+// ab907fad11 build: FF-DECLINED partner_idle with host_act=ACT_TRY_SLEEP, and
+// SRV-WAIT costing up to 4065ms of wall clock per single game turn, with neither
+// player able to interrupt (the sleeper has no activity, so there is no `5` to
+// press).  The 2026-07-10 fix put ACT_TRY_SLEEP in the passive allow-list, which
+// covers only the TRYING phase — 79ms in that log.
+//
+// Reporting a synthetic id makes sleep behave exactly like every other
+// FF-eligible activity, and needs no new predicate anywhere: is_passive_activity()
+// is a denylist, so any non-empty id absent from the interactive and blocking-UI
+// lists is passive and fast-forwardable by construction.  So one player crafting
+// while the other sleeps fast-forwards, both sleeping fast-forwards, and either
+// one waking drops the pair back to lockstep so the awake player can walk around
+// — the ordinary both-sides rule, with sleep as just another member of the set.
+//
+// Deliberately NOT named "ACT_SLEEP": no such activity id exists in the tree, and
+// the MP_ prefix cannot collide if upstream ever adds one.
+static const std::string MP_ASLEEP_ACT = "MP_ASLEEP";
+
+static bool mp_char_is_asleep( const Character &who )
+{
+    static const efftype_id eff_sleep( "sleep" );
+    return who.has_effect( eff_sleep );
+}
+
+// The activity id to put on the wire for `who`: their real activity, else the
+// synthetic sleep marker, else empty for genuinely idle.
+static std::string mp_wire_activity_id( const Character &who )
+{
+    if( who.activity ) {
+        return who.activity.id().str();
+    }
+    return mp_char_is_asleep( who ) ? MP_ASLEEP_ACT : std::string();
+}
+
 static std::string mp_activity_verb_phrase( const std::string &act_id )
 {
     if( act_id.empty() ) {
         return std::string();
+    }
+    if( act_id == MP_ASLEEP_ACT ) {
+        return _( "sleeping" );   // synthetic; activity_id( "MP_ASLEEP" ) is not valid
     }
     const activity_id aid( act_id );
     // NOTE: ACT_PULP used to be special-cased here to say "pulping" because the SP
@@ -1481,7 +1523,11 @@ struct mp_hud_t {
                 const std::string frac = std::to_string( cur ) + "/" + std::to_string( total );
                 mvwprintz( win, point( x, crow ), c_light_blue, "%s", frac.c_str() );
                 x += utf8_width( frac ) + 1;
-            } else if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD ) {
+            } else if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD &&
+                       g_partner_activity != MP_ASLEEP_ACT ) {
+                // Sleep has no progress fraction either (it is an effect, not an
+                // activity with moves_total), so a permanent "0%" would read as
+                // broken sync exactly as it does for ACT_PULP.
                 // Advance by what was actually printed, not a hardcoded 5. "21%" is
                 // three columns, so the flat +5 left a two-space hole before
                 // whatever came next — visible now that the fast-forward marker
@@ -6945,19 +6991,15 @@ void wait_for_client_action()
         return;
     }
 
-    // Sleep is the one true fast-forward case: 28800 ticks of strict lockstep
-    // would mean ~48 minutes wall-clock for 8 hours of game-sleep.  Host-side
-    // sleep effect bypasses the lockstep wait so the host can race through
-    // those turns at native do_turn speed.  Client-side sleep needs its own
-    // bypass once implemented — for now sleep is treated as host-only.
-    {
-        static const efftype_id eff_sleep( "sleep" );
-        if( get_avatar().has_effect( eff_sleep ) ) {
-            process_mp_events();
-            mp_log( "[cdda-mp] lockstep-skip: host_act=sleep" );
-            return;
-        }
-    }
+    // REMOVED 2026-08-30 — the host-only sleep bypass.  It skipped the lockstep
+    // wait whenever the HOST was asleep, regardless of what the client was doing:
+    // one-sided fast-forward, the one thing no other activity is allowed to do,
+    // and it left the client's sleep with no equivalent at all ("client-side sleep
+    // needs its own bypass once implemented").  Sleep now reports MP_ASLEEP_ACT on
+    // the wire and goes through the ordinary both-sides FF path below, which is
+    // what the roadmap's burst-mode spec has asked for since it was written:
+    // "the sleep bypass that already exists is a hard-coded special case of this.
+    // Generalize and remove the special case."
 
     // Both-passive fast-forward: when both sides are in passive activities
     // (both crafting, both eating, host crafting + client helping, etc.),
@@ -12415,6 +12457,14 @@ std::string client_enrich_action( const std::string &json )
         // is reflected here too.
         if( av.activity ) {
             g_client_turn_activity = av.activity.id().str();
+        } else if( mp_char_is_asleep( av ) ) {
+            // Sleep is an effect with no activity — see MP_ASLEEP_ACT.  There is no
+            // activity_start to carry it, so this sampled field IS the signal.
+            g_client_turn_activity = MP_ASLEEP_ACT;
+        } else if( g_client_turn_activity == MP_ASLEEP_ACT ) {
+            // Woke up.  No activity_end fires for an effect either, so clear it
+            // here or the host would believe we were asleep forever.
+            g_client_turn_activity.clear();
         }
         const std::string client_act_id = g_client_turn_activity;
         enriched += ",\"client_activity\":\"" + client_act_id + "\"";
@@ -15854,7 +15904,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"client_kills\":" + std::to_string( g_client_kills ) + ","
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
            "\"host_ctrl_veh\":" + std::string( host.controlling_vehicle ? "true" : "false" ) + ","
-           "\"host_activity\":\"" + ( host.activity ? host.activity.id().str() : "" ) + "\","
+           "\"host_activity\":\"" + mp_wire_activity_id( host ) + "\","
            "\"host_activity_moves\":" + std::to_string(
                host.activity ? host.activity.moves_left : -1 ) + ","
            "\"host_activity_pct\":" + std::to_string(
