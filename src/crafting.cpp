@@ -3741,6 +3741,14 @@ bool Character::consume_step_tool_targets( item &craft, const std::vector<int> &
             : which == 1 ? get_map_inv().has_charges( n.first, n.second )
             : crafting_inventory().has_charges( n.first, n.second );
             if( !ok ) {
+                // MP DIAGNOSTIC 2026-08-28 — THIS is the site the hotplate
+                // messages come from; the craft_consume_tools() callouts below
+                // never fired.  Body in mp_gamestate.cpp (rule 4).
+                cata_mp::mp_log_step_tool_shortfall( *this, craft, n.first, n.second, which,
+                                                     charges_of( n.first ),
+                                                     get_map_inv().charges_of( n.first ),
+                                                     pin_to_map, origin, radius,
+                                                     "consume_step_tool_targets" );
                 add_msg_player_or_npc(
                     _( "You have insufficient %s charges and can't continue crafting." ),
                     _( "<npcname> has insufficient %s charges and can't continue crafting." ),
@@ -3757,6 +3765,8 @@ bool Character::consume_step_tool_targets( item &craft, const std::vector<int> &
         const bool present = pin_to_map ? get_map_inv().has_tools( p.type, 1 )
                              : crafting_inventory().has_tools( p.type, 1 );
         if( !present ) {
+            cata_mp::mp_log_step_tool_missing( *this, craft, p.type, pin_to_map, origin, radius,
+                                               "consume_step_tool_targets/presence" );
             add_msg_player_or_npc(
                 _( "You no longer have the %s and can't continue crafting." ),
                 _( "<npcname> no longer has the %s and can't continue crafting." ),
@@ -3812,6 +3822,8 @@ bool Character::verify_step_tools( item &craft, int step_idx,
         const bool present = pin_to_map ? get_map_inv().has_tools( alloc.sel.comp.type, 1 )
                              : crafting_inventory().has_tools( alloc.sel.comp.type, 1 );
         if( !present ) {
+            cata_mp::mp_log_step_tool_missing( *this, craft, alloc.sel.comp.type, pin_to_map,
+                                               origin, radius, "verify_step_tools" );
             add_msg_player_or_npc(
                 _( "You no longer have the %s and can't continue crafting." ),
                 _( "<npcname> no longer has the %s and can't continue crafting." ),
@@ -3903,6 +3915,10 @@ bool Character::craft_consume_passive_step_tools( item &craft, time_point now,
         }
     }
     const step_source_context src = resolve_step_source( craft, loc );
+    // MP DIAGNOSTIC 2026-08-28 — single funnel for all three craft_actualize_*
+    // passive entry points: does each side claim the same craft as its own?
+    cata_mp::mp_log_step_source( craft, loc, this, src.present_char, src.origin, src.radius,
+                                 /*pin_to_map=*/src.present_char == nullptr );
     return consume_step_tool_targets( craft, targets, src.origin, src.radius,
                                       /*pin_to_map=*/src.present_char == nullptr );
 }

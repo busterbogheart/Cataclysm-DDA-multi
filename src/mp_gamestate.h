@@ -15,6 +15,7 @@ class npc;
 class Character;
 class Creature;
 class item;
+class item_location;
 class player_activity;
 struct WORLD;
 
@@ -342,6 +343,51 @@ void mp_log_craft_possession_lost( bool item_missing, const tripoint_abs_ms &cra
 void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
                                   const itype_id &tool_type, int count_needed,
                                   const char *from );
+
+// DIAGNOSTIC 2026-08-28 — the three callouts above are in the WRONG function.
+// The 2026-08-28 repro produced 12 host / 140 client "insufficient hotplate
+// charges" messages and ZERO CRAFT-TOOL-SHORTFALL lines, so nothing the
+// 2026-08-27 pass instrumented is what fires. The message the players actually
+// see comes from consume_step_tool_targets()'s shortfall lambda on the
+// step-bucket path, reached through the PASSIVE (unattended) craft tick — which
+// is why a hotplate touched hours and several game-loads earlier still
+// complains: step_tool_allocs is serialized onto the craft item itself
+// (item.cpp set_step_tool_allocs), so the tool choice outlives the session.
+//
+// Both sides printed the first-person "You have ..." variant and never
+// "<npcname> has ...", so each side's resolve_consume_crafter() resolved to its
+// OWN avatar for what looks like one shared craft. resolve_crafter() matches on
+// get_avatar().getID() == crafter_id, and character ids are per-world
+// sequential while the client runs its own world — so the two avatars can hold
+// the SAME id and each side answers "that's me." Every logger below prints both
+// avatar_id and crafter_id so a single repro settles that outright.
+//
+// which: 0 = usage_from::player, 1 = map, 2 = both.  have_player / have_map are
+// passed in because the caller has already built the map inventory on this
+// path; the 2026-08-27 logger reported only carried charges, which always read
+// 0 on a map-sourced tool and said nothing.
+void mp_log_step_tool_shortfall( Character &who, const item &craft,
+                                 const itype_id &tool_type, int needed, int which,
+                                 int have_player, int have_map, bool pin_to_map,
+                                 const tripoint_bub_ms &origin, int radius,
+                                 const char *site );
+
+// The "You no longer have the %s" sibling: a selected non-charged tool that must
+// merely be PRESENT went missing.  Fires from consume_step_tool_targets()'s
+// presence sweep and from verify_step_tools(); `site` says which.
+void mp_log_step_tool_missing( Character &who, const item &craft,
+                               const itype_id &tool_type, bool pin_to_map,
+                               const tripoint_bub_ms &origin, int radius,
+                               const char *site );
+
+// Who this side believes is paying for a passive craft, and where it is sourcing
+// from.  One callout inside craft_consume_passive_step_tools() covers all three
+// craft_actualize_* entry points that funnel into it.  Logs unconditionally, not
+// just on failure: the question is whether BOTH sides claim the same craft, and
+// the runs where nothing is short are the control.
+void mp_log_step_source( const item &craft, const item_location &loc,
+                         const Character *consumer, const Character *present_char,
+                         const tripoint_bub_ms &origin, int radius, bool pin_to_map );
 
 // Client-only: "direct your character" menu, bound to ACTION_LOOT while in
 // client mode (the plain SP loot() the host uses would run against the

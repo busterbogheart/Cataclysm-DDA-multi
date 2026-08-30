@@ -32,6 +32,7 @@
 #include "get_version.h"
 #include "gates.h"
 #include "item.h"
+#include "item_location.h" // step-tool diagnostics log loc.where() / craft placement
 #include "line.h"
 #include "itype.h"
 #include "json.h"
@@ -9281,6 +9282,103 @@ void mp_log_craft_tool_shortfall( const Character &crafter, const item &craft,
             " tool='" + tool_type.str() + "' count_needed=" + std::to_string( count_needed ) +
             " count_have=" + std::to_string( crafter.charges_of( tool_type ) ) +
             " in_veh=" + std::to_string( crafter.in_vehicle ) );
+}
+
+// Shared prefix for the step-tool diagnostics below: the identity question.
+// avatar_id vs crafter_id is the whole point — if both sides log the same
+// crafter_id AND each resolves it to its own avatar, one craft is being
+// advanced twice.
+static std::string mp_step_identity( Character &who, const item &craft )
+{
+    const tripoint_abs_ms wpos = who.pos_abs();
+    return std::string( " side=" ) + ( is_hosting() ? "HOST" : "CLIENT" ) +
+           " who='" + who.get_name() + "' is_avatar=" + std::to_string( who.is_avatar() ) +
+           " avatar_id=" + std::to_string( get_avatar().getID().get_value() ) +
+           " crafter_id=" + std::to_string( craft.get_crafter_id().get_value() ) +
+           " who_abs=" + std::to_string( wpos.x() ) + "," + std::to_string( wpos.y() ) +
+           "," + std::to_string( wpos.z() ) +
+           " recipe='" + craft.get_making().result_name() + "'" +
+           " in_veh=" + std::to_string( who.in_vehicle );
+}
+
+// Where the step is sourcing charges from, and how far the payer is from it.
+// dist > radius is the "the craft outlived its tool's reach" answer.
+static std::string mp_step_source_fields( Character &who, const tripoint_bub_ms &origin,
+        int radius, bool pin_to_map )
+{
+    const tripoint_abs_ms oabs = get_map().get_abs( origin );
+    return " origin_abs=" + std::to_string( oabs.x() ) + "," + std::to_string( oabs.y() ) +
+           "," + std::to_string( oabs.z() ) +
+           " radius=" + std::to_string( radius ) +
+           " dist=" + std::to_string( rl_dist( who.pos_abs(), oabs ) ) +
+           " pin_to_map=" + std::to_string( pin_to_map );
+}
+
+void mp_log_step_tool_shortfall( Character &who, const item &craft,
+                                 const itype_id &tool_type, int needed, int which,
+                                 int have_player, int have_map, bool pin_to_map,
+                                 const tripoint_bub_ms &origin, int radius,
+                                 const char *site )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    const char *src = which == 0 ? "player" : ( which == 1 ? "map" : "both" );
+    mp_log( "[cdda-mp] STEP-TOOL-SHORTFALL:" + mp_step_identity( who, craft ) +
+            " site=" + std::string( site ) +
+            " from=" + std::string( src ) +
+            " tool='" + tool_type.str() + "'" +
+            " needed=" + std::to_string( needed ) +
+            " have_player=" + std::to_string( have_player ) +
+            " have_map=" + std::to_string( have_map ) +
+            mp_step_source_fields( who, origin, radius, pin_to_map ) );
+}
+
+void mp_log_step_tool_missing( Character &who, const item &craft,
+                               const itype_id &tool_type, bool pin_to_map,
+                               const tripoint_bub_ms &origin, int radius,
+                               const char *site )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    mp_log( "[cdda-mp] STEP-TOOL-MISSING:" + mp_step_identity( who, craft ) +
+            " site=" + std::string( site ) +
+            " tool='" + tool_type.str() + "'" +
+            mp_step_source_fields( who, origin, radius, pin_to_map ) );
+}
+
+void mp_log_step_source( const item &craft, const item_location &loc,
+                         const Character *consumer, const Character *present_char,
+                         const tripoint_bub_ms &origin, int radius, bool pin_to_map )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    const tripoint_abs_ms oabs = get_map().get_abs( origin );
+    const auto who_str = []( const Character * c ) -> std::string {
+        if( c == nullptr )
+        {
+            return "(null)";
+        }
+        return "'" + c->get_name() + "'/id=" + std::to_string( c->getID().get_value() ) +
+        "/is_avatar=" + std::to_string( c->is_avatar() );
+    };
+    // loc.where() distinguishes a held craft (character) from one sitting in a
+    // vehicle or on the ground — the vehicle-cargo case is the hotplate repro.
+    mp_log( "[cdda-mp] STEP-SOURCE: side=" + std::string( is_hosting() ? "HOST" : "CLIENT" ) +
+            " recipe='" + craft.get_making().result_name() + "'" +
+            " crafter_id=" + std::to_string( craft.get_crafter_id().get_value() ) +
+            " avatar_id=" + std::to_string( get_avatar().getID().get_value() ) +
+            " loc_where=" + std::to_string( static_cast<int>( loc.where() ) ) +
+            " consumer=" + who_str( consumer ) +
+            " present=" + who_str( present_char ) +
+            " origin_abs=" + std::to_string( oabs.x() ) + "," + std::to_string( oabs.y() ) +
+            "," + std::to_string( oabs.z() ) +
+            " radius=" + std::to_string( radius ) +
+            " pin_to_map=" + std::to_string( pin_to_map ) +
+            " cur_step=" + std::to_string( craft.get_current_step() ) +
+            " tools_to_continue=" + std::to_string( craft.has_tools_to_continue() ) );
 }
 
 // Move the client avatar to an absolute position, loading the map chunk if needed.
