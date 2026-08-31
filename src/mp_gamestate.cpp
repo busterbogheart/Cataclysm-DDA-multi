@@ -7378,7 +7378,19 @@ void wait_for_client_action()
         // every ~16ms (SDL pumped), so the host stays responsive — the mirror of
         // the client staying responsive while the host aims (ranged.cpp:2988).
         const bool partner_interactive = partner_in_interactive_activity();
-        if( wait_elapsed_ms > 100 && !get_avatar().activity && !partner_interactive ) {
+        // MP 2026-08-30 — mp_local_ff_activity(), NOT get_avatar().activity.  Sleep
+        // is an effect, so a SLEEPING host has no player_activity and read as "no
+        // activity" here — walking straight into a poll that blocks until a host
+        // keypress or a client action.  With the partner crafting in move-debt,
+        // neither can arrive (it cannot act until granted, and cannot be granted
+        // until this turn ends), so the session deadlocked until someone pressed a
+        // key on the host's window.  Found by sampling the live process: the stack
+        // read wait_for_client_action -> handle_action -> get_player_input ->
+        // input_context::handle_input.  Same root as d2606b498f — a call site that
+        // mistakes asleep for idle — which fixed the three FF predicates and missed
+        // this one.  A sleeping host must skip the blocking poll exactly as a
+        // crafting host does; SP skips input entirely while asleep anyway.
+        if( wait_elapsed_ms > 100 && mp_local_ff_activity().empty() && !partner_interactive ) {
             g->mp_poll_input();
         } else if( partner_interactive && !logged_partner_interactive_skip ) {
             mp_log( "[cdda-mp] SRV-WAIT: partner interactive (" + g_partner_activity +
