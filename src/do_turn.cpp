@@ -293,12 +293,30 @@ void handle_key_blocking_activity( int timeout )
     // inventory, see messages, etc. while waiting for the client to act.
     if( has_unfinished_activity || u.has_destination()
         || cata_mp::is_host_waiting_for_client() ) {
+        // MP DIAG 2026-08-30 — measured: the host's SRV-WAIT loop blocks HERE for
+        // 28s+ despite timeout=16 (WATCHDOG turn-phase=cw:loop_input, label held
+        // across the whole stall, so one call and not a spin).  Split the wait
+        // itself from the action handling below it.  Self-throttling: only a call
+        // that overran by >1s says anything, so a healthy 16ms poll is silent.
+        const auto mp_t0 = std::chrono::steady_clock::now();
         input_context ctxt = get_default_mode_input_context();
         // timeout>0 blocks up to that many ms for an event (like a popup / the main
         // loop) — the MP host wait passes 16ms so keys are caught reliably; SP/client
         // callers pass 0 (non-blocking poll, unchanged) since their own loop already
         // pumps SDL events before this runs.
         const std::string action = ctxt.handle_input( timeout );
+        const auto mp_t1 = std::chrono::steady_clock::now();
+        const int mp_input_ms = static_cast<int>(
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        mp_t1 - mp_t0 ).count() );
+        if( mp_input_ms > 1000 && ( cata_mp::is_hosting() || cata_mp::is_client_mode() ) ) {
+            cata_mp::mp_log( "[cdda-mp] KBA-SLOW-INPUT: handle_input(timeout=" +
+                             std::to_string( timeout ) + ") took " +
+                             std::to_string( mp_input_ms ) + "ms, action=\"" + action +
+                             "\" unfinished_act=" + std::to_string( has_unfinished_activity ) +
+                             " dest=" + std::to_string( u.has_destination() ) +
+                             " host_wait=" + std::to_string( cata_mp::is_host_waiting_for_client() ) );
+        }
         if( cata_mp::is_hosting() && cata_mp::is_host_waiting_for_client() &&
             !action.empty() && action != "ANY_INPUT" && action != "TIMEOUT" ) {
             cata_mp::mp_log( "[cdda-mp] HOST-LOCKED-INPUT: action=\"" + action + "\"" );
@@ -361,6 +379,18 @@ void handle_key_blocking_activity( int timeout )
         if( refresh ) {
             ui_manager::redraw();
             refresh_display();
+        }
+        if( cata_mp::is_hosting() || cata_mp::is_client_mode() ) {
+            const int mp_total_ms = static_cast<int>(
+                                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now() - mp_t0 ).count() );
+            // Total overran while the INPUT wait itself was short => the time went
+            // into handling the action below, not into waiting for a key.
+            if( mp_total_ms > 1000 && mp_total_ms - mp_input_ms > 250 ) {
+                cata_mp::mp_log( "[cdda-mp] KBA-SLOW-HANDLE: total=" +
+                                 std::to_string( mp_total_ms ) + "ms input=" +
+                                 std::to_string( mp_input_ms ) + "ms action=\"" + action + "\"" );
+            }
         }
     } else {
         refresh_display();
