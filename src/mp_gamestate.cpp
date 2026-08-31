@@ -7288,8 +7288,10 @@ void wait_for_client_action()
                           ? std::chrono::milliseconds( 0 )
                           : std::chrono::milliseconds( 16 );
         const auto t_iter0 = std::chrono::steady_clock::now();
+        mp_turn_phase( "cw:loop_queuewait" );
         get_mp_queue().wait_for_event( step );
         const auto t_after_wait = std::chrono::steady_clock::now();
+        mp_turn_phase( "cw:loop_events" );
         process_mp_events();
         const auto t_after_drain = std::chrono::steady_clock::now();
         // The drain above may have just set g_client_acted_this_turn (the
@@ -7310,12 +7312,14 @@ void wait_for_client_action()
         // get_avatar().activity (prev attempt) missed the COMMON case — the host
         // sits here with host_act=none most of the time, so input was starved
         // ("5/zoom/map only occasionally caught").
+        mp_turn_phase( "cw:loop_pump" );
         inp_mngr.pump_events();
         // Block up to 16ms for an event (not a non-blocking poll). DIAG proved the
         // non-blocking poll ran 57x/sec but caught ZERO keys — the SRV-WAIT sub-loop
         // doesn't deliver SDL events to handle_input(0) the way the main loop does.
         // Blocking (like the monster-interrupt popup, which IS responsive) catches
         // them reliably. 16ms ≈ the loop's step, so it adds no real latency.
+        mp_turn_phase( "cw:loop_input" );
         handle_key_blocking_activity( 16 );
         if( g_client_acted_this_turn ) {
             break;
@@ -7330,6 +7334,7 @@ void wait_for_client_action()
         static auto last_redraw = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();
         if( std::chrono::duration_cast<std::chrono::milliseconds>( now - last_redraw ).count() > 100 ) {
+            mp_turn_phase( "cw:loop_redraw" );
             ui_manager::redraw();
             last_redraw = now;
         }
