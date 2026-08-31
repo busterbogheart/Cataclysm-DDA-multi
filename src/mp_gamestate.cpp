@@ -958,6 +958,9 @@ static std::string g_partner_activity;
 // Defined further down next to should_fast_forward(); forward-declared here so the
 // activity_start handler can log the verdict alongside the id.
 static bool is_fast_forwardable_activity( const std::string &id );
+// Defined with the other FF helpers further down; forward-declared so the
+// SRV-WAIT probe can report the local side's FF activity.
+static std::string mp_local_ff_activity();
 // Remaining moves of the partner's current activity, forwarded alongside
 // g_partner_activity.  -1 = unknown (older peer, or no activity).  Read only by
 // should_fast_forward()'s duration floor — see FF_MIN_ACTIVITY_MOVES.
@@ -7227,7 +7230,30 @@ void wait_for_client_action()
         // bail out and let do_turn race through both crafts at SP speed.
         // Without this, the client (also in FF) won't dispatch waits, so
         // g_client_acted_this_turn never flips and we deadlock both ends.
-        if( should_fast_forward() ) {
+        // DIAG 2026-08-30 — this loop has NO per-iteration logging, so a host
+        // spinning here is indistinguishable in the log from a host that is
+        // hard-hung: measured, the host received "ACT-START RECV: id=ACT_CRAFT
+        // passive=1 ff_eligible=1" at 20:15:08.212 and then emitted nothing for 33s
+        // while the watchdog counted up.  With the host asleep (MP_ASLEEP) and the
+        // partner crafting, this re-check SHOULD bail.  Say once a second why it
+        // does not.  Throttled by wall clock, so a healthy short wait stays silent.
+        const bool ff_mid = should_fast_forward();
+        {
+            static int64_t s_last_probe_ms = 0;
+            const int64_t now_probe = mp_now_ms();
+            if( now_probe - s_last_probe_ms >= 1000 ) {
+                s_last_probe_ms = now_probe;
+                mp_log( "[cdda-mp] SRV-WAIT-PROBE: ff=" + std::to_string( ff_mid ? 1 : 0 ) +
+                        " reason=" + ( ff_mid ? std::string( "(would bail)" ) : mp_ff_decline_reason() ) +
+                        " acted=" + std::to_string( g_client_acted_this_turn ? 1 : 0 ) +
+                        " self=" + mp_local_ff_activity() +
+                        " partner=" + ( g_partner_activity.empty() ? "(none)" : g_partner_activity ) +
+                        " partner_moves=" + std::to_string( g_partner_activity_moves ) +
+                        " held=" + std::to_string( mp_peer_modal_held() ? 1 : 0 ) +
+                        " granted=" + std::to_string( g_granted_this_turn ? 1 : 0 ) );
+            }
+        }
+        if( ff_mid ) {
             mp_log( "[cdda-mp] SRV-WAIT: FAST-FORWARD engaged mid-wait, bailing" );
             break;
         }
