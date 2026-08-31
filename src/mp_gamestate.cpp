@@ -7008,6 +7008,10 @@ void wait_for_client_action()
     if( !remote_player_connected ) {
         return;
     }
+    // DIAG 2026-08-30 — "map_cache" is the mark immediately before this call, so a
+    // stall reported there is a stall somewhere in HERE, ahead of the
+    // "SRV-WAIT: entering" line.  Sub-marks so the next repro says which part.
+    mp_turn_phase( "cw:enter" );
 
     // REMOVED 2026-08-30 — the host-only sleep bypass.  It skipped the lockstep
     // wait whenever the HOST was asleep, regardless of what the client was doing:
@@ -7093,6 +7097,7 @@ void wait_for_client_action()
             last_reason = key;
         }
     }
+    mp_turn_phase( "cw:ff_decided" );
     if( ff_now ) {
         // MP 2026-08-30 — FF LEAD CONTROL.  Bursting unconditionally is what let
         // the host grant ~4000 turns ahead; the client then kept playing for
@@ -7122,6 +7127,7 @@ void wait_for_client_action()
                         std::to_string( MP_FF_HOLD_MAX_MS ) + "ms with lead=" +
                         std::to_string( lead ) + " — bursting anyway (safety valve)" );
                 s_hold_start_ms = 0;
+                mp_turn_phase( "cw:ff_valve_events" );
                 process_mp_events();
                 return;
             }
@@ -7130,6 +7136,7 @@ void wait_for_client_action()
                 mp_log( "[cdda-mp] FF-LEAD: released, lead=" + std::to_string( lead ) );
                 s_hold_start_ms = 0;
             }
+            mp_turn_phase( "cw:ff_events" );
             process_mp_events();
             return;
         }
@@ -9759,7 +9766,16 @@ void process_mp_events()
                 remove_remote_player();
                 break;
             case mp_event::type::action:
-                handle_remote_action( event.session_id, event.data );
+                {
+                    // DIAG 2026-08-30 — the host stall hunt reached "turn-phase=map_cache",
+                    // whose only statement is wait_for_client_action(), yet no
+                    // "SRV-WAIT: entering" was ever logged — so it parks BEFORE that,
+                    // and the only work on those paths is process_mp_events().  This
+                    // breadcrumb names the exact client message being applied when the
+                    // main thread stops, the same way the client apply steps do.
+                    mp_apply_step step( "host-apply:" + event.data.substr( 0, 60 ) );
+                    handle_remote_action( event.session_id, event.data );
+                }
                 if( !is_state_sync( event.data ) ) {
                     turn_action_processed = true;
                 }
