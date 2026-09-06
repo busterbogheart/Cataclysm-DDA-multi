@@ -808,6 +808,16 @@ static std::unordered_set<uint32_t> g_server_veh_live_nids;
 // transient short broadcast can't kill a live monster (the woodpecker bug).
 static std::unordered_set<uint32_t> g_server_mon_known_nids;
 
+// Host: per-nid last position seen while the monster was still alive in the
+// tracker. DIAGNOSTIC ONLY (GH#23 A/D). At the point removed_monsters is
+// computed the monster is already gone from the tracker, so "died right here"
+// and "the bubble moved away from it" are indistinguishable — both are just
+// absent. Keeping the last live position lets MON-REMOVED say which: a nid
+// whose last position is still inbounds when it vanishes died; one that is out
+// of bounds left the bubble. The same position also answers D — whether the
+// host actually has a corpse on that tile to send.
+static std::unordered_map<uint32_t, tripoint_abs_ms> g_server_mon_last_pos;
+
 // Host: per-nid last-broadcast monster record (the emitted JSON object). The
 // monster snapshot resent every monster, every turn — large and ~95% redundant
 // (most monsters don't move/change between turns). build_monster_list now emits
@@ -10036,13 +10046,36 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
 
     const tripoint_bub_ms new_pos = m.get_bub( abs_pos );
     if( new_pos != u.pos_bub() ) {
+        // DIAGNOSTIC (GH#23 C, direction 1): is the AVATAR being teleported onto a
+        // tile a monster already occupies?  The host's "pos" and its monster list
+        // ride the SAME state packet, and the monster list is a delta — a monster
+        // that didn't move is omitted, so the client holds its old position while
+        // this teleport walks the avatar across it.  SP's setpos has no occupancy
+        // check (nothing in SP can move a character onto a creature), so nothing
+        // stops the stack.  Pairs with MON-SYNC-ONTO-PLAYER below: exactly one of
+        // the two should fire for a given d0, and which one names the culprit.
+        if( const monster *sitting = get_creature_tracker().creature_at<monster>( abs_pos, true ) ) {
+            mp_log( "[cdda-mp] TELE-ONTO-MONSTER: avatar teleport to " +
+                    std::to_string( abs_pos.x() ) + "," + std::to_string( abs_pos.y() ) +
+                    "," + std::to_string( abs_pos.z() ) + " lands on " +
+                    sitting->type->id.str() + " nid=" + std::to_string( sitting->mp_net_id ) +
+                    " (from " + std::to_string( u.pos_abs().x() ) + "," +
+                    std::to_string( u.pos_abs().y() ) + ", step=" +
+                    std::to_string( std::max( std::abs( abs_pos.x() - u.pos_abs().x() ),
+                                              std::abs( abs_pos.y() - u.pos_abs().y() ) ) ) + ")" );
+        }
         // DIAGNOSTIC (resurrection #2): count live synced monsters before/after the
         // map reload to prove whether update_map silently unloads them (the suspected
         // source of MON-RESPAWN-DROPPED). Logs only when the count drops.
+        // GH#23 B: also capture WHICH nids, so the invisibility window of a dropped
+        // monster can be measured against its later MON-RESPAWN-DROPPED line — the
+        // count alone can't tell you whether the same monster keeps falling out.
         int mons_before = 0;
+        std::unordered_set<uint32_t> nids_before;
         for( const auto &p : get_creature_tracker().get_monsters_list() ) {
             if( p && p->mp_net_id != 0 && !p->is_dead() ) {
                 ++mons_before;
+                nids_before.insert( p->mp_net_id );
             }
         }
         if( new_pos.z() != u.pos_bub().z() ) {
@@ -10064,12 +10097,17 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         for( const auto &p : get_creature_tracker().get_monsters_list() ) {
             if( p && p->mp_net_id != 0 && !p->is_dead() ) {
                 ++mons_after;
+                nids_before.erase( p->mp_net_id );   // survived the shift
             }
         }
         if( mons_after < mons_before ) {
+            std::string lost;
+            for( const uint32_t n : nids_before ) {
+                lost += std::to_string( n ) + ' ';
+            }
             mp_log( "[cdda-mp] TELE-MON-DROP: synced monsters " + std::to_string( mons_before ) +
                     " -> " + std::to_string( mons_after ) + " across update_map (delta=" +
-                    std::to_string( mons_before - mons_after ) + ")" );
+                    std::to_string( mons_before - mons_after ) + ") lost_nids=[" + lost + "]" );
         }
     } else {
         mp_log( "[cdda-mp] teleport: -> already at target" );
@@ -14665,6 +14703,29 @@ static void apply_monster_sync( JsonObject &jo )
         // Correct position if the server disagrees.
         if( best->pos_abs() != target && m.inbounds( target ) ) {
             const shared_ptr_fast<monster> occupant = ct.find( target );
+            // DIAGNOSTIC (GH#23 C, direction 2): ct.find() returns only a monster
+            // (creature_tracker.h), so this guard is blind to the client's avatar
+            // and to the host proxy NPC — a synced monster can be dropped straight
+            // onto a person.  Log it BEFORE deciding, so the counts stay honest:
+            // this records what the host asked us to do, not what we did.  If the
+            // d0 samples show up here, the host is reporting the monster on the
+            // player's tile; if they show up in TELE-ONTO-MONSTER instead, the
+            // player is being walked onto a stale delta-omitted monster.
+            const Creature *person = get_creature_tracker().creature_at<Creature>( target, true );
+            if( person != nullptr && !person->is_monster() ) {
+                mp_log( "[cdda-mp] MON-SYNC-ONTO-PLAYER: host places " +
+                        best->type->id.str() + " nid=" + std::to_string( nid ) + " at " +
+                        std::to_string( target.x() ) + "," + std::to_string( target.y() ) +
+                        "," + std::to_string( target.z() ) + " — occupied by '" +
+                        person->get_name() + "' (avatar=" +
+                        std::to_string( person->is_avatar() ) + ") | from " +
+                        std::to_string( best->pos_abs().x() ) + "," +
+                        std::to_string( best->pos_abs().y() ) + " avatar_at=" +
+                        std::to_string( get_avatar().pos_abs().x() ) + "," +
+                        std::to_string( get_avatar().pos_abs().y() ) + " proxy_at=" +
+                        std::to_string( region_center.x() ) + "," +
+                        std::to_string( region_center.y() ) );
+            }
             if( !occupant || occupant.get() == best ) {
                 best->setpos( target, false );
             }
@@ -15373,6 +15434,8 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
     for( const auto &mon_ptr : get_creature_tracker().get_monsters_list() ) {
         if( mon_ptr && mon_ptr->mp_net_id != 0 && !mon_ptr->is_dead() ) {
             mon_alive_now.insert( mon_ptr->mp_net_id );
+            // GH#23 A/D diagnostic: remember where it was while it was still here.
+            g_server_mon_last_pos[mon_ptr->mp_net_id] = mon_ptr->pos_abs();
         }
     }
     std::string removed_monsters_json = "[";
@@ -15387,12 +15450,45 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
             }
             rmfirst = false;
             removed_monsters_json += std::to_string( old_nid );
-            mp_log( "[cdda-mp] MON-REMOVED: nid=" + std::to_string( old_nid ) +
-                    " (died/left bubble)" );
+            // GH#23 A/D: classify the removal instead of shrugging at it. A monster
+            // whose last live position is still inside the host's map died there;
+            // one whose last position has fallen out of bounds was unloaded when the
+            // bubble moved, and is alive — the client must NOT bury that one.
+            // corpse_here answers D: the client only ever receives a corpse through
+            // tile_changes, and last session it got one on 8 tiles in two hours, so
+            // check whether the host even has a corpse to send at the death tile.
+            std::string why = " reason=UNKNOWN(no-last-pos)";
+            const auto lp = g_server_mon_last_pos.find( old_nid );
+            if( lp != g_server_mon_last_pos.end() ) {
+                const tripoint_abs_ms &last = lp->second;
+                const bool in = get_map().inbounds( last );
+                int corpses = 0;
+                if( in ) {
+                    for( const item &it : get_map().i_at( get_map().get_bub( last ) ) ) {
+                        if( it.is_corpse() ) {
+                            ++corpses;
+                        }
+                    }
+                }
+                why = " last_pos=" + std::to_string( last.x() ) + "," +
+                      std::to_string( last.y() ) + "," + std::to_string( last.z() ) +
+                      " inbounds=" + std::to_string( in ) +
+                      " corpses_here=" + std::to_string( corpses ) +
+                      " reason=" + ( in ? "DIED" : "LEFT_BUBBLE" );
+            }
+            mp_log( "[cdda-mp] MON-REMOVED: nid=" + std::to_string( old_nid ) + why );
         }
     }
     removed_monsters_json += ']';
     g_server_mon_known_nids = std::move( mon_alive_now );
+    // Prune the diagnostic position map to the still-known set so it can't grow
+    // without bound over a long session.
+    if( g_server_mon_last_pos.size() > g_server_mon_known_nids.size() ) {
+        for( auto it = g_server_mon_last_pos.begin(); it != g_server_mon_last_pos.end(); ) {
+            it = g_server_mon_known_nids.count( it->first ) ? std::next( it )
+                 : g_server_mon_last_pos.erase( it );
+        }
+    }
 
     // Scan for tile changes around both the remote player AND the host so that
     // doors/terrain the host interacts with also reach the client.
