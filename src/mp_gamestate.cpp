@@ -1256,6 +1256,8 @@ static float g_mp_host_luminance = 0.0f;
 // action packet and injected into the host's lighting pass at the proxy NPC position.
 static float g_mp_remote_player_luminance = 0.0f;
 
+static const bodypart_str_id body_part_torso( "torso" );
+
 static const efftype_id effect_bleed( "bleed" );
 static const efftype_id effect_harnessed( "harnessed" );
 static const efftype_id effect_pet( "pet" );
@@ -2424,6 +2426,21 @@ static std::unordered_map<uint32_t, int> g_last_reported_monster_hp;
 
 // Client: last known HP per bodypart string ID — used to synthesise "you were hit" messages.
 static std::unordered_map<std::string, int> g_last_bodypart_hp;
+
+// Client: SP reactions to harm the HOST inflicted, recorded in the recv path and
+// run by client_resolve_pending_ui() from the main loop.  Both SP hooks involved,
+// Character::on_hurt and react_to_felt_pain (via set_pain), can open
+// cancel_activity_or_ignore_query, a blocking UI that must never run inside packet
+// processing.
+//
+// Measured 2026-10-12: the client took the host's damage as raw set_part_hp_cur
+// writes and pain not at all, so neither hook ever ran.  Asleep on pills beside an
+// equally drugged host, the host woke when a zombie brute grabbed it; the client
+// took hit after hit (BP-DAMAGE-SYNTH 20, 17, 7, ...) without waking, and died.
+static bool g_client_pending_hurt = false;     // real damage arrived → on_hurt()
+static int g_client_pending_pain = 0;          // host-side pain rise to apply
+static int g_last_host_proxy_pain = -1;        // proxy pain at last sync; -1 = none yet
+static bool g_client_pending_lost_host_wake = false;
 
 // Client: net_ids of synced monsters the client just killed locally, awaiting the
 // host's authoritative confirmation. Value = remaining syncs to suppress a
@@ -10737,6 +10754,7 @@ static bool apply_one_state_message( const std::string &msg )
     if( msg.find( "\"type\":\"host_died\"" ) != std::string::npos ) {
         if( !g_server_died ) {
             g_server_died = true;
+            g_client_pending_lost_host_wake = true;
             remove_client_host_npc();
             add_msg( m_bad, _( "Your partner has died.  Waiting for them to respawn..." ) );
         }
@@ -10784,8 +10802,19 @@ static bool apply_one_state_message( const std::string &msg )
     // when the silent host stops granting turns — confusing UX for what is
     // really "your character died".
     if( msg.find( "\"type\":\"you_died\"" ) != std::string::npos ) {
+        // SP's game over (game::is_game_over) fires on is_dead_state(): a vital
+        // part at 0 HP.  die() alone doesn't set that, and the host sends this
+        // instead of a final HP sync, so the last synced HP can still be alive.
+        // Measured 2026-10-12: torso 12/84 at you_died → no death screen, and a
+        // sleeping client spun forever.  Zero the torso the way SP's own forced
+        // deaths do (character_health.cpp: set_part_hp_cur( body_part_torso, 0 )).
+        avatar &av = get_avatar();
+        if( !av.is_dead_state() ) {
+            av.set_part_hp_cur( body_part_torso, 0 );
+        }
+        mp_log( "[cdda-mp] CLI-YOU-DIED: dead_state=" + std::to_string( av.is_dead_state() ) );
         add_msg( m_bad, "%s", _( "You died." ) );
-        get_avatar().die( &get_map(), nullptr );
+        av.die( &get_map(), nullptr );
         return true;
     }
 
@@ -10953,6 +10982,7 @@ static bool apply_one_state_message( const std::string &msg )
     if( msg.find( "\"connected\":false" ) != std::string::npos ) {
         if( !g_server_died ) {
             g_server_died = true;
+            g_client_pending_lost_host_wake = true;
             remove_client_host_npc();
             add_msg( m_bad, _( "Lost connection to server." ) );
         }
@@ -11503,6 +11533,21 @@ static bool apply_one_state_message( const std::string &msg )
                     + std::string( e.what() ) );
         }
 
+        // Pain the host inflicted on our proxy.  Only the RISE is applied: both
+        // bodies decay pain on their own, and the proxy carries none of our
+        // client-local pain sources, so an absolute overwrite would erase those.
+        // The first value after a join only sets the baseline.
+        if( jo.has_int( "proxy_pain" ) ) {
+            const int host_pain = jo.get_int( "proxy_pain" );
+            if( g_last_host_proxy_pain >= 0 && host_pain > g_last_host_proxy_pain ) {
+                g_client_pending_pain += host_pain - g_last_host_proxy_pain;
+                mp_log( "[cdda-mp] PAIN-SYNC: proxy " + std::to_string( g_last_host_proxy_pain ) +
+                        "->" + std::to_string( host_pain ) + " pending=" +
+                        std::to_string( g_client_pending_pain ) );
+            }
+            g_last_host_proxy_pain = host_pain;
+        }
+
         // Apply per-bodypart HP to the client avatar so the sidebar stays accurate.
         // Also synthesise "you were hit" messages from HP deltas.
         if( jo.has_array( "bodyparts" ) ) {
@@ -11608,6 +11653,8 @@ static bool apply_one_state_message( const std::string &msg )
                 mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: total=" + std::to_string( total_damage ) );
                 //~ %d is the total damage taken across all body parts this tick.
                 add_msg( m_bad, _( "You are hit for %d damage!" ), total_damage );
+                // Real damage, so SP's hurt reaction runs from the main loop.
+                g_client_pending_hurt = true;
             } else if( recompute_sig ) {
                 mp_log( "[cdda-mp] BP-DAMAGE-SYNTH: suppressed uniform recompute (all "
                         + std::to_string( n_parts ) + " parts -" + std::to_string( first_delta )
@@ -11985,6 +12032,49 @@ void client_resolve_pending_ui()
             g_autosmash_pending = true;
         }
     }
+    // Harm the host inflicted on our proxy, given SP's own reactions on the real
+    // body: pain through set_pain (react_to_felt_pain: the pain wake, heavy-sleeper
+    // thresholds, "Ouch, something hurts!") and the hit through on_hurt (wake unless
+    // narcosis / sleep-shutdown CBM, ADRENALINE, "You were hurt!").  See
+    // g_client_pending_hurt.  wake_up() only zeroes the sleep effect's duration, so
+    // `woke` reads the remaining duration rather than has_effect().
+    if( g_client_pending_pain > 0 || g_client_pending_hurt ) {
+        static const efftype_id eff_sleep( "sleep" );
+        avatar &av = get_avatar();
+        const bool was_asleep = mp_char_is_asleep( av );
+        const int pain = g_client_pending_pain;
+        const bool hurt = g_client_pending_hurt;
+        g_client_pending_pain = 0;
+        g_client_pending_hurt = false;
+        if( pain > 0 ) {
+            // Already resisted by the proxy on the host; don't resist twice.
+            av.mod_pain_noresist( pain );
+        }
+        if( hurt ) {
+            av.on_hurt( nullptr );
+        }
+        const bool woke = was_asleep &&
+                          ( !av.has_effect( eff_sleep ) ||
+                            av.get_effect( eff_sleep ).get_duration() <= 0_turns );
+        mp_log( "[cdda-mp] CLI-HURT: pain+" + std::to_string( pain ) +
+                " hurt=" + std::to_string( hurt ) +
+                " pain_now=" + std::to_string( av.get_pain() ) +
+                " was_asleep=" + std::to_string( was_asleep ) +
+                " woke=" + std::to_string( woke ) );
+    }
+    // The host is gone while we sleep.  SP skips the input loop for a sleeper, and
+    // no grant will ever come to carry the sleep forward, so do_turn spins on a
+    // frozen clock with the window unresponsive (measured 2026-10-12: ~41,000
+    // passes/s after you_died, until killed).  Wake up so the locked input path
+    // runs and the menus work again.
+    if( g_client_pending_lost_host_wake ) {
+        g_client_pending_lost_host_wake = false;
+        avatar &av = get_avatar();
+        if( mp_char_is_asleep( av ) ) {
+            av.wake_up();
+            mp_log( "[cdda-mp] CLI-WAKE-LOST-HOST: woke the sleeping client" );
+        }
+    }
 }
 
 void client_process_incoming()
@@ -12026,6 +12116,11 @@ void client_process_incoming()
         // can't be diffed against this fresh game's turn 0 and fast-forward
         // needs across two unrelated timelines.
         mp_reset_turn_catchup_state();
+        // Same for harm reactions: the first proxy_pain after a join is a baseline.
+        g_client_pending_hurt = false;
+        g_client_pending_pain = 0;
+        g_last_host_proxy_pain = -1;
+        g_client_pending_lost_host_wake = false;
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
         // Templates wire-sync: send local template list so the host can request
@@ -16317,6 +16412,10 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
                return s;
            }() ) +
            "\"bodyparts\":" + bparts_json +
+           // The proxy's pain, after its own resistances.  The client applies the
+           // rise since the last sync so SP's pain reactions run on the real body
+           // (see g_client_pending_pain).
+           ",\"proxy_pain\":" + std::to_string( remote->get_pain() ) +
            // MP 2026-08-15 — turns this packet represents. 1 for an ordinary grant;
            // FF_BATCH_TURNS for a batched fast-forward grant, telling the client to
            // tick its activity that many times rather than once.
