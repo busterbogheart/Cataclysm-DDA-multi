@@ -3941,6 +3941,44 @@ static void mp_handle_note_sync( const std::string &msg );
 static void mp_handle_high_five_recv( const std::string &msg );
 static void mp_handle_shout_recv( const std::string &msg );
 
+// Host vehicle census, one line: total, count per type, and every stack (2+
+// vehicles of one type on one tile).  Logged at each host world load and each
+// client join, so the event that grows a stack shows up in the log right after it.
+// Covers the reality bubble only (map::get_vehicles).
+//
+// Measured 2026-10-12: the MAGICLAND save holds 113 vehicles at 15 locations,
+// stacked on single tiles (racing kayak x32, canoe x27, Co-op cycle x25, Wooden
+// Cabin Cruiser x14).  Two loads that day, with autosaves in between, gave identical
+// counts, so the stacks formed in earlier sessions whose logs are gone.
+static void mp_log_vehicle_census( const std::string &reason )
+{
+    std::map<std::string, int> by_type;
+    std::map<std::string, int> by_tile;
+    int total = 0;
+    for( const wrapped_vehicle &wv : get_map().get_vehicles() ) {
+        if( !wv.v ) {
+            continue;
+        }
+        const tripoint_abs_ms p = wv.v->pos_abs();
+        ++total;
+        ++by_type[wv.v->name];
+        ++by_tile[wv.v->name + " @" + std::to_string( p.x() ) + "," +
+                  std::to_string( p.y() ) + "," + std::to_string( p.z() )];
+    }
+    std::string types;
+    for( const auto &[name, n] : by_type ) {
+        types += ( types.empty() ? "" : ", " ) + name + " x" + std::to_string( n );
+    }
+    std::string stacks;
+    for( const auto &[key, n] : by_tile ) {
+        if( n >= 2 ) {
+            stacks += ( stacks.empty() ? "" : ", " ) + key + " x" + std::to_string( n );
+        }
+    }
+    mp_log( "[cdda-mp] VEH-CENSUS: reason=" + reason + " total=" + std::to_string( total ) +
+            " types=[" + types + "] stacks=[" + stacks + "]" );
+}
+
 // What the client's step into a monster's tile does, decided the way SP decides
 // it for the avatar.  SP splits it across two functions: avatar_action::move
 // attacks only when `critter.friendly == 0 && !critter.has_effect( effect_pet )`,
@@ -4333,6 +4371,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             "' (id=" + std::to_string( get_avatar().getID().get_value() ) +
                             ") partner=CLIENT '" + cname + "' (proxy_id=" +
                             std::to_string( remote_player_npc_id.get_value() ) + ")" );
+                    mp_log_vehicle_census( g_client_rejoin_pending ? "client_reconnect" : "client_join" );
                     // One-shot: what does the proxy know about magic?  Expected
                     // to be nothing — see ROADMAP B4.
                     mp_log_proxy_magic_state();
@@ -9089,6 +9128,7 @@ static void mp_start_pending_host_thread()
     g_host_thread_actually_started = true;
     mp_kill_tally_subscribe();   // start counting kills for the co-op tally
     mp_log( "[cdda-mp] MENU: host thread started (post-world-load)" );
+    mp_log_vehicle_census( "host_load" );
 }
 
 bool mp_menu_start_host_session()
