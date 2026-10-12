@@ -1257,7 +1257,11 @@ static float g_mp_host_luminance = 0.0f;
 static float g_mp_remote_player_luminance = 0.0f;
 
 static const efftype_id effect_bleed( "bleed" );
+static const efftype_id effect_harnessed( "harnessed" );
+static const efftype_id effect_pet( "pet" );
 static const efftype_id effect_ridden( "ridden" );
+
+static const json_character_flag json_flag_CANNOT_MOVE( "CANNOT_MOVE" );
 
 // ---------------------------------------------------------------------------
 // Info panel (bottom-left corner)
@@ -3937,6 +3941,85 @@ static void mp_handle_note_sync( const std::string &msg );
 static void mp_handle_high_five_recv( const std::string &msg );
 static void mp_handle_shout_recv( const std::string &msg );
 
+// What the client's step into a monster's tile does, decided the way SP decides
+// it for the avatar.  SP splits it across two functions: avatar_action::move
+// attacks only when `critter.friendly == 0 && !critter.has_effect( effect_pet )`,
+// and game::walk_move displaces anything it did not attack.  walk_move moves `u`
+// and cannot take the proxy, so this mirrors both halves for an npc.
+//
+// Measured 2026-10-12: the move handler called melee_attack() on ANY monster in
+// the way.  The client walked into the host's summoned wolf (friendly the whole
+// time on both sides, per MON-FRIENDLY) and the host resolved it as "You chop
+// the wolf in the chest for 60 damage. ... You kill the wolf!", where the host's
+// own step into the same wolves read "You displace the wolf."  Every friendly
+// monster was exposed: summons, pets, tamed animals.
+//
+// Not mirrored from avatar_action::move's attack branch: safe mode and the
+// auto-move cancel are the CLIENT's own UI state and have no meaning on the
+// host's copy of the proxy; the relax-gas check reads effects the proxy does
+// not carry.
+enum class mp_proxy_bump {
+    attack,   // hostile: bump-to-attack, as SP
+    step,     // displaced, or passing over it under a walkway: take the step
+    blocked   // can't be moved: no step and no AP spent (SP returns false)
+};
+
+static mp_proxy_bump mp_proxy_bump_monster( npc &proxy, monster &critter,
+        const tripoint_bub_ms &dest )
+{
+    map &here = get_map();
+    mp_proxy_bump result = mp_proxy_bump::step;
+    // Creatures under a solid surface coexist with the walker on the tile.
+    if( critter.is_underwater() && here.has_flag( ter_furn_flag::TFLAG_SWIM_UNDER, dest ) ) {
+        result = mp_proxy_bump::step;
+    } else if( critter.friendly == 0 && !critter.has_effect( effect_pet ) ) {
+        result = mp_proxy_bump::attack;
+    } else if( critter.has_flag( mon_flag_IMMOBILE ) || critter.has_effect( effect_harnessed ) ||
+               critter.has_effect( effect_ridden ) || critter.has_flag( json_flag_CANNOT_MOVE ) ) {
+        proxy.add_msg_player_or_npc( m_info, _( "You can't displace your %s." ),
+                                     _( "<npcname> can't displace the %s." ), critter.name() );
+        result = mp_proxy_bump::blocked;
+    } else if( proxy.is_mounted() ) {
+        // walk_move: a mounted walker shoves the monster to any free adjacent tile.
+        std::vector<tripoint_bub_ms> maybe_valid;
+        for( const tripoint_bub_ms &jk : here.points_in_radius( critter.pos_bub(), 1 ) ) {
+            if( g->is_empty( jk ) ) {
+                maybe_valid.push_back( jk );
+            }
+        }
+        bool moved = false;
+        while( !moved && !maybe_valid.empty() ) {
+            moved = critter.move_to( random_entry_removed( maybe_valid ) );
+        }
+        if( moved ) {
+            proxy.add_msg_player_or_npc( _( "You push the %s out of the way." ),
+                                         _( "<npcname> pushes the %s out of the way." ), critter.name() );
+        } else {
+            proxy.add_msg_player_or_npc( _( "There is no room to push the %s out of the way." ),
+                                         _( "<npcname> has no room to push the %s out of the way." ),
+                                         critter.name() );
+            result = mp_proxy_bump::blocked;
+        }
+    } else {
+        // walk_move: swap the monster onto the tile the walker is leaving.
+        if( critter.move_to( proxy.pos_bub(), /*force=*/false, /*step_on_critter=*/true ) ) {
+            proxy.add_msg_player_or_npc( _( "You displace the %s." ),
+                                         _( "<npcname> displaces the %s." ), critter.name() );
+        } else {
+            proxy.add_msg_player_or_npc( _( "You cannot move the %s out of the way." ),
+                                         _( "<npcname> cannot move the %s out of the way." ),
+                                         critter.name() );
+            result = mp_proxy_bump::blocked;
+        }
+    }
+    mp_log( "[cdda-mp] PROXY-BUMP: mon=" + critter.type->id.str() +
+            " friendly=" + std::to_string( critter.friendly ) +
+            " pet=" + std::to_string( critter.has_effect( effect_pet ) ) +
+            " result=" + ( result == mp_proxy_bump::attack ? "attack" :
+                           result == mp_proxy_bump::blocked ? "blocked" : "step" ) );
+    return result;
+}
+
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
     // Liveness: ANY message from the client (action, wait, or heartbeat) proves
@@ -6019,11 +6102,18 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     " next_impassable_post=" +
                     std::to_string( m.impassable( next ) ) );
         }
-        if( target ) {
+        // A monster in the way is attacked only if SP would attack it; a friendly
+        // one is displaced and the step proceeds below.  See mp_proxy_bump_monster().
+        const mp_proxy_bump bump = target ? mp_proxy_bump_monster( *remote, *target, next )
+                                   : mp_proxy_bump::step;
+        if( bump == mp_proxy_bump::attack ) {
             // melee_attack() charges moves on the NPC internally; capture the result.
             remote->melee_attack( *target, true );
             g_remote_moves = remote->get_moves();
             acted = true;
+        } else if( bump == mp_proxy_bump::blocked ) {
+            // Couldn't move it.  acted stays false, so the SRV-FREE path below hands
+            // the client its moves back, as SP returns from the move unspent.
         } else if( drag_handled_turn ) {
                 // Drag fully consumed the turn (collision / stuff in way /
                 // shift / too heavy).  Don't step the proxy; pay roughly the
