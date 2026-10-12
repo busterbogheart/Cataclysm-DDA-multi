@@ -11531,7 +11531,8 @@ static bool apply_one_state_message( const std::string &msg )
                         " last_seq=" + std::to_string( g_client_last_grant_seq ) );
                 g_client_waiting_for_ack = false;
                 get_avatar().set_moves( srv_moves );
-            } else if( ( !g_client_waiting_for_ack || get_avatar().activity ) &&
+            } else if( ( !g_client_waiting_for_ack || get_avatar().activity ||
+                         mp_char_is_asleep( get_avatar() ) ) &&
                        ( grant_seq == 0 || grant_seq > g_client_last_grant_seq ) ) {
                 // New grant: seq is fresh AND (no pending ack OR avatar is in an
                 // activity).  The activity-override bypasses the ack guard so
@@ -11539,17 +11540,20 @@ static bool apply_one_state_message( const std::string &msg )
                 // arrive faster than the client can ack — the activity is the
                 // pacing authority during a passive activity, not the
                 // handshake.  Seq guard still prevents stale replays.
+                // Sleep gets the same override: it is a long action with no
+                // player_activity (an effect), acked per grant below.
                 if( grant_seq > 0 ) {
                     g_client_last_grant_seq = grant_seq;
                 }
                 const player_activity &ca = get_avatar().activity;
+                const bool asleep = !ca && mp_char_is_asleep( get_avatar() );
                 mp_log( "[cdda-mp] CLI-GRANT: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
-                        " act=" + ( ca ? ca.id().str() : "none" ) +
-                        " override_ack=" + std::to_string( ca && g_client_waiting_for_ack ) );
+                        " act=" + ( ca ? ca.id().str() : asleep ? MP_ASLEEP_ACT : "none" ) +
+                        " override_ack=" + std::to_string( ( ca || asleep ) && g_client_waiting_for_ack ) );
                 // If we overrode the ack guard for an activity, clear it now so
                 // the next dispatch isn't suppressed by stale state.
-                if( ca && g_client_waiting_for_ack ) {
+                if( ( ca || asleep ) && g_client_waiting_for_ack ) {
                     g_client_waiting_for_ack = false;
                 }
                 get_avatar().set_moves( srv_moves );
@@ -11660,6 +11664,35 @@ static bool apply_one_state_message( const std::string &msg )
                     // while the activity runs.  Without this, do_turn never
                     // exits to the main game loop's redraw path during a long
                     // activity.
+                    g->invalidate_main_ui_adaptor();
+                } else if( asleep ) {
+                    // Asleep: the same per-grant ack as the passive branch above,
+                    // minus the tick, because sleep has no player_activity to
+                    // tick.  It is an effect, and SP advances it from the per-turn
+                    // body/effect processing, which on the client already
+                    // catches up across the host's calendar (this packet set it).
+                    // So the grant buys exactly the host's turn(s) of sleep.
+                    //
+                    // Measured 2026-10-12 without this: grant 59 reached a
+                    // sleeping client with act=none, fell through every branch,
+                    // and was never acked.  The host sat in SRV-WAIT for 72 s
+                    // (RED, every key HOST-LOCKED-BLOCK).  The 100 moves were
+                    // never spent either, so should_advance_calendar() stayed
+                    // open and the client free-ran ~29,670 turns (8 h of sleep,
+                    // hunger and rest) on its own clock while the shared one
+                    // moved 74.
+                    //
+                    // Spend the whole grant: a sleeping character takes no
+                    // action, and moves <= 0 is what closes the calendar gate
+                    // until the next grant, just as a passive tick leaves it.
+                    get_avatar().set_moves( 0 );
+                    mp_log( "[cdda-mp] CLI-GRANT-SLEEP-ACK: moves " + std::to_string( srv_moves ) +
+                            "->0 grant_seq=" + std::to_string( grant_seq ) +
+                            " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) );
+                    client_send( client_enrich_action(
+                                     "{\"type\":\"action\",\"action\":\"wait\"}" ) );
+                    g_client_waiting_for_ack = true;
+                    g_ack_set_time = std::chrono::steady_clock::now();
                     g->invalidate_main_ui_adaptor();
                 }
             } else {
