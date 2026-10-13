@@ -1270,6 +1270,9 @@ static void mp_reset_map_sync();
 // Shared by both host and client; resets on connect/disconnect.
 // Hysteresis: step up at 50/57, step down at 44/50.
 static int g_separation_tier = 0;
+// The "too far" line: tier 3 of the separation warning, and the most a
+// teleport may leave between the two players (mp_teleport_refused).
+static constexpr int MP_SEPARATION_LIMIT = 68;
 // False until the host+client have been confirmed close (<40 tiles) at least once
 // this session. Suppresses the join transient: the client proxy spawns at its
 // scenario start (far) and is teleported next to the host a beat later, so the
@@ -9630,6 +9633,39 @@ npc *get_partner_npc()
     return result;
 }
 
+bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest )
+{
+    const npc *partner = get_partner_npc();
+    if( partner == nullptr ) {
+        return false;   // no live co-op session
+    }
+    // Who must stay near whom: the local player near their partner, or (host
+    // only) the client's proxy, moved by something host-side, near the host.
+    tripoint_abs_ms anchor;
+    if( who.is_avatar() ) {
+        anchor = partner->pos_abs();
+    } else if( is_hosting() && &who == partner ) {
+        anchor = get_avatar().pos_abs();
+    } else {
+        return false;
+    }
+    // Same metric as check_separation_warning.
+    const int dist = std::max( std::abs( dest.x() - anchor.x() ), std::abs( dest.y() - anchor.y() ) );
+    if( dist < MP_SEPARATION_LIMIT ) {
+        return false;
+    }
+    mp_log( "[cdda-mp] TELEPORT-REFUSED: who='" + who.get_name() + "' dest=" +
+            std::to_string( dest.x() ) + "," + std::to_string( dest.y() ) + "," +
+            std::to_string( dest.z() ) + " partner_dist=" + std::to_string( dist ) +
+            " limit=" + std::to_string( MP_SEPARATION_LIMIT ) );
+    if( who.is_avatar() ) {
+        //~ %s is the co-op partner's name.  First sentence is SP's dimensional-anchor message.
+        add_msg( m_warning, _( "You feel a strange, inward force.  You can't teleport that far from %s." ),
+                 mp_partner_display_name() );
+    }
+    return true;
+}
+
 bool is_partner_npc( character_id id )
 {
     // Host side: the client's proxy is remote_player_npc_id.
@@ -10726,7 +10762,7 @@ static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_a
         return;
     }
     const int prev = g_separation_tier;
-    if( dist >= 68 ) {
+    if( dist >= MP_SEPARATION_LIMIT ) {
         g_separation_tier = 3;
     } else if( dist >= 60 ) {
         g_separation_tier = std::max( g_separation_tier, 2 );

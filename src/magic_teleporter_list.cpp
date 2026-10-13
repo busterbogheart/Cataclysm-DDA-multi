@@ -24,6 +24,7 @@
 #include "map_iterator.h"
 #include "mapdata.h"
 #include "messages.h"
+#include "mp_gamestate.h"
 #include "output.h"
 #include "panels.h"
 #include "point.h"
@@ -98,6 +99,11 @@ void teleporter_list::translocate( const std::set<tripoint_bub_ms> &targets )
     std::optional<tripoint_abs_omt> omt_dest = choose_teleport_location();
     if( !omt_dest ) {
         add_msg( _( "Teleport canceled." ) );
+        return;
+    }
+    // Co-op: one reality bubble; refuse a gate too far from the partner.
+    if( cata_mp::mp_teleport_refused( get_avatar(),
+                                      project_to<coords::ms>( *omt_dest ) + point( SEEX, SEEY ) ) ) {
         return;
     }
 

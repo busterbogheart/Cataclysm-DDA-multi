@@ -271,6 +271,16 @@ int get_separation_tier();
 // direction indicator when the partner is off-screen.
 ::npc *get_partner_npc();
 
+// Co-op limit on teleports: there is one reality bubble, so a teleport that
+// leaves the pair more than MP_SEPARATION_LIMIT apart splits the session (the
+// client keeps playing at the destination while its host-side body stays put).
+// True, after logging and telling the player, when `who` (the local player,
+// or on the host the client's proxy) would land that far from their partner.
+// Called beside SP's DIMENSIONAL_ANCHOR refusal in teleport::teleport_to_point
+// and after the destination pick in teleporter_list::translocate.  Short hops
+// near the partner pass.  False outside a live co-op session.
+bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest );
+
 // Host: true while wait_for_client_action() is blocking — i.e. the host has
 // no moves and is waiting for the client to ack the current turn.  Used to
 // gate which keys are handled during the wait (zoom etc.).

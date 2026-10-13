@@ -28,6 +28,7 @@
 #include "map.h"
 #include "map_scale_constants.h"
 #include "messages.h"
+#include "mp_gamestate.h"
 #include "point.h"
 #include "rng.h"
 #include "submap.h"
@@ -191,6 +192,10 @@ bool teleport::teleport_to_point( Creature &critter, tripoint_bub_ms target, boo
     if( abs_ms.z() > OVERMAP_HEIGHT || abs_ms.z() < -OVERMAP_DEPTH ) {
         debugmsg( "%s cannot teleport to point %s: too high or too deep.", critter.get_name(),
                   abs_ms.to_string() );
+        return false;
+    }
+    // Co-op: one reality bubble, so nothing may teleport the pair apart.
+    if( cata_mp::mp_teleport_refused( critter, abs_ms ) ) {
         return false;
     }
     //The teleportee is dimensionally anchored so nothing happens
