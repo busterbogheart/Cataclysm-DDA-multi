@@ -27,6 +27,7 @@
 #include "map_iterator.h"
 #include "messages.h"
 #include "monster.h"
+#include "mp_gamestate.h"
 #include "music.h"
 #include "npc.h"
 #include "output.h"
@@ -341,6 +342,9 @@ void sounds::sound( const tripoint_bub_ms &p, int vol, sound_t category,
     sounds_since_last_turn.emplace_back( p,
                                          sound_event{ vol, category, description, ambient,
                                                  false, id, variant, seas_str } );
+    // MP: the co-op client hears the host's world through its own copy of this list.
+    cata_mp::mp_note_sound( p, vol, static_cast<int>( category ), description, ambient, id,
+                            variant, /*footstep=*/false );
 }
 
 void sounds::sound( const tripoint_bub_ms &p, int vol, sound_t category,
@@ -357,6 +361,9 @@ void sounds::add_footstep( const tripoint_bub_ms &p, int volume, int, monster *,
     const std::string seas_str = season_str( seas );
     sounds_since_last_turn.emplace_back( p, sound_event { volume,
                                          sound_t::movement, footstep, false, true, "", "", seas_str} );
+    // MP: see the matching callout in sounds::sound().
+    cata_mp::mp_note_sound( p, volume, static_cast<int>( sound_t::movement ), footstep, false,
+                            "", "", /*footstep=*/true );
 }
 
 template <typename C>

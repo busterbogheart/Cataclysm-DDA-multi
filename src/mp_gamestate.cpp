@@ -2442,6 +2442,107 @@ static int g_client_pending_pain = 0;          // host-side pain rise to apply
 static int g_last_host_proxy_pain = -1;        // proxy pain at last sync; -1 = none yet
 static bool g_client_pending_lost_host_wake = false;
 
+// Host: sounds made in the host's world since the last state packet, so the client
+// hears them through its OWN SP processing: sounds::sound() / add_footstep() on
+// arrival, then sounds::process_sound_markers( &u ) in its do_turn.  That applies
+// the client's hearing, deafness, hearing protection, the heavy-sleeper wake dice,
+// narcosis, the "Heard …!" noise distraction, "You hear …" messages, sfx and map
+// markers, all by SP's own rules.
+//
+// Measured 2026-10-12: both asleep; the host woke ~21:12:00 and walked away, and a
+// zombie reached the client almost a minute later.  The client only woke when
+// bitten, because no sound from the host's world ever reached it.  Absolute
+// coordinates, since the bubble can shift between the sound and the send.
+struct mp_wire_sound {
+    tripoint_abs_ms pos;
+    int volume;
+    int category;
+    std::string description;
+    bool ambient;
+    std::string id;
+    std::string variant;
+    bool footstep;
+};
+static std::vector<mp_wire_sound> g_host_sounds_for_client;
+static constexpr size_t MP_MAX_SOUNDS_PER_PACKET = 48;
+static constexpr size_t MP_MAX_SOUNDS_BUFFERED = 512;
+
+void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
+                    const std::string &description, bool ambient,
+                    const std::string &id, const std::string &variant, bool footstep )
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id );
+    if( !proxy ) {
+        return;
+    }
+    // Generated on each side from the shared weather, so forwarding doubles it.
+    if( category == static_cast<int>( sounds::sound_t::weather ) ) {
+        return;
+    }
+    const tripoint_abs_ms abs = get_map().get_abs( p );
+    const tripoint_abs_ms listener = proxy->pos_abs();
+    // The client's own tile: the noise of its own actions, which it can also make
+    // locally (a passive activity ticks on both sides), so forwarding would double
+    // it.  SP gives own-tile sound no distraction and no marker anyway.  A monster's
+    // attack is voiced from the attacker's tile (monattack.cpp), so it still passes.
+    if( abs == listener ) {
+        return;
+    }
+    // Drop only what could not reach the proxy even with doubled hearing; the
+    // client applies SP's exact volume/distance/weather rules on arrival.
+    if( vol * 2 - rl_dist( abs, listener ) <= 0 ) {
+        return;
+    }
+    if( g_host_sounds_for_client.size() >= MP_MAX_SOUNDS_BUFFERED ) {
+        g_host_sounds_for_client.erase( g_host_sounds_for_client.begin() );
+    }
+    g_host_sounds_for_client.push_back( { abs, vol, category, description, ambient, id,
+                                          variant, footstep } );
+}
+
+// Host: drain the buffered sounds into a JSON array for the next state packet,
+// keeping the loudest at the listener when there are more than one packet holds.
+static std::string mp_take_client_sounds_json( const tripoint_abs_ms &listener )
+{
+    if( g_host_sounds_for_client.empty() ) {
+        return "[]";
+    }
+    std::vector<mp_wire_sound> snd;
+    snd.swap( g_host_sounds_for_client );
+    const size_t total = snd.size();
+    if( snd.size() > MP_MAX_SOUNDS_PER_PACKET ) {
+        std::stable_sort( snd.begin(), snd.end(), [&listener]( const mp_wire_sound & a,
+        const mp_wire_sound & b ) {
+            return a.volume - rl_dist( a.pos, listener ) > b.volume - rl_dist( b.pos, listener );
+        } );
+        snd.resize( MP_MAX_SOUNDS_PER_PACKET );
+    }
+    std::string out = "[";
+    for( const mp_wire_sound &s : snd ) {
+        if( out.size() > 1 ) {
+            out += ',';
+        }
+        out += "{\"x\":" + std::to_string( s.pos.x() ) +
+               ",\"y\":" + std::to_string( s.pos.y() ) +
+               ",\"z\":" + std::to_string( s.pos.z() ) +
+               ",\"v\":" + std::to_string( s.volume ) +
+               ",\"c\":" + std::to_string( s.category ) +
+               ",\"a\":" + ( s.ambient ? "true" : "false" ) +
+               ",\"f\":" + ( s.footstep ? "true" : "false" ) +
+               ",\"d\":\"" + json_escape_str( s.description ) + "\"" +
+               ",\"id\":\"" + json_escape_str( s.id ) + "\"" +
+               ",\"var\":\"" + json_escape_str( s.variant ) + "\"}";
+    }
+    out += ']';
+    mp_log( "[cdda-mp] SOUND-SEND: n=" + std::to_string( snd.size() ) +
+            ( total > snd.size() ? " dropped=" + std::to_string( total - snd.size() ) : "" ) +
+            " first=\"" + snd.front().description + "\" v=" + std::to_string( snd.front().volume ) );
+    return out;
+}
+
 // Client: net_ids of synced monsters the client just killed locally, awaiting the
 // host's authoritative confirmation. Value = remaining syncs to suppress a
 // host-rebroadcast respawn. The host hasn't processed the forwarded kill yet, so
@@ -11631,6 +11732,50 @@ static bool apply_one_state_message( const std::string &msg )
             g_last_host_proxy_pain = host_pain;
         }
 
+        // Sounds from the host's world (see mp_note_sound).  Recorded through SP's own
+        // sounds::sound / add_footstep, which only append to the turn's sound list,
+        // so this is safe in the recv path.  The client's do_turn then runs
+        // process_sound_markers( &u ): its own hearing, its own wake dice.
+        if( jo.has_array( "sounds" ) ) {
+            map &here = get_map();
+            int n = 0;
+            int injected = 0;
+            int loudest = -1;
+            std::string loudest_desc;
+            for( const JsonValue &sv : jo.get_array( "sounds" ) ) {
+                JsonObject so = sv.get_object();
+                so.allow_omitted_members();
+                ++n;
+                const tripoint_bub_ms p = here.get_bub( tripoint_abs_ms( so.get_int( "x" ),
+                                                        so.get_int( "y" ), so.get_int( "z" ) ) );
+                const int cat = so.get_int( "c" );
+                if( !here.inbounds( p ) || cat < 0 ||
+                    cat >= static_cast<int>( sounds::sound_t::LAST ) ) {
+                    continue;
+                }
+                const int vol = so.get_int( "v" );
+                const std::string desc = so.get_string( "d" );
+                if( so.get_bool( "f", false ) ) {
+                    sounds::add_footstep( p, vol, 0, nullptr, desc );
+                } else {
+                    sounds::sound( p, vol, static_cast<sounds::sound_t>( cat ), desc,
+                                   so.get_bool( "a", false ), so.get_string( "id", "" ),
+                                   so.get_string( "var", "default" ) );
+                }
+                ++injected;
+                if( vol > loudest ) {
+                    loudest = vol;
+                    loudest_desc = desc;
+                }
+            }
+            if( n > 0 ) {
+                mp_log( "[cdda-mp] SOUND-RECV: n=" + std::to_string( n ) + " injected=" +
+                        std::to_string( injected ) + " loudest=\"" + loudest_desc + "\" v=" +
+                        std::to_string( loudest ) + " asleep=" +
+                        std::to_string( mp_char_is_asleep( get_avatar() ) ) );
+            }
+        }
+
         // Apply per-bodypart HP to the client avatar so the sidebar stays accurate.
         // Also synthesise "you were hit" messages from HP deltas.
         if( jo.has_array( "bodyparts" ) ) {
@@ -16549,6 +16694,9 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            // rise since the last sync so SP's pain reactions run on the real body
            // (see g_client_pending_pain).
            ",\"proxy_pain\":" + std::to_string( remote->get_pain() ) +
+           // Sounds from the host's world for the client to hear — see
+           // mp_note_sound().
+           ",\"sounds\":" + mp_take_client_sounds_json( remote->pos_abs() ) +
            // MP 2026-08-15 — turns this packet represents. 1 for an ordinary grant;
            // FF_BATCH_TURNS for a batched fast-forward grant, telling the client to
            // tick its activity that many times rather than once.
