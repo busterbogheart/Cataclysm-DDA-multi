@@ -908,6 +908,7 @@ bool game::do_turn()
         // if av.activity is cleared mid-turn by the activity finishing.
         cata_mp::set_client_turn_activity( pre_activity_id ? pre_activity_id.str()
                                            : std::string() );
+        cata_mp::mp_client_note_activity_loop_start();
         // Client busy-loop fix: when we have an activity but no moves to tick
         // it, do_turn just spins doing nothing — the input loop is skipped
         // (moves <= 0) and the activity loop is skipped (moves <= 0).  The
