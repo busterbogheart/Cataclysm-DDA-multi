@@ -3943,6 +3943,12 @@ void host_capture_avatar_msgs( unsigned long long pre_msg )
         mp_log( "[cdda-mp] host_capture_avatar_msgs: forwarding raw=\"" + text + "\" host_name=\"" +
                 host_name + "\" -> out=\"" + out + "\"" );
         g_host_action_msgs_pending.push_back( out );
+        // Relayed here; the between-action pass (serialize_remote_player_state)
+        // must not relay it again.  A host line naming the partner reached the
+        // client twice: "Angelika passes the boxcutter knife to you." from here,
+        // plus that pass's name->you rewrite of the raw line, "You pass the
+        // boxcutter knife to you." (measured 2026-10-13 19:26:22).
+        g_msg_suppress_ranges.emplace_back( msg_idx - 1, msg_idx );
     }
     mp_msg_prune_suppressed( cur );
 }
