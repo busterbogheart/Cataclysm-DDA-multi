@@ -11432,7 +11432,17 @@ static bool apply_one_state_message( const std::string &msg )
 
         // Sync host's calendar turn so the client sees the correct time, lighting, and weather.
         if( jo.has_int( "calendar_turn" ) ) {
-            calendar::turn = time_point( jo.get_int( "calendar_turn" ) );
+            const time_point host_turn( jo.get_int( "calendar_turn" ) );
+            // A new turn: drop the last turn's sound markers before this packet's
+            // sounds are injected.  SP clears them only at the end of the player's
+            // own input turn (do_turn.cpp:1199), which in SP is every turn; a co-op
+            // client can see several host turns go by between its own (asleep,
+            // waiting on the host, a fast-forward batch, an expensive move), so the
+            // ear markers piled up into trails (reported 2026-10-12).
+            if( host_turn != calendar::turn ) {
+                sounds::reset_markers();
+            }
+            calendar::turn = host_turn;
         }
         // Adopt the host's game-start anchors so survival/date-since-start math
         // measures from the host's world, not the client's scratch world (the
