@@ -2426,6 +2426,9 @@ static std::unordered_map<uint32_t, int> g_last_reported_monster_hp;
 
 // Client: last known HP per bodypart string ID — used to synthesise "you were hit" messages.
 static std::unordered_map<std::string, int> g_last_bodypart_hp;
+// Client: the host's max HP per bodypart at the last sync, so a drop explained by a
+// falling max (proxy max-HP recompute) isn't read as damage.
+static std::unordered_map<std::string, int> g_last_bodypart_hpmax;
 
 // Client: SP reactions to harm the HOST inflicted, recorded in the recv path and
 // run by client_resolve_pending_ui() from the main loop.  Both SP hooks involved,
@@ -8005,13 +8008,14 @@ static bool mp_partner_recently_hurt()
     }
     static time_point s_checked_turn = calendar::before_time_starts;
     static time_point s_hurt_turn = calendar::before_time_starts;
-    static std::map<bodypart_id, int> s_last_hp;
+    // Per part: { hp, hp_max } at the last check.
+    static std::map<bodypart_id, std::pair<int, int>> s_last_hp;
     if( calendar::turn != s_checked_turn ) {
         s_checked_turn = calendar::turn;
-        std::map<bodypart_id, int> now;
+        std::map<bodypart_id, std::pair<int, int>> now;
         if( const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id ) ) {
             for( const bodypart_id &bp : proxy->get_all_body_parts() ) {
-                now[bp] = proxy->get_hp( bp );
+                now[bp] = { proxy->get_hp( bp ), proxy->get_hp_max( bp ) };
             }
         }
         int n_parts = 0;
@@ -8019,14 +8023,20 @@ static bool mp_partner_recently_hurt()
         int first_delta = 0;
         int total_drop = 0;
         bool uniform = true;
-        for( const auto &[bp, hp] : now ) {
+        for( const auto &[bp, hp_and_max] : now ) {
             const auto it = s_last_hp.find( bp );
             if( it == s_last_hp.end() ) {
                 continue;
             }
             ++n_parts;
-            if( hp < it->second ) {
-                const int delta = it->second - hp;
+            // As on the client: the share of a drop explained by the part's max
+            // falling is the proxy's max-HP recompute, not damage.  Measured
+            // 2026-10-12 21:42:51: max 84→81 on all 12 parts read here as "proxy lost
+            // 32 hp over 12 part(s)" and held FF for nothing.
+            const int max_drop = std::max( 0, it->second.second - hp_and_max.second );
+            const int real_drop = it->second.first - hp_and_max.first - max_drop;
+            if( real_drop > 0 ) {
+                const int delta = real_drop;
                 if( n_dropped == 0 ) {
                     first_delta = delta;
                 } else if( delta != first_delta ) {
@@ -11819,15 +11829,32 @@ static bool apply_one_state_message( const std::string &msg )
                 // the sleeping client was bitten to death without waking.
                 const int host_max = bpo.has_int( "hp_max" ) ? bpo.get_int( "hp_max" )
                                      : av.get_part_hp_max( bp );
-                if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
-                    && prev_it->second > host_max ) {
+                //
+                // A drop is also not damage as far as the part's max fell since the
+                // last sync: the proxy's max-HP recompute (the Phantom Damage Class)
+                // scales current HP down with max.  Measured 2026-10-12 21:42:51: max
+                // 84→81 on every part; full parts clamped 84→81 (caught by the guard
+                // above), damaged ones 80→78 / 81→79 / 78→76, which read as a phantom
+                // "You are hit for 8 damage!" + on_hurt, enough to wake a sleeper.
+                // Only the excess over the max drop is damage, so a hit landing in the
+                // same packet still counts.  Until a previous max is known (right after
+                // a join), the baseline-above-max guard decides alone.
+                const auto prev_max_it = g_last_bodypart_hpmax.find( bp_str );
+                const bool max_known = prev_max_it != g_last_bodypart_hpmax.end();
+                const int max_drop = max_known ? std::max( 0, prev_max_it->second - host_max ) : 0;
+                g_last_bodypart_hpmax[bp_str] = host_max;
+                const int raw_drop = prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
+                                     ? prev_it->second - new_hp : 0;
+                const int real_drop = !max_known && prev_it != g_last_bodypart_hp.end() &&
+                                      prev_it->second > host_max ? 0 : raw_drop - max_drop;
+                if( raw_drop > 0 && real_drop <= 0 ) {
                     mp_log( "[cdda-mp] BP-DELTA-CLAMP: " + bp_str + " prev=" +
                             std::to_string( prev_it->second ) + " new=" + std::to_string( new_hp ) +
-                            " host_max=" + std::to_string( host_max ) + " (max recompute, not damage)" );
+                            " host_max=" + std::to_string( host_max ) + " max_drop=" +
+                            std::to_string( max_drop ) + " (max recompute, not damage)" );
                 }
-                if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
-                    && prev_it->second <= host_max ) {
-                    const int delta = prev_it->second - new_hp;
+                if( real_drop > 0 ) {
+                    const int delta = real_drop;
                     mp_log( "[cdda-mp] BP-DELTA: " + bp_str
                             + " prev=" + std::to_string( prev_it->second )
                             + " new=" + std::to_string( new_hp )
