@@ -4187,11 +4187,35 @@ bool mp_world_mods_ok( const std::string &worldname, std::string &missing_out )
     if( !w ) {
         return true;
     }
+    // Both directions must match.  The original check only caught mods the WORLD
+    // runs that the host doesn't ("needs").  Reported 2026-10-12: a vanilla
+    // Play Now save (Jolyn Pham) loaded straight into a Magiclysm host, because a
+    // vanilla world has nothing the host lacks.  The client then runs without the
+    // host's mod data for everything the host sends.  The new-character path
+    // already adopts the host's exact mod set (mp_ensure_client_scratch_world);
+    // a loaded world has to match it the same way.
     const std::set<std::string> host_set( host_mods.begin(), host_mods.end() );
+    std::set<std::string> world_set;
+    std::string needs;
     for( const mod_id &m : w->active_mod_order ) {
+        world_set.insert( m.str() );
         if( host_set.count( m.str() ) == 0 ) {
-            missing_out += ( missing_out.empty() ? "" : ", " ) + m.str();
+            needs += ( needs.empty() ? "" : ", " ) + m.str();
         }
+    }
+    std::string lacks;
+    for( const std::string &m : host_mods ) {
+        if( world_set.count( m ) == 0 ) {
+            lacks += ( lacks.empty() ? "" : ", " ) + m;
+        }
+    }
+    if( !needs.empty() ) {
+        //~ %s is a list of mod ids the world uses that the co-op host isn't running.
+        missing_out = string_format( _( "needs: %s" ), needs );
+    }
+    if( !lacks.empty() ) {
+        //~ %s is a list of mod ids the co-op host runs that this world doesn't have.
+        missing_out += ( missing_out.empty() ? "" : "; " ) + string_format( _( "missing: %s" ), lacks );
     }
     return missing_out.empty();
 }

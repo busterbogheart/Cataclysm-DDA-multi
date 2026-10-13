@@ -1255,12 +1255,12 @@ bool main_menu::opening_screen()
                             if( n_compatible == 0 && !wnames.empty() ) {
                                 std::string detail;
                                 for( const auto &kv : world_missing ) {
-                                    detail += "\n  - " + kv.first + "  (needs: " + kv.second + ")";
+                                    detail += "\n  - " + kv.first + "  (" + kv.second + ")";
                                 }
                                 popup( _( "None of your saved characters can join this host.\n\n"
-                                          "They were made in worlds using mods this host isn't "
-                                          "running:%s\n\nStart a new character instead, or ask the "
-                                          "host to enable those mods." ), detail );
+                                          "Their worlds' mods don't match the host's:%s\n\nStart a "
+                                          "new character instead, or match the mods on both sides." ),
+                                       detail );
                                 break;
                             }
                             std::string chosen_world;
@@ -1285,7 +1285,8 @@ bool main_menu::opening_screen()
                                         // Say WHY, not just "no" — the player can act on
                                         // a named mod, and this is the same badge pattern
                                         // the co-op/solo markers already use.
-                                        display += "  " + colorize( string_format( _( "(needs: %s)" ),
+                                        //~ %s is "needs: <mods>" and/or "missing: <mods>".
+                                        display += "  " + colorize( string_format( _( "(%s)" ),
                                                                     miss_it->second ), c_red );
                                     }
                                     wpick.entries.emplace_back( idx++, usable, MENU_AUTOASSIGN, display );
@@ -1329,12 +1330,12 @@ bool main_menu::opening_screen()
                 default:
                     break;
             }
-        }
             // MP: a co-op join that didn't end in a world must not leave the
             // process connected and in client mode for whatever is started next.
             if( !start ) {
                 cata_mp::mp_abandon_client_join();
             }
+        }
     }
     if( start && !load_game && get_scenario() ) {
         add_msg( get_scenario()->description( player_character.male ) );

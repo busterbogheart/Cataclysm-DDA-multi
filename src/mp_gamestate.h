@@ -698,8 +698,10 @@ std::string mp_world_marker_badge( const std::string &worldname );
 // guard landed the same character simply had no tradeable inventory.  There is no
 // repair for this; the item cannot exist host-side.  So gate it at selection.
 //
-// True when every mod in `worldname` is also active on the host.  `missing_out`
-// receives a comma-separated list of the ones that are not, for the UI label.
+// True when `worldname`'s mod set MATCHES the host's, in both directions (a world
+// lacking a host mod fails too, see 2026-10-12 in the .cpp).  `missing_out`
+// receives the reason for the UI label: "needs: <mods the host isn't running>"
+// and/or "missing: <host mods the world doesn't have>".
 // Returns true (permissive) when the host advertised no mod list at all — an
 // older host, where blocking would be a guess.
 bool mp_world_mods_ok( const std::string &worldname, std::string &missing_out );
