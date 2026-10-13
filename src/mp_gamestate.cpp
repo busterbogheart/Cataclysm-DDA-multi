@@ -11581,8 +11581,24 @@ static bool apply_one_state_message( const std::string &msg )
                 // down.  That clamp is not combat damage; counting it made the
                 // client cry "You are hit for 204 damage!" on join with no
                 // attacker (confirmed 2026-06-02: all parts 105->88/max95).
+                //
+                // The baseline is a HOST value, so it is judged against the HOST's
+                // max for that part (sent alongside), not our own.  The two bodies'
+                // maxima differ by a point (measured 2026-10-12: client 20 vs host
+                // 21 on a Fragile/FLIMSY3 character, a constant |delta|=1 in
+                // HP-AUTHORITY-BG), and judging 21 against our 20 discarded every
+                // real hit as a recompute clamp: no BP-DAMAGE-SYNTH, no on_hurt, and
+                // the sleeping client was bitten to death without waking.
+                const int host_max = bpo.has_int( "hp_max" ) ? bpo.get_int( "hp_max" )
+                                     : av.get_part_hp_max( bp );
                 if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
-                    && prev_it->second <= av.get_part_hp_max( bp ) ) {
+                    && prev_it->second > host_max ) {
+                    mp_log( "[cdda-mp] BP-DELTA-CLAMP: " + bp_str + " prev=" +
+                            std::to_string( prev_it->second ) + " new=" + std::to_string( new_hp ) +
+                            " host_max=" + std::to_string( host_max ) + " (max recompute, not damage)" );
+                }
+                if( prev_it != g_last_bodypart_hp.end() && new_hp < prev_it->second
+                    && prev_it->second <= host_max ) {
                     const int delta = prev_it->second - new_hp;
                     mp_log( "[cdda-mp] BP-DELTA: " + bp_str
                             + " prev=" + std::to_string( prev_it->second )
