@@ -7904,18 +7904,51 @@ static bool mp_partner_recently_hurt()
     }
     static time_point s_checked_turn = calendar::before_time_starts;
     static time_point s_hurt_turn = calendar::before_time_starts;
-    static int s_last_total = -1;
+    static std::map<bodypart_id, int> s_last_hp;
     if( calendar::turn != s_checked_turn ) {
         s_checked_turn = calendar::turn;
-        const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id );
-        const int total = proxy ? proxy->get_hp() : -1;
-        if( total >= 0 && s_last_total >= 0 && total < s_last_total ) {
+        std::map<bodypart_id, int> now;
+        if( const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id ) ) {
+            for( const bodypart_id &bp : proxy->get_all_body_parts() ) {
+                now[bp] = proxy->get_hp( bp );
+            }
+        }
+        int n_parts = 0;
+        int n_dropped = 0;
+        int first_delta = 0;
+        int total_drop = 0;
+        bool uniform = true;
+        for( const auto &[bp, hp] : now ) {
+            const auto it = s_last_hp.find( bp );
+            if( it == s_last_hp.end() ) {
+                continue;
+            }
+            ++n_parts;
+            if( hp < it->second ) {
+                const int delta = it->second - hp;
+                if( n_dropped == 0 ) {
+                    first_delta = delta;
+                } else if( delta != first_delta ) {
+                    uniform = false;
+                }
+                ++n_dropped;
+                total_drop += delta;
+            }
+        }
+        // Every part down by one identical amount is the signature the client's
+        // BP-DAMAGE-SYNTH filter already ignores.  It is SP's one NON-disturbing
+        // damage, negative healing rate (hurtall( 1, nullptr, false ),
+        // character_health.cpp:1237), or a max-HP recompute.  Neither wakes an SP
+        // sleeper, so neither may stop FF: without this, a character with negative
+        // healing would drop FF for FF_HURT_HOLD_TURNS on every tick.
+        const bool uniform_all = n_dropped == n_parts && n_dropped >= 6 && uniform;
+        if( n_dropped > 0 && !uniform_all ) {
             s_hurt_turn = calendar::turn;
-            mp_log( "[cdda-mp] FF-PARTNER-HURT: proxy hp " + std::to_string( s_last_total ) +
-                    "->" + std::to_string( total ) + ", lockstep for " +
+            mp_log( "[cdda-mp] FF-PARTNER-HURT: proxy lost " + std::to_string( total_drop ) +
+                    " hp over " + std::to_string( n_dropped ) + " part(s), lockstep for " +
                     std::to_string( FF_HURT_HOLD_TURNS ) + " turns" );
         }
-        s_last_total = total;
+        s_last_hp = std::move( now );
     }
     return s_hurt_turn != calendar::before_time_starts &&
            calendar::turn - s_hurt_turn <= time_duration::from_turns( FF_HURT_HOLD_TURNS );
