@@ -651,6 +651,11 @@ bool mp_menu_join_session();
 // connection and leave client mode, so nothing else started from the menu (Play
 // Now, New Game, Load) joins the host.  No-op when not in client mode.
 void mp_abandon_client_join();
+// The co-op client's scratch world is internal and never listed in any menu.
+// worldfactory::init() skips it (mp_is_internal_world); mp_hide_internal_worlds()
+// drops it from the in-memory lists again after a co-op session.
+bool mp_is_internal_world( const std::string &name );
+void mp_hide_internal_worlds();
 
 // Main-menu integration: disarm a previously armed (but not-yet-started)
 // host session.  No-op if host mode isn't armed.
