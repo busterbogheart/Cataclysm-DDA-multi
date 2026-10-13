@@ -2464,6 +2464,54 @@ static constexpr int MP_EFFECTS_REFRESH_ACTIONS = 20;
 // client.
 static std::set<std::string> g_proxy_mirrored_effects;
 
+// Host: mirrored effects the HOST's own SP code removed from the proxy, keyed
+// "id|bp" → turn removed.  The world acting on the proxy is host-owned, so those
+// removals win: the client is told (proxy_lost_effects) and the effect is not
+// re-mirrored until the client's own snapshot drops it.
+//
+// Measured 2026-10-12 22:38: Magiclysm's EOC_MAGUS_STOP_ATTACK_SHIELD
+// (character_takes_damage → u_lose_effect) removed Mageshield from the proxy when
+// a bite landed; the client still had it, and its next snapshot put it straight
+// back (PROXY-EFFECTS +[effect_magus_mageshield] at 22:38:16.759), which made the
+// one-hit shield infinite.  A hit waking the proxy (npc on_hurt → wake_up) is the
+// same shape for sleep.
+static std::map<std::string, int> g_proxy_effect_tombstones;
+static constexpr int MP_EFFECT_TOMBSTONE_TURNS = 100;
+
+static std::pair<efftype_id, bodypart_id> mp_effect_key_parts( const std::string &key )
+{
+    const size_t bar = key.find( '|' );
+    const bodypart_str_id bpsid( key.substr( bar + 1 ) );
+    return { efftype_id( key.substr( 0, bar ) ),
+             bpsid.is_valid() ? bpsid.id() : bodypart_str_id::NULL_ID().id() };
+}
+
+// Host: mirrored effects the proxy no longer has, as a state-packet field (or ""),
+// moving each to the tombstones.  Called once per serialized state packet.
+static std::string mp_proxy_lost_effects_field( npc &proxy )
+{
+    std::string json;
+    for( auto it = g_proxy_mirrored_effects.begin(); it != g_proxy_mirrored_effects.end(); ) {
+        const auto [et, bp] = mp_effect_key_parts( *it );
+        if( proxy.has_effect( et, bp ) ) {
+            ++it;
+            continue;
+        }
+        json += std::string( json.empty() ? "" : "," ) + "{\"id\":\"" + et.str() +
+                "\",\"bp\":\"" + bp.id().str() + "\"}";
+        mp_log( "[cdda-mp] PROXY-EFFECT-LOST: " + *it +
+                " removed host-side, telling the client" );
+        g_proxy_effect_tombstones[*it] = to_turn<int>( calendar::turn );
+        it = g_proxy_mirrored_effects.erase( it );
+    }
+    if( json.empty() ) {
+        return std::string();
+    }
+    // Whatever removed it, the enchantments it granted are gone too.
+    proxy.recalculate_enchantment_cache();
+    return ",\"proxy_lost_effects\":[" + json + "]";
+}
+
 // Client: the effects snapshot for this action, or "" when it needn't be sent.
 static std::string mp_client_effects_json()
 {
@@ -5038,8 +5086,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
             std::set<std::string> now_keys;
+            std::set<std::string> listed;
             std::string added;
             std::string removed;
+            bool cache_dirty = false;
             const int now_turn = to_turn<int>( calendar::turn );
             for( const JsonValue &ev : jo.get_array( "client_effects" ) ) {
                 JsonObject eo = ev.get_object();
@@ -5059,17 +5109,42 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 const time_duration dur = permanent ? 1_turns :
                                           time_duration::from_turns( expiry - now_turn );
                 const std::string key = et.str() + "|" + bp.id().str();
+                listed.insert( key );
+                // Removed host-side by the world (see g_proxy_effect_tombstones):
+                // don't put it back while the client hasn't caught up yet.
+                if( g_proxy_effect_tombstones.count( key ) ) {
+                    continue;
+                }
                 if( remote->has_effect( et, bp ) ) {
                     effect &e = remote->get_effect( et, bp );
                     if( !permanent ) {
                         e.set_duration( dur );
                     }
-                    e.set_intensity( intensity );
+                    if( e.get_intensity() != intensity ) {
+                        e.set_intensity( intensity );
+                        cache_dirty = true;
+                    }
+                } else if( g_proxy_mirrored_effects.count( key ) ) {
+                    // We mirrored it and the proxy no longer has it: the host's own
+                    // SP code removed it since the last state packet, which hasn't
+                    // reported it yet.  Keep it tracked so mp_proxy_lost_effects_field
+                    // reports it, and don't re-add it.
                 } else {
                     remote->add_effect( et, dur, bp, permanent, intensity );
                     added += ( added.empty() ? "" : " " ) + key;
+                    cache_dirty = true;
                 }
                 now_keys.insert( key );
+            }
+            // A tombstone ends once the client's own snapshot has dropped the effect
+            // (it got proxy_lost_effects), or after a safety timeout.
+            for( auto it = g_proxy_effect_tombstones.begin(); it != g_proxy_effect_tombstones.end(); ) {
+                if( !listed.count( it->first ) ||
+                    now_turn - it->second > MP_EFFECT_TOMBSTONE_TURNS ) {
+                    it = g_proxy_effect_tombstones.erase( it );
+                } else {
+                    ++it;
+                }
             }
             for( const std::string &key : g_proxy_mirrored_effects ) {
                 if( now_keys.count( key ) ) {
@@ -5081,8 +5156,18 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 remote->remove_effect( et, bpsid.is_valid() ? bpsid.id() :
                                        bodypart_str_id::NULL_ID().id() );
                 removed += ( removed.empty() ? "" : " " ) + key;
+                cache_dirty = true;
             }
             g_proxy_mirrored_effects = std::move( now_keys );
+            // SP rebuilds a character's enchantment cache every turn in
+            // update_body(), but the proxy never runs one: do_turn skips its whole
+            // NPC turn (mp_tick_proxy_activity, then continue).  Without this an
+            // effect's enchantments never took hold host-side: measured 22:38,
+            // Mageshield (FORCEFIELD +1, i.e. a certain block) sat on the proxy for
+            // 20 s and a zombie dog's bite still did 7 to the torso.
+            if( cache_dirty ) {
+                remote->recalculate_enchantment_cache();
+            }
             if( !added.empty() || !removed.empty() ) {
                 mp_log( "[cdda-mp] PROXY-EFFECTS: +[" + added + "] -[" + removed + "] n=" +
                         std::to_string( g_proxy_mirrored_effects.size() ) );
@@ -11884,6 +11969,31 @@ static bool apply_one_state_message( const std::string &msg )
                     + std::string( e.what() ) );
         }
 
+        // Effects of ours that the host's world took off the proxy (see
+        // g_proxy_effect_tombstones): a one-hit shield that took the hit, a sleep
+        // ended by an attack.  Remove them through SP so its remove message shows
+        // ("Your mageshield fades as the attack impacts it.") and our next effects
+        // snapshot drops them, which releases the host's tombstone.
+        if( jo.has_array( "proxy_lost_effects" ) ) {
+            avatar &av = get_avatar();
+            for( const JsonValue &lv : jo.get_array( "proxy_lost_effects" ) ) {
+                JsonObject lo = lv.get_object();
+                lo.allow_omitted_members();
+                const efftype_id et( lo.get_string( "id", "" ) );
+                if( !et.is_valid() ) {
+                    continue;
+                }
+                const bodypart_str_id bpsid( lo.get_string( "bp", "" ) );
+                const bodypart_id bp = bpsid.is_valid() ? bpsid.id() : bodypart_str_id::NULL_ID().id();
+                const bool had = av.has_effect( et, bp );
+                if( had ) {
+                    av.remove_effect( et, bp );
+                }
+                mp_log( "[cdda-mp] CLI-EFFECT-LOST: " + et.str() + "|" + bp.id().str() +
+                        " had=" + std::to_string( had ) );
+            }
+        }
+
         // Pain the host inflicted on our proxy.  Only the RISE is applied: both
         // bodies decay pain on their own, and the proxy carries none of our
         // client-local pain sources, so an absolute overwrite would erase those.
@@ -16932,6 +17042,8 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            // Sounds from the host's world for the client to hear — see
            // mp_note_sound().
            ",\"sounds\":" + mp_take_client_sounds_json( remote->pos_abs() ) +
+           // Client-owned effects the host's world took off the proxy.
+           mp_proxy_lost_effects_field( *remote ) +
            // MP 2026-08-15 — turns this packet represents. 1 for an ordinary grant;
            // FF_BATCH_TURNS for a batched fast-forward grant, telling the client to
            // tick its activity that many times rather than once.
