@@ -647,6 +647,10 @@ uint16_t mp_host_port();
 // probes, connects, sets client mode.  Silent on success; pops an error
 // and returns false on cancel or connection failure.
 bool mp_menu_join_session();
+// The join flow returned to the main menu without entering a world: close the
+// connection and leave client mode, so nothing else started from the menu (Play
+// Now, New Game, Load) joins the host.  No-op when not in client mode.
+void mp_abandon_client_join();
 
 // Main-menu integration: disarm a previously armed (but not-yet-started)
 // host session.  No-op if host mode isn't armed.

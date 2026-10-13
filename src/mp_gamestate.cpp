@@ -3095,6 +3095,24 @@ void mp_on_world_exit()
     }
 }
 
+void mp_abandon_client_join()
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    // Reported 2026-10-12: Join → character creation → Escape back to the main
+    // menu left the connection open and the process in client mode (the cancel
+    // path deliberately stayed connected so Join could be re-entered).  Play Now,
+    // which is single-player, then started a game that adopted the host's seed
+    // and sent the join: the "solo" character dropped into the running co-op game.
+    // mp_on_world_exit() only clears the mode on leaving a WORLD; this is the
+    // pre-world exit.  Re-entering Join just reconnects.
+    mp_log( std::string( "[cdda-mp] MENU: co-op join abandoned before entering a world — " ) +
+            "closing the connection and leaving client mode" );
+    client_close();
+    set_client_mode( false );
+}
+
 static void purge_npcs_by_name( const std::string &name )
 {
     if( name.empty() ) {

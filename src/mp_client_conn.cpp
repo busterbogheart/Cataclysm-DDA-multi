@@ -814,4 +814,17 @@ void client_disable_reconnect()
     g_client_joined.store( false );   // also silences the heartbeat on intentional end
 }
 
+void client_close()
+{
+    // An intentional end, so no re-dial, and forget the join we never sent.
+    client_disable_reconnect();
+    g_pending_join.clear();
+    g_join_sent = false;
+    // ~client_impl stops io_ctx and joins the io thread; the socket closes with it,
+    // which also ends the pre-JOIN session on the host.
+    g_client.reset();
+    std::string stale;
+    while( g_recv_queue.pop( stale ) ) {}
+}
+
 } // namespace cata_mp

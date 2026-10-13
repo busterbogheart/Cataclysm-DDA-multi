@@ -1305,7 +1305,7 @@ bool main_menu::opening_screen()
                             // New character
                             const int ct = pick_char_type();
                             if( ct < 0 ) {
-                                break;  // connected; user can re-enter Join
+                                break;  // mp_abandon_client_join() closes the connection
                             }
                             // Client side: ensure a scratch world exists so the SP
                             // char-creation flow's pick_world doesn't force the user
@@ -1330,6 +1330,11 @@ bool main_menu::opening_screen()
                     break;
             }
         }
+            // MP: a co-op join that didn't end in a world must not leave the
+            // process connected and in client mode for whatever is started next.
+            if( !start ) {
+                cata_mp::mp_abandon_client_join();
+            }
     }
     if( start && !load_game && get_scenario() ) {
         add_msg( get_scenario()->description( player_character.male ) );

@@ -42,6 +42,10 @@ void client_send( const std::string &json );
 // Used by mp_gamestate::client_process_incoming() to apply server state.
 bool client_recv_pop( std::string &out );
 
+// Close the client connection on purpose (an abandoned join): no reconnect, no
+// pending join, socket closed, queued messages dropped.
+void client_close();
+
 // Block until a message is queued (or the timeout expires) without consuming it.
 // For waits that must wake the moment the host sends something, not on a timer.
 bool client_recv_wait( std::chrono::milliseconds timeout );
