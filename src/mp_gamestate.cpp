@@ -2568,7 +2568,13 @@ static void mp_pin_proxy_hp_max( npc &proxy, const char *why )
                    "->" + std::to_string( mx );
     }
     if( !changed.empty() ) {
-        mp_log( std::string( "[cdda-mp] PROXY-HPMAX(" ) + why + "): " + changed );
+        // Rate-limited per reason: the kcal re-pin can fire every few turns.
+        static std::map<std::string, int> s_count;
+        const int n = ++s_count[why];
+        if( n <= 3 || n % 100 == 0 ) {
+            mp_log( std::string( "[cdda-mp] PROXY-HPMAX(" ) + why + ") #" + std::to_string( n ) + ": " +
+                    changed );
+        }
     }
 }
 
@@ -5330,6 +5336,27 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 g_client_hp_max_by_part[entry.get_string( 0 )] = entry.get_int( 1 );
             }
             mp_pin_proxy_hp_max( *remote, "client" );
+        } catch( const JsonError & ) {}
+    }
+    // Needs mirror (see client_enrich_action).  set_stored_kcal() recomputes max HP
+    // (character_health.cpp:922, body fat feeds max HP), so re-pin after it.
+    if( msg.find( "\"client_needs\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            JsonArray nd = jo.get_array( "client_needs" );
+            if( nd.size() >= 5 ) {
+                remote->set_hunger( nd.get_int( 0 ) );
+                remote->set_thirst( nd.get_int( 1 ) );
+                remote->set_sleepiness( nd.get_int( 2 ) );
+                remote->set_sleep_deprivation( nd.get_int( 4 ) );
+                const int kcal = nd.get_int( 3 );
+                if( remote->get_stored_kcal() != kcal ) {
+                    remote->set_stored_kcal( kcal );
+                    mp_pin_proxy_hp_max( *remote, "kcal" );
+                }
+            }
         } catch( const JsonError & ) {}
     }
     if( msg.find( "\"client_mana\":" ) != std::string::npos ) {
@@ -13655,6 +13682,15 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_spells\":" + spells_json;
         }
         enriched += ",\"client_mana\":" + std::to_string( av.magic->available_mana() );
+        // Needs, every action (five ints): hunger, thirst, sleepiness, stored kcal,
+        // sleep deprivation.  The proxy runs no needs of its own: do_turn skips its
+        // whole NPC turn, so they sat frozen at spawn values, and the stat penalties
+        // and EOC conditions the host evaluates for the client read those.  Stage 1,
+        // part 4 of the character ownership table.
+        enriched += ",\"client_needs\":[" + std::to_string( av.get_hunger() ) + "," +
+                    std::to_string( av.get_thirst() ) + "," + std::to_string( av.get_sleepiness() ) +
+                    "," + std::to_string( av.get_stored_kcal() ) + "," +
+                    std::to_string( av.get_sleep_deprivation() ) + "]";
         // Per-part max HP when it changed — see mp_client_hp_max_json().
         const std::string hp_max_json = mp_client_hp_max_json();
         if( !hp_max_json.empty() ) {
