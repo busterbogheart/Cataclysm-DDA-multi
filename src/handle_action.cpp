@@ -2103,6 +2103,7 @@ bool Character::cast_spell( spell &sp, bool fake_spell,
         abs_target = get_map().get_abs( *target );
     }
 
+    cata_mp::mp_note_spell_cast( *this, sp, target.has_value() );
     assign_activity( spellcasting_activity_actor(
                          time_duration::from_moves<int>( sp.casting_time( *this ) ),
                          sp.id(), abs_target, fake_spell_level ) );

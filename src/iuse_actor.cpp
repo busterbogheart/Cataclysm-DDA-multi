@@ -67,6 +67,7 @@
 #include "memory_fast.h"
 #include "messages.h"
 #include "monster.h"
+#include "mp_gamestate.h"
 #include "mtype.h"
 #include "music.h"
 #include "mutation.h"
@@ -2918,6 +2919,7 @@ std::optional<int> cast_spell_actor::use( Character *p, item &it, map * /*here*/
         return 0;
     }
 
+    cata_mp::mp_note_spell_cast( *p, casting, false, /*from_item=*/true );
     p->assign_activity( spellcasting_activity_actor(
                             time_duration::from_moves<int>( casting.casting_time( *p ) ),
                             casting.id(), std::nullopt, spell_level,

@@ -1310,7 +1310,8 @@ bool game::do_turn()
                 // post-resolution wait once it consumes moves.  Passive long-actions
                 // (craft/read/wait/…) still need the assignment-time wait.
                 if( act_just_assigned && !cata_mp::is_client_waiting_for_ack()
-                    && cata_mp::is_passive_activity( u.activity.id().str() ) ) {
+                    && cata_mp::is_passive_activity(
+                        cata_mp::mp_activity_class( u.activity.id().str(), false ) ) ) {
                     cata_mp::mp_log( "[cdda-mp] LOCKED-DISPATCH: activity just assigned in locked HA, dispatching wait id="
                                      + u.activity.id().str() );
                     cata_mp::client_dispatch_wait_for_activity(

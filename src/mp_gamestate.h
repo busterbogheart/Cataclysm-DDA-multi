@@ -17,6 +17,7 @@ class Creature;
 class item;
 class item_location;
 class player_activity;
+class spell;
 struct WORLD;
 
 namespace cata_mp {
@@ -969,6 +970,19 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id(
 // instead of snapping the client back (B6).
 void mp_client_note_activity_loop_start();
 void mp_client_note_activity_loop_end();
+
+// Per-spell fast-forward (B8).  Every spell runs as ACT_SPELLCASTING, which is
+// interactive because finish() can open the targeting UI or a menu.  Called
+// where a cast starts (Character::cast_spell, and the item-cast path with
+// from_item), it records whether THIS cast can: if not, the cast is classified
+// as the pseudo id ACT_SPELLCASTING_FF, which is passive and fast-forwardable
+// like crafting.  from_item casts never qualify (their level isn't known here).
+void mp_note_spell_cast( const Character &caster, const spell &sp, bool target_given,
+                         bool from_item = false );
+// The id an activity is CLASSIFIED by (is_passive_activity and friends): the
+// real id, except a fast-forward-safe cast becomes ACT_SPELLCASTING_FF.
+// partner=false for the local avatar's activity, true for g_partner_activity.
+std::string mp_activity_class( const std::string &id, bool partner );
 
 // Client only: emit an explicit activity-lifecycle marker to the host.  These
 // are signal-only — they don't consume client moves and the host doesn't
