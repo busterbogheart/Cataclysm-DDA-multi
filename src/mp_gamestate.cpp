@@ -11537,11 +11537,22 @@ static bool apply_one_state_message( const std::string &msg )
             mp_log( "[cdda-mp] TRADE-APPLY: moves=" + std::to_string( av.get_moves() ) +
                     " ack=" + std::to_string( is_client_waiting_for_ack() ) +
                     " ms_since_grant=" + std::to_string( ms_since_last_grant() ) + "ms" );
+            // Items our world can't resolve are skipped, not deserialized: an
+            // unknown itype aborts in item::deserialize (find_template → debugmsg),
+            // the same crash worn_sync screens against on the host
+            // (mp_wire_item_ok).  The two-way mod match at join (ca2623a1ca) keeps
+            // mismatched worlds out; this is the containment behind it, for version
+            // skew or a mod changed mid-session.  Same known limit: it screens
+            // "typeid" members only.
+            std::set<std::string> trade_unknown;
             // "give" = items the host gave to our proxy → add to our avatar
             if( jo.has_array( "give" ) ) {
                 for( const JsonValue &iv : jo.get_array( "give" ) ) {
                     JsonObject io = iv.get_object();
                     io.allow_omitted_members();
+                    if( !mp_wire_item_ok( io, trade_unknown ) ) {
+                        continue;
+                    }
                     item tmp;
                     tmp.deserialize( io );
                     av.i_add( tmp );
@@ -11553,6 +11564,9 @@ static bool apply_one_state_message( const std::string &msg )
                 for( const JsonValue &iv : jo.get_array( "take" ) ) {
                     JsonObject io = iv.get_object();
                     io.allow_omitted_members();
+                    if( !mp_wire_item_ok( io, trade_unknown ) ) {
+                        continue;   // can't exist on our side, so nothing to remove
+                    }
                     item tmp;
                     tmp.deserialize( io );
                     const itype_id tid = tmp.typeId();
@@ -11567,6 +11581,17 @@ static bool apply_one_state_message( const std::string &msg )
                     mp_log( "[cdda-mp] trade_delta: lost " + tid.str()
                             + ( found ? " (ok)" : " (NOT FOUND)" ) );
                 }
+            }
+            if( !trade_unknown.empty() ) {
+                std::string ids;
+                for( const std::string &id : trade_unknown ) {
+                    ids += ( ids.empty() ? "" : ", " ) + id;
+                }
+                mp_log( "[cdda-mp] TRADE-ITEM-UNKNOWN: skipped items this world has no "
+                        "definition for: " + ids );
+                add_msg( m_bad, _( "Your partner traded items this world doesn't have (%s).  "
+                                   "They were skipped because your worlds aren't running the same mods." ),
+                         ids );
             }
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] trade_delta parse error: " ) + e.what() );
