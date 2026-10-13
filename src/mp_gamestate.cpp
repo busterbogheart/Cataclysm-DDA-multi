@@ -1211,6 +1211,9 @@ static void mp_partner_activity_transition_check()
         return;
     }
     const std::string partner_name = mp_partner_display_name();
+    // Narration for THIS screen only.  On the host it names the client, so the
+    // between-action relay sent it back to them as "You has finished casting."
+    const mp_local_msg_scope local_only;
     if( g_partner_activity_prev.empty() && !g_partner_activity.empty() ) {
         add_msg( m_info, _( "%1$s begins %2$s." ), partner_name,
                  mp_activity_verb_phrase( g_partner_activity ) );
@@ -3415,9 +3418,19 @@ static void remove_remote_player( bool announce = true )
     std::cout << "[cdda-mp] Remote player removed from world." << std::endl;
 }
 
-// After substituting an NPC name → "You", the verb is still third-person singular.
-// Strip the suffix so "You guts" → "You gut", "You misses" → "You miss", etc.
-// Also fixes "You's " → "your " for possessive constructions.
+// Split a verb token into its core and any trailing punctuation, so the
+// conjugation passes see "miss" in "You miss." (measured: the client relayed it
+// to the host as "Douglas Jolly miss.s").
+static std::pair<std::string, std::string> mp_split_trailing_punct( const std::string &tok )
+{
+    static const std::string punct = ".,!?;:";
+    size_t n = tok.size();
+    while( n > 0 && punct.find( tok[n - 1] ) != std::string::npos ) {
+        --n;
+    }
+    return { tok.substr( 0, n ), tok.substr( n ) };
+}
+
 // Rewrite a first-person message ("You drop your hand mirror on the grass.")
 // into a third-person version with the subject's name and proper conjugation
 // ("Wilford Rubin drops Wilford Rubin's hand mirror on the grass.").
@@ -3475,8 +3488,10 @@ static void mp_rewrite_first_to_third( std::string &s, const std::string &subjec
         if( ve == std::string::npos ) {
             ve = s.size();
         }
-        if( ve > vs + 1 ) {
-            const std::string v = s.substr( vs, ve - vs );
+        const std::pair<std::string, std::string> vp = mp_split_trailing_punct( s.substr( vs, ve - vs ) );
+        const std::string &v = vp.first;
+        const std::string &punct = vp.second;
+        if( v.size() > 1 ) {
             std::string fixed;
             // Irregular verbs (second-person plural → third-person singular).
             // Must run before the generic "add s" rule below, otherwise
@@ -3511,17 +3526,15 @@ static void mp_rewrite_first_to_third( std::string &s, const std::string &subjec
                     fixed = v + "s";
                 }
             }
-            s.replace( vs, ve - vs, fixed );
+            s.replace( vs, ve - vs, fixed + punct );
         }
     }
 }
 
-static void fix_you_verb( std::string &s )
+// "You <verb>" at the start of s: conjugate the verb back from the third
+// person ("You has" → "You have", "You misses." → "You miss.").
+static void mp_you_verb_to_second_person( std::string &s )
 {
-    for( size_t p = 0; ( p = s.find( "You's ", p ) ) != std::string::npos; ) {
-        s.replace( p, 6, "your " );
-    }
-
     if( s.rfind( "You ", 0 ) != 0 ) {
         return;
     }
@@ -3531,11 +3544,12 @@ static void fix_you_verb( std::string &s )
     if( ve == std::string::npos ) {
         ve = s.size();
     }
-    if( ve <= vs + 1 ) {
+    const std::pair<std::string, std::string> vp = mp_split_trailing_punct( s.substr( vs, ve - vs ) );
+    const std::string &v = vp.first;
+    const std::string &punct = vp.second;
+    if( v.size() <= 1 ) {
         return;
     }
-
-    const std::string v = s.substr( vs, ve - vs );
     std::string fixed;
 
     // Irregular verbs (third-person singular → second-person plural).  These
@@ -3570,8 +3584,44 @@ static void fix_you_verb( std::string &s )
         }
     }
 
-    s.replace( vs, ve - vs, fixed );
+    s.replace( vs, ve - vs, fixed + punct );
 }
+
+// The inverse of mp_rewrite_first_to_third: a line that names the reader's own
+// character, rewritten to address them.  "Gavin has finished casting." →
+// "You have finished casting."; "The zombie dog hits Gavin's left arm." → "The
+// zombie dog hits your left arm."  Capitalised only at the start of the line,
+// and only a leading subject gets its verb conjugated.  Every relay path that
+// turns the partner's name into "you" goes through here; the between-action
+// path used to swap in a bare "You" (measured: "hits You's left arm",
+// "stopped by You's armor").  Returns whether the name occurred.
+static bool mp_rewrite_name_to_you( std::string &s, const std::string &name )
+{
+    if( name.empty() ) {
+        return false;
+    }
+    const std::string poss = name + "'s";
+    bool any = false;
+    bool subject = false;
+    size_t p = 0;
+    while( ( p = s.find( name, p ) ) != std::string::npos ) {
+        const bool is_poss = s.compare( p, poss.size(), poss ) == 0;
+        std::string repl = is_poss ? "your" : "you";
+        if( p == 0 ) {
+            repl[0] = 'Y';
+            subject = !is_poss;
+        }
+        s.replace( p, is_poss ? poss.size() : name.size(), repl );
+        p += repl.size();
+        any = true;
+    }
+    if( subject ) {
+        mp_you_verb_to_second_person( s );
+    }
+    return any;
+}
+
+static bool mp_msg_suppressed( unsigned long long idx );
 
 // Collect messages generated from pre_msg onward, apply NPC→"You" substitution,
 // and append them to g_action_msgs_pending for inclusion in the next broadcast.
@@ -3586,8 +3636,12 @@ static void flush_action_msgs( unsigned long long pre_msg, const std::string &np
     const size_t count = static_cast<size_t>( cur - pre_msg );
     g_last_forwarded_msg_count = cur;  // advance watermark to avoid double-forward
     const auto new_msgs = Messages::recent_messages( count );
+    unsigned long long msg_idx = cur - new_msgs.size();
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
+        if( mp_msg_suppressed( msg_idx++ ) ) {
+            continue;   // emitted inside an mp_local_msg_scope
+        }
         // Partner swap/push/tap/join messages are host-POV (either the host's
         // own actor line "You swap places with <proxy>", or the handler's
         // observer line "<proxy> pushes you out of the way", or the join
@@ -3624,16 +3678,7 @@ static void flush_action_msgs( unsigned long long pre_msg, const std::string &np
                 out.replace( q, 9, npc_name );
                 q += npc_name.size();
             }
-            bool did_sub = false;
-            size_t p = 0;
-            while( ( p = out.find( npc_name, p ) ) != std::string::npos ) {
-                out.replace( p, npc_name.size(), "You" );
-                p += 3;
-                did_sub = true;
-            }
-            if( did_sub ) {
-                fix_you_verb( out );
-            }
+            mp_rewrite_name_to_you( out, npc_name );
         }
         mp_log( "[cdda-mp] flush_action_msgs queued: " + out );
         g_action_msgs_pending.push_back( out );
@@ -3730,12 +3775,7 @@ static void mp_addressee_to_you( std::string &s, const std::string &own_name )
     if( name.empty() || name == own_name ) {
         return;
     }
-    size_t p = 0;
-    while( ( p = s.find( name, p ) ) != std::string::npos ) {
-        const std::string repl = ( p == 0 ) ? "You" : "you";
-        s.replace( p, name.size(), repl );
-        p += repl.size();
-    }
+    mp_rewrite_name_to_you( s, name );
 }
 
 // Half-open [begin, end) ranges of Messages::appended_total() indices that must
@@ -3759,6 +3799,12 @@ static bool mp_msg_suppressed( unsigned long long idx )
 // connected, say) must not grow it without bound.
 static void mp_msg_prune_suppressed( unsigned long long idx )
 {
+    // The host's between-action relay (serialize_remote_player_state) reads the
+    // log later than the capture passes that call this, so don't drop a range
+    // it hasn't passed yet.
+    if( is_hosting() ) {
+        idx = std::min( idx, g_last_forwarded_msg_count );
+    }
     g_msg_suppress_ranges.erase(
         std::remove_if( g_msg_suppress_ranges.begin(), g_msg_suppress_ranges.end(),
     [idx]( const std::pair<unsigned long long, unsigned long long> &r ) {
@@ -4813,6 +4859,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 // relayed "Niesha swaps places with Jeff" never converts Jeff→you.
                 g_partner_name_cached = cname;
                 if( was_placeholder ) {
+                    // Host-screen announcements about the client; never relayed
+                    // to it (it arrived as "You has connected and joined").
+                    const mp_local_msg_scope local_only;
                     if( g_partner_pending_reconnect ) {
                         add_msg( m_good, _( "%s reconnected." ), cname );
                         g_partner_pending_reconnect = false;
@@ -13616,36 +13665,6 @@ static std::string build_client_monster_hits()
     return first ? std::string() : ( "[" + hits + "]" );
 }
 
-// Conjugate the first-word verb of `s` to third-person singular in place.
-// "finish waiting" → "finishes waiting", "watch X" → "watches X".
-// Inverse of fix_you_verb (which strips for host→client direction).
-static void add_third_person_s( std::string &s )
-{
-    size_t end = s.find( ' ' );
-    if( end == std::string::npos ) {
-        end = s.size();
-    }
-    if( end == 0 || end > 40 ) {
-        return;
-    }
-    const char last = s[end - 1];
-    if( last == 's' ) {
-        return;  // already conjugated
-    }
-    if( last == 'x' || last == 'z' ) {
-        s.insert( end, "es" );
-        return;
-    }
-    if( end >= 2 ) {
-        const std::string two = s.substr( end - 2, 2 );
-        if( two == "ch" || two == "sh" ) {
-            s.insert( end, "es" );
-            return;
-        }
-    }
-    s.insert( end, "s" );
-}
-
 // Snapshot any new "You ..." messages the client's avatar produced since the
 // last send.  Substitute "You" with the client's character name so the host
 // reads them in third person ("Roy finishes waiting", "Roy is now reading X").
@@ -13693,10 +13712,10 @@ static void client_capture_avatar_msgs()
         }
         std::string out = text;
         if( out.rfind( "You ", 0 ) == 0 ) {
-            // "You finish waiting" → "finish waiting" → "finishes waiting" → "Roy finishes waiting"
-            std::string rest = out.substr( 4 );
-            add_third_person_s( rest );
-            out = client_name + " " + rest;
+            // "You finish waiting" → "Roy finishes waiting".  The same rewrite
+            // the host uses for its own lines: irregular verbs and possessives
+            // (a bare "+s" sent "You are hit" as "Roy ares hit").
+            mp_rewrite_first_to_third( out, client_name );
         } else {
             // "Now reading X" → "Roy is now reading X"
             out = client_name + " is " + out;
@@ -17068,8 +17087,12 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
         const size_t new_count = static_cast<size_t>( current_msg_count - g_last_forwarded_msg_count );
         g_last_forwarded_msg_count = current_msg_count;
         const auto new_msgs = Messages::recent_messages( new_count );
+        unsigned long long msg_idx = current_msg_count - new_msgs.size();
         for( const auto &[time_str, text] : new_msgs ) {
             ( void )time_str;
+            if( mp_msg_suppressed( msg_idx++ ) ) {
+                continue;   // emitted inside an mp_local_msg_scope
+            }
             // Swap/push messages are rendered on the client via semantic flags
             // (partner_swapped/partner_pushed) or the client's own SP handler —
             // forwarding them here produces "You swaps/swap places with you."
@@ -17109,13 +17132,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
                 continue;  // skip messages unrelated to the remote player
             }
             std::string out = text;
-            if( !npc_name.empty() ) {
-                size_t p = 0;
-                while( ( p = out.find( npc_name, p ) ) != std::string::npos ) {
-                    out.replace( p, npc_name.size(), "You" );
-                    p += 3;
-                }
-            }
+            mp_rewrite_name_to_you( out, npc_name );
             append_msg( out );
         }
     }
