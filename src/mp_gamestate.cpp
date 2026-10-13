@@ -8756,13 +8756,26 @@ static int mp_local_ff_moves()
 // on_hurt (client_resolve_pending_ui) can wake it before the next bite.  If it
 // sleeps on (heavy sleeper, narcosis), FF resumes when the hold runs out.
 //
-// Host-only, and safe as such: a sleeping or passive-activity client acks each
-// grant from its grant handler whatever its own FF verdict, so the host returning
-// to lockstep cannot strand an ack.
+// Detected on the host only (only it sees the proxy lose HP), but the client
+// must reach the SAME verdict, so the host forwards the hold (ff_hurt_hold in
+// every state packet) and the client reads it here.  The old note said
+// host-only was safe because a passive-activity client acks every grant from
+// its grant handler whatever its own verdict.  Measured 2026-10-13 19:07:38,
+// it is not: a grant that arrives while the client is IDLE is acked by
+// client_dispatch_wait_for_activity once the client starts an activity, and
+// that path IS gated by the client's verdict.  Both players started casting
+// within a hold; the client saw FF (dispatch_wait: FAST-FORWARD, skip), the
+// host saw partner_hurt and waited on grant 7061 forever.  The hold counts
+// game turns, and none pass while the host waits, so it never cleared.
 static constexpr int FF_HURT_HOLD_TURNS = 10;
+// Client: the host's hurt hold, from the last state packet.
+static bool g_host_ff_hurt_hold = false;
 
 static bool mp_partner_recently_hurt()
 {
+    if( is_client_mode() ) {
+        return g_host_ff_hurt_hold;
+    }
     if( !is_hosting() ) {
         return false;
     }
@@ -12169,6 +12182,9 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_int( "calendar_turn" ) ) {
             g_partner_calendar_turn = jo.get_int( "calendar_turn" );
         }
+        // The host's FF hurt hold, so both sides reach the same FF verdict
+        // (see mp_partner_recently_hurt).  Absent from an older host: no hold.
+        g_host_ff_hurt_hold = jo.get_bool( "ff_hurt_hold", false );
         if( jo.has_bool( "host_waiting" ) ) {
             g_partner_waiting = jo.get_bool( "host_waiting" );
         }
@@ -17618,6 +17634,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"client_rejoin\":" + std::string( client_rejoin ? "true" : "false" ) + ","
            "\"calendar_turn\":" + std::to_string( to_turn<int>( calendar::turn ) ) + ","
            "\"host_waiting\":" + std::string( mp_turn_show_green() ? "false" : "true" ) + ","
+           "\"ff_hurt_hold\":" + std::string( mp_partner_recently_hurt() ? "true" : "false" ) + ","
            // Host's game-start anchors so the client's "survived N days" (and any
            // date-since-start math) measure from the HOST's world start, not the
            // client's throwaway scratch world — otherwise survival is inflated by
