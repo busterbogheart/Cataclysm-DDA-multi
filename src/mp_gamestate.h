@@ -276,6 +276,17 @@ void client_process_incoming();
 // client_process_incoming(), where a top-level UI context is valid.
 void client_resolve_pending_ui();
 
+// do_turn() callout for a SLEEPING client.  SP skips the whole input block for a
+// sleeper, so between host grants the client spun on a frozen clock with the window
+// dead.  Keeps the window alive and waits for the next packet instead.
+void mp_client_asleep_wait();
+
+// sounds.cpp callout: record a sound made in the host's world so the client can
+// hear it through its own SP sound processing.  Host-only; a no-op elsewhere.
+void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
+                    const std::string &description, bool ambient,
+                    const std::string &id, const std::string &variant, bool footstep );
+
 // Block until the server has sent the initial position and the avatar has been
 // teleported to the host area.  Call once after the game world is loaded but
 // before the first do_turn(), so the player never sees their scenario start tile.

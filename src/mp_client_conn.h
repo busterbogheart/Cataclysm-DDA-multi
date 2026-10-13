@@ -2,6 +2,7 @@
 #ifndef CATA_SRC_MP_CLIENT_CONN_H
 #define CATA_SRC_MP_CLIENT_CONN_H
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -40,6 +41,10 @@ void client_send( const std::string &json );
 // Pop one incoming message from the recv queue. Returns false when empty.
 // Used by mp_gamestate::client_process_incoming() to apply server state.
 bool client_recv_pop( std::string &out );
+
+// Block until a message is queued (or the timeout expires) without consuming it.
+// For waits that must wake the moment the host sends something, not on a timer.
+bool client_recv_wait( std::chrono::milliseconds timeout );
 
 // --- Auto-reconnect ------------------------------------------------------
 // When the TCP link drops UNGRACEFULLY (tunnel blip / RTO timeout — no FIN),

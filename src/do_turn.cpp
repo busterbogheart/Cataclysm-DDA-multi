@@ -1339,6 +1339,10 @@ bool game::do_turn()
                 }
             }
         }
+    } else if( cata_mp::is_client_mode() ) {
+        // MP: a sleeping client waits for the host's next grant here — see
+        // mp_client_asleep_wait().  SP has nothing to do for a sleeper at this point.
+        cata_mp::mp_client_asleep_wait();
     }
 
     if( driving_view_offset.x() != 0 || driving_view_offset.y() != 0 ) {

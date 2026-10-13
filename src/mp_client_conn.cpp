@@ -57,8 +57,11 @@ class string_queue
 {
     public:
         void push( std::string s ) {
-            std::lock_guard<std::mutex> lk( mtx_ );
-            q_.push( std::move( s ) );
+            {
+                std::lock_guard<std::mutex> lk( mtx_ );
+                q_.push( std::move( s ) );
+            }
+            cv_.notify_one();
         }
         bool pop( std::string &out ) {
             std::lock_guard<std::mutex> lk( mtx_ );
@@ -69,9 +72,16 @@ class string_queue
             q_.pop();
             return true;
         }
+        // Block until a message is queued or the timeout expires; true when one is
+        // ready.  Same shape as event_queue::wait_for_event (mp_queue.h).
+        bool wait_for_data( std::chrono::milliseconds timeout ) {
+            std::unique_lock<std::mutex> lk( mtx_ );
+            return cv_.wait_for( lk, timeout, [this] { return !q_.empty(); } );
+        }
     private:
         std::queue<std::string> q_;
         std::mutex mtx_;
+        std::condition_variable cv_;
 };
 
 static string_queue g_recv_queue;
@@ -720,6 +730,11 @@ bool client_recv_pop( std::string &out )
         return true;
     }
     return false;
+}
+
+bool client_recv_wait( std::chrono::milliseconds timeout )
+{
+    return g_recv_queue.wait_for_data( timeout );
 }
 
 void client_send( const std::string &json )

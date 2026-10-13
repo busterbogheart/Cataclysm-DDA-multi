@@ -12176,6 +12176,40 @@ void client_resolve_pending_ui()
     }
 }
 
+void mp_client_asleep_wait()
+{
+    // A sleeper normally spends each grant at once (CLI-GRANT-SLEEP-ACK), so moves > 0
+    // means a grant is mid-flight; let do_turn run as before.
+    if( !is_client_mode() || get_avatar().get_moves() > 0 ) {
+        return;
+    }
+    // Measured 2026-10-12: with nothing to do between grants the sleeping client ran
+    // ~42,000 do_turn passes a second (PROGRESS-UI-AVG) with no redraw and no event
+    // pump, so its window read as frozen through the whole sleep.  eee63b76a3 made
+    // it so: closing the clock between grants starves SP's turn-counted sleep
+    // redraw, which the free-running clock used to trigger.
+    //
+    // Window events, with keypresses dropped (input_manager::pump_events): a
+    // sleeper can't act, as in SP.
+    inp_mngr.pump_events();
+    // Redraw as the shared clock moves, at most every 250 ms, so the sleeper sees the
+    // world go by without a redraw per grant slowing fast-forward.
+    static time_point s_drawn_turn = calendar::before_time_starts;
+    static std::chrono::steady_clock::time_point s_drawn_at;
+    const auto now = std::chrono::steady_clock::now();
+    if( calendar::turn != s_drawn_turn && now - s_drawn_at >= std::chrono::milliseconds( 250 ) ) {
+        s_drawn_turn = calendar::turn;
+        s_drawn_at = now;
+        g->invalidate_main_ui_adaptor();
+        ui_manager::redraw();
+        refresh_display();
+    }
+    // Block until the host sends something instead of spinning.  The ceiling only
+    // keeps the window serviced while the host is quiet (or gone, in which case the
+    // lost-host wake in client_resolve_pending_ui ends the sleep).
+    client_recv_wait( std::chrono::milliseconds( 50 ) );
+}
+
 void client_process_incoming()
 {
     // After the host has died (or the socket dropped), drain the queue silently
