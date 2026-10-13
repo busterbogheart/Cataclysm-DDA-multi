@@ -7879,6 +7879,48 @@ static int mp_local_ff_moves()
     return act ? act.moves_left : -1;
 }
 
+// Host: true for FF_HURT_HOLD_TURNS game turns after the partner's proxy lost HP.
+//
+// Measured 2026-10-12: a Fragile (FLIMSY3, 21 HP a part) client slept beside a host
+// still in ACT_TRY_SLEEP.  Fast-forward ran 10-turn batches while a zombie two tiles
+// away attacked the proxy: the client's packets jumped turn 5225369 → 5225377 →
+// 5225379, carrying the first bite and then death.  Nothing could stop the
+// batching: the gate relies on SP cancelling each side's activity, a sleeper has
+// none to cancel, and the proxy's on_hurt is an npc's.  SP hands a sleeper woken by
+// a hit its turn at once; under FF the client learns of the hit a batch late.
+// Dropping to lockstep for a moment gives the client every turn, so its own
+// on_hurt (client_resolve_pending_ui) can wake it before the next bite.  If it
+// sleeps on (heavy sleeper, narcosis), FF resumes when the hold runs out.
+//
+// Host-only, and safe as such: a sleeping or passive-activity client acks each
+// grant from its grant handler whatever its own FF verdict, so the host returning
+// to lockstep cannot strand an ack.
+static constexpr int FF_HURT_HOLD_TURNS = 10;
+
+static bool mp_partner_recently_hurt()
+{
+    if( !is_hosting() ) {
+        return false;
+    }
+    static time_point s_checked_turn = calendar::before_time_starts;
+    static time_point s_hurt_turn = calendar::before_time_starts;
+    static int s_last_total = -1;
+    if( calendar::turn != s_checked_turn ) {
+        s_checked_turn = calendar::turn;
+        const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id );
+        const int total = proxy ? proxy->get_hp() : -1;
+        if( total >= 0 && s_last_total >= 0 && total < s_last_total ) {
+            s_hurt_turn = calendar::turn;
+            mp_log( "[cdda-mp] FF-PARTNER-HURT: proxy hp " + std::to_string( s_last_total ) +
+                    "->" + std::to_string( total ) + ", lockstep for " +
+                    std::to_string( FF_HURT_HOLD_TURNS ) + " turns" );
+        }
+        s_last_total = total;
+    }
+    return s_hurt_turn != calendar::before_time_starts &&
+           calendar::turn - s_hurt_turn <= time_duration::from_turns( FF_HURT_HOLD_TURNS );
+}
+
 std::string mp_ff_decline_reason()
 {
     if( !is_hosting() && !is_client_mode() ) {
@@ -7886,6 +7928,9 @@ std::string mp_ff_decline_reason()
     }
     if( mp_peer_modal_held() ) {
         return "partner_modal";
+    }
+    if( mp_partner_recently_hurt() ) {
+        return "partner_hurt";
     }
     const std::string mine = mp_local_ff_activity();
     if( mine.empty() ) {
@@ -7923,6 +7968,11 @@ bool should_fast_forward()
     // non-FF dialog stop both players correctly.  Kept in the same order as
     // mp_ff_decline_reason() so the logged reason always matches the verdict.
     if( mp_peer_modal_held() ) {
+        return false;
+    }
+    // The partner is being hurt — see mp_partner_recently_hurt().  Same order as
+    // mp_ff_decline_reason().
+    if( mp_partner_recently_hurt() ) {
         return false;
     }
     // Local avatar must be in a fast-forwardable (long, passive) activity — or
