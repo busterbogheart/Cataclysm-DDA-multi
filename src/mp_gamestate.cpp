@@ -69,6 +69,8 @@
 #include "ui_manager.h"
 #include "rng.h"
 #include "units.h"
+#include "weather.h"
+#include "weather_type.h"
 #include "units_utility.h"
 #include "skill.h"
 #include "popup.h"
@@ -1264,6 +1266,9 @@ static const efftype_id effect_pet( "pet" );
 static const efftype_id effect_ridden( "ridden" );
 
 static const json_character_flag json_flag_CANNOT_MOVE( "CANNOT_MOVE" );
+
+static const trait_id trait_HEAVYSLEEPER( "HEAVYSLEEPER" );
+static const trait_id trait_HEAVYSLEEPER2( "HEAVYSLEEPER2" );
 
 // ---------------------------------------------------------------------------
 // Info panel (bottom-left corner)
@@ -2504,6 +2509,28 @@ void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
     }
     g_host_sounds_for_client.push_back( { abs, vol, category, description, ambient, id,
                                           variant, footstep } );
+}
+
+// P( the sum of n dice with `sides` faces is below `target` ), exactly.  SP's sleep
+// wake roll in sounds::process_sound_markers is dice( n, 15 ) < heard_volume, with n
+// 2 / 3 / 6 for no trait / HEAVYSLEEPER / HEAVYSLEEPER2.  Diagnostic only.
+static double mp_p_dice_below( int n, int sides, int target )
+{
+    std::vector<double> dist( 1, 1.0 );   // dist[s] = P( sum == s )
+    for( int i = 0; i < n; ++i ) {
+        std::vector<double> next( dist.size() + sides, 0.0 );
+        for( size_t s = 0; s < dist.size(); ++s ) {
+            for( int face = 1; face <= sides; ++face ) {
+                next[s + face] += dist[s] / sides;
+            }
+        }
+        dist = std::move( next );
+    }
+    double p = 0.0;
+    for( size_t s = 0; s < dist.size() && static_cast<int>( s ) < target; ++s ) {
+        p += dist[s];
+    }
+    return p;
 }
 
 // Host: drain the buffered sounds into a JSON array for the next state packet,
@@ -11752,6 +11779,22 @@ static bool apply_one_state_message( const std::string &msg )
             int injected = 0;
             int loudest = -1;
             std::string loudest_desc;
+            // Wake-odds diagnostic inputs (see SOUND-WAKE-ODDS below).
+            static const efftype_id eff_narcosis( "narcosis" );
+            static const bionic_id bio_sleep_shutdown( "bio_sleep_shutdown" );
+            const avatar &me_av = get_avatar();
+            const bool sleeping = mp_char_is_asleep( me_av );
+            const bool wake_blocked = me_av.has_effect( eff_narcosis ) ||
+                                      me_av.has_bionic( bio_sleep_shutdown );
+            const float hearing = me_av.hearing_ability();
+            const int weather_attn = get_weather().weather_id->sound_attn;
+            const int wake_dice = me_av.has_trait( trait_HEAVYSLEEPER2 ) ? 6 :
+                                  me_av.has_trait( trait_HEAVYSLEEPER ) ? 3 : 2;
+            double p_stay = 1.0;
+            int best_heard = INT_MIN;
+            int best_dist = 0;
+            double best_p = 0.0;
+            std::string best_desc;
             for( const JsonValue &sv : jo.get_array( "sounds" ) ) {
                 JsonObject so = sv.get_object();
                 so.allow_omitted_members();
@@ -11777,12 +11820,38 @@ static bool apply_one_state_message( const std::string &msg )
                     loudest = vol;
                     loudest_desc = desc;
                 }
+                // DIAG (2026-10-12): SP never logs its sleep-wake roll, so a sleeper
+                // that stays asleep through forwarded sounds can't be told apart from
+                // one that never rolled.  Mirror the roll's inputs here: heard volume
+                // as sounds::process_sound_markers computes it (sound_distance on one
+                // z-level is rl_dist, +5 per level; the underground extra is left out).
+                if( sleeping ) {
+                    const tripoint_bub_ms me = get_avatar().pos_bub();
+                    const int dist = rl_dist( p.xy(), me.xy() ) + 5 * std::abs( p.z() - me.z() );
+                    const int heard = static_cast<int>( ( vol - weather_attn ) * hearing ) - dist;
+                    const double p_wake = mp_p_dice_below( wake_dice, 15, heard );
+                    p_stay *= 1.0 - p_wake;
+                    if( heard > best_heard ) {
+                        best_heard = heard;
+                        best_dist = dist;
+                        best_p = p_wake;
+                        best_desc = desc;
+                    }
+                }
             }
             if( n > 0 ) {
                 mp_log( "[cdda-mp] SOUND-RECV: n=" + std::to_string( n ) + " injected=" +
                         std::to_string( injected ) + " loudest=\"" + loudest_desc + "\" v=" +
-                        std::to_string( loudest ) + " asleep=" +
-                        std::to_string( mp_char_is_asleep( get_avatar() ) ) );
+                        std::to_string( loudest ) + " asleep=" + std::to_string( sleeping ) );
+            }
+            if( sleeping && best_heard != INT_MIN ) {
+                mp_log( "[cdda-mp] SOUND-WAKE-ODDS: best=\"" + best_desc + "\" heard=" +
+                        std::to_string( best_heard ) + " dist=" + std::to_string( best_dist ) +
+                        " weather_attn=" + std::to_string( weather_attn ) + " roll=" +
+                        std::to_string( wake_dice ) + "d15" +
+                        string_format( " p_best=%.1f%% p_packet=%.1f%%", best_p * 100.0,
+                                       ( 1.0 - p_stay ) * 100.0 ) +
+                        ( wake_blocked ? " (narcosis/sleep-shutdown: cannot wake)" : "" ) );
             }
         }
 
