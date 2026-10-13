@@ -557,6 +557,7 @@ void mp_handle_client_hp( const std::string &msg )
             }
             const int before = proxy->get_part_hp_cur( bp );
             proxy->mod_part_hp_cur( bp, d );
+            mp_hurt_baseline_adjust( bp, proxy->get_part_hp_cur( bp ) - before );
             applied += bp_str + ":" + std::to_string( before ) + "->" +
                        std::to_string( proxy->get_part_hp_cur( bp ) ) + " ";
         }

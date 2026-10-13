@@ -182,6 +182,9 @@ std::string mp_activity_percent_suffix( int moves_total, int moves_left );
 // host's echo of an HP change the CLIENT itself caused is not reported as
 // incoming damage.  Narration only; does not change HP.
 void mp_hp_baseline_adjust( const std::string &bp_str, int delta );
+// Host: the client-reported HP change just applied to the proxy (client_hp) is
+// not damage, so keep it out of the FF hurt hold's per-part baseline.
+void mp_hurt_baseline_adjust( const bodypart_id &bp, int delta );
 
 // A monster friendly to one player must be friendly to the other.
 //

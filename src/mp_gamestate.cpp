@@ -8770,6 +8770,9 @@ static int mp_local_ff_moves()
 static constexpr int FF_HURT_HOLD_TURNS = 10;
 // Client: the host's hurt hold, from the last state packet.
 static bool g_host_ff_hurt_hold = false;
+// Host: the proxy's { hp, hp_max } per part at the last hurt check.  File scope
+// so mp_hurt_baseline_adjust() can move it.
+static std::map<bodypart_id, std::pair<int, int>> g_hurt_last_hp;
 
 static bool mp_partner_recently_hurt()
 {
@@ -8781,8 +8784,6 @@ static bool mp_partner_recently_hurt()
     }
     static time_point s_checked_turn = calendar::before_time_starts;
     static time_point s_hurt_turn = calendar::before_time_starts;
-    // Per part: { hp, hp_max } at the last check.
-    static std::map<bodypart_id, std::pair<int, int>> s_last_hp;
     if( calendar::turn != s_checked_turn ) {
         s_checked_turn = calendar::turn;
         std::map<bodypart_id, std::pair<int, int>> now;
@@ -8797,8 +8798,8 @@ static bool mp_partner_recently_hurt()
         int total_drop = 0;
         bool uniform = true;
         for( const auto &[bp, hp_and_max] : now ) {
-            const auto it = s_last_hp.find( bp );
-            if( it == s_last_hp.end() ) {
+            const auto it = g_hurt_last_hp.find( bp );
+            if( it == g_hurt_last_hp.end() ) {
                 continue;
             }
             ++n_parts;
@@ -8832,10 +8833,24 @@ static bool mp_partner_recently_hurt()
                     " hp over " + std::to_string( n_dropped ) + " part(s), lockstep for " +
                     std::to_string( FF_HURT_HOLD_TURNS ) + " turns" );
         }
-        s_last_hp = std::move( now );
+        g_hurt_last_hp = std::move( now );
     }
     return s_hurt_turn != calendar::before_time_starts &&
            calendar::turn - s_hurt_turn <= time_duration::from_turns( FF_HURT_HOLD_TURNS );
+}
+
+void mp_hurt_baseline_adjust( const bodypart_id &bp, int delta )
+{
+    // The client changed its own HP on purpose (blood magic, a spell's HP cost)
+    // and reported it; the host just applied that to the proxy.  That is not
+    // the world hurting the partner, so move the hurt check's baseline with it.
+    // Measured 2026-10-13: HOST-HP-EVENT src=blood_magic arm_l 94->89 armed a
+    // 10-turn FF hold (FF-PARTNER-HURT "proxy lost 5 hp") every time.  Same idea
+    // as mp_hp_baseline_adjust() on the client.
+    const auto it = g_hurt_last_hp.find( bp );
+    if( it != g_hurt_last_hp.end() ) {
+        it->second.first += delta;
+    }
 }
 
 std::string mp_ff_decline_reason()
