@@ -1008,6 +1008,12 @@ static int g_partner_morale = 0;
 // pixel-identical to the partner's sidebar limb bar. max<=0 = not yet received.
 static int g_partner_hp_cur = 0;
 static int g_partner_hp_max = 0;
+// Partner's mana, synced the same way from their real character (B17).  The
+// host's proxy derives max mana from its own stats, like max HP.  max<=0 means
+// the partner knows no spells, and the panel shows nothing, as SP's sidebar
+// only matters to a caster.
+static int g_partner_mana_cur = 0;
+static int g_partner_mana_max = 0;
 
 // Round-trip latency to the partner is now measured on the io thread via the
 // heartbeat ping/pong (mp_client_conn.cpp / mp_server.cpp), read for display via
@@ -1539,7 +1545,24 @@ struct mp_hud_t {
         mvwprintz( win, point( x, crow ), c_white, "[" );
         mvwprintz( win, point( x + 1, crow ), hp_color, "%s", hpbar.c_str() );
         mvwprintz( win, point( x + 6, crow ), c_white, "]" );
-        x += 9;
+        x += 7;
+
+        // Mana (B17), only for a partner who knows spells: a 5-wide bar in the
+        // same brackets as HP, '#' in light blue like SP's mana graph widget.
+        // Any mana at all shows at least one '#', so "nearly dry" never reads
+        // as "no mana".
+        if( partner && g_partner_mana_max > 0 ) {
+            const int cur = std::clamp( g_partner_mana_cur, 0, g_partner_mana_max );
+            const int filled = cur <= 0 ? 0 :
+                               std::clamp( ( cur * 5 + g_partner_mana_max / 2 ) / g_partner_mana_max, 1, 5 );
+            mvwprintz( win, point( x, crow ), c_white, "[" );
+            mvwprintz( win, point( x + 1, crow ), c_light_blue, "%s",
+                       std::string( filled, '#' ).c_str() );
+            mvwprintz( win, point( x + 6, crow ), c_white, "]" );
+            x += 7;
+        }
+        // Gap after the bars (HP, then mana flush against it).
+        x += 2;
 
         // Activity + progress %.  Use the verb phrase (e.g. "reading",
         // "constructing a vehicle") so the panel matches the begin/finish
@@ -4770,6 +4793,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     }
     if( jo.has_int( "client_hp_max" ) ) {
         g_partner_hp_max = jo.get_int( "client_hp_max" );
+    }
+    if( jo.has_int( "client_mana" ) ) {
+        g_partner_mana_cur = jo.get_int( "client_mana" );
+    }
+    if( jo.has_int( "client_mana_max" ) ) {
+        g_partner_mana_max = jo.get_int( "client_mana_max" );
     }
     // (Ping now measured on the io thread via heartbeat — see mp_server.cpp.)
     if( jo.has_int( "client_calendar_turn" ) ) {
@@ -11995,6 +12024,12 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_int( "host_hp_max" ) ) {
             g_partner_hp_max = jo.get_int( "host_hp_max" );
         }
+        if( jo.has_int( "host_mana" ) ) {
+            g_partner_mana_cur = jo.get_int( "host_mana" );
+        }
+        if( jo.has_int( "host_mana_max" ) ) {
+            g_partner_mana_max = jo.get_int( "host_mana_max" );
+        }
         // (Ping now measured on the io thread via heartbeat — see mp_client_conn.cpp.)
         // Snapshot host's calendar BEFORE the local sync above overwrites it,
         // so the panel can show drift = local - last_received_partner.  Since
@@ -13984,6 +14019,10 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_hp_cur\":" + std::to_string( wl.first );
             enriched += ",\"client_hp_max\":" + std::to_string( wl.second );
         }
+        // Real max mana for the host's panel (client_mana above is current);
+        // 0 = knows no spells, so the panel shows no mana.
+        enriched += ",\"client_mana_max\":" + std::to_string(
+                        av.magic->knows_spell() ? av.magic->max_mana( av ) : 0 );
         // (Ping now measured on the io thread via heartbeat — see mp_client_conn.cpp.)
         if( !g_client_msgs_pending.empty() ) {
             std::string msgs = "[";
@@ -17480,6 +17519,9 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"host_morale\":" + std::to_string( host.get_morale_level() ) + ","
            "\"host_hp_cur\":" + std::to_string( mp_worst_limb_hp( host ).first ) + ","
            "\"host_hp_max\":" + std::to_string( mp_worst_limb_hp( host ).second ) + ","
+           "\"host_mana\":" + std::to_string( host.magic->available_mana() ) + ","
+           "\"host_mana_max\":" + std::to_string(
+               host.magic->knows_spell() ? host.magic->max_mana( host ) : 0 ) + ","
            "\"host_effects\":" + host_effects_json + ","
            "\"host_hp\":" + host_hp_json + ","
            + ( []() -> std::string {
