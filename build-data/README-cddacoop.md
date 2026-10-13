@@ -265,17 +265,15 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 
 ### Does CO-OP change hardware requirements?
 
-It's about the same as single-player CDDA. The simulation is CPU-bound and single-threaded, RAM is modest (~0.5 to 2 GB), and the tiles renderer barely touches the GPU.
+It's about the same as single-player CDDA. The simulation mostly uses CPU and is single-threaded, RAM is modest (about .5 to 2 GB per player), and the tiles renderer barely touches the GPU.
 
-Co-op does not double the CPU cost. There is one shared simulation area centered on the host, not one per player, so the host runs roughly single-player plus a little overhead, not 2x.
-
-Obviously the new requirement is the network; the host streams world updates to the client every turn, so a faster connection and hardware helps here.
+It doesn't double the cost on either machine. There is one shared simulation area centered on the host, not one per player, so the host runs roughly single-player plus some overhead. What it does mean is that both machines are doing real work: the client is a full copy of the game, not a simple display, so co-op is better with two decent computers rather than one good one.
 
 ### So the better computer/connection should be the host?
 
-Yes. The host runs the full world simulation, serializes the changed state every turn, and uploads it to the client, so it does the heavy lifting.
+Yes. The host owns everything the client doesn't: monster and NPC AI, vehicle movement, and fire/gas/smoke simulation. Also it scans the world for changes every turn, packages them up and sends them out. Monster AI alone is the single biggest part of a host turn, but the client doesn't pay costs for it.
 
-The client mostly renders what the host sends and waits its turn, so it is lighter on CPU; and memory use is similar to single-player.
+The client is lighter; it runs its own copy of the world (weather, item decay, lighting, sound, mapgen) and does all of its own rendering. It skips the AI and physics which the host owns (expensive), so it's lighter.  Memory use is still about the same on both sides.  So yes, put the stronger machine and the better connection on the host, but the client needs a decent machine too. 
 
 ### How does it work under the hood?
 
