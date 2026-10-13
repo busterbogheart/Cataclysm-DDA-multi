@@ -273,7 +273,7 @@ It doesn't double the cost on either machine. There is one shared simulation are
 
 Yes. The host owns everything the client doesn't: monster and NPC AI, vehicle movement, and fire/gas/smoke simulation. Also it scans the world for changes every turn, packages them up and sends them out. Monster AI alone is the single biggest part of a host turn, but the client doesn't pay costs for it.
 
-The client is lighter; it runs its own copy of the world (weather, item decay, lighting, sound, mapgen) and does all of its own rendering. It skips the AI and physics which the host owns (expensive), so it's lighter.  Memory use is still about the same on both sides.  So yes, put the stronger machine and the better connection on the host, but the client needs a decent machine too. 
+The client is lighter; it runs its own copy of the world (weather, item decay, lighting, sound, mapgen) and does all of its own rendering. It skips the AI and physics which the host owns (expensive).  Memory use is still about the same on both sides.  So yes, put the stronger machine and the better connection on the host, but the client needs a decent machine too. 
 
 ### How does it work under the hood?
 
