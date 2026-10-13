@@ -4953,7 +4953,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     const int intensity = bo.get_int( "intensity", 0 );
                     if( !bp_str.empty() && intensity > 0 ) {
                         const bodypart_id bp = bodypart_str_id( bp_str ).id();
-                        remote->add_effect( effect_bleed, 2_turns, bp, intensity );
+                        remote->add_effect( effect_bleed, 2_turns, bp, /*permanent=*/false, intensity );
                     }
                 }
             }
@@ -11694,7 +11694,7 @@ static bool apply_one_state_message( const std::string &msg )
                     if( bp_str.empty() || !bpsid.is_valid() ) {
                         host_npc->add_effect( et, dur, false, intensity );
                     } else {
-                        host_npc->add_effect( et, dur, bpsid.id(), intensity );
+                        host_npc->add_effect( et, dur, bpsid.id(), /*permanent=*/false, intensity );
                     }
                 }
             }
