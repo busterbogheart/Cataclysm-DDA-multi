@@ -19,6 +19,7 @@
 #include "display.h"
 #include "mood_face.h"
 #include "martialarts.h"
+#include "magic.h"
 #include "calendar.h"
 #include "cata_utility.h"
 #include "character_id.h"
@@ -2510,6 +2511,38 @@ static std::string mp_proxy_lost_effects_field( npc &proxy )
     // Whatever removed it, the enchantments it granted are gone too.
     proxy.recalculate_enchantment_cache();
     return ",\"proxy_lost_effects\":[" + json + "]";
+}
+
+// ---------------------------------------------------------------------------
+// Spells and mana: client → proxy mirror.  Stage 1, part 2 of the character
+// ownership table (B4 proper).  The proxy had no known_magic at all
+// (MAGIC-PROXY: spells=0, mana the constructor's default), so everything the host
+// evaluates for the joining player read a mundane: Magiclysm's class enchantments
+// compute from u_school_level() / u_spell_level(), and spell formulas resolved
+// host-side read the proxy's levels.  d75d3fef08 patched the partner-spell path
+// alone; this gives the proxy the real spellbook.
+//
+// Spells are signature-gated (sent only when the set or a level changes); mana is
+// a single int sent with every action, since casting and regen move it often.
+static std::string g_client_spells_sig_sent;
+
+// Client: the spellbook for this action as [["id",level],…], or "" if unchanged.
+static std::string mp_client_spells_json()
+{
+    std::string json = "[";
+    for( const spell *sp : get_avatar().magic->get_spells() ) {
+        if( json.size() > 1 ) {
+            json += ',';
+        }
+        json += "[\"" + sp->id().str() + "\"," + std::to_string( sp->get_level() ) + "]";
+    }
+    json += ']';
+    if( json == g_client_spells_sig_sent ) {
+        return std::string();
+    }
+    mp_log( "[cdda-mp] CLI-SPELLS-SEND: " + json.substr( 0, 600 ) );
+    g_client_spells_sig_sent = json;
+    return json;
 }
 
 // Client: the effects snapshot for this action, or "" when it needn't be sent.
@@ -5171,6 +5204,58 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             if( !added.empty() || !removed.empty() ) {
                 mp_log( "[cdda-mp] PROXY-EFFECTS: +[" + added + "] -[" + removed + "] n=" +
                         std::to_string( g_proxy_mirrored_effects.size() ) );
+            }
+        } catch( const JsonError & ) {}
+    }
+
+    // Mirror the client's spellbook onto the proxy (see mp_client_spells_json).
+    // known_magic::set_spell_level is SP's one-call learn / relevel / forget: it
+    // skips learn_spell's class-trait side effects (which would mutate the proxy;
+    // the client's own traits arrive by the mutation sync) and forget_spell's
+    // get_player_character() event bug (ROADMAP, magic.cpp).
+    if( msg.find( "\"client_spells\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            std::set<spell_id> listed;
+            std::string changed;
+            for( const JsonValue &sv : jo.get_array( "client_spells" ) ) {
+                JsonArray entry = sv.get_array();
+                const spell_id sp( entry.get_string( 0 ) );
+                const int level = entry.get_int( 1 );
+                if( !sp.is_valid() ) {
+                    continue;
+                }
+                listed.insert( sp );
+                if( remote->magic->knows_spell( sp ) &&
+                    remote->magic->get_spell( sp ).get_level() == level ) {
+                    continue;
+                }
+                remote->magic->set_spell_level( sp, level, remote );
+                changed += ( changed.empty() ? "" : " " ) + sp.str() + "=" + std::to_string( level );
+            }
+            for( const spell_id &sp : remote->magic->spells() ) {
+                if( !listed.count( sp ) ) {
+                    remote->magic->set_spell_level( sp, -1, remote );
+                    changed += ( changed.empty() ? "" : " " ) + sp.str() + "=forgotten";
+                }
+            }
+            if( !changed.empty() ) {
+                // Class enchantments read spell / school levels.
+                remote->recalculate_enchantment_cache();
+                mp_log( "[cdda-mp] PROXY-SPELLS: " + changed.substr( 0, 600 ) );
+                mp_log_proxy_magic_state();
+            }
+        } catch( const JsonError & ) {}
+    }
+    if( msg.find( "\"client_mana\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_int( "client_mana" ) ) {
+                remote->magic->set_mana( jo.get_int( "client_mana" ) );
             }
         } catch( const JsonError & ) {}
     }
@@ -12748,6 +12833,7 @@ void client_process_incoming()
         // And the effects mirror: force a full snapshot to the new proxy.
         g_client_effects_sig_sent.clear();
         g_client_effects_actions_since_send = 0;
+        g_client_spells_sig_sent.clear();
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
         // Templates wire-sync: send local template list so the host can request
@@ -13479,6 +13565,12 @@ std::string client_enrich_action( const std::string &json )
         if( !effects_json.empty() ) {
             enriched += ",\"client_effects\":" + effects_json;
         }
+        // Spellbook when it changed, mana every time — see mp_client_spells_json().
+        const std::string spells_json = mp_client_spells_json();
+        if( !spells_json.empty() ) {
+            enriched += ",\"client_spells\":" + spells_json;
+        }
+        enriched += ",\"client_mana\":" + std::to_string( av.magic->available_mana() );
         enriched += ",\"client_tile_changes\":" + tile_changes;
         if( veh_cargo_changes != "[]" ) {
             enriched += ",\"client_veh_cargo_changes\":" + veh_cargo_changes;
