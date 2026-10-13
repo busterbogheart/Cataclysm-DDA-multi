@@ -2435,6 +2435,71 @@ static std::unordered_map<std::string, int> g_last_bodypart_hp;
 // falling max (proxy max-HP recompute) isn't read as damage.
 static std::unordered_map<std::string, int> g_last_bodypart_hpmax;
 
+// ---------------------------------------------------------------------------
+// Effects: client → proxy mirror.  Stage 1 of the character ownership table
+// (ROADMAP "SPEC 2026-10-12 — CHARACTER OWNERSHIP TABLE").
+//
+// The client owns its body's effects: sleep, drugs, illness, Magiclysm self-buffs,
+// everything its own SP code applies.  Before this, only bleeding crossed to the
+// host's proxy, so everything the host resolves for the client (melee, dodge,
+// enchantments, spell formulas, being attacked in its sleep) saw a body with none
+// of them: 283 self-target Magiclysm spells had no host-side effect (B3), and a
+// sleeping client's proxy stood awake and dodged.
+//
+// Wire form: { id, bp, intensity, absolute expiry turn (-1 = permanent) }.  An
+// absolute expiry doesn't change as time passes, so the signature only changes
+// when an effect is added, removed, extended or changes intensity, and the
+// snapshot is only sent then (plus a periodic refresh, below).  Bleeding is left
+// to its existing client_bleed path, which drives the host-side blood trail.
+static std::string g_client_effects_sig_sent;
+static int g_client_effects_actions_since_send = 0;
+// Resend even when unchanged every N enriched actions, so a proxy effect the host
+// removed on its own (e.g. a hit waking the proxy while the client sleeps on
+// under narcosis) is restored within a few turns.
+static constexpr int MP_EFFECTS_REFRESH_ACTIONS = 20;
+
+// Host: the effects the proxy carries BECAUSE the client has them, as "id|bp"
+// keys.  A client snapshot only ever removes these; effects the host's world put
+// on the proxy (a monster's grab, a bite) stay until stage 2 hands them to the
+// client.
+static std::set<std::string> g_proxy_mirrored_effects;
+
+// Client: the effects snapshot for this action, or "" when it needn't be sent.
+static std::string mp_client_effects_json()
+{
+    std::string sig;
+    std::string json = "[";
+    int n = 0;
+    for( const effect &eff : get_avatar().get_effects() ) {
+        if( eff.get_id() == effect_bleed ) {
+            continue;
+        }
+        const int expiry = eff.is_permanent() ? -1 :
+                           to_turn<int>( calendar::turn + eff.get_duration() );
+        const std::string id = eff.get_id().str();
+        const std::string bp = eff.get_bp().id().str();
+        if( n++ > 0 ) {
+            json += ',';
+        }
+        json += "{\"id\":\"" + id + "\",\"bp\":\"" + bp + "\",\"i\":" +
+                std::to_string( eff.get_intensity() ) + ",\"exp\":" + std::to_string( expiry ) + "}";
+        sig += id + "|" + bp + "|" + std::to_string( eff.get_intensity() ) + "|" +
+               std::to_string( expiry ) + ";";
+    }
+    json += ']';
+    const bool changed = sig != g_client_effects_sig_sent;
+    if( !changed && ++g_client_effects_actions_since_send < MP_EFFECTS_REFRESH_ACTIONS ) {
+        return std::string();
+    }
+    if( changed ) {
+        mp_log( "[cdda-mp] CLI-EFFECTS-SEND: n=" + std::to_string( n ) + " " + json.substr( 0,
+                600 ) );
+    }
+    g_client_effects_sig_sent = std::move( sig );
+    g_client_effects_actions_since_send = 0;
+    return json;
+}
+
 // Client: SP reactions to harm the HOST inflicted, recorded in the recv path and
 // run by client_resolve_pending_ui() from the main loop.  Both SP hooks involved,
 // Character::on_hurt and react_to_felt_pain (via set_pain), can open
@@ -3006,6 +3071,8 @@ static void spawn_remote_player( const std::string &name )
     // sessions where the cleanup file went missing (e.g. host saved while
     // connected, then quit — the proxy ends up in the world save).
     remote->set_value( "mp_proxy", std::string( "1" ) );
+    // A fresh proxy carries none of the previous one's mirrored effects.
+    g_proxy_mirrored_effects.clear();
     mp_log( "[cdda-mp] spawn: remote_player_npc_id=" +
             std::to_string( remote_player_npc_id.get_value() ) +
             " valid=" + std::to_string( remote_player_npc_id.is_valid() ) +
@@ -4956,6 +5023,69 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         remote->add_effect( effect_bleed, 2_turns, bp, /*permanent=*/false, intensity );
                     }
                 }
+            }
+        } catch( const JsonError & ) {}
+    }
+
+    // Mirror the client's effects onto the proxy (see mp_client_effects_json).
+    // Applied before the action itself, so a client that just woke moves as awake.
+    // Existing effects are SET, not re-added: SP's add_effect() on an effect the
+    // creature already has extends its duration, which would stretch it on every
+    // snapshot.  Only effects mirrored from the client are ever removed here.
+    if( msg.find( "\"client_effects\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            std::set<std::string> now_keys;
+            std::string added;
+            std::string removed;
+            const int now_turn = to_turn<int>( calendar::turn );
+            for( const JsonValue &ev : jo.get_array( "client_effects" ) ) {
+                JsonObject eo = ev.get_object();
+                eo.allow_omitted_members();
+                const efftype_id et( eo.get_string( "id", "" ) );
+                if( !et.is_valid() || et == effect_bleed ) {
+                    continue;
+                }
+                const bodypart_str_id bpsid( eo.get_string( "bp", "" ) );
+                const bodypart_id bp = bpsid.is_valid() ? bpsid.id() : bodypart_str_id::NULL_ID().id();
+                const int intensity = eo.get_int( "i", 1 );
+                const int expiry = eo.get_int( "exp", -1 );
+                const bool permanent = expiry < 0;
+                if( !permanent && expiry <= now_turn ) {
+                    continue;   // already over on the client's clock
+                }
+                const time_duration dur = permanent ? 1_turns :
+                                          time_duration::from_turns( expiry - now_turn );
+                const std::string key = et.str() + "|" + bp.id().str();
+                if( remote->has_effect( et, bp ) ) {
+                    effect &e = remote->get_effect( et, bp );
+                    if( !permanent ) {
+                        e.set_duration( dur );
+                    }
+                    e.set_intensity( intensity );
+                } else {
+                    remote->add_effect( et, dur, bp, permanent, intensity );
+                    added += ( added.empty() ? "" : " " ) + key;
+                }
+                now_keys.insert( key );
+            }
+            for( const std::string &key : g_proxy_mirrored_effects ) {
+                if( now_keys.count( key ) ) {
+                    continue;
+                }
+                const size_t bar = key.find( '|' );
+                const efftype_id et( key.substr( 0, bar ) );
+                const bodypart_str_id bpsid( key.substr( bar + 1 ) );
+                remote->remove_effect( et, bpsid.is_valid() ? bpsid.id() :
+                                       bodypart_str_id::NULL_ID().id() );
+                removed += ( removed.empty() ? "" : " " ) + key;
+            }
+            g_proxy_mirrored_effects = std::move( now_keys );
+            if( !added.empty() || !removed.empty() ) {
+                mp_log( "[cdda-mp] PROXY-EFFECTS: +[" + added + "] -[" + removed + "] n=" +
+                        std::to_string( g_proxy_mirrored_effects.size() ) );
             }
         } catch( const JsonError & ) {}
     }
@@ -12495,6 +12625,9 @@ void client_process_incoming()
         g_client_pending_pain = 0;
         g_last_host_proxy_pain = -1;
         g_client_pending_lost_host_wake = false;
+        // And the effects mirror: force a full snapshot to the new proxy.
+        g_client_effects_sig_sent.clear();
+        g_client_effects_actions_since_send = 0;
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
         // Templates wire-sync: send local template list so the host can request
@@ -13220,6 +13353,12 @@ std::string client_enrich_action( const std::string &json )
                         static_cast<unsigned long long>( g_client_last_grant_seq ) );
         enriched += ",\"client_light\":" + mp_json_num( cl );
         enriched += ",\"client_bleed\":" + bleed_json;
+        // Full effect set for the proxy, only when it changed — see
+        // mp_client_effects_json().
+        const std::string effects_json = mp_client_effects_json();
+        if( !effects_json.empty() ) {
+            enriched += ",\"client_effects\":" + effects_json;
+        }
         enriched += ",\"client_tile_changes\":" + tile_changes;
         if( veh_cargo_changes != "[]" ) {
             enriched += ",\"client_veh_cargo_changes\":" + veh_cargo_changes;
