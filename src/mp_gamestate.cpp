@@ -1065,14 +1065,23 @@ static std::string g_partner_activity_prev;
 // dispatch runs — which would mask the activity from the host's HUD.
 static std::string g_client_turn_activity;
 
-// Client's avatar position as this do_turn's activity loop begins.  B6: an
-// activity that moves the avatar from finish() (a Magiclysm teleport such as
-// magus_escape, dimension_door or phase_door) does it outside handle_action, so
-// the position_sync there never fires, and the host's next state packet snapped
-// the client back (37 tiles, measured 2026-08-27).  The move rides that turn's
-// "wait" as act_pos instead of a packet of its own: every srv_emit_ack ends the
-// client's turn, so a separate packet plus the wait would answer two turns.
+// Client's avatar position as this do_turn's activity loop begins, and where a
+// move made BY that loop is held until it is sent.  B6: an activity that moves
+// the avatar from finish() (a Magiclysm teleport such as magus_escape,
+// dimension_door or phase_door) does it outside handle_action, so the
+// position_sync there never fires, and the host's next state packet snapped
+// the client back (37 tiles, measured 2026-08-27).
+// - Captured at the loop's END, not at the wait: anything after the loop (a
+//   keypress, a host correction applied by client_process_incoming) is the
+//   host's to decide, and must not ride along as if the activity did it
+//   (measured 2026-10-13: walking produced dist=1-2 sends).
+// - Sent as "act_pos" on the client's NEXT enriched packet, whatever it is.
+//   A cheap cast leaves moves over, so the turn's wait can come seconds later
+//   via the orphan path; a move sent first must start from the new tile.  Not
+//   a packet of its own: every srv_emit_ack ends the client's turn.
 static std::optional<tripoint_abs_ms> g_client_activity_loop_pos;
+static std::optional<tripoint_abs_ms> g_client_pending_act_pos;
+static std::string g_client_pending_act_pos_desc;
 
 // Map-sync sent-set and forward declaration — defined later in the map-streaming
 // section but referenced in the move handler (process_remote_action).
@@ -5449,6 +5458,36 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         } catch( const JsonError & ) {}
     }
 
+    // B6: a move the client's activity made (a teleport spell's finish()),
+    // riding whatever packet the client sent next.  Applied BEFORE the action
+    // below, so a move sent right after a teleport starts from the new tile, and
+    // a wait's ack broadcasts the new position.  Same check as position_sync.
+    bool act_pos_moved = false;
+    if( msg.find( "\"act_pos\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            JsonObject pos = jo.get_object( "act_pos" );
+            const tripoint_abs_ms to{ pos.get_int( "x" ), pos.get_int( "y" ), pos.get_int( "z" ) };
+            const tripoint_abs_ms from = remote->pos_abs();
+            const std::string desc = "from=" + std::to_string( from.x() ) + "," +
+                                     std::to_string( from.y() ) + "," + std::to_string( from.z() ) +
+                                     " to=" + std::to_string( to.x() ) + "," + std::to_string( to.y() ) +
+                                     "," + std::to_string( to.z() ) +
+                                     " dist=" + std::to_string( rl_dist( from, to ) );
+            if( m.inbounds( to ) ) {
+                remote->setpos( m, m.get_bub( to ) );
+                act_pos_moved = true;
+                mp_log( "[cdda-mp] ACT-POS-APPLY: " + desc );
+            } else {
+                mp_log( "[cdda-mp] ACT-POS-REJECT: out of bounds " + desc );
+            }
+        } catch( const JsonError &e ) {
+            mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
+        }
+    }
+
     // Apply field changes (blood, etc.) placed on the client's map tiles.
     if( msg.find( "\"client_tile_changes\":" ) != std::string::npos ) {
         try {
@@ -5893,37 +5932,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     if( is_wait ) {
         mp_log( "[cdda-mp] wait recv: ctrl_veh=" + std::to_string( remote->controlling_vehicle ) +
                 " g_remote_moves=" + std::to_string( g_remote_moves ) );
-        // B6: the client's activity moved it this turn (a teleport spell's
-        // finish()).  Apply before the ack so the state packet the ack
-        // broadcasts already carries the new position; same checks as
-        // position_sync.  The ack name differs from "wait" so that packet gets
-        // the full tile scan the client needs around its new position.
-        bool moved = false;
-        if( msg.find( "\"act_pos\"" ) != std::string::npos ) {
-            try {
-                JsonValue jv = json_loader::from_string( msg );
-                JsonObject jo = jv.get_object();
-                jo.allow_omitted_members();
-                JsonObject pos = jo.get_object( "act_pos" );
-                const tripoint_abs_ms to{ pos.get_int( "x" ), pos.get_int( "y" ), pos.get_int( "z" ) };
-                const tripoint_abs_ms from = remote->pos_abs();
-                const std::string desc = "from=" + std::to_string( from.x() ) + "," +
-                                         std::to_string( from.y() ) + "," + std::to_string( from.z() ) +
-                                         " to=" + std::to_string( to.x() ) + "," + std::to_string( to.y() ) +
-                                         "," + std::to_string( to.z() ) +
-                                         " dist=" + std::to_string( rl_dist( from, to ) );
-                if( m.inbounds( to ) ) {
-                    remote->setpos( m, m.get_bub( to ) );
-                    moved = true;
-                    mp_log( "[cdda-mp] ACT-POS-APPLY: " + desc );
-                } else {
-                    mp_log( "[cdda-mp] ACT-POS-REJECT: out of bounds " + desc );
-                }
-            } catch( const JsonError &e ) {
-                mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
-            }
-        }
-        srv_emit_ack( moved ? "wait+act_pos" : "wait" );
+        // A wait that carried act_pos gets the full tile scan (any other name
+        // than "wait" does): the client needs the area around its new spot.
+        srv_emit_ack( act_pos_moved ? "wait+act_pos" : "wait" );
         return;
     }
 
@@ -13817,6 +13828,16 @@ std::string client_enrich_action( const std::string &json )
         // Echo the highest grant we have actually applied; the host subtracts.
         enriched += ",\"cseq\":" + std::to_string(
                         static_cast<unsigned long long>( g_client_last_grant_seq ) );
+        // B6: a move the activity loop made rides the next packet; see
+        // g_client_pending_act_pos.  The host applies it before the action.
+        if( g_client_pending_act_pos ) {
+            const tripoint_abs_ms &p = *g_client_pending_act_pos;
+            enriched += ",\"act_pos\":{\"x\":" + std::to_string( p.x() ) + ",\"y\":" +
+                        std::to_string( p.y() ) + ",\"z\":" + std::to_string( p.z() ) + "}";
+            mp_log( "[cdda-mp] ACT-POS-SEND: " + g_client_pending_act_pos_desc + " on=" +
+                    json.substr( 0, 48 ) );
+            g_client_pending_act_pos.reset();
+        }
         enriched += ",\"client_light\":" + mp_json_num( cl );
         enriched += ",\"client_bleed\":" + bleed_json;
         // Full effect set for the proxy, only when it changed — see
@@ -14253,38 +14274,37 @@ void mp_client_note_activity_loop_start()
     g_client_activity_loop_pos = get_avatar().pos_abs();
 }
 
-void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_idle )
+void mp_client_note_activity_loop_end()
 {
-    const player_activity &pact = get_avatar().activity;
-    const activity_id &id = pact ? pact.id() : pre_id;
-    // B6: did the activity move the avatar this turn?  See g_client_activity_loop_pos.
-    std::string act_pos;
-    std::string act_pos_desc;
-    if( g_client_activity_loop_pos ) {
-        const tripoint_abs_ms from = *g_client_activity_loop_pos;
-        const tripoint_abs_ms to = get_avatar().pos_abs();
-        if( to != from ) {
-            act_pos = "{\"x\":" + std::to_string( to.x() ) + ",\"y\":" + std::to_string( to.y() ) +
-                      ",\"z\":" + std::to_string( to.z() ) + "}";
-            act_pos_desc = "act=" + ( id ? id.str() : std::string( "none" ) ) + " from=" +
-                           std::to_string( from.x() ) + "," + std::to_string( from.y() ) + "," +
-                           std::to_string( from.z() ) + " to=" + std::to_string( to.x() ) + "," +
-                           std::to_string( to.y() ) + "," + std::to_string( to.z() ) +
-                           " dist=" + std::to_string( rl_dist( from, to ) );
-        }
-    }
-    if( g_client_waiting_for_ack ) {
-        mp_log( "[cdda-mp] dispatch_wait: ack pending, skip" );
-        if( !act_pos.empty() ) {
-            mp_log( "[cdda-mp] ACT-POS-UNSENT: reason=ack_pending " + act_pos_desc );
-        }
+    if( !g_client_activity_loop_pos ) {
         return;
     }
+    const tripoint_abs_ms from = *g_client_activity_loop_pos;
+    const tripoint_abs_ms to = get_avatar().pos_abs();
+    g_client_activity_loop_pos.reset();
+    if( to == from ) {
+        return;
+    }
+    g_client_pending_act_pos = to;
+    g_client_pending_act_pos_desc = "act=" + ( g_client_turn_activity.empty() ? std::string( "none" ) :
+                                    g_client_turn_activity ) +
+                                    " from=" + std::to_string( from.x() ) + "," + std::to_string( from.y() ) + "," +
+                                    std::to_string( from.z() ) + " to=" + std::to_string( to.x() ) + "," +
+                                    std::to_string( to.y() ) + "," + std::to_string( to.z() ) +
+                                    " dist=" + std::to_string( rl_dist( from, to ) );
+    mp_log( "[cdda-mp] ACT-POS-PENDING: " + g_client_pending_act_pos_desc );
+}
+
+void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_idle )
+{
+    if( g_client_waiting_for_ack ) {
+        mp_log( "[cdda-mp] dispatch_wait: ack pending, skip" );
+        return;
+    }
+    const player_activity &pact = get_avatar().activity;
+    const activity_id &id = pact ? pact.id() : pre_id;
     if( !id && !force_idle ) {
         mp_log( "[cdda-mp] dispatch_wait: no activity, skip" );
-        if( !act_pos.empty() ) {
-            mp_log( "[cdda-mp] ACT-POS-UNSENT: reason=no_activity " + act_pos_desc );
-        }
         return;
     }
     // Fast-forward mode: when both sides are in passive activities, host has
@@ -14295,19 +14315,10 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_id
     if( should_fast_forward() ) {
         mp_log( "[cdda-mp] dispatch_wait: FAST-FORWARD, skip wait for act=" +
                 ( id ? id.str() : "idle" ) );
-        if( !act_pos.empty() ) {
-            mp_log( "[cdda-mp] ACT-POS-UNSENT: reason=fast_forward " + act_pos_desc );
-        }
         return;
     }
     mp_log( "[cdda-mp] dispatch_wait: SEND wait for act=" + ( id ? id.str() : "idle" ) );
-    if( !act_pos.empty() ) {
-        mp_log( "[cdda-mp] ACT-POS-SEND: " + act_pos_desc );
-        // Sent once: a second dispatch in the same do_turn compares from here.
-        g_client_activity_loop_pos = get_avatar().pos_abs();
-    }
-    client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"" +
-                                       ( act_pos.empty() ? std::string() : ",\"act_pos\":" + act_pos ) + "}" ) );
+    client_send( client_enrich_action( "{\"type\":\"action\",\"action\":\"wait\"}" ) );
     client_mark_action_sent();
 }
 

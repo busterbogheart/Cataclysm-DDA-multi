@@ -931,11 +931,12 @@ void client_resync_worn();
 // fires when the activity consumed moves and then called finish() this same turn.
 void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id(), bool force_idle = false );
 
-// Client only: record the avatar's position as this turn's activity loop
-// begins.  client_dispatch_wait_for_activity() compares against it, so a move
-// the activity itself makes (a teleport spell's finish()) reaches the host on
-// that turn's wait instead of being snapped back (B6).
+// Client only: bracket do_turn's avatar activity loop.  If the loop moved the
+// avatar (a teleport spell's finish()), the new position rides the client's
+// next enriched packet as act_pos and the host applies it before that action,
+// instead of snapping the client back (B6).
 void mp_client_note_activity_loop_start();
+void mp_client_note_activity_loop_end();
 
 // Client only: emit an explicit activity-lifecycle marker to the host.  These
 // are signal-only — they don't consume client moves and the host doesn't
