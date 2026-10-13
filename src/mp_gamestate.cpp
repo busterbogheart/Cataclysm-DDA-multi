@@ -2487,6 +2487,8 @@ static std::pair<efftype_id, bodypart_id> mp_effect_key_parts( const std::string
              bpsid.is_valid() ? bpsid.id() : bodypart_str_id::NULL_ID().id() };
 }
 
+static void mp_pin_proxy_hp_max( npc &proxy, const char *why );   // defined below
+
 // Host: mirrored effects the proxy no longer has, as a state-packet field (or ""),
 // moving each to the tombstones.  Called once per serialized state packet.
 static std::string mp_proxy_lost_effects_field( npc &proxy )
@@ -2510,6 +2512,7 @@ static std::string mp_proxy_lost_effects_field( npc &proxy )
     }
     // Whatever removed it, the enchantments it granted are gone too.
     proxy.recalculate_enchantment_cache();
+    mp_pin_proxy_hp_max( proxy, "lost-effect" );
     return ",\"proxy_lost_effects\":[" + json + "]";
 }
 
@@ -2525,6 +2528,69 @@ static std::string mp_proxy_lost_effects_field( npc &proxy )
 // Spells are signature-gated (sent only when the set or a level changes); mana is
 // a single int sent with every action, since casting and regen move it often.
 static std::string g_client_spells_sig_sent;
+
+// ---------------------------------------------------------------------------
+// Max HP per part: client → proxy pin.  Stage 1, part 3 of the character
+// ownership table.  The proxy derived its own max from incomplete inputs, so it
+// sat a point off the client's (84 vs 85; 21 vs 20 on a Fragile character) and
+// flipped whenever it recomputed (84 → 81 at 2026-10-12 21:42:51).  Since the
+// host's current HP is authoritative for the client, the client effectively
+// played with the proxy's max, and the mismatch caused today's missed hits
+// (f25152025c) and phantom damage (9259ab8213).
+//
+// SP's recalculate_enchantment_cache() itself calls recalc_hp()
+// (character.cpp:4911), so every cache rebuild the mirrors trigger recomputes
+// the proxy's max from scratch.  The pin is therefore re-applied after each one,
+// after the mutation sync, and whenever the client sends new values.
+static std::string g_client_hp_max_sig_sent;               // client
+static std::map<std::string, int> g_client_hp_max_by_part; // host: bp id → max
+
+// Host: set the proxy's per-part max to the client's (clamping current HP down
+// if needed; the client's max-drop logic reads that as recompute, not damage).
+static void mp_pin_proxy_hp_max( npc &proxy, const char *why )
+{
+    std::string changed;
+    for( const auto &[bp_str, mx] : g_client_hp_max_by_part ) {
+        const bodypart_str_id bpsid( bp_str );
+        if( !bpsid.is_valid() || !proxy.has_part( bpsid.id() ) || mx <= 0 ) {
+            continue;
+        }
+        const bodypart_id bp = bpsid.id();
+        const int before = proxy.get_part_hp_max( bp );
+        if( before == mx ) {
+            continue;
+        }
+        proxy.set_part_hp_max( bp, mx );
+        if( proxy.get_part_hp_cur( bp ) > mx ) {
+            proxy.set_part_hp_cur( bp, mx );
+        }
+        changed += ( changed.empty() ? "" : " " ) + bp_str + ":" + std::to_string( before ) +
+                   "->" + std::to_string( mx );
+    }
+    if( !changed.empty() ) {
+        mp_log( std::string( "[cdda-mp] PROXY-HPMAX(" ) + why + "): " + changed );
+    }
+}
+
+// Client: per-part max HP as [["torso",84],…], or "" if unchanged.
+static std::string mp_client_hp_max_json()
+{
+    const avatar &av = get_avatar();
+    std::string json = "[";
+    for( const bodypart_id &bp : av.get_all_body_parts() ) {
+        if( json.size() > 1 ) {
+            json += ',';
+        }
+        json += "[\"" + bp.id().str() + "\"," + std::to_string( av.get_part_hp_max( bp ) ) + "]";
+    }
+    json += ']';
+    if( json == g_client_hp_max_sig_sent ) {
+        return std::string();
+    }
+    mp_log( "[cdda-mp] CLI-HPMAX-SEND: " + json );
+    g_client_hp_max_sig_sent = json;
+    return json;
+}
 
 // Client: the spellbook for this action as [["id",level],…], or "" if unchanged.
 static std::string mp_client_spells_json()
@@ -4966,6 +5032,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     mp_log( "[cdda-mp] worn_sync: appearance diff removed "
                             + std::to_string( removed ) + " added " + std::to_string( added )
                             + " (unchanged " + std::to_string( want.size() - added ) + ")" );
+                    // Mutations recompute max HP (mutation.cpp → recalc_hp).
+                    mp_pin_proxy_hp_max( *remote, "mutations" );
                 }
             }
             std::string ma_style_str;
@@ -5200,6 +5268,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             // 20 s and a zombie dog's bite still did 7 to the torso.
             if( cache_dirty ) {
                 remote->recalculate_enchantment_cache();
+                mp_pin_proxy_hp_max( *remote, "effects" );
             }
             if( !added.empty() || !removed.empty() ) {
                 mp_log( "[cdda-mp] PROXY-EFFECTS: +[" + added + "] -[" + removed + "] n=" +
@@ -5244,9 +5313,23 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             if( !changed.empty() ) {
                 // Class enchantments read spell / school levels.
                 remote->recalculate_enchantment_cache();
+                mp_pin_proxy_hp_max( *remote, "spells" );
                 mp_log( "[cdda-mp] PROXY-SPELLS: " + changed.substr( 0, 600 ) );
                 mp_log_proxy_magic_state();
             }
+        } catch( const JsonError & ) {}
+    }
+    if( msg.find( "\"client_hp_max_parts\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            g_client_hp_max_by_part.clear();
+            for( const JsonValue &hv : jo.get_array( "client_hp_max_parts" ) ) {
+                JsonArray entry = hv.get_array();
+                g_client_hp_max_by_part[entry.get_string( 0 )] = entry.get_int( 1 );
+            }
+            mp_pin_proxy_hp_max( *remote, "client" );
         } catch( const JsonError & ) {}
     }
     if( msg.find( "\"client_mana\":" ) != std::string::npos ) {
@@ -12834,6 +12917,7 @@ void client_process_incoming()
         g_client_effects_sig_sent.clear();
         g_client_effects_actions_since_send = 0;
         g_client_spells_sig_sent.clear();
+        g_client_hp_max_sig_sent.clear();
         // Immediately follow with our worn-item list and skin tone.
         client_resync_worn();
         // Templates wire-sync: send local template list so the host can request
@@ -13571,6 +13655,11 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_spells\":" + spells_json;
         }
         enriched += ",\"client_mana\":" + std::to_string( av.magic->available_mana() );
+        // Per-part max HP when it changed — see mp_client_hp_max_json().
+        const std::string hp_max_json = mp_client_hp_max_json();
+        if( !hp_max_json.empty() ) {
+            enriched += ",\"client_hp_max_parts\":" + hp_max_json;
+        }
         enriched += ",\"client_tile_changes\":" + tile_changes;
         if( veh_cargo_changes != "[]" ) {
             enriched += ",\"client_veh_cargo_changes\":" + veh_cargo_changes;
