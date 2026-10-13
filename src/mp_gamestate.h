@@ -144,6 +144,28 @@ class mp_local_msg_scope
         unsigned long long start = 0;
 };
 
+// Host: wraps npc::add_msg_player_or_npc.  The client's proxy is an npc, so SP
+// picks the NPC variant ("The %1$s lunges at <npcname>, but they dodge!") and
+// the relay could only swap the name, leaving "lunges at you, but they dodge"
+// and "penetrating their armor".  For the proxy, this queues SP's own PLAYER
+// variant for the client instead ("but you dodge!", already translated) and
+// keeps the NPC variant emitted inside the scope off the relay, so the client
+// gets one line, not both.  The host still sees the NPC variant.  No-op for
+// any other npc, and on the client.
+class mp_proxy_msg_scope
+{
+    public:
+        mp_proxy_msg_scope( const Character &who, const std::string &player_msg );
+        ~mp_proxy_msg_scope();
+        mp_proxy_msg_scope( const mp_proxy_msg_scope & ) = delete;
+        mp_proxy_msg_scope &operator=( const mp_proxy_msg_scope & ) = delete;
+        mp_proxy_msg_scope( mp_proxy_msg_scope && ) = delete;
+        mp_proxy_msg_scope &operator=( mp_proxy_msg_scope && ) = delete;
+    private:
+        bool active = false;
+        unsigned long long start = 0;
+};
+
 // True once per GAME turn rather than once per do_turn() call, so per-turn work
 // is not repeated while a player is locked and the calendar is frozen.  Always
 // true in single player.  See the definition for the measurement behind it.

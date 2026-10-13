@@ -3835,6 +3835,30 @@ mp_local_msg_scope::~mp_local_msg_scope()
     }
 }
 
+mp_proxy_msg_scope::mp_proxy_msg_scope( const Character &who, const std::string &player_msg )
+{
+    if( !is_hosting() || !remote_player_connected || !is_remote_player( who.getID() ) ) {
+        return;
+    }
+    active = true;
+    start = Messages::appended_total();
+    if( !player_msg.empty() ) {
+        mp_log( "[cdda-mp] PROXY-PLAYER-MSG: " + player_msg );
+        g_action_msgs_pending.push_back( player_msg );
+    }
+}
+
+mp_proxy_msg_scope::~mp_proxy_msg_scope()
+{
+    if( !active ) {
+        return;
+    }
+    const unsigned long long now = Messages::appended_total();
+    if( now > start ) {
+        g_msg_suppress_ranges.emplace_back( start, now );
+    }
+}
+
 void mp_hp_baseline_adjust( const std::string &bp_str, int delta )
 {
     // The client just changed its own HP deliberately (blood magic cost, spell

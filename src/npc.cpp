@@ -3428,9 +3428,10 @@ void npc::add_msg_if_npc( const std::string &msg ) const
     add_msg( replace_with_npc_name( msg ) );
 }
 
-void npc::add_msg_player_or_npc( const std::string &/*player_msg*/,
+void npc::add_msg_player_or_npc( const std::string &player_msg,
                                  const std::string &npc_msg ) const
 {
+    const cata_mp::mp_proxy_msg_scope mp_scope( *this, player_msg );
     add_msg_if_player_sees( *this, replace_with_npc_name( npc_msg ) );
 }
 
@@ -3440,9 +3441,10 @@ void npc::add_msg_if_npc( const game_message_params &params, const std::string &
 }
 
 void npc::add_msg_player_or_npc( const game_message_params &params,
-                                 const std::string &/*player_msg*/,
+                                 const std::string &player_msg,
                                  const std::string &npc_msg ) const
 {
+    const cata_mp::mp_proxy_msg_scope mp_scope( *this, player_msg );
     const map &here = get_map();
 
     if( get_player_view().sees( here, *this ) ) {
