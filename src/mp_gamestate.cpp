@@ -5989,6 +5989,23 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 std::map<std::string, int> field_counts;  // B18 DIAG: FIELD-FROM-CLIENT
                 int applied = 0;
                 int oob = 0;
+                // DIAG (2026-10-14): of the applied entries, how many actually
+                // CHANGED the host's tile.  A long-range client cast widens the
+                // scan to its reach and sends the whole ring on first use (707
+                // entries for one Beguile); TILE-APPLY-RESULT counted applies, so
+                // whether that ring overwrote anything was unknown.
+                int diff_ter = 0;
+                int diff_furn = 0;
+                int diff_items = 0;
+                std::string diff_examples;
+                int n_examples = 0;
+                const auto note_diff = [&]( const tripoint_abs_ms & at, const std::string & what ) {
+                    if( n_examples < 6 ) {
+                        ++n_examples;
+                        diff_examples += " " + std::to_string( at.x() ) + "," +
+                                         std::to_string( at.y() ) + ":" + what;
+                    }
+                };
                 for( const JsonValue &entry : jo.get_array( "client_tile_changes" ) ) {
                     JsonObject to = entry.get_object();
                     to.allow_omitted_members();
@@ -6006,6 +6023,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     if( to.has_string( "ter" ) ) {
                         const ter_id tid( to.get_string( "ter" ) );
                         if( tid.id().is_valid() ) {
+                            if( m.ter( bub ) != tid ) {
+                                ++diff_ter;
+                                note_diff( abs, "ter " + m.ter( bub ).id().str() + "->" + tid.id().str() );
+                            }
                             m.ter_set( bub, tid );
                             touched = true;
                         }
@@ -6013,6 +6034,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     if( to.has_string( "furn" ) ) {
                         const furn_id fid( to.get_string( "furn" ) );
                         if( fid.id().is_valid() ) {
+                            if( m.furn( bub ) != fid ) {
+                                ++diff_furn;
+                                note_diff( abs, "furn " + m.furn( bub ).id().str() + "->" + fid.id().str() );
+                            }
                             // furn_reset=true suppresses the avatar-grab
                             // "destroyed!" check inside map::furn_set
                             // (map.cpp:2085).  Without this, the host's
@@ -6056,6 +6081,25 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                     new_items.push_back( std::move( new_item ) );
                                 }
                             } catch( const JsonError & ) {}
+                        }
+                        {
+                            // Compare by type multiset: uids regenerate on add, so
+                            // only "different things on the tile" is meaningful.
+                            std::vector<std::string> host_types;
+                            std::vector<std::string> client_types;
+                            for( const item &it : m.i_at( bub ) ) {
+                                host_types.push_back( it.typeId().str() );
+                            }
+                            for( const item &it : new_items ) {
+                                client_types.push_back( it.typeId().str() );
+                            }
+                            std::sort( host_types.begin(), host_types.end() );
+                            std::sort( client_types.begin(), client_types.end() );
+                            if( host_types != client_types ) {
+                                ++diff_items;
+                                note_diff( abs, "items " + std::to_string( host_types.size() ) + "->" +
+                                           std::to_string( client_types.size() ) );
+                            }
                         }
                         auto do_replace = [bub, items = std::move( new_items )]() mutable {
                             map &m2 = get_map();
@@ -6144,7 +6188,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 // change made near a distant client can fall outside it.
                 mp_log( "[cdda-mp] TILE-APPLY-RESULT: seen=" + std::to_string( seen ) +
                         " applied=" + std::to_string( applied ) +
-                        " out_of_bounds=" + std::to_string( oob ) );
+                        " out_of_bounds=" + std::to_string( oob ) +
+                        " changed: ter=" + std::to_string( diff_ter ) +
+                        " furn=" + std::to_string( diff_furn ) +
+                        " items=" + std::to_string( diff_items ) +
+                        ( diff_examples.empty() ? "" : " e.g." + diff_examples ) );
                 // B18 DIAG: fields the client created (spell fog/fire/acid...)
                 // reaching the host.  Per packet, per type.
                 if( !field_counts.empty() ) {
