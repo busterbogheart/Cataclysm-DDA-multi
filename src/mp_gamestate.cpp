@@ -4135,10 +4135,24 @@ mp_proxy_msg_scope::mp_proxy_msg_scope( const Character &who, const std::string 
     }
     active = true;
     start = Messages::appended_total();
-    if( !player_msg.empty() ) {
-        mp_log( "[cdda-mp] PROXY-PLAYER-MSG: " + player_msg );
-        g_action_msgs_pending.push_back( player_msg );
+    if( player_msg.empty() ) {
+        return;
     }
+    std::string out = player_msg;
+    // Not every caller passes a real player variant.  Melee builds its hit message
+    // already in the attacker's form (an npc's: "<npcname> batters %s") and passes
+    // that one string as both variants, so the client read "<npcname> batters the
+    // zombie" (measured 2026-10-13, PROXY-PLAYER-MSG).  Such a string gets the old
+    // relay treatment: fill in the name, then rewrite it to address the client.
+    if( out.find( "<npcname>" ) != std::string::npos ) {
+        const std::string &name = who.get_name();
+        for( size_t q = 0; ( q = out.find( "<npcname>", q ) ) != std::string::npos; q += name.size() ) {
+            out.replace( q, 9, name );
+        }
+        mp_rewrite_name_to_you( out, name );
+    }
+    mp_log( "[cdda-mp] PROXY-PLAYER-MSG: " + out );
+    g_action_msgs_pending.push_back( out );
 }
 
 mp_proxy_msg_scope::~mp_proxy_msg_scope()
