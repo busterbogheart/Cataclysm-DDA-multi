@@ -16564,12 +16564,41 @@ static void apply_monster_sync( JsonObject &jo )
     // the nid was erased and a re-spawn is expected, not flagged).
     static std::unordered_set<uint32_t> s_ever_seen_nids;
 
+    // DIAGNOSTIC (host-killed monster stays alive on the client, 2026-10-14):
+    // nids whose LATEST word from the host is "removed", with the turn it said
+    // so. removed_monsters is one-shot and both culls below skip nid != 0, so a
+    // copy that misses its removal is never cleaned up. Any live client monster
+    // still carrying one of these nids is that ghost (MON-GHOST below). Erased
+    // the moment a broadcast lists the nid again (legit re-entry).
+    static std::unordered_map<uint32_t, int> s_host_removed_nids;
+    static std::unordered_set<uint32_t> s_ghost_logged;
+
     // Rebuild net_id → monster* map from current creature_tracker state.
+    // Last one wins, so two client copies under one nid leave the other copy
+    // unreachable by removed_monsters — log when that set changes.
     g_net_id_map.clear();
+    static std::set<uint32_t> s_last_dup_nids;
+    std::set<uint32_t> dup_nids;
+    std::string dup_log;
     for( const auto &ptr : mons ) {
         if( ptr && ptr->mp_net_id != 0 ) {
+            if( g_net_id_map.count( ptr->mp_net_id ) && !ptr->is_dead() &&
+                !g_net_id_map[ptr->mp_net_id]->is_dead() ) {
+                dup_nids.insert( ptr->mp_net_id );
+                dup_log += ptr->type->id.str() + "(nid=" + std::to_string( ptr->mp_net_id ) +
+                           " @" + std::to_string( ptr->pos_abs().x() ) + "," +
+                           std::to_string( ptr->pos_abs().y() ) + "," +
+                           std::to_string( ptr->pos_abs().z() ) + " vs @" +
+                           std::to_string( g_net_id_map[ptr->mp_net_id]->pos_abs().x() ) + "," +
+                           std::to_string( g_net_id_map[ptr->mp_net_id]->pos_abs().y() ) + ") ";
+            }
             g_net_id_map[ptr->mp_net_id] = ptr.get();
         }
+    }
+    if( dup_nids != s_last_dup_nids ) {
+        s_last_dup_nids = dup_nids;
+        mp_log( "[cdda-mp] MON-DUP-NID: " + std::to_string( dup_nids.size() ) +
+                " nid(s) held by two live client monsters [" + dup_log + "]" );
     }
 
     constexpr int SYNC_RADIUS = 84;   // match build_monster_list's broadcast radius
@@ -16595,6 +16624,7 @@ static void apply_monster_sync( JsonObject &jo )
     int n_spawned = 0;
     int n_culled = 0;
     std::string culled_log;
+    std::string remove_miss_log;
 
     for( const JsonValue &entry : jo.get_array( "monsters" ) ) {
         JsonObject mo = entry.get_object();
@@ -16612,6 +16642,9 @@ static void apply_monster_sync( JsonObject &jo )
         // the client never spawns a local one (GH#1: no duplicate corpse).
         if( nid != 0 && server_hp <= 0 ) {
             g_client_pending_kill.erase( nid );
+        }
+        if( nid != 0 && server_hp > 0 ) {
+            s_host_removed_nids.erase( nid );   // host says alive again
         }
 
         monster *best = nullptr;
@@ -16943,24 +16976,64 @@ static void apply_monster_sync( JsonObject &jo )
             }
             g_client_pending_kill.erase( rnid );  // host confirmed gone (GH#1)
             s_ever_seen_nids.erase( rnid );        // host-confirmed removal → not a silent drop
+            s_host_removed_nids[rnid] = to_turn<int>( calendar::turn );
             auto it = g_net_id_map.find( rnid );
             if( it != g_net_id_map.end() && it->second && !it->second->is_dead() ) {
                 culled_log += it->second->type->id.str() + "(nid=" +
                               std::to_string( rnid ) + ") ";
                 ++n_culled;
                 it->second->die( &m, nullptr );
+            } else {
+                // Not necessarily a bug (the client may never have held it), but
+                // it is the one-shot removal landing on nothing.
+                remove_miss_log += std::to_string( rnid ) +
+                                   ( it == g_net_id_map.end() ? "(not-held) " : "(already-dead) " );
             }
         }
     }
 
+    // A live client monster whose nid the host last reported removed: the
+    // host-killed-but-alive-on-client ghost. Logged once per nid, on appearance.
+    {
+        std::unordered_set<uint32_t> ghosts_now;
+        const tripoint_abs_ms av = get_avatar().pos_abs();
+        for( const auto &ptr : mons ) {
+            const monster *mon = ptr.get();
+            if( !mon || mon->mp_net_id == 0 || mon->is_dead() ) {
+                continue;
+            }
+            const auto rm = s_host_removed_nids.find( mon->mp_net_id );
+            if( rm == s_host_removed_nids.end() ) {
+                continue;
+            }
+            ghosts_now.insert( mon->mp_net_id );
+            if( s_ghost_logged.count( mon->mp_net_id ) ) {
+                continue;
+            }
+            const tripoint_abs_ms mp = mon->pos_abs();
+            mp_log( "[cdda-mp] MON-GHOST: " + mon->type->id.str() + " nid=" +
+                    std::to_string( mon->mp_net_id ) + " @ " + std::to_string( mp.x() ) + "," +
+                    std::to_string( mp.y() ) + "," + std::to_string( mp.z() ) +
+                    " hp=" + std::to_string( mon->get_hp() ) +
+                    " dAvatar=" + std::to_string( std::max( std::abs( mp.x() - av.x() ),
+                                                  std::abs( mp.y() - av.y() ) ) ) +
+                    " — host removed this nid " +
+                    std::to_string( to_turn<int>( calendar::turn ) - rm->second ) +
+                    " turns ago, client still holds it alive (dup_nid=" +
+                    std::to_string( dup_nids.count( mon->mp_net_id ) ) + ")" );
+        }
+        s_ghost_logged.swap( ghosts_now );   // a cleared ghost can log again if it recurs
+    }
+
     // Summary only when something changed (spawn/remove) — avoids per-turn spam.
-    if( n_spawned > 0 || n_culled > 0 ) {
+    if( n_spawned > 0 || n_culled > 0 || !remove_miss_log.empty() ) {
         mp_log( "[cdda-mp] MON-SYNC: host_sent=" + std::to_string( n_recv ) +
                 " in_region=" + std::to_string( in_region.size() ) +
                 " matched=" + std::to_string( matched.size() ) +
                 " spawned=" + std::to_string( n_spawned ) +
                 " removed=" + std::to_string( n_culled ) +
-                ( culled_log.empty() ? "" : " [removed: " + culled_log + "]" ) );
+                ( culled_log.empty() ? "" : " [removed: " + culled_log + "]" ) +
+                ( remove_miss_log.empty() ? "" : " [remove_miss: " + remove_miss_log + "]" ) );
     }
 
     g->cleanup_dead();
