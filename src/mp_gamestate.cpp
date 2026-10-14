@@ -1298,6 +1298,30 @@ static float g_mp_host_luminance = 0.0f;
 // action packet and injected into the host's lighting pass at the proxy NPC position.
 static float g_mp_remote_player_luminance = 0.0f;
 
+// B18 DIAG: one line per change of each light-sync value, so a stuck or zero
+// value is visible without flooding (the lightmap reads these every rebuild).
+static void mp_light_log( const std::string &tag, const std::string &detail )
+{
+    static std::map<std::string, std::string> last;
+    if( last[tag] == detail ) {
+        return;
+    }
+    last[tag] = detail;
+    mp_log( "[cdda-mp] LIGHT-SYNC " + tag + " " + detail );
+}
+
+// Light-relevant state of a character, for the LIGHT-SYNC SEND lines.
+static std::string mp_light_detail( const Character &who, float active )
+{
+    static const efftype_id effect_orb_light( "effect_classless_magic_light" );
+    std::string d = "active_light=" + mp_json_num( active );
+    d += " haslight=" + std::to_string( who.has_effect( efftype_id( "haslight" ) ) );
+    if( effect_orb_light.is_valid() ) {
+        d += " orb_of_light=" + std::to_string( who.has_effect( effect_orb_light ) );
+    }
+    return d;
+}
+
 static const bodypart_str_id body_part_torso( "torso" );
 
 static const efftype_id effect_bleed( "bleed" );
@@ -5366,6 +5390,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             jo.allow_omitted_members();
             if( jo.has_float( "client_light" ) || jo.has_int( "client_light" ) ) {
                 g_mp_remote_player_luminance = static_cast<float>( jo.get_float( "client_light" ) );
+                mp_light_log( "RECV", "client_light=" + mp_json_num( g_mp_remote_player_luminance ) );
             }
         } catch( const JsonError & ) {}
     }
@@ -12256,6 +12281,7 @@ static bool apply_one_state_message( const std::string &msg )
 
         if( jo.has_float( "host_light" ) || jo.has_int( "host_light" ) ) {
             g_mp_host_luminance = static_cast<float>( jo.get_float( "host_light" ) );
+            mp_light_log( "RECV", "host_light=" + mp_json_num( g_mp_host_luminance ) );
         }
         // Co-op kill tally — host is authoritative; client just stores the counts
         // for the HUD (both mapped to "You"/partner perspective at draw time).
@@ -13981,6 +14007,7 @@ std::string client_enrich_action( const std::string &json )
     bleed_json += "]";
 
     const float cl = av.active_light();
+    mp_light_log( "SEND", "client " + mp_light_detail( av, cl ) );
     const std::string tile_changes = build_client_tile_changes( mp_take_spell_tile_reach() );
     const std::string veh_cargo_changes = build_client_veh_cargo_changes();
 
@@ -14319,11 +14346,19 @@ const std::string &get_client_turn_activity()
 
 float get_host_luminance()
 {
+    // B18 DIAG: lightmap.cpp injects this at the host proxy's tile.
+    const npc *host_npc = client_host_npc_spawned ? g->critter_by_id<npc>( client_host_npc_id ) : nullptr;
+    mp_light_log( "APPLY", "side=client lum=" + mp_json_num( g_mp_host_luminance ) +
+                  " host_npc=" + std::string( host_npc ? "found" : "missing" ) );
     return g_mp_host_luminance;
 }
 
 float get_remote_player_luminance()
 {
+    // B18 DIAG: lightmap.cpp injects this at the client proxy's tile.
+    const npc *proxy = remote_player_connected ? g->critter_by_id<npc>( remote_player_npc_id ) : nullptr;
+    mp_light_log( "APPLY", "side=host lum=" + mp_json_num( g_mp_remote_player_luminance ) +
+                  " proxy=" + std::string( proxy ? "found" : "missing" ) );
     return g_mp_remote_player_luminance;
 }
 
@@ -14619,11 +14654,64 @@ void client_send_activity_start( const std::string &activity_id_str )
 // a pure client-side light-computation issue instead. Behavioral mods (the
 // only ones that differed in the report) can't cause either, so this pins it.
 // Heavily throttled + capped so a frozen/idle session can't flood the log.
+// B18 DIAG: the lightmap's actual values in a cross around each character, on
+// this screen, so the two screens can be compared tile by tile.  Same numbers
+// for the same character on both sides = any difference in what is drawn is
+// visibility (each screen only draws lit tiles its own player can see); different
+// numbers = a lighting difference.  partner_active is the partner copy's own
+// active_light() here: non-zero means lightmap.cpp's apply_character_light()
+// lights it IN ADDITION to the injected host_light/client_light.
+// Measured 2026-10-13: identical rings on both screens for both players' Orb of
+// Light (4,3,3,3 then dark); what each screen DRAWS differs because
+// map::apparent_light_at() is computed from the viewer (distance, fog, line of
+// sight), exactly as in SP.  Logged only while a light is on, when the line
+// changes, at most once every 5 s.
+static void mp_log_light_ring()
+{
+    static long long last_ms = 0;
+    const long long now_ms = mp_now_ms();
+    if( now_ms - last_ms < 5000 ) {
+        return;
+    }
+    const float partner_lum = is_hosting() ? g_mp_remote_player_luminance : g_mp_host_luminance;
+    if( get_avatar().active_light() <= 0.0f && partner_lum <= 0.0f ) {
+        return;
+    }
+    last_ms = now_ms;
+    map &here = get_map();
+    const auto ring = [&]( const Creature &c ) {
+        std::string out;
+        static const std::array<std::pair<point, const char *>, 4> dirs = {{
+                { point::east, "E" }, { point::west, "W" }, { point::north, "N" }, { point::south, "S" }
+            }
+        };
+        for( const auto &[d, name] : dirs ) {
+            out += std::string( " " ) + name + "=";
+            for( int r = 0; r <= 10; ++r ) {
+                const tripoint_bub_ms p = c.pos_bub() + d * r;
+                out += here.inbounds( p ) ? std::to_string( static_cast<int>( here.light_at( p ) ) ) : "-";
+                out += r < 10 ? "," : "";
+            }
+        }
+        return out;
+    };
+    static std::string last_line;
+    std::string line = std::string( is_hosting() ? "HOST" : "CLIENT" ) + " self" + ring( get_avatar() );
+    if( const npc *partner = get_partner_npc() ) {
+        line += " | partner partner_active=" + mp_json_num( partner->active_light() ) + ring( *partner );
+    }
+    if( line != last_line ) {
+        last_line = line;
+        mp_log( "[cdda-mp] LIGHT-RING " + line );
+    }
+}
+
 void mp_log_lighting_sample()
 {
     if( !is_hosting() && !is_client_mode() ) {
         return;
     }
+    mp_log_light_ring();
     static int dumps = 0;
     if( dumps >= 20 ) {
         return;
@@ -17672,7 +17760,11 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"host_appearance\":" + host_appearance_json + ","
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
            "\"host_facing\":" + std::to_string( host.facing == FacingDirection::LEFT ? 0 : 1 ) + ","
-           "\"host_light\":" + mp_json_num( host.active_light() ) + ","
+           "\"host_light\":" + [&host]() {
+               const float hl = host.active_light();
+               mp_light_log( "SEND", "host " + mp_light_detail( host, hl ) );
+               return mp_json_num( hl );
+           }() + ","
            "\"host_kills\":" + std::to_string( g_host_kills ) + ","
            "\"client_kills\":" + std::to_string( g_client_kills ) + ","
            "\"host_in_vehicle\":" + std::string( host.in_vehicle ? "true" : "false" ) + ","
