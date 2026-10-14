@@ -153,6 +153,25 @@ class mp_local_msg_scope
 // keeps the NPC variant emitted inside the scope off the relay, so the client
 // gets one line, not both.  The host still sees the NPC variant.  No-op for
 // any other npc, and on the client.
+// Client: wraps the client's own action (do_turn's handle_action() call).  A
+// sound the client's game makes inside it, or inside the activity loop (see
+// mp_client_note_activity_loop_start), is the client's doing (a gunshot, a
+// spoken spell, a thrown item landing) and is forwarded for the host's
+// monsters to hear.  Sounds its world simulates outside these windows are not:
+// the host's world makes its own.
+class mp_client_action_scope
+{
+    public:
+        mp_client_action_scope();
+        ~mp_client_action_scope();
+        mp_client_action_scope( const mp_client_action_scope & ) = delete;
+        mp_client_action_scope &operator=( const mp_client_action_scope & ) = delete;
+        mp_client_action_scope( mp_client_action_scope && ) = delete;
+        mp_client_action_scope &operator=( mp_client_action_scope && ) = delete;
+    private:
+        bool active = false;
+};
+
 class mp_proxy_msg_scope
 {
     public:

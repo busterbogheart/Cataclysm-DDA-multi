@@ -2770,6 +2770,18 @@ struct mp_wire_sound {
     bool footstep;
 };
 static std::vector<mp_wire_sound> g_host_sounds_for_client;
+// Client: true while replaying a host sound (SOUND-RECV), so mp_note_sound()
+// does not mistake it for one the client's own game made.
+static bool g_injecting_host_sound = false;
+// The other direction (2026-10-13).  Measured: the client's pistol shots (bang!
+// v=50) and spoken spells existed only in the client's game, so the host's
+// monsters never heard them.  Client: sounds its own actions made, for the next
+// enriched packet.  Host: true while playing one, so it is not sent back.
+static std::vector<mp_wire_sound> g_client_sounds_for_host;
+static bool g_injecting_client_sound = false;
+// Client: inside its own action (mp_client_action_scope) or activity loop.
+static int g_client_own_action_depth = 0;
+static bool g_client_in_activity_loop = false;
 static constexpr size_t MP_MAX_SOUNDS_PER_PACKET = 48;
 static constexpr size_t MP_MAX_SOUNDS_BUFFERED = 512;
 
@@ -2777,7 +2789,50 @@ void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
                     const std::string &description, bool ambient,
                     const std::string &id, const std::string &variant, bool footstep )
 {
-    if( !is_hosting() ) {
+    // B18 DIAG (2026-10-13): sound only flows host -> client.  Log what the
+    // client's own game produces (its spells, local shots, EOCs...) to design
+    // the client -> host half: which of these must reach the host's monsters,
+    // and which the host already makes itself.  Footsteps are only counted.
+    if( is_client_mode() && !g_injecting_host_sound ) {
+        static int footsteps = 0;
+        static int64_t last_footstep_log_ms = 0;
+        if( footstep || category == static_cast<int>( sounds::sound_t::movement ) ) {
+            ++footsteps;
+            if( mp_now_ms() - last_footstep_log_ms > 10000 ) {
+                last_footstep_log_ms = mp_now_ms();
+                mp_log( "[cdda-mp] SOUND-LOCAL: movement x" + std::to_string( footsteps ) +
+                        " in the last 10s" );
+                footsteps = 0;
+            }
+        } else if( category != static_cast<int>( sounds::sound_t::weather ) ) {
+            static const std::array<const char *, 13> cat_names = {{
+                    "background", "weather", "sensory", "music", "movement", "speech",
+                    "electronic_speech", "activity", "destructive_activity", "alarm",
+                    "combat", "alert", "order"
+                }
+            };
+            const char *cat_name = category >= 0 && category < 13 ? cat_names[category] : "?";
+            mp_log( std::string( "[cdda-mp] SOUND-LOCAL: cat=" ) + cat_name +
+                    " v=" + std::to_string( vol ) +
+                    " d=" + std::to_string( rl_dist( p, get_avatar().pos_bub() ) ) +
+                    " ambient=" + std::to_string( ambient ) +
+                    " desc=\"" + description + "\" id=" + id );
+        }
+    }
+    // Client: forward what its own action made.  Weather is generated on each
+    // side; footsteps are left out (they would be every step: a separate
+    // question); a yell already has its own relay (mp_relay_shout).
+    if( is_client_mode() && !g_injecting_host_sound &&
+        ( g_client_own_action_depth > 0 || g_client_in_activity_loop ) &&
+        !footstep && category != static_cast<int>( sounds::sound_t::weather ) &&
+        category != static_cast<int>( sounds::sound_t::movement ) && id != "shout" ) {
+        if( g_client_sounds_for_host.size() >= MP_MAX_SOUNDS_BUFFERED ) {
+            g_client_sounds_for_host.erase( g_client_sounds_for_host.begin() );
+        }
+        g_client_sounds_for_host.push_back( { get_map().get_abs( p ), vol, category, description,
+                                              ambient, id, variant, footstep } );
+    }
+    if( !is_hosting() || g_injecting_client_sound ) {
         return;
     }
     const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id );
@@ -2790,6 +2845,26 @@ void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
     }
     const tripoint_abs_ms abs = get_map().get_abs( p );
     const tripoint_abs_ms listener = proxy->pos_abs();
+    // B18 DIAG (2026-10-13): what the host's own world makes at the client's
+    // proxy (actions the host resolves for the client: smash, melee, moves), to
+    // compare against the client's SOUND-LOCAL for the same action.
+    if( rl_dist( abs, listener ) <= 2 ) {
+        static int proxy_footsteps = 0;
+        static int64_t last_proxy_footstep_log_ms = 0;
+        if( footstep || category == static_cast<int>( sounds::sound_t::movement ) ) {
+            ++proxy_footsteps;
+            if( mp_now_ms() - last_proxy_footstep_log_ms > 10000 ) {
+                last_proxy_footstep_log_ms = mp_now_ms();
+                mp_log( "[cdda-mp] SOUND-AT-PROXY: movement x" + std::to_string( proxy_footsteps ) +
+                        " in the last 10s" );
+                proxy_footsteps = 0;
+            }
+        } else {
+            mp_log( "[cdda-mp] SOUND-AT-PROXY: cat=" + std::to_string( category ) +
+                    " v=" + std::to_string( vol ) + " d=" + std::to_string( rl_dist( abs, listener ) ) +
+                    " desc=\"" + description + "\" id=" + id );
+        }
+    }
     // The client's own tile: the noise of its own actions, which it can also make
     // locally (a passive activity ticks on both sides), so forwarding would double
     // it.  SP gives own-tile sound no distraction and no marker anyway.  A monster's
@@ -2833,13 +2908,22 @@ static double mp_p_dice_below( int n, int sides, int target )
 
 // Host: drain the buffered sounds into a JSON array for the next state packet,
 // keeping the loudest at the listener when there are more than one packet holds.
+static std::string mp_take_sounds_json( std::vector<mp_wire_sound> &buffer,
+                                       const tripoint_abs_ms &listener, const char *tag );
 static std::string mp_take_client_sounds_json( const tripoint_abs_ms &listener )
 {
-    if( g_host_sounds_for_client.empty() ) {
+    return mp_take_sounds_json( g_host_sounds_for_client, listener, "SOUND-SEND" );
+}
+// Drain a sound buffer into a JSON array for the next packet, keeping the
+// loudest at the listener when there are more than one packet holds.
+static std::string mp_take_sounds_json( std::vector<mp_wire_sound> &buffer,
+                                       const tripoint_abs_ms &listener, const char *tag )
+{
+    if( buffer.empty() ) {
         return "[]";
     }
     std::vector<mp_wire_sound> snd;
-    snd.swap( g_host_sounds_for_client );
+    snd.swap( buffer );
     const size_t total = snd.size();
     if( snd.size() > MP_MAX_SOUNDS_PER_PACKET ) {
         std::stable_sort( snd.begin(), snd.end(), [&listener]( const mp_wire_sound & a,
@@ -2865,7 +2949,7 @@ static std::string mp_take_client_sounds_json( const tripoint_abs_ms &listener )
                ",\"var\":\"" + json_escape_str( s.variant ) + "\"}";
     }
     out += ']';
-    mp_log( "[cdda-mp] SOUND-SEND: n=" + std::to_string( snd.size() ) +
+    mp_log( std::string( "[cdda-mp] " ) + tag + ": n=" + std::to_string( snd.size() ) +
             ( total > snd.size() ? " dropped=" + std::to_string( total - snd.size() ) : "" ) +
             " first=\"" + snd.front().description + "\" v=" + std::to_string( snd.front().volume ) );
     return out;
@@ -3891,6 +3975,21 @@ mp_local_msg_scope::~mp_local_msg_scope()
         mp_log( "[cdda-mp] MSG-SUPPRESS: [" + std::to_string( start ) + "," +
                 std::to_string( now ) + ") not relayed" );
         g_msg_suppress_ranges.emplace_back( start, now );
+    }
+}
+
+mp_client_action_scope::mp_client_action_scope()
+{
+    if( is_client_mode() ) {
+        active = true;
+        ++g_client_own_action_depth;
+    }
+}
+
+mp_client_action_scope::~mp_client_action_scope()
+{
+    if( active ) {
+        --g_client_own_action_depth;
     }
 }
 
@@ -5633,6 +5732,49 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             }
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
+        }
+    }
+
+    // Sounds the client's own actions made (its gunshots, spoken spells...),
+    // played at their own tiles so the host's monsters hear them as in SP.
+    // g_injecting_client_sound keeps mp_note_sound from sending them back.
+    if( msg.find( "\"client_sounds\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            int n = 0;
+            int played = 0;
+            int loudest = -1;
+            std::string loudest_desc;
+            for( const JsonValue &sv : jo.get_array( "client_sounds" ) ) {
+                JsonObject so = sv.get_object();
+                so.allow_omitted_members();
+                ++n;
+                const tripoint_bub_ms p = m.get_bub( tripoint_abs_ms( so.get_int( "x" ),
+                                                     so.get_int( "y" ), so.get_int( "z" ) ) );
+                const int cat = so.get_int( "c" );
+                if( !m.inbounds( p ) || cat < 0 || cat >= static_cast<int>( sounds::sound_t::LAST ) ) {
+                    continue;
+                }
+                const int vol = so.get_int( "v" );
+                const std::string desc = so.get_string( "d" );
+                g_injecting_client_sound = true;
+                sounds::sound( p, vol, static_cast<sounds::sound_t>( cat ), desc,
+                               so.get_bool( "a", false ), so.get_string( "id", "" ),
+                               so.get_string( "var", "default" ) );
+                g_injecting_client_sound = false;
+                ++played;
+                if( vol > loudest ) {
+                    loudest = vol;
+                    loudest_desc = desc;
+                }
+            }
+            mp_log( "[cdda-mp] SOUND-FROM-CLIENT: n=" + std::to_string( n ) + " played=" +
+                    std::to_string( played ) + " loudest=\"" + loudest_desc + "\" v=" +
+                    std::to_string( loudest ) );
+        } catch( const JsonError &e ) {
+            mp_log( std::string( "[cdda-mp] SOUND-FROM-CLIENT parse error: " ) + e.what() );
         }
     }
 
@@ -12726,6 +12868,7 @@ static bool apply_one_state_message( const std::string &msg )
                 }
                 const int vol = so.get_int( "v" );
                 const std::string desc = so.get_string( "d" );
+                g_injecting_host_sound = true;
                 if( so.get_bool( "f", false ) ) {
                     sounds::add_footstep( p, vol, 0, nullptr, desc );
                 } else {
@@ -12733,6 +12876,7 @@ static bool apply_one_state_message( const std::string &msg )
                                    so.get_bool( "a", false ), so.get_string( "id", "" ),
                                    so.get_string( "var", "default" ) );
                 }
+                g_injecting_host_sound = false;
                 ++injected;
                 if( vol > loudest ) {
                     loudest = vol;
@@ -14117,6 +14261,12 @@ std::string client_enrich_action( const std::string &json )
         // Echo the highest grant we have actually applied; the host subtracts.
         enriched += ",\"cseq\":" + std::to_string(
                         static_cast<unsigned long long>( g_client_last_grant_seq ) );
+        // Sounds the client's own actions made, for the host's monsters (see
+        // g_client_sounds_for_host).
+        if( !g_client_sounds_for_host.empty() ) {
+            enriched += ",\"client_sounds\":" + mp_take_sounds_json( g_client_sounds_for_host,
+                        av.pos_abs(), "CLIENT-SOUND-SEND" );
+        }
         // B6: a move the activity loop made rides the next packet; see
         // g_client_pending_act_pos.  The host applies it before the action.
         if( g_client_pending_act_pos ) {
@@ -14574,10 +14724,12 @@ void client_set_autosmash_json( const std::string &json )
 void mp_client_note_activity_loop_start()
 {
     g_client_activity_loop_pos = get_avatar().pos_abs();
+    g_client_in_activity_loop = true;
 }
 
 void mp_client_note_activity_loop_end()
 {
+    g_client_in_activity_loop = false;
     if( !g_client_activity_loop_pos ) {
         return;
     }

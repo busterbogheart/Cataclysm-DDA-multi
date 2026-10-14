@@ -1047,6 +1047,7 @@ bool game::do_turn()
                     // clock timestamp so it can be directly compared against the
                     // client's CLI mp_dispatch SEND cadence from the same test.
                     const tripoint_abs_ms pre_pos = cata_mp::is_hosting() ? u.pos_abs() : tripoint_abs_ms();
+                    const cata_mp::mp_client_action_scope mp_action_scope;
                     const bool acted = handle_action();
                     if( cata_mp::is_hosting() ) {
                         cata_mp::mp_log( "[cdda-mp] HOST-HANDLE-ACTION: returned acted=" +
