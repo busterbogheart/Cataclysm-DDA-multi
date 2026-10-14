@@ -5645,6 +5645,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             if( jo.has_array( "client_tile_changes" ) ) {
                 map &m = get_map();
                 int seen = 0;      // DIAG (2026-08-27): see TILE-APPLY-RESULT below.
+                std::map<std::string, int> field_counts;  // B18 DIAG: FIELD-FROM-CLIENT
                 int applied = 0;
                 int oob = 0;
                 for( const JsonValue &entry : jo.get_array( "client_tile_changes" ) ) {
@@ -5741,6 +5742,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             if( ftid.is_valid() ) {
                                 m.add_field( bub, ftid, fo.get_int( "i", 1 ) );
                                 touched = true;
+                                ++field_counts[type_str];
                             }
                         }
                     }
@@ -5802,6 +5804,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 mp_log( "[cdda-mp] TILE-APPLY-RESULT: seen=" + std::to_string( seen ) +
                         " applied=" + std::to_string( applied ) +
                         " out_of_bounds=" + std::to_string( oob ) );
+                // B18 DIAG: fields the client created (spell fog/fire/acid...)
+                // reaching the host.  Per packet, per type.
+                if( !field_counts.empty() ) {
+                    std::string fc;
+                    for( const auto &[t, n] : field_counts ) {
+                        fc += " " + t + " x" + std::to_string( n );
+                    }
+                    mp_log( "[cdda-mp] FIELD-FROM-CLIENT:" + fc );
+                }
             }
         } catch( const JsonError & ) {}
     }
@@ -15287,6 +15298,7 @@ static void apply_tile_changes( JsonObject &jo )
     // tiles where the host's terrain differs from what we already had locally
     // (i.e. our scratch-world map disagreeing with the host's).
     int ter_seen = 0;
+    std::map<std::string, int> host_field_counts;  // B18 DIAG: FIELD-FROM-HOST
     int ter_diff = 0;
     int ter_logged = 0;
 
@@ -15388,6 +15400,7 @@ static void apply_tile_changes( JsonObject &jo )
                 const field_type_id ftid( type_str );
                 if( ftid.is_valid() ) {
                     m.add_field( bub, ftid, fo.get_int( "i", 1 ) );
+                    ++host_field_counts[type_str];
                 }
             }
         }
@@ -15476,6 +15489,14 @@ static void apply_tile_changes( JsonObject &jo )
         }
     }
 
+    // B18 DIAG: fields the host sent (its own spell fields, fire, smoke...).
+    if( !host_field_counts.empty() ) {
+        std::string fc;
+        for( const auto &[t, n] : host_field_counts ) {
+            fc += " " + t + " x" + std::to_string( n );
+        }
+        mp_log( "[cdda-mp] FIELD-FROM-HOST:" + fc );
+    }
     if( ter_seen > 0 ) {
         mp_log( "[cdda-mp] apply_tile_changes: batch ter_seen=" + std::to_string( ter_seen ) +
                 " ter_diff=" + std::to_string( ter_diff ) +
