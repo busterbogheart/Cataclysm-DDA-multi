@@ -504,6 +504,49 @@ mp_hp_event_scope::~mp_hp_event_scope()
     client_send( payload );
 }
 
+mp_debug_body_edit_scope::mp_debug_body_edit_scope( const Character &who )
+{
+    if( !is_client_mode() || !who.is_avatar() ) {
+        return;
+    }
+    who_ = &who;
+    for( const bodypart_id &bp : who.get_all_body_parts() ) {
+        hp_[bp.id().str()] = who.get_part_hp_cur( bp );
+    }
+    pain_ = who.get_pain();
+}
+
+mp_debug_body_edit_scope::~mp_debug_body_edit_scope()
+{
+    if( who_ == nullptr ) {
+        return;
+    }
+    std::string parts;
+    for( const auto &[bp_str, before] : hp_ ) {
+        const bodypart_id bp = bodypart_str_id( bp_str ).id();
+        if( !who_->has_part( bp ) ) {
+            continue;
+        }
+        const int d = who_->get_part_hp_cur( bp ) - before;
+        if( d == 0 ) {
+            continue;
+        }
+        parts += std::string( parts.empty() ? "" : "," ) + "{\"bp\":\"" + bp_str +
+                 "\",\"d\":" + std::to_string( d ) + "}";
+        // As in mp_hp_event_scope: the host echoes this back as an absolute
+        // value, which must not be narrated as a hit.
+        mp_hp_baseline_adjust( bp_str, d );
+    }
+    const int pain_now = who_->get_pain();
+    if( parts.empty() && pain_now == pain_ ) {
+        return;
+    }
+    const std::string payload = "{\"type\":\"client_hp\",\"src\":\"debug\",\"parts\":[" + parts + "]" +
+                                ( pain_now != pain_ ? ",\"pain\":" + std::to_string( pain_now ) : "" ) + "}";
+    mp_log( "[cdda-mp] CLI-HP-EVENT: " + payload );
+    client_send( payload );
+}
+
 void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta )
 {
     if( g_hp_scope_depth == 0 || delta == 0 || !is_client_mode() || !who.is_avatar() ) {
@@ -703,6 +746,12 @@ void mp_handle_client_hp( const std::string &msg )
             mp_hurt_baseline_adjust( bp, proxy->get_part_hp_cur( bp ) - before );
             applied += bp_str + ":" + std::to_string( before ) + "->" +
                        std::to_string( proxy->get_part_hp_cur( bp ) ) + " ";
+        }
+        // A client debug edit can set pain too (the proxy's pain is host-owned).
+        if( jo.has_int( "pain" ) ) {
+            const int before = proxy->get_pain();
+            proxy->set_pain( jo.get_int( "pain" ) );
+            applied += "pain:" + std::to_string( before ) + "->" + std::to_string( proxy->get_pain() );
         }
         mp_log( "[cdda-mp] HOST-HP-EVENT: src=" + src + " [" + applied + "]" );
     } catch( const std::exception &e ) {

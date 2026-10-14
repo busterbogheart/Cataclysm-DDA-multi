@@ -99,6 +99,7 @@
 #include "mission.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "mp_magic.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "npc.h"
@@ -2387,6 +2388,8 @@ static void character_edit_menu()
     // The NPC is also required for "Add mission", so has to be in this scope
     npc *np = get_creature_tracker().creature_at<npc>( locations[index], false );
     Character &you = np ? *np->as_character() : *player_character.as_character();
+    // MP: report any HP/pain change this edit makes on the co-op client's own avatar.
+    cata_mp::mp_debug_body_edit_scope mp_body_edit( you );
     uilist nmenu;
 
     if( np != nullptr ) {
@@ -4832,6 +4835,7 @@ const std::vector<debug_action_entry> &all_actions()
         {
             debug_menu_index::NORMALIZE_BODY_STAT, translate_marker( "Normalize body" ), "normalize body", "Game", []()
             {
+                cata_mp::mp_debug_body_edit_scope mp_body_edit( get_avatar() );
                 normalize_body( get_avatar() );
             }
         },

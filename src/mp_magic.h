@@ -2,6 +2,7 @@
 #ifndef CATA_SRC_MP_MAGIC_H
 #define CATA_SRC_MP_MAGIC_H
 
+#include <map>
 #include <string>
 
 #include "type_id.h"
@@ -122,6 +123,28 @@ class mp_hp_event_scope
         mp_hp_event_scope &operator=( const mp_hp_event_scope & ) = delete;
         mp_hp_event_scope( mp_hp_event_scope && ) = delete;
         mp_hp_event_scope &operator=( mp_hp_event_scope && ) = delete;
+};
+
+// Debug-menu body edits on the client's own character ("Set hit points",
+// "Normalize body stats", "Set pain", ...).  Current HP and pain are host-owned
+// (the world hurts the proxy), so a local edit was reverted by the next state
+// packet, and the client even narrated the revert as damage (BP-DAMAGE-SYNTH /
+// CLI-HURT, 2026-10-14).  The debug setters write HP absolutely
+// (set_part_hp_cur / set_all_parts_hp_to_max), around mp_note_hp_event, so
+// this scope snapshots HP and pain on entry and reports the difference on exit
+// through the client_hp channel (src "debug", plus the new pain).  No-op
+// unless we are the client and `who` is our own avatar.
+class mp_debug_body_edit_scope
+{
+    public:
+        explicit mp_debug_body_edit_scope( const Character &who );
+        ~mp_debug_body_edit_scope();
+        mp_debug_body_edit_scope( const mp_debug_body_edit_scope & ) = delete;
+        mp_debug_body_edit_scope &operator=( const mp_debug_body_edit_scope & ) = delete;
+    private:
+        const Character *who_ = nullptr;
+        std::map<std::string, int> hp_;
+        int pain_ = 0;
 };
 
 // Called from Character::mod_part_hp_cur().  No-op unless a scope is armed, we
