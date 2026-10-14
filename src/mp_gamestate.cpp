@@ -1096,6 +1096,11 @@ static const std::string MP_SPELLCAST_FF_ACT = "ACT_SPELLCASTING_FF";
 //   via the orphan path; a move sent first must start from the new tile.  Not
 //   a packet of its own: every srv_emit_ack ends the client's turn.
 static std::optional<tripoint_abs_ms> g_client_activity_loop_pos;
+// The client's activity when the loop began; see mp_client_note_activity_loop_end.
+static std::string g_client_loop_start_activity;
+// The activity whose end marker was last sent, cleared by the next start, so an
+// end is sent once per activity whichever path notices first.
+static std::string g_client_activity_ended_since_start;
 static std::optional<tripoint_abs_ms> g_client_pending_act_pos;
 static std::string g_client_pending_act_pos_desc;
 
@@ -14894,11 +14899,26 @@ void mp_client_note_activity_loop_start()
 {
     g_client_activity_loop_pos = get_avatar().pos_abs();
     g_client_in_activity_loop = true;
+    const player_activity &act = get_avatar().activity;
+    g_client_loop_start_activity = act ? act.id().str() : std::string();
 }
 
 void mp_client_note_activity_loop_end()
 {
     g_client_in_activity_loop = false;
+    // The activity ended inside this loop: tell the host now.  do_turn's other
+    // end reports (ORPHAN-IN-LOOP / ORPHAN-POST-LOOP) only run with moves left
+    // over.  Measured 2026-10-13 (B7): Utility Molding's finish() left the client
+    // at -244 moves, no end was sent, the wait that followed still said
+    // client_activity=ACT_SPELLCASTING, and the host fast-forwarded on (1000-move
+    // grants every ~110 ms) while the client stood idle and sent nothing.
+    if( !g_client_loop_start_activity.empty() && !get_avatar().activity ) {
+        mp_log( "[cdda-mp] ACT-END from activity loop: " + g_client_loop_start_activity +
+                " moves=" + std::to_string( get_avatar().get_moves() ) );
+        g_client_turn_activity.clear();   // the next packet reports idle
+        client_send_activity_end( g_client_loop_start_activity );
+    }
+    g_client_loop_start_activity.clear();
     if( !g_client_activity_loop_pos ) {
         return;
     }
@@ -14954,6 +14974,7 @@ void client_send_activity_start( const std::string &activity_id_str )
     if( !is_client_mode() || activity_id_str.empty() ) {
         return;
     }
+    g_client_activity_ended_since_start.clear();
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_start\","
                              "\"activity_id\":\"" + activity_id_str + "\"" +
                              std::string( activity_id_str == MP_SPELLCAST_ACT && g_local_cast_ff_safe ?
@@ -15105,6 +15126,13 @@ void client_send_activity_end( const std::string &activity_id_str )
     if( !is_client_mode() ) {
         return;
     }
+    // Once per activity: several paths can notice the same end (the activity
+    // loop, the grant handler, ORPHAN-IN-LOOP / -POST-LOOP).
+    if( !activity_id_str.empty() && activity_id_str == g_client_activity_ended_since_start ) {
+        mp_log( "[cdda-mp] ACT-END SKIP: " + activity_id_str + " already reported" );
+        return;
+    }
+    g_client_activity_ended_since_start = activity_id_str;
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_end\","
                              "\"activity_id\":\"" + activity_id_str + "\"}";
     const player_activity &cur = get_avatar().activity;
