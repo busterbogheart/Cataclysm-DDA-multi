@@ -16715,14 +16715,14 @@ static void apply_monster_sync( JsonObject &jo )
     // the nid was erased and a re-spawn is expected, not flagged).
     static std::unordered_set<uint32_t> s_ever_seen_nids;
 
-    // DIAGNOSTIC (host-killed monster stays alive on the client, 2026-10-14):
+    // Tombstones (host-killed monster stays alive on the client, 2026-10-14):
     // nids whose LATEST word from the host is "removed", with the turn it said
     // so. removed_monsters is one-shot and both culls below skip nid != 0, so a
-    // copy that misses its removal is never cleaned up. Any live client monster
-    // still carrying one of these nids is that ghost (MON-GHOST below). Erased
-    // the moment a broadcast lists the nid again (legit re-entry).
+    // copy that misses its removal would never be cleaned up. Any live client
+    // monster still carrying one of these nids is that ghost, and is removed
+    // (MON-GHOST below). Erased the moment a broadcast lists the nid again
+    // (legit re-entry).
     static std::unordered_map<uint32_t, int> s_host_removed_nids;
-    static std::unordered_set<uint32_t> s_ghost_logged;
 
     // Rebuild net_id → monster* map from current creature_tracker state.
     // Last one wins, so two client copies under one nid leave the other copy
@@ -17197,13 +17197,25 @@ static void apply_monster_sync( JsonObject &jo )
         }
     }
 
-    // A live client monster whose nid the host last reported removed: the
-    // host-killed-but-alive-on-client ghost. Logged once per nid, on appearance.
+    // A live client monster whose nid the host last reported removed: a ghost.
+    // removed_monsters is one-shot, and it misses a client copy that is sitting
+    // in the client's own overmap monster storage at that moment — update_map
+    // unloads synced monsters into it with mp_net_id intact, and reloads them
+    // when the client's bubble comes back (measured 2026-10-14: TELE-MON-DROP
+    // lost_nids=[6 28 9 8 3] → remove_miss (not-held) for all five → all five
+    // MON-GHOST at their exact spawn tiles a minute later, frozen at full HP).
+    // So the removal is made durable: the tombstone stands until the host
+    // broadcasts the nid alive again (which, for a monster that really came
+    // back, happens earlier in this same sync), and a tombstoned copy is
+    // removed whenever it turns up.  Quietly, whatever the original reason: it
+    // is a stale copy of a monster whose death or departure already happened,
+    // possibly somewhere else, so a corpse or a death message now would be a
+    // second, wrong one.
     {
-        std::unordered_set<uint32_t> ghosts_now;
+        std::vector<monster *> ghosts;
         const tripoint_abs_ms av = get_avatar().pos_abs();
         for( const auto &ptr : mons ) {
-            const monster *mon = ptr.get();
+            monster *mon = ptr.get();
             if( !mon || mon->mp_net_id == 0 || mon->is_dead() ) {
                 continue;
             }
@@ -17211,10 +17223,7 @@ static void apply_monster_sync( JsonObject &jo )
             if( rm == s_host_removed_nids.end() ) {
                 continue;
             }
-            ghosts_now.insert( mon->mp_net_id );
-            if( s_ghost_logged.count( mon->mp_net_id ) ) {
-                continue;
-            }
+            ghosts.push_back( mon );
             const tripoint_abs_ms mp = mon->pos_abs();
             mp_log( "[cdda-mp] MON-GHOST: " + mon->type->id.str() + " nid=" +
                     std::to_string( mon->mp_net_id ) + " @ " + std::to_string( mp.x() ) + "," +
@@ -17224,10 +17233,16 @@ static void apply_monster_sync( JsonObject &jo )
                                                   std::abs( mp.y() - av.y() ) ) ) +
                     " — host removed this nid " +
                     std::to_string( to_turn<int>( calendar::turn ) - rm->second ) +
-                    " turns ago, client still holds it alive (dup_nid=" +
+                    " turns ago; removing the stale copy (dup_nid=" +
                     std::to_string( dup_nids.count( mon->mp_net_id ) ) + ")" );
         }
-        s_ghost_logged.swap( ghosts_now );   // a cleared ghost can log again if it recurs
+        for( monster *mon : ghosts ) {
+            culled_log += mon->type->id.str() + "(nid=" + std::to_string( mon->mp_net_id ) +
+                          ",ghost) ";
+            ++n_culled;
+            g_net_id_map.erase( mon->mp_net_id );
+            g->remove_zombie( *mon );
+        }
     }
 
     // Summary only when something changed (spawn/remove) — avoids per-turn spam.
