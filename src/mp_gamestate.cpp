@@ -708,6 +708,45 @@ struct mp_kill_counter : event_subscriber {
 };
 static mp_kill_counter g_kill_counter;
 static bool g_kill_counter_subscribed = false;
+
+// --- Stage 2 measurement: effects the HOST's world puts on the proxy ---------
+// The client's own effects reach the proxy through the effects mirror
+// (PROXY-EFFECTS).  Everything else the proxy gains — a monster's grab, being
+// knocked down, a bite's infection, poison, a boomer's bile, a monster spell's
+// debuff — happens only in the host's world and never reaches the client (the
+// "other half" of B3, ROADMAP character ownership table, stage 2).  And since
+// the proxy runs no turns, such an effect never ticks or expires host-side.
+// DIAGNOSTIC ONLY: name each one as it lands so stage 2 is built against what
+// actually happens in play.
+static bool g_applying_client_effects = false;   // set around the mirror's add_effect
+
+struct mp_proxy_effect_probe : event_subscriber {
+    using event_subscriber::notify;
+    void notify( const cata::event &e ) override {
+        if( !is_hosting() || g_applying_client_effects ||
+            e.type() != event_type::character_gains_effect ) {
+            return;
+        }
+        if( !remote_player_connected ||
+            e.get<character_id>( "character" ) != remote_player_npc_id ) {
+            return;
+        }
+        const efftype_id eff = e.get<efftype_id>( "effect" );
+        const bodypart_id bp = e.get<bodypart_id>( "bodypart" );
+        std::string dur = "?";
+        if( const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id ) ) {
+            if( proxy->has_effect( eff, bp ) ) {
+                const effect &ef = proxy->get_effect( eff, bp );
+                dur = ef.is_permanent() ? std::string( "perm" ) :
+                      std::to_string( to_turns<int>( ef.get_duration() ) ) + "t";
+            }
+        }
+        mp_log( "[cdda-mp] PROXY-WORLD-EFFECT: +" + eff.str() + "|" + bp.id().str() +
+                " int=" + std::to_string( e.get<int>( "intensity" ) ) + " dur=" + dur +
+                " — put on the proxy by the host's world; the client never receives it" );
+    }
+};
+static mp_proxy_effect_probe g_proxy_effect_probe;
 static bool g_kill_tally_reset_pending = false;
 
 void mp_kill_tally_mark_new_character()
@@ -762,6 +801,7 @@ static void mp_kill_tally_subscribe()
         } );
     }
     get_event_bus().subscribe( &g_kill_counter );
+    get_event_bus().subscribe( &g_proxy_effect_probe );
     g_kill_counter_subscribed = true;
 }
 static void mp_kill_tally_unsubscribe()
@@ -770,6 +810,7 @@ static void mp_kill_tally_unsubscribe()
         return;
     }
     get_event_bus().unsubscribe( &g_kill_counter );
+    get_event_bus().unsubscribe( &g_proxy_effect_probe );
     g_kill_counter_subscribed = false;
 }
 
@@ -2719,8 +2760,32 @@ static void mp_pin_proxy_hp_max( npc &proxy, const char *why );   // defined bel
 
 // Host: mirrored effects the proxy no longer has, as a state-packet field (or ""),
 // moving each to the tombstones.  Called once per serialized state packet.
+// Stage 2 measurement (see mp_proxy_effect_probe): the proxy's effects that the
+// client did NOT mirror onto it — i.e. what the host's world put there — logged
+// whenever the set changes.  Shows whether they persist (the proxy never ticks
+// them, so a downed or grabbed proxy may stay that way host-side).
+static void mp_log_proxy_world_effects( const npc &proxy )
+{
+    std::string now;
+    for( const effect &ef : proxy.get_effects() ) {
+        const std::string key = ef.get_id().str() + "|" + ef.get_bp().id().str();
+        if( g_proxy_mirrored_effects.count( key ) ) {
+            continue;
+        }
+        now += ( now.empty() ? "" : " " ) + key + "(" +
+               ( ef.is_permanent() ? std::string( "perm" ) :
+                 std::to_string( to_turns<int>( ef.get_duration() ) ) + "t" ) + ")";
+    }
+    static std::string s_last;
+    if( now != s_last ) {
+        s_last = now;
+        mp_log( "[cdda-mp] PROXY-WORLD-EFFECTS-NOW: [" + now + "]" );
+    }
+}
+
 static std::string mp_proxy_lost_effects_field( npc &proxy )
 {
+    mp_log_proxy_world_effects( proxy );
     std::string json;
     for( auto it = g_proxy_mirrored_effects.begin(); it != g_proxy_mirrored_effects.end(); ) {
         const auto [et, bp] = mp_effect_key_parts( *it );
@@ -5787,7 +5852,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     // reported it yet.  Keep it tracked so mp_proxy_lost_effects_field
                     // reports it, and don't re-add it.
                 } else {
+                    g_applying_client_effects = true;
                     remote->add_effect( et, dur, bp, permanent, intensity );
+                    g_applying_client_effects = false;
                     added += ( added.empty() ? "" : " " ) + key;
                     cache_dirty = true;
                 }
