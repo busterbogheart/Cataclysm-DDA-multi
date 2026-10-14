@@ -1471,9 +1471,11 @@ static std::string mp_light_detail( const Character &who, float active )
 static const bodypart_str_id body_part_torso( "torso" );
 
 static const efftype_id effect_bleed( "bleed" );
+static const efftype_id effect_docile( "docile" );
 static const efftype_id effect_harnessed( "harnessed" );
 static const efftype_id effect_pet( "pet" );
 static const efftype_id effect_ridden( "ridden" );
+static const efftype_id effect_run( "run" );
 
 static const json_character_flag json_flag_CANNOT_MOVE( "CANNOT_MOVE" );
 
@@ -15799,6 +15801,22 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
                // Part of the record string, so the delta gate re-sends a monster
                // whose friendliness changes.
                + ",\"fr\":" + std::to_string( mon_ptr->friendly )
+               // Attitude inputs (2026-10-14).  monster::attitude() reads these,
+               // and only the host's monster turn ever changes them, so without
+               // them the client showed every monster's starting attitude
+               // forever ("Fleeing!" on the host, "Hostile!" on the client).
+               // The viewer-side half (the player's own traits) is computed
+               // client-side, correctly, from the client's avatar.  morale and
+               // anger drift only while away from the type's base, so an idle
+               // monster's record stays identical and the delta gate still
+               // skips it.
+               + ",\"ang\":" + std::to_string( mon_ptr->anger )
+               + ",\"mor\":" + std::to_string( mon_ptr->morale )
+               + ",\"agg\":" + ( mon_ptr->aggro_character ? "1" : "0" )
+               + ",\"flee\":" + ( mon_ptr->has_effect( effect_run ) ? "1" : "0" )
+               + ",\"doc\":" + ( mon_ptr->has_effect( effect_docile ) ? "1" : "0" )
+               + ( mon_ptr->faction.id() != mon_ptr->type->default_faction
+                   ? ",\"fac\":\"" + mon_ptr->faction.id().str() + "\"" : std::string() )
                + ",\"facing\":" + std::to_string( mon_facing ) + rider_field + "}";
         // Delta gate: emit only if new or changed since last broadcast. nid + id
         // are stable, so an identical record string means x/y/z/hp/facing are all
@@ -17046,6 +17064,43 @@ static void apply_monster_sync( JsonObject &jo )
                             " " + std::to_string( best->friendly ) + " -> " + std::to_string( fr ) );
                 }
                 best->friendly = fr;
+            }
+        }
+
+        // The rest of the attitude inputs (see build_monster_list).  Applied
+        // as values, and monster::attitude() — SP's own computation, with the
+        // client's own avatar as the viewer — does the rest.
+        if( mo.has_int( "ang" ) ) {
+            const monster_attitude before = best->attitude( &get_avatar() );
+            best->anger = mo.get_int( "ang" );
+            best->morale = mo.get_int( "mor", best->morale );
+            best->aggro_character = mo.get_int( "agg", 1 ) != 0;
+            best->mp_set_fleeing( mo.get_int( "flee", 0 ) != 0 );
+            const bool docile = mo.get_int( "doc", 0 ) != 0;
+            if( docile != best->has_effect( effect_docile ) ) {
+                if( docile ) {
+                    best->add_effect( effect_docile, 1_turns, true );
+                } else {
+                    best->remove_effect( effect_docile );
+                }
+            }
+            std::string fac;
+            mo.read( "fac", fac );
+            const mfaction_str_id fac_id( fac );
+            best->faction = !fac.empty() && fac_id.is_valid() ? fac_id
+                            : best->type->default_faction;
+            const monster_attitude after = best->attitude( &get_avatar() );
+            if( after != before ) {
+                static const std::array<const char *, NUM_MONSTER_ATTITUDES> names = {
+                    "NULL", "FRIEND", "FPASSIVE", "FLEE", "IGNORE", "FOLLOW", "ATTACK"
+                };
+                mp_log( "[cdda-mp] MON-ATTITUDE: nid=" + std::to_string( nid ) + " " +
+                        best->type->id.str() + " " + names[before] + " -> " + names[after] +
+                        " (ang=" + std::to_string( best->anger ) +
+                        " mor=" + std::to_string( best->morale ) +
+                        " agg=" + std::to_string( best->aggro_character ) +
+                        " flee=" + std::to_string( mo.get_int( "flee", 0 ) ) +
+                        " doc=" + std::to_string( docile ) + ")" );
             }
         }
 

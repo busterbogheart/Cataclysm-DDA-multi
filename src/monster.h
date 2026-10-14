@@ -588,6 +588,11 @@ class monster : public Creature
         // Assigned by the host when the monster first enters sync range; used by clients
         // to match incoming state updates to local monster objects without positional ambiguity.
         uint32_t mp_net_id = 0;
+        // Co-op client: apply the host's FLEEING state.  The client never runs
+        // this monster's turn, so effect_cache is never rebuilt from its effects.
+        void mp_set_fleeing( bool fleeing ) {
+            effect_cache[FLEEING] = fleeing;
+        }
         // abstract for a fish monster representing a hidden stock of population in that area.
         int fish_population = 1;
 
