@@ -16986,9 +16986,17 @@ static void apply_monster_sync( JsonObject &jo )
         if( mo.has_int( "fr" ) ) {
             const int fr = mo.get_int( "fr" );
             if( best->friendly != fr ) {
-                mp_log( "[cdda-mp] MON-FRIENDLY: nid=" + std::to_string( nid ) +
-                        " " + best->type->id.str() +
-                        " " + std::to_string( best->friendly ) + " -> " + std::to_string( fr ) );
+                // Log a change of KIND — hostile (0), timed charm (>0), permanent
+                // (<0) — not every tick of a charm counting down (863 -> 862 ...,
+                // 53 lines for one charmed dog, 2026-10-14).
+                const auto kind = []( int f ) {
+                    return f == 0 ? 0 : ( f > 0 ? 1 : -1 );
+                };
+                if( kind( best->friendly ) != kind( fr ) ) {
+                    mp_log( "[cdda-mp] MON-FRIENDLY: nid=" + std::to_string( nid ) +
+                            " " + best->type->id.str() +
+                            " " + std::to_string( best->friendly ) + " -> " + std::to_string( fr ) );
+                }
                 best->friendly = fr;
             }
         }
