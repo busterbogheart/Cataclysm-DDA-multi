@@ -77,6 +77,7 @@
 #include "popup.h"
 #include "mod_manager.h"
 #include "mp_magic.h"
+#include "timed_event.h"
 #include "mp_mod_compat.h"
 #include "string_input_popup.h"
 #include "uilist.h"
@@ -1308,6 +1309,113 @@ static void mp_light_log( const std::string &tag, const std::string &detail )
     }
     last[tag] = detail;
     mp_log( "[cdda-mp] LIGHT-SYNC " + tag + " " + detail );
+}
+
+// B18 part 2: world-light timed events.  Artifact Light (ARTIFACT_LIGHT: "everywhere
+// as bright as day"), DIM (the sky dims, then recovers) and CUSTOM_LIGHT_LEVEL (set by
+// EOCs) live in each process's own timed_event_manager and change the natural light
+// level for the whole map (game::natural_light_level), so a cast lit only the
+// caster's world.  Host-authoritative mirror: the host lists its light events in
+// every state packet and the client matches them; an event the client's own spell
+// creates goes to the host once.  Both calendars are the same, so mirrored events
+// end together.  None of the three does anything when it ends
+// (timed_event::actualize has no case for them), so ending one early is silent.
+static bool mp_is_light_event( timed_event_type t )
+{
+    return t == timed_event_type::DIM || t == timed_event_type::ARTIFACT_LIGHT ||
+           t == timed_event_type::CUSTOM_LIGHT_LEVEL;
+}
+
+static std::string mp_light_event_key( timed_event_type t, int when_turn )
+{
+    return std::to_string( static_cast<int>( t ) ) + ":" + std::to_string( when_turn );
+}
+
+static std::string mp_light_events_json( const std::set<std::string> *skip = nullptr )
+{
+    std::string out = "[";
+    for( const timed_event &e : get_timed_events().get_all() ) {
+        if( !mp_is_light_event( e.type ) ) {
+            continue;
+        }
+        // An event at or past its end turn is finished: never send it.  Measured
+        // 2026-10-13: listing finished events bounced each one back and forth ~7
+        // times in 130 ms as it ended (the client, a turn behind, re-sent it).
+        if( e.when <= calendar::turn ) {
+            continue;
+        }
+        const int w = to_turn<int>( e.when );
+        if( skip != nullptr && skip->count( mp_light_event_key( e.type, w ) ) > 0 ) {
+            continue;
+        }
+        if( out.size() > 1 ) {
+            out += ',';
+        }
+        out += "{\"t\":" + std::to_string( static_cast<int>( e.type ) ) + ",\"w\":" +
+               std::to_string( w ) + ",\"s\":" + std::to_string( e.strength ) + "}";
+    }
+    return out + "]";
+}
+
+// Add a light event unless one with the same type and end turn is already queued.
+static bool mp_add_light_event( timed_event_type t, int when_turn, int strength )
+{
+    if( when_turn <= to_turn<int>( calendar::turn ) ) {
+        return false;   // already finished (see mp_light_events_json)
+    }
+    for( const timed_event &e : get_timed_events().get_all() ) {
+        if( e.type == t && to_turn<int>( e.when ) == when_turn ) {
+            return false;
+        }
+    }
+    get_timed_events().add( t, calendar::turn_zero + time_duration::from_turns( when_turn ), -1,
+                            strength );
+    return true;
+}
+
+// Client: light events learned from the host, and ones this client created and sent.
+static std::set<std::string> g_light_events_from_host;
+static std::set<std::string> g_light_events_sent;
+
+// Client: match the host's list (state packet "light_events").
+static void mp_client_sync_light_events( const JsonArray &arr )
+{
+    std::set<std::string> host_keys;
+    for( const JsonValue &v : arr ) {
+        JsonObject eo = v.get_object();
+        eo.allow_omitted_members();
+        const timed_event_type t = static_cast<timed_event_type>( eo.get_int( "t" ) );
+        if( !mp_is_light_event( t ) ) {
+            continue;
+        }
+        const int w = eo.get_int( "w" );
+        const std::string key = mp_light_event_key( t, w );
+        host_keys.insert( key );
+        if( mp_add_light_event( t, w, eo.get_int( "s", -1 ) ) ) {
+            mp_log( "[cdda-mp] LIGHT-EVENT: mirrored from host " + key );
+        }
+        g_light_events_from_host.insert( key );
+        g_light_events_sent.erase( key );   // the host has it now
+    }
+    // The host ended one it had sent: end ours now too.
+    for( auto it = g_light_events_from_host.begin(); it != g_light_events_from_host.end(); ) {
+        if( host_keys.count( *it ) > 0 ) {
+            ++it;
+            continue;
+        }
+        const size_t colon = it->find( ':' );
+        const timed_event_type t = static_cast<timed_event_type>( std::stoi( it->substr( 0, colon ) ) );
+        const int w = std::stoi( it->substr( colon + 1 ) );
+        if( timed_event *e = get_timed_events().get( t ) ) {
+            if( to_turn<int>( e->when ) == w && e->when > calendar::turn ) {
+                e->when = calendar::turn;
+                mp_log( "[cdda-mp] LIGHT-EVENT: host ended " + *it + ", ending ours" );
+            }
+        }
+        // Finished: never send it back, even while our clock trails the host's.
+        g_light_events_sent.insert( *it );
+        it = g_light_events_from_host.erase( it );
+    }
 }
 
 // Light-relevant state of a character, for the LIGHT-SYNC SEND lines.
@@ -5732,6 +5840,28 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             }
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
+        }
+    }
+
+    // World-light events the client's spell created (Artifact Light...): add them
+    // here, and the state packet lists them back (mp_client_sync_light_events).
+    if( msg.find( "\"client_light_events\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            for( const JsonValue &v : jo.get_array( "client_light_events" ) ) {
+                JsonObject eo = v.get_object();
+                eo.allow_omitted_members();
+                const timed_event_type t = static_cast<timed_event_type>( eo.get_int( "t" ) );
+                if( mp_is_light_event( t ) &&
+                    mp_add_light_event( t, eo.get_int( "w" ), eo.get_int( "s", -1 ) ) ) {
+                    mp_log( "[cdda-mp] LIGHT-EVENT: added from client " +
+                            mp_light_event_key( t, eo.get_int( "w" ) ) );
+                }
+            }
+        } catch( const JsonError &e ) {
+            mp_log( std::string( "[cdda-mp] LIGHT-EVENT parse error: " ) + e.what() );
         }
     }
 
@@ -12432,6 +12562,9 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        if( jo.has_array( "light_events" ) ) {
+            mp_client_sync_light_events( jo.get_array( "light_events" ) );
+        }
         if( jo.has_float( "host_light" ) || jo.has_int( "host_light" ) ) {
             g_mp_host_luminance = static_cast<float>( jo.get_float( "host_light" ) );
             mp_light_log( "RECV", "host_light=" + mp_json_num( g_mp_host_luminance ) );
@@ -14261,6 +14394,22 @@ std::string client_enrich_action( const std::string &json )
         // Echo the highest grant we have actually applied; the host subtracts.
         enriched += ",\"cseq\":" + std::to_string(
                         static_cast<unsigned long long>( g_client_last_grant_seq ) );
+        // World-light events the client's own spell created (see
+        // mp_is_light_event), once each.
+        {
+            std::set<std::string> known = g_light_events_from_host;
+            known.insert( g_light_events_sent.begin(), g_light_events_sent.end() );
+            const std::string mine = mp_light_events_json( &known );
+            if( mine != "[]" ) {
+                enriched += ",\"client_light_events\":" + mine;
+                for( const timed_event &e : get_timed_events().get_all() ) {
+                    if( mp_is_light_event( e.type ) ) {
+                        g_light_events_sent.insert( mp_light_event_key( e.type, to_turn<int>( e.when ) ) );
+                    }
+                }
+                mp_log( "[cdda-mp] LIGHT-EVENT: client sent " + mine );
+            }
+        }
         // Sounds the client's own actions made, for the host's monsters (see
         // g_client_sounds_for_host).
         if( !g_client_sounds_for_host.empty() ) {
@@ -17933,6 +18082,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"host_appearance\":" + host_appearance_json + ","
            "\"host_move_mode\":\"" + host.move_mode.str() + "\","
            "\"host_facing\":" + std::to_string( host.facing == FacingDirection::LEFT ? 0 : 1 ) + ","
+           "\"light_events\":" + mp_light_events_json() + ","
            "\"host_light\":" + [&host]() {
                const float hl = host.active_light();
                mp_light_log( "SEND", "host " + mp_light_detail( host, hl ) );
