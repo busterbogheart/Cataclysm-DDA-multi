@@ -14,6 +14,7 @@
 #include "creature.h"
 #include "effect.h"
 #include "coordinates.h"
+#include "creature_tracker.h"
 #include "event.h"
 #include "event_bus.h"
 #include "event_subscriber.h"
@@ -32,6 +33,8 @@
 #include "string_formatter.h"
 #include "translations.h"
 #include "type_id.h"
+
+static const efftype_id effect_pet( "pet" );
 
 namespace cata_mp
 {
@@ -305,6 +308,105 @@ void mp_handle_client_summon( const std::string &msg )
             std::to_string( abs.z() ) + ")" +
             " friendly=" + std::to_string( friendly ) +
             " turns=" + std::to_string( turns ) );
+}
+
+void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *op )
+{
+    if( !is_client_mode() || !caster.is_avatar() ) {
+        return;   // host is authoritative; monster/death-spell casts aren't ours
+    }
+    if( mon.mp_net_id == 0 ) {
+        // A client-local monster the host has no copy of.  Nothing to apply
+        // over there; the sync culls it either way.
+        mp_log( "[cdda-mp] CLI-MON-OP: " + std::string( op ) + " on unsynced " +
+                mon.type->id.str() + " — not sent" );
+        return;
+    }
+    // The result, not the spell: type and friendliness after the effect ran.
+    const std::string payload =
+        std::string( "{\"type\":\"client_monster_op\",\"op\":\"" ) + op +
+        "\",\"nid\":" + std::to_string( mon.mp_net_id ) +
+        ",\"to\":\"" + mon.type->id.str() + "\"" +
+        ",\"fr\":" + std::to_string( mon.friendly ) +
+        ",\"pet\":" + ( mon.has_effect( effect_pet ) ? "true" : "false" ) + "}";
+    mp_log( "[cdda-mp] CLI-MON-OP-SEND: " + payload );
+    client_send( payload );
+    mp_client_monster_op_sent( mon, std::string( op ) == "banish" );
+}
+
+void mp_handle_client_monster_op( const std::string &msg )
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    std::string op;
+    std::string to;
+    uint32_t nid = 0;
+    int fr = 0;
+    bool pet = false;
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        op = jo.get_string( "op", "" );
+        to = jo.get_string( "to", "" );
+        nid = static_cast<uint32_t>( jo.get_int( "nid", 0 ) );
+        fr = jo.get_int( "fr", 0 );
+        pet = jo.get_bool( "pet", false );
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] HOST-MON-OP parse error: " ) + e.what() );
+        return;
+    }
+    monster *mon = nullptr;
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        if( ptr && ptr->mp_net_id == nid && !ptr->is_dead() ) {
+            mon = ptr.get();
+            break;
+        }
+    }
+    if( nid == 0 || mon == nullptr ) {
+        mp_log( "[cdda-mp] HOST-MON-OP: REJECTED " + op + " nid=" + std::to_string( nid ) +
+                " — no live host monster with this nid" );
+        return;
+    }
+    const std::string before = mon->type->id.str() + " fr=" + std::to_string( mon->friendly );
+    if( op == "poly" ) {
+        // magical_polymorph(): poly, then FRIENDLY_POLY's friendly = -1 for a
+        // character caster.  Sending the resulting friendliness covers both;
+        // for a plain polymorph it's the value the host already had.
+        const mtype_id new_id( to );
+        if( to.empty() || !new_id.is_valid() ) {
+            mp_log( "[cdda-mp] HOST-MON-OP: REJECTED poly nid=" + std::to_string( nid ) +
+                    ", unknown type '" + to + "'" );
+            return;
+        }
+        if( mon->type->id != new_id ) {
+            mon->poly( new_id );
+        }
+        mon->friendly = fr;
+    } else if( op == "charm" ) {
+        // charm_monster(): unset_dest, friendliness from the client's own
+        // duration roll, and CHARM_PET's permanent pet effect.
+        mon->unset_dest();
+        mon->friendly = fr;
+        if( pet && !mon->has_effect( effect_pet ) ) {
+            mon->add_effect( effect_pet, 1_turns, true );
+        }
+    } else if( op == "banish" ) {
+        // banishment(): no drops, killed by the caster.  The proxy is the
+        // client's character here, so the kill is credited the way SP credits
+        // the caster.  The overflow HP cost was already paid on the client.
+        mp_log( "[cdda-mp] HOST-MON-OP: banish nid=" + std::to_string( nid ) + " " + before );
+        mon->death_drops = false;
+        mon->die( &get_map(), get_partner_npc() );
+        g->cleanup_dead();
+        return;
+    } else {
+        mp_log( "[cdda-mp] HOST-MON-OP: REJECTED unknown op '" + op + "'" );
+        return;
+    }
+    mp_log( "[cdda-mp] HOST-MON-OP: " + op + " nid=" + std::to_string( nid ) + " " + before +
+            " -> " + mon->type->id.str() + " fr=" + std::to_string( mon->friendly ) );
 }
 
 // --- Deliberate client HP changes (ROADMAP B2) ----------------------------

@@ -75,6 +75,25 @@ void mp_on_summon_placed( monster &mon, int summon_turns, bool permanent );
 // Host: apply a {"type":"client_summon",...} packet.
 void mp_handle_client_summon( const std::string &msg );
 
+// --- Client monster-identity spells (ROADMAP B15) -------------------------
+//
+// Measured 2026-10-14: a client charm, polymorph or banish changed only the
+// client's copy of the monster.  The host never heard, so its next broadcast
+// reverted the charm and the type, and a banish arrived as a full-HP "hit"
+// that the host turned into an ordinary kill (corpse, loot, kill credit).
+//
+// Same shape as client summons: the client has already resolved the spell
+// (success roll, the polymorph result, the charm duration), so it sends the
+// RESULT and the host applies it through the same SP call the spell used.
+// Nothing is re-rolled host-side.  `op` is "poly", "charm" or "banish".
+// Called from magical_polymorph, charm_monster and banishment
+// (magic_spell_effect.cpp).  No-op unless we are the client, the caster is our
+// own avatar, and the monster is a synced one (has a net id).
+void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *op );
+
+// Host: apply a {"type":"client_monster_op",...} packet.
+void mp_handle_client_monster_op( const std::string &msg );
+
 // --- Deliberate client HP changes (ROADMAP B2) ----------------------------
 //
 // The host's proxy HP is authoritative: apply_monster_sync's sibling, the

@@ -774,6 +774,7 @@ static void magical_polymorph( monster &victim, Creature &caster, const spell &s
             victim.make_ally( *caster.as_monster() );
         }
     }
+    cata_mp::mp_on_monster_spell_op( victim, caster, "poly" );
 }
 
 void spell_effect::targeted_polymorph( const spell &sp, Creature &caster,
@@ -1644,6 +1645,7 @@ void spell_effect::charm_monster( const spell &sp, Creature &caster, const tripo
         }
         if( success ) {
             add_msg_if_player_sees( potential_target, m_good, _( "You charm the %s!" ), mon->name() );
+            cata_mp::mp_on_monster_spell_op( *mon, caster, "charm" );
         } else {
             add_msg_if_player_sees( potential_target, m_bad, _( "The %s resists your charm attempt." ),
                                     mon->name() );
@@ -2007,6 +2009,7 @@ void spell_effect::banishment( const spell &sp, Creature &caster, const tripoint
         // banished monsters take their stuff with them
         mon->death_drops = false;
         mon->die( &here, &caster );
+        cata_mp::mp_on_monster_spell_op( *mon, caster, "banish" );
     }
 }
 

@@ -4992,6 +4992,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // Client charmed, polymorphed or banished a synced monster.  Out-of-band
+    // for the same reason as client_summon, and drained before the next grant
+    // so the next broadcast already carries the change.  Body in mp_magic.cpp.
+    if( msg.find( "\"type\":\"client_monster_op\"" ) != std::string::npos ) {
+        mp_handle_client_monster_op( msg );
+        return;
+    }
+
     // Deliberate client-side HP change (blood magic cost, spell heal).  Applied
     // to the proxy HERE, which process_mp_events() drains before
     // grant_client_turn() -- so the absolute HP the next state packet carries
@@ -14250,6 +14258,18 @@ static int mp_take_monster_hit_report( const monster &mon )
     }
     g_last_reported_monster_hp[mon.mp_net_id] = client_hp;
     return dealt;
+}
+
+void mp_client_monster_op_sent( const monster &mon, bool killed )
+{
+    const uint32_t nid = mon.mp_net_id;
+    if( killed ) {
+        g_last_monster_hp.erase( nid );
+        g_last_reported_monster_hp.erase( nid );
+        g_client_pending_kill[nid] = CLIENT_PENDING_KILL_SYNCS;
+    } else if( g_last_monster_hp.count( nid ) ) {
+        g_last_reported_monster_hp[nid] = mon.get_hp();
+    }
 }
 
 void mp_client_pre_remove_dead()

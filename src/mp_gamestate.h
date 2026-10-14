@@ -16,6 +16,7 @@ class Character;
 class Creature;
 class item;
 class item_location;
+class monster;
 class player_activity;
 class spell;
 struct WORLD;
@@ -309,6 +310,14 @@ bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest );
 // client killed locally, so it still reaches the host on the next action even
 // though the monster itself is gone by then.  No-op outside client mode.
 void mp_client_pre_remove_dead();
+
+// Client: a spell's effect on a synced monster is being sent to the host as an
+// op (mp_on_monster_spell_op).  Re-baseline the hit report so the same change
+// isn't ALSO reported as damage: a polymorph's hp rescale, or a banished
+// monster counted as a full-HP kill.  `killed` drops the baseline and arms the
+// pending-kill guard so the host's in-flight "still alive" broadcasts don't
+// re-spawn it before the op lands.
+void mp_client_monster_op_sent( const monster &mon, bool killed );
 
 // Host: true while wait_for_client_action() is blocking — i.e. the host has
 // no moves and is waiting for the client to ack the current turn.  Used to
