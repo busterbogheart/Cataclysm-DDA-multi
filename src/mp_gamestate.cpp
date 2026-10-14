@@ -16857,26 +16857,33 @@ static void apply_monster_sync( JsonObject &jo )
 
         matched.insert( best );
 
-        // DIAGNOSTIC (B15): the host's "id" is never applied to a monster matched
-        // by nid, so a type change on either side (polymorph, upgrade) persists
-        // silently.  Logged once per (nid, client type, host type).
-        if( nid != 0 ) {
-            static std::unordered_map<uint32_t, std::string> s_type_mismatch_logged;
+        // Host is authoritative on type, as it already is on hp, friendliness and
+        // position.  A monster changes type in place under the same nid
+        // (monster::poly: polymorph spells, upgrades), so a nid match carrying a
+        // different "id" IS that change — apply it through the same SP call.
+        // Without this the client kept the old type forever, and later ran the
+        // old type's death (a fleshwarped acidic zombie leaked acid on the client
+        // only, B15 2026-10-14).  HP is overwritten from server_hp below, after
+        // poly's rescale.
+        if( !best->is_dead() ) {
             std::string host_id;
             mo.read( "id", host_id );
             if( !host_id.empty() && host_id != best->type->id.str() ) {
-                const std::string key = best->type->id.str() + ">" + host_id;
-                std::string &last = s_type_mismatch_logged[nid];
-                if( last != key ) {
-                    last = key;
-                    mp_log( "[cdda-mp] MON-TYPE-MISMATCH: nid=" + std::to_string( nid ) +
-                            " client=" + best->type->id.str() + " host=" + host_id +
+                const mtype_id new_id( host_id );
+                if( new_id.is_valid() ) {
+                    mp_log( "[cdda-mp] MON-TYPE-SYNC: nid=" + std::to_string( nid ) + " " +
+                            best->type->id.str() + " -> " + host_id +
                             " client_hp=" + std::to_string( best->get_hp() ) +
-                            " host_hp=" + std::to_string( server_hp ) +
-                            " — client keeps its own type" );
+                            " host_hp=" + std::to_string( server_hp ) );
+                    best->poly( new_id );
+                } else {
+                    static std::unordered_set<std::string> s_unknown_logged;
+                    if( s_unknown_logged.insert( host_id ).second ) {
+                        mp_log( "[cdda-mp] MON-TYPE-SYNC: nid=" + std::to_string( nid ) +
+                                " host type '" + host_id + "' is unknown here — client keeps " +
+                                best->type->id.str() );
+                    }
                 }
-            } else {
-                s_type_mismatch_logged.erase( nid );
             }
         }
 
