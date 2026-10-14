@@ -4919,6 +4919,27 @@ static mp_proxy_bump mp_proxy_bump_monster( npc &proxy, monster &critter,
     return result;
 }
 
+// A passed item arriving is the GIVER's action, not the receiver's.  Place it
+// the way SP places a received item — i_add_or_drop: a pocket, else wield if the
+// hands are free, else drop at the feet; never the interactive "Stop wielding?"
+// unwield that a bare i_add() falls into — and keep whatever moves that
+// placement charged off the receiver's turn.  On the client those moves are the
+// host's grant: a pistol that didn't fit any pocket was wielded for 128 moves
+// (89 -> -39) inside the trade_delta handler, the client sat at moves<0 holding
+// an unacked grant, and the host waited on it forever (red/red, 2026-10-14).
+static void mp_receive_passed_item( Character &who, item &it, const char *side )
+{
+    const int before = who.get_moves();
+    who.i_add_or_drop( it );
+    if( who.get_moves() != before ) {
+        mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " placing " +
+                it.typeId().str() + " charged " + std::to_string( before - who.get_moves() ) +
+                " moves (wielded: no pocket room) — the giver's action, not the "
+                "receiver's; restored to " + std::to_string( before ) );
+        who.set_moves( before );
+    }
+}
+
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
     // Liveness: ANY message from the client (action, wait, or heartbeat) proves
@@ -4962,7 +4983,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     io.allow_omitted_members();
                     item tmp;
                     tmp.deserialize( io );
-                    av.i_add( tmp );
+                    mp_receive_passed_item( av, tmp, "host" );
                     mp_log( "[cdda-mp] trade_delta(host): gained " + tmp.typeId().str() );
                 }
             }
@@ -12362,7 +12383,7 @@ static bool apply_one_state_message( const std::string &msg )
                     }
                     item tmp;
                     tmp.deserialize( io );
-                    av.i_add( tmp );
+                    mp_receive_passed_item( av, tmp, "client" );
                     mp_log( "[cdda-mp] trade_delta: gained " + tmp.typeId().str() );
                 }
             }
