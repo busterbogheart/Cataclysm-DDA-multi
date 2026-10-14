@@ -2040,18 +2040,11 @@ static void cast_spell( bool recast_spell = false )
         return;
     }
 
-    // MP: a menu opened while locked (no moves) is browse-only, decided here at
-    // open and not re-checked after it closes.
-    const bool mp_browse_only = !recast_spell && cata_mp::mp_spell_menu_browse_only( player_character );
     spell &sp = recast_spell
                 ? player_character.magic->get_spell( player_character.magic->last_spell )
                 : player_character.magic->select_spell( player_character );
     // if no spell was selected
     if( sp.id().is_null() ) {
-        return;
-    }
-    if( mp_browse_only ) {
-        cata_mp::mp_refuse_browse_only_cast( sp );
         return;
     }
     player_character.magic->last_spell = sp.id();
@@ -2444,7 +2437,7 @@ static const std::set<action_id> host_ui_actions = {
     ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
     ACTION_DISASSEMBLE,
     ACTION_BUTCHER,
-    // Browse only while waiting (see cast_spell / mp_spell_menu_browse_only).
+    // Browse only while waiting: every spell disabled (mp_spell_menu_browse_only).
     ACTION_CAST_SPELL,
     // ACTION_CONSTRUCT intentionally excluded (mirrors the client gate):
     // confirming a build immediately writes map state via
@@ -2531,8 +2524,8 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 ACTION_BUTCHER, ACTION_LOOT,
                 ACTION_CRAFT, ACTION_RECRAFT, ACTION_LONGCRAFT,
                 ACTION_DISASSEMBLE,
-                // Browse only: cast_spell() refuses a pick made from a menu that
-                // opened while locked (mp_spell_menu_browse_only).
+                // Browse only: while locked every spell in the menu is disabled
+                // (mp_spell_menu_browse_only), so nothing can be picked.
                 ACTION_CAST_SPELL,
                 // NOTE: ACTION_CONSTRUCT is intentionally NOT here. Unlike the
                 // others (deferred activities / own-inventory mutations gated by

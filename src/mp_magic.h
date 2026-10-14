@@ -169,18 +169,15 @@ bool mp_confirm_long_cast( const spell &sp, Character &caster );
 
 // Browse-only spell menu.  While a player is locked (no moves: waiting on the
 // partner's turn) the spell menu still opens, as the crafting and pickup menus
-// do, but a spell picked from it is not cast.  Unlike crafting, a cast is not
-// queued for the next grant: its start-of-cast decisions (danger prompt,
-// fast-forward eligibility, the tile-ring seed) would run against a turn that
-// is over by the time the grant arrives.  Decided once when the menu opens and
-// not re-checked: moves arriving while it is open don't unlock it — reopen it.
-// True in a co-op session when `who` has no moves.  Called from cast_spell()
-// (handle_action.cpp) before select_spell().
+// do, but every entry is disabled: readable, not selectable, exactly like a
+// spell the player can't afford.  Unlike crafting, a cast is not queued for the
+// next grant: its start-of-cast decisions (danger prompt, fast-forward
+// eligibility, the tile-ring seed) would run against a turn that is over by the
+// time the grant arrives.  Decided once when the menu is built and not
+// re-checked: moves arriving while it is open don't unlock it — reopen it.
+// True in a co-op session when `who` has no moves.  Called from
+// known_magic::select_spell() (magic.cpp).
 bool mp_spell_menu_browse_only( const Character &who );
-
-// Called by cast_spell() when a spell was picked from a browse-only menu:
-// tells the player (locally — nothing for the partner) and logs it.
-void mp_refuse_browse_only_cast( const spell &sp );
 
 // Receiver: apply a {"type":"partner_spell",...} packet to our own avatar.
 // Symmetric -- host and client both send and both receive.

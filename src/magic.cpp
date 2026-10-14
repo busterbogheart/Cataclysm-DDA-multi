@@ -3397,8 +3397,11 @@ spell &known_magic::select_spell( Character &guy )
         spell_menu.set_category( "all" );
     }
 
+    // MP: while waiting on the partner's turn every spell is disabled: readable
+    // (hilight_disabled), not selectable.
+    const bool mp_browse_only = cata_mp::mp_spell_menu_browse_only( guy );
     for( size_t i = 0; i < known_spells_sorted.size(); i++ ) {
-        spell_menu.addentry( static_cast<int>( i ), known_spells_sorted[i]->can_cast( guy ),
+        spell_menu.addentry( static_cast<int>( i ), !mp_browse_only && known_spells_sorted[i]->can_cast( guy ),
                              get_invlet( known_spells_sorted[i]->id() ), known_spells_sorted[i]->name() );
     }
     refresh_favorite( &spell_menu, known_spells_sorted );

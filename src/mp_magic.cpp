@@ -23,7 +23,6 @@
 #include "json_loader.h"
 #include "magic.h"
 #include "map.h"
-#include "messages.h"
 #include "monster.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
@@ -754,17 +753,12 @@ static constexpr int MP_LONG_CAST_DANGER_RADIUS = 30;
 bool mp_spell_menu_browse_only( const Character &who )
 {
     // The same test both locked-action gates in handle_action() use.
-    return ( is_client_mode() || is_hosting() ) && who.is_avatar() && who.get_moves() <= 0;
-}
-
-void mp_refuse_browse_only_cast( const spell &sp )
-{
-    mp_log( "[cdda-mp] SPELL-BROWSE: picked " + sp.id().str() +
-            " from a menu opened while locked — not cast" );
-    // About this player's own menu; nothing for the partner to read.
-    mp_local_msg_scope no_relay;
-    add_msg( m_info, _( "You're waiting on your partner, so the spell list was browse-only.  "
-                        "Open it again on your turn to cast." ) );
+    const bool browse = ( is_client_mode() || is_hosting() ) && who.is_avatar() &&
+                        who.get_moves() <= 0;
+    if( browse ) {
+        mp_log( "[cdda-mp] SPELL-BROWSE: spell menu opened while locked — all entries disabled" );
+    }
+    return browse;
 }
 
 bool mp_confirm_long_cast( const spell &sp, Character &caster )
