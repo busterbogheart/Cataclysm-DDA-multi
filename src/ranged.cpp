@@ -2847,6 +2847,8 @@ double Character::gun_value( const item &weap, int ammo ) const
 
 target_handler::trajectory target_ui::run()
 {
+    // MP: a blocking UI; hold the co-op partner's fast-forward while it is open.
+    cata_mp::peer_modal_hold mp_hold;
     if( mode == TargetMode::Spell && !no_mana && !casting->can_cast( *you ) ) {
         you->add_msg_if_player( m_bad, _( "You don't have enough %s to cast this spell" ),
                                 casting->energy_string() );

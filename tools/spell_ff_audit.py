@@ -8,10 +8,13 @@ Mirrors mp_note_spell_cast() in src/mp_gamestate.cpp:
   "none" not in valid_targets AND no RANDOM_TARGET flag;
 - effect=translocate opens a destination menu;
 - an effect_on_condition spell whose EOC tree uses u_query, run_eoc_selector,
-  u_query_tile (and similar) opens a menu.  SP compiles EOCs to code, so the
-  game can't check this at runtime: the ids this prints under "EOC UI" must be
-  kept in mp_note_spell_cast()'s effect_menu_spells list.  Re-run after
-  pulling upstream content and diff that list.
+  u_query_tile (and similar) opens a menu.
+Since B7 (2026-10-13) this is INFORMATIONAL: every cast may fast-forward,
+because the client hands a cast's finishing tick to do_turn's main loop, so a
+menu or targeting UI at finish() opens in a valid context.  Use it to see which
+spells will stop for a UI at the end (and so pause the partner's FF), and to
+spot menu effects that peer_modal_hold doesn't cover yet (u_query_tile,
+open_dialogue, string_input).
 The YES/NO lists only cover spells that can reach FF_MIN_ACTIVITY_MOVES (3000).
 """
 import json, os, sys, collections
