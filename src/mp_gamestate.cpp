@@ -1418,6 +1418,28 @@ static void mp_client_sync_light_events( const JsonArray &arr )
     }
 }
 
+// B16 DIAG: this character's real mana regeneration, as SP computes it
+// (known_magic::update_mana: one tick per 3 minutes of
+// floor( 3/480 * calculate_by_enchantment( max_mana, REGEN_MANA ) )), logged on
+// change, so a before/after mana reading over a fast-forwarded wait can be
+// checked against the exact expected gain.
+static void mp_log_mana_rate( const Character &who, const char *side )
+{
+    const double per_8h = std::max( 0.0, who.calculate_by_enchantment(
+                                        static_cast<double>( who.magic->max_mana( who ) ),
+                                        enchant_vals::mod::REGEN_MANA ) );
+    const int per_tick = static_cast<int>( std::floor( per_8h * 3.0 / 480.0 ) );
+    const std::string line = std::string( side ) + " max=" + std::to_string( who.magic->max_mana( who ) ) +
+                             " regen_per_8h=" + std::to_string( static_cast<int>( per_8h ) ) +
+                             " per_3min_tick=" + std::to_string( per_tick ) +
+                             " per_hour=" + std::to_string( per_tick * 20 );
+    static std::map<std::string, std::string> last;
+    if( last[side] != line ) {
+        last[side] = line;
+        mp_log( "[cdda-mp] MANA-RATE: " + line );
+    }
+}
+
 // Light-relevant state of a character, for the LIGHT-SYNC SEND lines.
 static std::string mp_light_detail( const Character &who, float active )
 {
@@ -14440,6 +14462,7 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_spells\":" + spells_json;
         }
         enriched += ",\"client_mana\":" + std::to_string( av.magic->available_mana() );
+        mp_log_mana_rate( av, "client" );
         // Needs, every action (five ints): hunger, thirst, sleepiness, stored kcal,
         // sleep deprivation.  The proxy runs no needs of its own: do_turn skips its
         // whole NPC turn, so they sat frozen at spawn values, and the stat penalties
@@ -18108,7 +18131,10 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"host_morale\":" + std::to_string( host.get_morale_level() ) + ","
            "\"host_hp_cur\":" + std::to_string( mp_worst_limb_hp( host ).first ) + ","
            "\"host_hp_max\":" + std::to_string( mp_worst_limb_hp( host ).second ) + ","
-           "\"host_mana\":" + std::to_string( host.magic->available_mana() ) + ","
+           "\"host_mana\":" + [&host]() {
+               mp_log_mana_rate( host, "host" );
+               return std::to_string( host.magic->available_mana() );
+           }() + ","
            "\"host_mana_max\":" + std::to_string(
                host.magic->knows_spell() ? host.magic->max_mana( host ) : 0 ) + ","
            "\"host_effects\":" + host_effects_json + ","
