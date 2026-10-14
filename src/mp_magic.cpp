@@ -310,6 +310,47 @@ void mp_handle_client_summon( const std::string &msg )
             " turns=" + std::to_string( turns ) );
 }
 
+// A spell (or any of its extra effects, recursively) that changes world state
+// the host owns: creates, revives, transforms or splits monsters, or fires a
+// world event.  `depth` bounds a pathological extra_effects cycle.
+static bool spell_changes_host_world( const spell_id &sp, std::string &which, int depth = 0 )
+{
+    static const std::set<std::string> host_owned = {
+        "summon", "slime_split", "revive", "revive_dormant", "upgrade",
+        "effect_on_condition", "timed_event", "guilt"
+    };
+    if( depth > 8 || !sp.is_valid() ) {
+        return false;
+    }
+    if( host_owned.count( sp->effect_name ) ) {
+        which = sp.str() + ":" + sp->effect_name;
+        return true;
+    }
+    for( const fake_spell &extra : sp->additional_spells ) {
+        if( spell_changes_host_world( extra.id, which, depth + 1 ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool mp_skip_monster_death_effect( const monster &mon, bool eoc )
+{
+    if( !is_client_mode() ) {
+        return false;
+    }
+    std::string which;
+    if( eoc ) {
+        which = "eoc:" + mon.type->mdeath_effect.eoc.value().str();
+    } else if( !spell_changes_host_world( mon.type->mdeath_effect.sp.id, which ) ) {
+        return false;
+    }
+    mp_log( "[cdda-mp] MON-DEATH-EFFECT-SKIP: " + mon.type->id.str() + " nid=" +
+            std::to_string( mon.mp_net_id ) + " " + which +
+            " — the host runs this death; its result arrives through sync" );
+    return true;
+}
+
 void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *op )
 {
     if( !is_client_mode() || !caster.is_avatar() ) {

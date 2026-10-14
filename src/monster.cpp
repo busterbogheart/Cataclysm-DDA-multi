@@ -3151,7 +3151,7 @@ void monster::die( map *here, Creature *nkiller )
 
     add_msg_if_player_sees( *this, m_good, type->mdeath_effect.death_message.translated(), name() );
 
-    if( type->mdeath_effect.has_effect ) {
+    if( type->mdeath_effect.has_effect && !cata_mp::mp_skip_monster_death_effect( *this, false ) ) {
         //Not a hallucination, go process the death effects.
         spell death_spell = type->mdeath_effect.sp.get_spell( *this );
         if( killer != nullptr && !type->mdeath_effect.sp.self &&
@@ -3170,7 +3170,7 @@ void monster::die( map *here, Creature *nkiller )
         get_player_character().apply_murder_penalties( this );
     }
 
-    if( type->mdeath_effect.eoc.has_value() ) {
+    if( type->mdeath_effect.eoc.has_value() && !cata_mp::mp_skip_monster_death_effect( *this, true ) ) {
         //Not a hallucination, go process the death effects.
         if( type->mdeath_effect.eoc.value().is_valid() ) {
             dialogue d( killer == nullptr ? nullptr : get_talker_for( killer ), get_talker_for( *this ) );

@@ -322,6 +322,19 @@ void mp_pre_remove_dead();
 // re-spawn it before the op lands.
 void mp_client_monster_op_sent( const monster &mon, bool killed );
 
+// Client: true when monster::die should NOT run this monster's death spell
+// (`eoc` false) or death EOC (`eoc` true) in the client's world, because the
+// host runs the same death and owns what it creates.  A death spell that
+// spawns, revives, upgrades or splits monsters, or fires a world event, would
+// otherwise do it twice: once host-side (synced back as real monsters) and
+// once here (client-local copies the cull then removes, or worse, a revive or
+// upgrade the host never did).  Spells that only act on creatures and fields
+// in the area (bile, gas, acid pools, explosions) still run, because the
+// client's own body is client-authoritative and that local cast is today the
+// only way such an effect reaches the client avatar.  Death EOCs never run
+// client-side.  False outside client mode.  Body in mp_magic.cpp.
+bool mp_skip_monster_death_effect( const monster &mon, bool eoc );
+
 // Host: true while wait_for_client_action() is blocking — i.e. the host has
 // no moves and is waiting for the client to ack the current turn.  Used to
 // gate which keys are handled during the wait (zoom etc.).
