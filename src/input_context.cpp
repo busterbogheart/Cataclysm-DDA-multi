@@ -503,7 +503,11 @@ const std::string &input_context::handle_input( const int timeout )
         // resolve only in keycode mode would fail exactly here — and ESC works in
         // the menus and in map/morale/player_data, so this is context-specific.
         // Names the category, the event type and the resolution.
-        if( cata_mp::is_client_mode() || cata_mp::is_hosting() ) {
+        // Skips the input poll's own no-event results and mouse motion: 2,091 of
+        // 2,139 "UNRESOLVED" lines in a 2026-10-14 client log were evt_type=0
+        // timeouts, and MOUSE_MOVE was the host's top input line.
+        if( ( cata_mp::is_client_mode() || cata_mp::is_hosting() ) &&
+            next_action.type != input_event_t::error && action != "MOUSE_MOVE" ) {
             cata_mp::mp_log( "[cdda-mp] CTXT-RESOLVE: cat=\"" + category +
                              "\" evt_type=" + std::to_string( static_cast<int>( next_action.type ) ) +
                              " seq=" + std::to_string( next_action.sequence.empty() ? -1 :

@@ -651,9 +651,9 @@ void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
                          double ms_redraw_gated, double ms_redraw_popup,
                          double ms_refresh, double ms_total );
 
-// Marks the last statement of game::do_turn().  Wall-clock between this and the
-// next HOST-DO-TURN-ENTRY is time spent outside do_turn entirely (main loop / SDL
-// frame pacing).  No-ops outside an MP session.
+// Called at the last statement of game::do_turn() while a long action runs.
+// Logs once per 100 turns with the turn rate (was a bare per-turn marker).
+// No-ops outside an MP session.
 void mp_log_do_turn_exit();
 
 // Client only: called when our own avatar finishes a spell, with how far that

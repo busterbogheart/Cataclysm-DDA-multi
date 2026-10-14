@@ -770,11 +770,6 @@ bool game::do_turn()
         load_npcs();
     }
 
-    if( cata_mp::is_hosting() ) {
-        cata_mp::mp_log( "[cdda-mp] HOST-DO-TURN-ENTRY: avatar_moves=" +
-                         std::to_string( get_avatar().get_moves() ) +
-                         " av_act=" + ( get_avatar().activity ? get_avatar().activity.id().str() : "none" ) );
-    }
     // Process multiplayer events from network thread
     cata_mp::process_mp_events();
     // Apply any server state updates received since the last turn (client mode)
@@ -795,10 +790,6 @@ bool game::do_turn()
             cata_mp::mp_log( msg );
             last = msg;
         }
-    }
-    if( cata_mp::is_hosting() ) {
-        cata_mp::mp_log( "[cdda-mp] HOST-POST-MP-EVENTS: avatar_moves=" +
-                         std::to_string( get_avatar().get_moves() ) );
     }
     cata_mp::mp_turn_phase_begin();
     // Lockstep: grant the client their turn at the start of each game turn.
@@ -1506,7 +1497,7 @@ bool game::do_turn()
 
     debug_menu::debug_capture::tick_if_active();
     // MP DIAGNOSTIC 2026-08-14 — brackets the far end of the turn.  Any wall-clock
-    // between this line and the next HOST-DO-TURN-ENTRY is spent OUTSIDE do_turn
+    // between this line and the next turn's first TURN-PHASES mark is spent OUTSIDE do_turn
     // (main loop / SDL frame pacing), not in the progress-UI redraw.  Lets the
     // 16ms/turn be attributed without guessing.
     cata_mp::mp_turn_phase( "tail" );

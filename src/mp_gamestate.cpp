@@ -9345,13 +9345,30 @@ void mp_turn_phase_flush( int threshold_ms )
         g_turn_marks.clear();
         return;
     }
-    std::string line = "[cdda-mp] TURN-PHASES: total=" + std::to_string( total ) + "ms";
+    // Summed per phase name, in order of first appearance.  The host's
+    // client-wait loop marks cw:loop_* every ~17ms, so a long wait printed
+    // thousands of segments one by one (a 205,141-char line, 2026-10-13);
+    // repeats now fold to name=N×total.
+    std::vector<std::pair<std::string, std::pair<long long, int>>> sums;
     for( size_t i = 1; i < g_turn_marks.size(); ++i ) {
         const auto d = ms_between( g_turn_marks[i - 1], g_turn_marks[i] );
-        // Only print segments that actually cost something — a turn has many
+        auto it = std::find_if( sums.begin(), sums.end(), [&]( const auto & s ) {
+            return s.first == g_turn_marks[i].name;
+        } );
+        if( it == sums.end() ) {
+            sums.push_back( { g_turn_marks[i].name, { d, 1 } } );
+        } else {
+            it->second.first += d;
+            ++it->second.second;
+        }
+    }
+    std::string line = "[cdda-mp] TURN-PHASES: total=" + std::to_string( total ) + "ms";
+    for( const auto &[name, sum] : sums ) {
+        // Only print phases that actually cost something — a turn has many
         // phases and the zero ones are noise.
-        if( d > 0 ) {
-            line += std::string( " " ) + g_turn_marks[i].name + "=" + std::to_string( d ) + "ms";
+        if( sum.first > 0 ) {
+            line += " " + name + "=" + ( sum.second > 1 ? std::to_string( sum.second ) + "x/" : "" ) +
+                    std::to_string( sum.first ) + "ms";
         }
     }
     mp_log( line );
@@ -9426,9 +9443,11 @@ void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
         gate_fires++;
     }
     const bool ff = should_fast_forward();
-    // Full detail for the first 3000 passes, then 1-in-20.  A craft the user
-    // aborts after ~15s at 62 turns/sec lands well inside the detailed window.
-    const bool verbose = calls <= 3000 || ( calls % 20 ) == 0;
+    // Only passes that did something: the gate fired (it actually redrew) or the
+    // pass was slow.  The rest are gate=0 total=0.01ms repeats — most of the
+    // 3,591 lines in a 2026-10-14 client log — and PROGRESS-UI-AVG below still
+    // counts them.
+    const bool verbose = gate_fired || ms_total >= 5.0;
     if( verbose ) {
         char buf[256];
         std::snprintf( buf, sizeof( buf ),
@@ -9461,7 +9480,22 @@ void mp_log_do_turn_exit()
     if( !get_avatar().activity ) {
         return;
     }
-    mp_log( "[cdda-mp] DO-TURN-EXIT" );
+    // One line per 100 turns with the rate, not a bare marker per turn (14,837
+    // field-less lines in a 2026-10-14 client log).  The rate is what the
+    // per-turn timestamps were being read for.
+    static int s_exits = 0;
+    static std::chrono::steady_clock::time_point s_window_start = std::chrono::steady_clock::now();
+    if( ++s_exits < 100 ) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             now - s_window_start ).count();
+    mp_log( "[cdda-mp] DO-TURN-EXIT x100 in " + std::to_string( ms ) + "ms (" +
+            std::to_string( ms > 0 ? 100000 / ms : 0 ) + " turns/s) act=" +
+            get_avatar().activity.id().str() );
+    s_exits = 0;
+    s_window_start = now;
 }
 
 void mp_log_safemode_check( int newseen, int mostseen, int safe_mode )
@@ -10180,8 +10214,14 @@ bool client_suppress_self_gravity( const Character &who )
     // teleport.  Our local map at the destination z is a lagging shadow that may
     // still read t_open_air, so trusting our own gravity check here means falling
     // through a bridge deck the host knows is solid.  Defer entirely to the host.
-    mp_log( "[cdda-mp] gravity: suppressed client avatar self-fall at z=" +
-            std::to_string( who.pos_abs().z() ) );
+    // Called every turn the avatar stands anywhere; log when the z-level changes,
+    // not 1,457 identical "at z=0" lines a session.
+    static int s_last_logged_z = INT_MIN;
+    if( who.pos_abs().z() != s_last_logged_z ) {
+        s_last_logged_z = who.pos_abs().z();
+        mp_log( "[cdda-mp] gravity: suppressed client avatar self-fall at z=" +
+                std::to_string( s_last_logged_z ) );
+    }
     return true;
 }
 
@@ -11324,8 +11364,11 @@ void process_mp_events()
                         event.data.substr( 0, 60 ) );
                 continue;
             }
-            // Heartbeats arrive every ~1.5s — don't spam the log with them.
-            if( event.data.find( "\"type\":\"heartbeat\"" ) == std::string::npos ) {
+            // Heartbeats arrive every ~1.5s — don't spam the log with them.  Nor
+            // with routine state syncs (worn_sync rides every client action):
+            // their handlers log what they apply.  Actions are what this line is
+            // for — the arrival order of real client turns.
+            if( !sync && event.data.find( "\"type\":\"heartbeat\"" ) == std::string::npos ) {
                 mp_log( "[cdda-mp] process_mp_events: " + event.data.substr( 0, 60 ) );
             }
         }
@@ -11544,11 +11587,16 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
     map &m = get_map();
 
     const bool in = m.inbounds( abs_pos );
-    mp_log( "[cdda-mp] teleport: target_abs=" + std::to_string( abs_pos.x() ) + "," +
-            std::to_string( abs_pos.y() ) + " inbounds=" + std::to_string( in ) +
-            " initial_done=" + std::to_string( g_initial_teleport_done ) +
-            " avatar_abs=" + std::to_string( u.pos_abs().x() ) + "," +
-            std::to_string( u.pos_abs().y() ) );
+    // Every state packet carries the host's position, so this ran once per packet:
+    // 1,034 of 1,043 calls in a 2026-10-14 client log were "already at target".
+    // Log only the calls that move the avatar or can't.
+    if( !in || abs_pos != u.pos_abs() ) {
+        mp_log( "[cdda-mp] teleport: target_abs=" + std::to_string( abs_pos.x() ) + "," +
+                std::to_string( abs_pos.y() ) + " inbounds=" + std::to_string( in ) +
+                " initial_done=" + std::to_string( g_initial_teleport_done ) +
+                " avatar_abs=" + std::to_string( u.pos_abs().x() ) + "," +
+                std::to_string( u.pos_abs().y() ) );
+    }
 
     if( !in ) {
         if( !g_initial_teleport_done ) {
@@ -11637,8 +11685,6 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
                     " -> " + std::to_string( mons_after ) + " across update_map (delta=" +
                     std::to_string( mons_before - mons_after ) + ") lost_nids=[" + lost + "]" );
         }
-    } else {
-        mp_log( "[cdda-mp] teleport: -> already at target" );
     }
 }
 
@@ -11840,8 +11886,11 @@ static bool apply_one_state_message( const std::string &msg )
         mp_set_peer_modal_held( msg.find( "\"held\":1" ) != std::string::npos );
         return true;
     }
-    // Log a preview of every received packet so we can confirm moves=90 packets arrive.
-    {
+    // Log a preview of every received packet except routine state broadcasts:
+    // CLI-RECV# already logs each of those with its moves, and the preview of
+    // one is the same 120 header bytes every time.
+    static const std::string state_prefix = "{\"type\":\"state\"";
+    if( msg.compare( 0, state_prefix.size(), state_prefix ) != 0 ) {
         const size_t preview_len = std::min( msg.size(), static_cast<size_t>( 120 ) );
         mp_log( "[cdda-mp] recv-packet: " + msg.substr( 0, preview_len ) );
     }
@@ -15387,6 +15436,7 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
     // Per-batch delta counters — see the note at the item/field checks below.
     int dbg_delta_items = 0;
     int dbg_delta_fields = 0;
+    int dbg_delta_terfurn = 0;
     std::string out = "[";
     bool first = true;
     map &m = get_map();
@@ -15560,14 +15610,12 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
             if( !fields_sig.empty() ) {
                 ++dbg_delta_fields;
             }
+            // Same treatment for terrain/furniture (2026-10-14): the per-tile line
+            // was 106MB of a 114MB player log (nyonine, 908k lines), nearly all of
+            // it baseline population — the first scan of newly loaded tiles, every
+            // one of which differs from an empty baseline (676k of them t_open_air).
             if( ter_furn_changed ) {
-                const int dist = square_dist( abs, center );
-                mp_log( "[cdda-mp] tile_delta terfurn @ " +
-                        std::to_string( abs.x() ) + "," +
-                        std::to_string( abs.y() ) + "," +
-                        std::to_string( abs.z() ) + " ter=" + ter_str +
-                        " furn=" + furn_str + " dist_from_scan_center=" +
-                        std::to_string( dist ) );
+                ++dbg_delta_terfurn;
             }
 
             if( !first ) {
@@ -15610,8 +15658,9 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
                     " items_serialized=" + std::to_string( n_items_serialized ) );
         }
     }
-    if( dbg_delta_items > 0 || dbg_delta_fields > 0 ) {
-        mp_log( "[cdda-mp] tile_delta: items=" + std::to_string( dbg_delta_items ) +
+    if( dbg_delta_items > 0 || dbg_delta_fields > 0 || dbg_delta_terfurn > 0 ) {
+        mp_log( "[cdda-mp] tile_delta: terfurn=" + std::to_string( dbg_delta_terfurn ) +
+                " items=" + std::to_string( dbg_delta_items ) +
                 " fields=" + std::to_string( dbg_delta_fields ) + " tiles changed" );
     }
     return out;
@@ -15745,16 +15794,20 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
     // sit outside the 84-radius window centered on the client proxy — the band the
     // client can fill with its own divergent local-mapgen monsters that the host
     // has no copy of ("client sees enemies the host can't kill" report). Pair this
-    // with the client's MON-PHANTOM line. Logged on change to avoid per-tick spam.
-    static int s_last_n_sent = -1;
-    if( n_sent != s_last_n_sent ) {
-        s_last_n_sent = n_sent;
-        int n_tracker = 0;
-        for( const auto &t_ptr : get_creature_tracker().get_monsters_list() ) {
-            if( t_ptr && !t_ptr->is_dead() ) {
-                ++n_tracker;
-            }
+    // with the client's MON-PHANTOM line. Logged on change to avoid per-tick spam —
+    // of the in-radius and tracker counts, not of `sent`: with the delta gate,
+    // sent swings every broadcast (19, 0, 16 …) while nothing in range changes.
+    int n_tracker = 0;
+    for( const auto &t_ptr : get_creature_tracker().get_monsters_list() ) {
+        if( t_ptr && !t_ptr->is_dead() ) {
+            ++n_tracker;
         }
+    }
+    static int s_last_in_radius = -1;
+    static int s_last_tracker = -1;
+    if( n_sent + n_skipped != s_last_in_radius || n_tracker != s_last_tracker ) {
+        s_last_in_radius = n_sent + n_skipped;
+        s_last_tracker = n_tracker;
         mp_log( "[cdda-mp] MON-BROADCAST-COUNT: sent=" + std::to_string( n_sent ) +
                 " skipped(delta)=" + std::to_string( n_skipped ) +
                 " radius=" + std::to_string( radius ) +
@@ -17727,8 +17780,13 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
 
     tripoint_bub_ms pos_bub = remote->pos_bub();
     tripoint_abs_ms pos = remote->pos_abs();
-    mp_log( "[cdda-mp] SRP: npc_abs=" + std::to_string( pos.x() ) + "," + std::to_string( pos.y() ) +
-            " bub=" + std::to_string( pos_bub.x() ) + "," + std::to_string( pos_bub.y() ) );
+    // Every broadcast; log when the proxy actually moved.
+    static tripoint_abs_ms s_last_srp_pos{ INT_MIN, INT_MIN, INT_MIN };
+    if( pos != s_last_srp_pos ) {
+        s_last_srp_pos = pos;
+        mp_log( "[cdda-mp] SRP: npc_abs=" + std::to_string( pos.x() ) + "," + std::to_string( pos.y() ) +
+                " bub=" + std::to_string( pos_bub.x() ) + "," + std::to_string( pos_bub.y() ) );
+    }
     const avatar &host = get_avatar();
     tripoint_abs_ms host_pos = host.pos_abs();
 
