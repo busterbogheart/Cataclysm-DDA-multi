@@ -4930,7 +4930,17 @@ static mp_proxy_bump mp_proxy_bump_monster( npc &proxy, monster &critter,
 static void mp_receive_passed_item( Character &who, item &it, const char *side )
 {
     const int before = who.get_moves();
+    const std::string type = it.typeId().str();
+    const bool was_wielding = who.is_armed();
+    const int ground_before = static_cast<int>( get_map().i_at( who.pos_bub() ).size() );
     who.i_add_or_drop( it );
+    // DIAG (2026-10-14, passed pistol vanished host-side): where it landed.
+    const int ground_after = static_cast<int>( get_map().i_at( who.pos_bub() ).size() );
+    const tripoint_abs_ms at = who.pos_abs();
+    mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " " + type + " -> " +
+            ( ground_after > ground_before ? "GROUND @" + std::to_string( at.x() ) + "," +
+              std::to_string( at.y() ) + "," + std::to_string( at.z() ) :
+              !was_wielding && who.is_armed() ? std::string( "wielded" ) : std::string( "inventory" ) ) );
     if( who.get_moves() != before ) {
         mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " placing " +
                 it.typeId().str() + " charged " + std::to_string( before - who.get_moves() ) +
@@ -6120,8 +6130,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             std::sort( client_types.begin(), client_types.end() );
                             if( host_types != client_types ) {
                                 ++diff_items;
-                                note_diff( abs, "items " + std::to_string( host_types.size() ) + "->" +
-                                           std::to_string( client_types.size() ) );
+                                // Name the types, capped: "1->1" alone couldn't say
+                                // which item a REPLACE erased (the 2026-10-14
+                                // passed-pistol loss on the host's own tile).
+                                const auto list = []( const std::vector<std::string> &v ) {
+                                    std::string s;
+                                    for( size_t i = 0; i < v.size() && i < 4; ++i ) {
+                                        s += ( i ? "," : "" ) + v[i];
+                                    }
+                                    return "[" + s + ( v.size() > 4 ? ",…" : "" ) + "]";
+                                };
+                                note_diff( abs, "items " + list( host_types ) + "->" + list( client_types ) );
                             }
                         }
                         auto do_replace = [bub, items = std::move( new_items )]() mutable {
