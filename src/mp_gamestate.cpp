@@ -14239,6 +14239,16 @@ static std::string build_client_monster_hits()
             // host broadcasts (still showing it alive, kill not yet processed)
             // don't respawn it — see apply_monster_sync's spawn guard (GH#1).
             g_client_pending_kill[mon->mp_net_id] = CLIENT_PENDING_KILL_SYNCS;
+            // DIAGNOSTIC (B15): dead with HP left is a death that wasn't damage
+            // (banishment).  The host will treat it as a full-HP hit and run a
+            // normal death — corpse, loot, kill credit.
+            if( mon->is_dead() && mon->get_hp() > 0 ) {
+                mp_log( "[cdda-mp] CLI-KILL-NONDAMAGE: nid=" + std::to_string( mon->mp_net_id ) +
+                        " " + mon->type->id.str() + " died with hp=" +
+                        std::to_string( mon->get_hp() ) + " death_drops=" +
+                        std::to_string( mon->death_drops ) +
+                        " — reported to the host as dealt=" + std::to_string( dealt ) );
+            }
         }
         g_last_reported_monster_hp[mon->mp_net_id] = client_hp;
         if( !first ) { hits += ','; }
@@ -15562,6 +15572,20 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
         }
         const uint32_t nid = mon_ptr->mp_net_id;
         seen_nids.insert( nid );
+        // DIAGNOSTIC (B15): a monster that changes type in place keeps its nid
+        // (monster::poly — polymorph spells, upgrades).  The client ignores "id"
+        // on a nid match, so pair this with the client's MON-TYPE-MISMATCH.
+        {
+            static std::unordered_map<uint32_t, mtype_id> s_host_nid_type;
+            const auto [ty, fresh] = s_host_nid_type.emplace( nid, mon_ptr->type->id );
+            if( !fresh && ty->second != mon_ptr->type->id ) {
+                mp_log( "[cdda-mp] MON-TYPE-CHANGE: nid=" + std::to_string( nid ) + " " +
+                        ty->second.str() + " -> " + mon_ptr->type->id.str() +
+                        " hp=" + std::to_string( mon_ptr->get_hp() ) +
+                        " fr=" + std::to_string( mon_ptr->friendly ) + " (host)" );
+                ty->second = mon_ptr->type->id;
+            }
+        }
         const int mon_facing = ( mon_ptr->facing == FacingDirection::LEFT ) ? 0 : 1;
         // Ridden-mount sync: tag who rides so the client can re-establish the
         // effect_ridden + mounted_player link and drive the SP rid_ draw path.
@@ -16546,6 +16570,37 @@ static void apply_vehicle_sync( JsonObject &jo )
     }
 }
 
+// DIAGNOSTIC (B15, GH#23 D): a client-side die() of a synced monster runs SP's
+// full death in the client's world only — corpse, loot, death spell, death EOC.
+// Log what it left on the tile, so a corpse the host never had (a banished
+// monster, one that only left the bubble) is visible, and name any death spell
+// the client just ran locally (necro-boomer: revive + upgrade).
+static void mp_client_sync_die( monster &mon, map &m, const char *via )
+{
+    const tripoint_bub_ms at = mon.pos_bub();
+    const bool in = m.inbounds( at );
+    const int before = in ? static_cast<int>( m.i_at( at ).size() ) : 0;
+    const monster_death_effect &de = mon.type->mdeath_effect;
+    const std::string what = mon.type->id.str() + " nid=" + std::to_string( mon.mp_net_id ) +
+                             " hp=" + std::to_string( mon.get_hp() );
+    mon.die( &m, nullptr );
+    int corpses = 0;
+    int after = 0;
+    if( in ) {
+        for( const item &it : m.i_at( at ) ) {
+            ++after;
+            if( it.is_corpse() ) {
+                ++corpses;
+            }
+        }
+    }
+    mp_log( "[cdda-mp] MON-CLIENT-DIE: " + what + " via=" + via +
+            " items_added=" + std::to_string( after - before ) +
+            " corpses_on_tile=" + std::to_string( corpses ) +
+            " death_spell=" + ( de.has_effect ? de.sp.id.str() : std::string( "none" ) ) +
+            " death_eoc=" + std::to_string( de.eoc.has_value() ) );
+}
+
 static void apply_monster_sync( JsonObject &jo )
 {
     if( !jo.has_array( "monsters" ) ) {
@@ -16746,6 +16801,29 @@ static void apply_monster_sync( JsonObject &jo )
 
         matched.insert( best );
 
+        // DIAGNOSTIC (B15): the host's "id" is never applied to a monster matched
+        // by nid, so a type change on either side (polymorph, upgrade) persists
+        // silently.  Logged once per (nid, client type, host type).
+        if( nid != 0 ) {
+            static std::unordered_map<uint32_t, std::string> s_type_mismatch_logged;
+            std::string host_id;
+            mo.read( "id", host_id );
+            if( !host_id.empty() && host_id != best->type->id.str() ) {
+                const std::string key = best->type->id.str() + ">" + host_id;
+                std::string &last = s_type_mismatch_logged[nid];
+                if( last != key ) {
+                    last = key;
+                    mp_log( "[cdda-mp] MON-TYPE-MISMATCH: nid=" + std::to_string( nid ) +
+                            " client=" + best->type->id.str() + " host=" + host_id +
+                            " client_hp=" + std::to_string( best->get_hp() ) +
+                            " host_hp=" + std::to_string( server_hp ) +
+                            " — client keeps its own type" );
+                }
+            } else {
+                s_type_mismatch_logged.erase( nid );
+            }
+        }
+
         // Host is authoritative on friendliness, for spawned and matched alike.
         // "friendly" is per-instance state, not part of the mtype, so a monster
         // rebuilt from its id alone is always hostile until told otherwise.
@@ -16815,7 +16893,7 @@ static void apply_monster_sync( JsonObject &jo )
         // Apply server HP. Kill locally if the server says it's dead.
         if( server_hp >= 0 ) {
             if( server_hp <= 0 ) {
-                best->die( &m, nullptr );
+                mp_client_sync_die( *best, m, "host_hp0" );
             } else {
                 best->set_hp( server_hp );
             }
@@ -16982,7 +17060,7 @@ static void apply_monster_sync( JsonObject &jo )
                 culled_log += it->second->type->id.str() + "(nid=" +
                               std::to_string( rnid ) + ") ";
                 ++n_culled;
-                it->second->die( &m, nullptr );
+                mp_client_sync_die( *it->second, m, "removed" );
             } else {
                 // Not necessarily a bug (the client may never have held it), but
                 // it is the one-shot removal landing on nothing.
