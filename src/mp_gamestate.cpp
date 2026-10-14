@@ -4919,35 +4919,40 @@ static mp_proxy_bump mp_proxy_bump_monster( npc &proxy, monster &critter,
     return result;
 }
 
-// A passed item arriving is the GIVER's action, not the receiver's.  Place it
-// the way SP places a received item — i_add_or_drop: a pocket, else wield if the
-// hands are free, else drop at the feet; never the interactive "Stop wielding?"
-// unwield that a bare i_add() falls into — and keep whatever moves that
-// placement charged off the receiver's turn.  On the client those moves are the
-// host's grant: a pistol that didn't fit any pocket was wielded for 128 moves
-// (89 -> -39) inside the trade_delta handler, the client sat at moves<0 holding
-// an unacked grant, and the host waited on it forever (red/red, 2026-10-14).
+// A passed item arriving is the GIVER's action, not the receiver's, so placing
+// it never costs the receiver moves and never opens a menu.  Order: a pocket;
+// else wield it if the hands are free (what a bare i_add() does, but at no
+// move cost); else drop it at the receiver's feet.  Two bugs shaped this
+// (2026-10-14):
+// - A bare i_add() wields for item_handling_cost moves, and with something
+//   already wielded unwields through the interactive "Stop wielding?" menu.
+//   On the client those moves are the host's grant: a pistol that fit no
+//   pocket was wielded for 128 moves (89 -> -39) inside the trade_delta
+//   handler, the client sat at moves<0 holding an unacked grant, and the host
+//   waited on it forever (red/red).
+// - SP's i_add_or_drop() avoids both, but drops anything that fails its
+//   volume check even with free hands, so a passed shotgun landed on the
+//   floor in front of an empty-handed partner.
+// Used for the receiver's real body AND for the partner NPC in the giver's
+// world (mp_handle_pass_item), so both worlds put the item in the same place.
 static void mp_receive_passed_item( Character &who, item &it, const char *side )
 {
-    const int before = who.get_moves();
     const std::string type = it.typeId().str();
-    const bool was_wielding = who.is_armed();
-    const int ground_before = static_cast<int>( get_map().i_at( who.pos_bub() ).size() );
-    who.i_add_or_drop( it );
-    // DIAG (2026-10-14, passed pistol vanished host-side): where it landed.
-    const int ground_after = static_cast<int>( get_map().i_at( who.pos_bub() ).size() );
-    const tripoint_abs_ms at = who.pos_abs();
-    mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " " + type + " -> " +
-            ( ground_after > ground_before ? "GROUND @" + std::to_string( at.x() ) + "," +
-              std::to_string( at.y() ) + "," + std::to_string( at.z() ) :
-              !was_wielding && who.is_armed() ? std::string( "wielded" ) : std::string( "inventory" ) ) );
-    if( who.get_moves() != before ) {
-        mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " placing " +
-                it.typeId().str() + " charged " + std::to_string( before - who.get_moves() ) +
-                " moves (wielded: no pocket room) — the giver's action, not the "
-                "receiver's; restored to " + std::to_string( before ) );
-        who.set_moves( before );
+    std::string where;
+    item_location added = who.i_add( it, true, nullptr, nullptr,
+                                     /*allow_drop=*/false, /*allow_wield=*/false );
+    if( added != item_location::nowhere ) {
+        where = "inventory";
+    } else if( !who.is_armed() && who.can_wield( it ).success() &&
+               who.wield( it, /*obtain_cost=*/0 ) ) {
+        where = "wielded";
+    } else {
+        get_map().add_item_or_charges( who.pos_bub(), it );
+        const tripoint_abs_ms at = who.pos_abs();
+        where = "GROUND @" + std::to_string( at.x() ) + "," + std::to_string( at.y() ) + "," +
+                std::to_string( at.z() ) + ( who.is_armed() ? " (hands full)" : " (can't wield)" );
     }
+    mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " " + type + " -> " + where );
 }
 
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
@@ -17608,7 +17613,9 @@ void mp_handle_pass_item()
     item given = *loc;
 
     av.i_rem( loc.get_item() );
-    partner->i_add( given );
+    // Same placement the receiver's own world uses, so both worlds agree on
+    // where it went (and no unwield menu for the partner NPC).
+    mp_receive_passed_item( *partner, given, "partner" );
 
     std::list<item> give_list = { given };
     std::list<item> take_list;
