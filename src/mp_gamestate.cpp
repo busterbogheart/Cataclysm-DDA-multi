@@ -14063,7 +14063,9 @@ static int mp_take_spell_tile_reach()
 // spells have a numeric max_range greater than 10, so a spell that transforms
 // terrain at range 18 silently did nothing as far as the shared world is
 // concerned.  Callers pass a wider radius on the turn such a spell resolves.
-static std::string build_client_tile_changes( int radius = 10 )
+// `seed_unseen`: record the current state of every tile in the box that has no
+// baseline yet, and send nothing (see mp_seed_spell_tile_baselines).
+static std::string build_client_tile_changes( int radius = 10, bool seed_unseen = false )
 {
     const avatar &av = get_avatar();
     const tripoint_abs_ms center = av.pos_abs();
@@ -14071,11 +14073,16 @@ static std::string build_client_tile_changes( int radius = 10 )
     std::string out = "[";
     bool first = true;
     int emitted = 0;   // DIAG (2026-08-27): see TILE-SCAN-RESULT at the return.
+    int seeded = 0;
 
     for( int dy = -radius; dy <= radius; ++dy ) {
         for( int dx = -radius; dx <= radius; ++dx ) {
             const tripoint_abs_ms abs{ center.x() + dx, center.y() + dy, center.z() };
             if( !m.inbounds( abs ) ) {
+                continue;
+            }
+            // Before any operator[] below creates the entry.
+            if( seed_unseen && g_client_terfurn_baseline.count( abs ) ) {
                 continue;
             }
             const tripoint_bub_ms bub = m.get_bub( abs );
@@ -14113,7 +14120,7 @@ static std::string build_client_tile_changes( int radius = 10 )
             const bool items_changed = ( item_baseline != items_sig );
             if( items_changed ) {
                 item_baseline = items_sig;
-                if( !items_sig.empty() ) {
+                if( !items_sig.empty() && !seed_unseen ) {
                     mp_log( "[cdda-mp] client tile items @ " +
                             std::to_string( abs.x() ) + "," +
                             std::to_string( abs.y() ) + "," +
@@ -14191,6 +14198,10 @@ static std::string build_client_tile_changes( int radius = 10 )
                 !trap_changed && !graffiti_changed && !pc_changed ) {
                 continue;
             }
+            if( seed_unseen ) {
+                ++seeded;   // baseline recorded above; nothing to send
+                continue;
+            }
 
             if( !first ) {
                 out += ',';
@@ -14233,7 +14244,10 @@ static std::string build_client_tile_changes( int radius = 10 )
     // scan means the scan produced nothing (look at ordering — did the terrain
     // transform land before the scan ran?), while entries>0 with nothing applied
     // host-side moves the problem to the applier's inbounds check.
-    if( radius > 10 || emitted > 0 ) {
+    if( seed_unseen ) {
+        mp_log( "[cdda-mp] TILE-SCAN-SEED: radius=" + std::to_string( radius ) +
+                " seeded=" + std::to_string( seeded ) + " unseen tiles (recorded, not sent)" );
+    } else if( radius > 10 || emitted > 0 ) {
         mp_log( "[cdda-mp] TILE-SCAN-RESULT: radius=" + std::to_string( radius ) +
                 " entries=" + std::to_string( emitted ) +
                 " bytes=" + std::to_string( out.size() ) );
@@ -15235,6 +15249,19 @@ void client_send_activity_start( const std::string &activity_id_str )
         return;
     }
     g_client_activity_ended_since_start.clear();
+    // A cast's finish widens the next tile scan to the spell's reach (B13) so
+    // ground it changed far out reaches the host.  But a tile the client has
+    // never scanned has no baseline, so on that widened scan EVERY such tile read
+    // as changed and the client's whole local world in the ring was written into
+    // the host's: measured 2026-10-14, one client Beguile (range 30) sent 698
+    // entries and replaced 43 empty host tiles with the client's household items
+    // (RPG_die, bag_zipper, ceramic_plate, ...).  Record the ring's unseen tiles
+    // now, before the spell resolves (activity start always precedes the
+    // resolve, instant casts included), so the finishing scan sends only what
+    // the spell itself changed.
+    if( activity_id_str == MP_SPELLCAST_ACT ) {
+        build_client_tile_changes( MAX_SPELL_TILE_REACH, /*seed_unseen=*/true );
+    }
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_start\","
                              "\"activity_id\":\"" + activity_id_str + "\"" +
                              std::string( activity_id_str == MP_SPELLCAST_ACT && g_local_cast_ff_safe ?
