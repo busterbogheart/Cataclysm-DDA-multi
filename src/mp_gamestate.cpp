@@ -3101,6 +3101,15 @@ static std::string mp_take_sounds_json( std::vector<mp_wire_sound> &buffer,
 static std::unordered_map<uint32_t, int> g_client_pending_kill;
 static constexpr int CLIENT_PENDING_KILL_SYNCS = 3;
 
+// Client: kill reports for synced monsters the client killed locally that left
+// the creature tracker before an action could report them (nid -> dealt).
+// build_client_monster_hits() scans live monsters only, and the next inbound
+// state packet's cleanup_dead removes a dead one — so a kill whose action left
+// moves over was silently dropped and the host's copy came back (measured
+// 2026-10-14: client banish, ACT-END moves=100, MON-RESPAWN-DROPPED 3s later).
+// Filled by mp_client_pre_remove_dead(), drained by build_client_monster_hits().
+static std::unordered_map<uint32_t, int> g_client_harvested_kills;
+
 // Client: fingerprint of the last host_worn list applied — avoids re-dressing every tick.
 static std::string g_client_host_worn_sig;
 
@@ -13732,6 +13741,8 @@ void client_process_incoming()
         g_client_pending_hurt = false;
         g_client_pending_pain = 0;
         g_last_host_proxy_pain = -1;
+        // A kill held from a previous session names a nid on a different host.
+        g_client_harvested_kills.clear();
         g_client_pending_lost_host_wake = false;
         // And the effects mirror: force a full snapshot to the new proxy.
         g_client_effects_sig_sent.clear();
@@ -14204,10 +14215,77 @@ static std::string build_client_veh_cargo_changes( int radius = 12 )
 // own *current* live HP — see g_last_reported_monster_hp above for why: a
 // same-target concurrent hit from the host's own avatar must add up with
 // this, not get clobbered by it.
+// One synced monster's damage since the last report, or 0 if nothing is new.
+// Advances the reported baseline, and arms the pending-kill guard on a kill.
+static int mp_take_monster_hit_report( const monster &mon )
+{
+    const auto it = g_last_monster_hp.find( mon.mp_net_id );
+    if( it == g_last_monster_hp.end() ) {
+        return 0;
+    }
+    const int client_hp = mon.is_dead() ? 0 : mon.get_hp();
+    // last_reported defaults to the broadcast baseline the first time we
+    // ever report this nid (g_last_reported_monster_hp has no entry yet).
+    const auto rit = g_last_reported_monster_hp.find( mon.mp_net_id );
+    const int last_reported = rit != g_last_reported_monster_hp.end() ? rit->second : it->second;
+    const int dealt = last_reported - client_hp;
+    if( dealt <= 0 ) {
+        return 0;  // no new damage since our last report
+    }
+    if( client_hp <= 0 ) {
+        // Client killed this synced monster locally. Mark it so the next few
+        // host broadcasts (still showing it alive, kill not yet processed)
+        // don't respawn it — see apply_monster_sync's spawn guard (GH#1).
+        g_client_pending_kill[mon.mp_net_id] = CLIENT_PENDING_KILL_SYNCS;
+        // DIAGNOSTIC (B15): dead with HP left is a death that wasn't damage
+        // (banishment).  The host will treat it as a full-HP hit and run a
+        // normal death — corpse, loot, kill credit.
+        if( mon.is_dead() && mon.get_hp() > 0 ) {
+            mp_log( "[cdda-mp] CLI-KILL-NONDAMAGE: nid=" + std::to_string( mon.mp_net_id ) +
+                    " " + mon.type->id.str() + " died with hp=" +
+                    std::to_string( mon.get_hp() ) + " death_drops=" +
+                    std::to_string( mon.death_drops ) +
+                    " — reported to the host as dealt=" + std::to_string( dealt ) );
+        }
+    }
+    g_last_reported_monster_hp[mon.mp_net_id] = client_hp;
+    return dealt;
+}
+
+void mp_client_pre_remove_dead()
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        const monster *mon = ptr.get();
+        if( !mon || mon->mp_net_id == 0 || !mon->is_dead() ) {
+            continue;
+        }
+        // Deaths the host ordered (mp_client_sync_die) have no baseline left,
+        // so only the client's own kills produce a report here.
+        const int dealt = mp_take_monster_hit_report( *mon );
+        if( dealt > 0 ) {
+            g_client_harvested_kills[mon->mp_net_id] += dealt;
+            mp_log( "[cdda-mp] CLI-KILL-HARVEST: nid=" + std::to_string( mon->mp_net_id ) +
+                    " " + mon->type->id.str() + " dealt=" + std::to_string( dealt ) +
+                    " — dead copy leaving the tracker before any action reported it;"
+                    " held for the next report" );
+        }
+    }
+}
+
 static std::string build_client_monster_hits()
 {
     std::string hits;
     bool first = true;
+    for( const auto &[nid, dealt] : g_client_harvested_kills ) {
+        if( !first ) { hits += ','; }
+        first = false;
+        hits += "{\"nid\":" + std::to_string( nid )
+             + ",\"dealt\":" + std::to_string( dealt ) + "}";
+    }
+    g_client_harvested_kills.clear();
     for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
         monster *mon = ptr.get();
         if( !mon || mon->mp_net_id == 0 ) {
@@ -14221,36 +14299,10 @@ static std::string build_client_monster_hits()
             }
             continue;
         }
-        const auto it = g_last_monster_hp.find( mon->mp_net_id );
-        if( it == g_last_monster_hp.end() ) {
+        const int dealt = mp_take_monster_hit_report( *mon );
+        if( dealt <= 0 ) {
             continue;
         }
-        const int client_hp = mon->is_dead() ? 0 : mon->get_hp();
-        // last_reported defaults to the broadcast baseline the first time we
-        // ever report this nid (g_last_reported_monster_hp has no entry yet).
-        const auto rit = g_last_reported_monster_hp.find( mon->mp_net_id );
-        const int last_reported = rit != g_last_reported_monster_hp.end() ? rit->second : it->second;
-        const int dealt = last_reported - client_hp;
-        if( dealt <= 0 ) {
-            continue;  // no new damage since our last report
-        }
-        if( client_hp <= 0 ) {
-            // Client killed this synced monster locally. Mark it so the next few
-            // host broadcasts (still showing it alive, kill not yet processed)
-            // don't respawn it — see apply_monster_sync's spawn guard (GH#1).
-            g_client_pending_kill[mon->mp_net_id] = CLIENT_PENDING_KILL_SYNCS;
-            // DIAGNOSTIC (B15): dead with HP left is a death that wasn't damage
-            // (banishment).  The host will treat it as a full-HP hit and run a
-            // normal death — corpse, loot, kill credit.
-            if( mon->is_dead() && mon->get_hp() > 0 ) {
-                mp_log( "[cdda-mp] CLI-KILL-NONDAMAGE: nid=" + std::to_string( mon->mp_net_id ) +
-                        " " + mon->type->id.str() + " died with hp=" +
-                        std::to_string( mon->get_hp() ) + " death_drops=" +
-                        std::to_string( mon->death_drops ) +
-                        " — reported to the host as dealt=" + std::to_string( dealt ) );
-            }
-        }
-        g_last_reported_monster_hp[mon->mp_net_id] = client_hp;
         if( !first ) { hits += ','; }
         first = false;
         hits += "{\"nid\":" + std::to_string( mon->mp_net_id )
@@ -16583,6 +16635,10 @@ static void mp_client_sync_die( monster &mon, map &m, const char *via )
     const monster_death_effect &de = mon.type->mdeath_effect;
     const std::string what = mon.type->id.str() + " nid=" + std::to_string( mon.mp_net_id ) +
                              " hp=" + std::to_string( mon.get_hp() );
+    // The host ordered this death, so it is not the client's kill to report:
+    // drop the hit baseline before mp_client_pre_remove_dead() can see it.
+    g_last_monster_hp.erase( mon.mp_net_id );
+    g_last_reported_monster_hp.erase( mon.mp_net_id );
     mon.die( &m, nullptr );
     int corpses = 0;
     int after = 0;

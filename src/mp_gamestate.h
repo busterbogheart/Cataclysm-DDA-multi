@@ -304,6 +304,12 @@ int get_separation_tier();
 // near the partner pass.  False outside a live co-op session.
 bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest );
 
+// Client: called by game::cleanup_dead just before dead monsters leave the
+// creature tracker.  Captures the kill report for any synced monster the
+// client killed locally, so it still reaches the host on the next action even
+// though the monster itself is gone by then.  No-op outside client mode.
+void mp_client_pre_remove_dead();
+
 // Host: true while wait_for_client_action() is blocking — i.e. the host has
 // no moves and is waiting for the client to ack the current turn.  Used to
 // gate which keys are handled during the wait (zoom etc.).
