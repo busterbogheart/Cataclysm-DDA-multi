@@ -4100,7 +4100,7 @@ void game::cleanup_dead()
     }
 
     if( monster_is_dead ) {
-        cata_mp::mp_client_pre_remove_dead();
+        cata_mp::mp_pre_remove_dead();
         // From here on, pointers to creatures get invalidated as dead creatures get removed.
         critter_tracker->remove_dead();
     }

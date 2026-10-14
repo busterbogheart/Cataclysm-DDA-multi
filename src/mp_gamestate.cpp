@@ -822,6 +822,17 @@ static std::unordered_set<uint32_t> g_server_mon_known_nids;
 // host actually has a corpse on that tile to send.
 static std::unordered_map<uint32_t, tripoint_abs_ms> g_server_mon_last_pos;
 
+// Host: how each net-id'd monster died, captured as it leaves the tracker
+// (mp_pre_remove_dead, from game::cleanup_dead).  By the time removed_monsters
+// is computed the monster is gone, and a kill, a banishment and an unload when
+// the bubble moved all look the same: absent.  The client then buried every
+// one of them with die() — a corpse for a banished monster (B15) and for one
+// that merely left the bubble (GH#23 A).  Value = death_drops: true for a
+// normal death, false for one SP ran without drops (banishment).  A removed
+// nid with no entry never died here: it left the bubble or was despawned.
+// Consumed and cleared by each removed_monsters diff.
+static std::unordered_map<uint32_t, bool> g_server_mon_death_drops;
+
 // Host: per-nid last-broadcast monster record (the emitted JSON object). The
 // monster snapshot resent every monster, every turn — large and ~95% redundant
 // (most monsters don't move/change between turns). build_monster_list now emits
@@ -3107,7 +3118,7 @@ static constexpr int CLIENT_PENDING_KILL_SYNCS = 3;
 // state packet's cleanup_dead removes a dead one — so a kill whose action left
 // moves over was silently dropped and the host's copy came back (measured
 // 2026-10-14: client banish, ACT-END moves=100, MON-RESPAWN-DROPPED 3s later).
-// Filled by mp_client_pre_remove_dead(), drained by build_client_monster_hits().
+// Filled by mp_pre_remove_dead(), drained by build_client_monster_hits().
 static std::unordered_map<uint32_t, int> g_client_harvested_kills;
 
 // Client: fingerprint of the last host_worn list applied — avoids re-dressing every tick.
@@ -14272,8 +14283,17 @@ void mp_client_monster_op_sent( const monster &mon, bool killed )
     }
 }
 
-void mp_client_pre_remove_dead()
+void mp_pre_remove_dead()
 {
+    if( is_hosting() ) {
+        // Record how each synced monster died, for removed_monsters.
+        for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+            if( ptr && ptr->mp_net_id != 0 && ptr->is_dead() ) {
+                g_server_mon_death_drops[ptr->mp_net_id] = ptr->death_drops;
+            }
+        }
+        return;
+    }
     if( !is_client_mode() ) {
         return;
     }
@@ -16656,7 +16676,7 @@ static void mp_client_sync_die( monster &mon, map &m, const char *via )
     const std::string what = mon.type->id.str() + " nid=" + std::to_string( mon.mp_net_id ) +
                              " hp=" + std::to_string( mon.get_hp() );
     // The host ordered this death, so it is not the client's kill to report:
-    // drop the hit baseline before mp_client_pre_remove_dead() can see it.
+    // drop the hit baseline before mp_pre_remove_dead() can see it.
     g_last_monster_hp.erase( mon.mp_net_id );
     g_last_reported_monster_hp.erase( mon.mp_net_id );
     mon.die( &m, nullptr );
@@ -17129,9 +17149,21 @@ static void apply_monster_sync( JsonObject &jo )
     // left alone — it stays frozen until the host updates or removes it. This
     // replaces the old "in_region but unmatched → die" loop that killed live
     // monsters on a single missed broadcast (the woodpecker bug).
+    // Each entry says why it left (see the host's diff), and the client does
+    // what SP did there: a normal death, a death without drops (banishment),
+    // or no death at all for a monster that left the bubble or despawned.
     if( jo.has_array( "removed_monsters" ) ) {
         for( const JsonValue &rv : jo.get_array( "removed_monsters" ) ) {
-            const uint32_t rnid = static_cast<uint32_t>( rv.get_int() );
+            uint32_t rnid = 0;
+            std::string removal = "died";
+            if( rv.test_object() ) {
+                JsonObject ro = rv.get_object();
+                ro.allow_omitted_members();
+                rnid = static_cast<uint32_t>( ro.get_int( "nid", 0 ) );
+                removal = ro.get_string( "why", "died" );
+            } else {
+                rnid = static_cast<uint32_t>( rv.get_int() );
+            }
             if( rnid == 0 ) {
                 continue;
             }
@@ -17140,10 +17172,22 @@ static void apply_monster_sync( JsonObject &jo )
             s_host_removed_nids[rnid] = to_turn<int>( calendar::turn );
             auto it = g_net_id_map.find( rnid );
             if( it != g_net_id_map.end() && it->second && !it->second->is_dead() ) {
-                culled_log += it->second->type->id.str() + "(nid=" +
-                              std::to_string( rnid ) + ") ";
+                monster &gone = *it->second;
+                culled_log += gone.type->id.str() + "(nid=" + std::to_string( rnid ) +
+                              ( removal == "died" ? "" : "," + removal ) + ") ";
                 ++n_culled;
-                mp_client_sync_die( *it->second, m, "removed" );
+                if( removal == "gone" ) {
+                    // Alive elsewhere (unloaded) or despawned: no corpse, no
+                    // death message, no death spell.  If it comes back into
+                    // range the host re-broadcasts it and it re-spawns here.
+                    g_net_id_map.erase( it );
+                    g->remove_zombie( gone );
+                } else {
+                    if( removal == "nodrops" ) {
+                        gone.death_drops = false;   // as banishment() sets it
+                    }
+                    mp_client_sync_die( gone, m, removal == "nodrops" ? "removed_nodrops" : "removed" );
+                }
             } else {
                 // Not necessarily a bug (the client may never have held it), but
                 // it is the one-shot removal landing on nothing.
@@ -17701,13 +17745,25 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
     // still alive, never removes it on the client. Replaces the client's old
     // cull-by-absence, which killed live monsters (the woodpecker bug).
     std::unordered_set<uint32_t> mon_alive_now;
+    // Dead but not yet cleaned up: how they died is still readable here.
+    std::unordered_map<uint32_t, bool> mon_dead_now;
     for( const auto &mon_ptr : get_creature_tracker().get_monsters_list() ) {
-        if( mon_ptr && mon_ptr->mp_net_id != 0 && !mon_ptr->is_dead() ) {
-            mon_alive_now.insert( mon_ptr->mp_net_id );
-            // GH#23 A/D diagnostic: remember where it was while it was still here.
-            g_server_mon_last_pos[mon_ptr->mp_net_id] = mon_ptr->pos_abs();
+        if( !mon_ptr || mon_ptr->mp_net_id == 0 ) {
+            continue;
         }
+        if( mon_ptr->is_dead() ) {
+            mon_dead_now[mon_ptr->mp_net_id] = mon_ptr->death_drops;
+            continue;
+        }
+        mon_alive_now.insert( mon_ptr->mp_net_id );
+        // GH#23 A/D diagnostic: remember where it was while it was still here.
+        g_server_mon_last_pos[mon_ptr->mp_net_id] = mon_ptr->pos_abs();
     }
+    // Each entry carries WHY it left, so the client can do what SP did:
+    //   "died"    a normal death — the client runs die(), corpse and all
+    //   "nodrops" a death SP ran with death_drops=false (banishment)
+    //   "gone"    never died here: left the bubble, or despawned — the client
+    //             removes it quietly, no corpse, no death message
     std::string removed_monsters_json = "[";
     {
         bool rmfirst = true;
@@ -17715,19 +17771,25 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
             if( mon_alive_now.count( old_nid ) ) {
                 continue;
             }
+            const char *removal = "gone";
+            const auto dn = mon_dead_now.find( old_nid );
+            const auto dl = g_server_mon_death_drops.find( old_nid );
+            if( dn != mon_dead_now.end() ) {
+                removal = dn->second ? "died" : "nodrops";
+            } else if( dl != g_server_mon_death_drops.end() ) {
+                removal = dl->second ? "died" : "nodrops";
+            }
             if( !rmfirst ) {
                 removed_monsters_json += ',';
             }
             rmfirst = false;
-            removed_monsters_json += std::to_string( old_nid );
-            // GH#23 A/D: classify the removal instead of shrugging at it. A monster
-            // whose last live position is still inside the host's map died there;
-            // one whose last position has fallen out of bounds was unloaded when the
-            // bubble moved, and is alive — the client must NOT bury that one.
-            // corpse_here answers D: the client only ever receives a corpse through
-            // tile_changes, and last session it got one on 8 tiles in two hours, so
-            // check whether the host even has a corpse to send at the death tile.
-            std::string why = " reason=UNKNOWN(no-last-pos)";
+            removed_monsters_json += "{\"nid\":" + std::to_string( old_nid ) +
+                                     ",\"why\":\"" + removal + "\"}";
+            // GH#23 A/D diagnostic, kept beside the ledger's answer: the old
+            // position heuristic (a last live position still in bounds = died)
+            // and whether the host has a corpse on that tile to send.  The
+            // client only ever receives a corpse through tile_changes.
+            std::string why = std::string( " why=" ) + removal + " pos_guess=UNKNOWN(no-last-pos)";
             const auto lp = g_server_mon_last_pos.find( old_nid );
             if( lp != g_server_mon_last_pos.end() ) {
                 const tripoint_abs_ms &last = lp->second;
@@ -17740,16 +17802,20 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
                         }
                     }
                 }
-                why = " last_pos=" + std::to_string( last.x() ) + "," +
+                why = std::string( " why=" ) + removal +
+                      " last_pos=" + std::to_string( last.x() ) + "," +
                       std::to_string( last.y() ) + "," + std::to_string( last.z() ) +
                       " inbounds=" + std::to_string( in ) +
                       " corpses_here=" + std::to_string( corpses ) +
-                      " reason=" + ( in ? "DIED" : "LEFT_BUBBLE" );
+                      " pos_guess=" + ( in ? "DIED" : "LEFT_BUBBLE" );
             }
             mp_log( "[cdda-mp] MON-REMOVED: nid=" + std::to_string( old_nid ) + why );
         }
     }
     removed_monsters_json += ']';
+    // Every removal this broadcast has been classified; an entry left over is
+    // a monster the client never knew about.
+    g_server_mon_death_drops.clear();
     g_server_mon_known_nids = std::move( mon_alive_now );
     // Prune the diagnostic position map to the still-known set so it can't grow
     // without bound over a long session.

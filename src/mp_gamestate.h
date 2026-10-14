@@ -305,11 +305,14 @@ int get_separation_tier();
 // near the partner pass.  False outside a live co-op session.
 bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest );
 
-// Client: called by game::cleanup_dead just before dead monsters leave the
-// creature tracker.  Captures the kill report for any synced monster the
-// client killed locally, so it still reaches the host on the next action even
-// though the monster itself is gone by then.  No-op outside client mode.
-void mp_client_pre_remove_dead();
+// Called by game::cleanup_dead just before dead monsters leave the creature
+// tracker.  Host: records how each synced monster died (with or without
+// drops), so removed_monsters can tell the client a kill from a banishment
+// from a monster that merely left the bubble.  Client: captures the kill
+// report for any synced monster the client killed locally, so it still
+// reaches the host on the next action even though the monster itself is gone
+// by then.  No-op outside a co-op session.
+void mp_pre_remove_dead();
 
 // Client: a spell's effect on a synced monster is being sent to the host as an
 // op (mp_on_monster_spell_op).  Re-baseline the hit report so the same change
