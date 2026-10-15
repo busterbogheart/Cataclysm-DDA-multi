@@ -682,8 +682,32 @@ static bool g_client_rejoin_pending = false;
 // each kill to itself or the client's proxy, and wires both counts to the client
 // (which only DISPLAYS — never counts locally, to avoid double-counting).
 // Anticipates the kill-feed messages (ROADMAP) but is just the tally for now.
+//
+// Counts are kept PER CHARACTER, by name (the identity CDDA itself saves a
+// character under), not per role (2026-10-15): with one host_kills/client_kills
+// pair per world, a brand-new client character joined at 14 kills it inherited
+// from earlier client characters.  g_host_kills / g_client_kills are the two
+// numbers on the wire and in the HUD: on the host, looked up for whoever is the
+// avatar and the client's proxy right now (mp_kill_tally_refresh); on the
+// client, as received.
 static int g_host_kills = 0;
 static int g_client_kills = 0;
+static std::map<std::string, int> g_kills_by_char;   // host only: name -> kills
+
+static void mp_kill_tally_refresh()
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    const auto kills_of = []( const std::string & name ) {
+        const auto it = g_kills_by_char.find( name );
+        return it == g_kills_by_char.end() ? 0 : it->second;
+    };
+    g_host_kills = kills_of( get_avatar().get_name() );
+    const npc *proxy = remote_player_connected && remote_player_npc_id.is_valid()
+                       ? g->critter_by_id<npc>( remote_player_npc_id ) : nullptr;
+    g_client_kills = proxy ? kills_of( proxy->get_name() ) : 0;
+}
 
 struct mp_kill_counter : event_subscriber {
     // Un-hide the base's 3-arg notify() overload — we only override the 1-arg one,
@@ -700,11 +724,22 @@ struct mp_kill_counter : event_subscriber {
         // Attribute to host avatar or the client's proxy.  Client kills reach here
         // now that client_monster_hits credits the proxy via die(&m, proxy).
         const character_id killer = e.get<character_id>( "killer" );
+        std::string name;
         if( killer == get_avatar().getID() ) {
-            g_host_kills++;
+            name = get_avatar().get_name();
         } else if( remote_player_connected && killer == remote_player_npc_id ) {
-            g_client_kills++;
+            if( const npc *proxy = g->critter_by_id<npc>( remote_player_npc_id ) ) {
+                name = proxy->get_name();
+            }
         }
+        if( name.empty() ) {
+            return;
+        }
+        const int now = ++g_kills_by_char[name];
+        mp_kill_tally_refresh();
+        mp_log( "[cdda-mp] KILL-TALLY: " + name + " (" +
+                ( killer == get_avatar().getID() ? "host" : "client" ) + ") killed " +
+                e.get<mtype_id>( "victim_type" ).str() + " -> " + std::to_string( now ) );
     }
 };
 static mp_kill_counter g_kill_counter;
@@ -773,36 +808,44 @@ static void mp_save_kill_tally()
     write_to_file( mp_kill_tally_path(), [&]( std::ostream &fout ) {
         JsonOut jo( fout );
         jo.start_object();
-        jo.member( "host_kills", g_host_kills );
-        jo.member( "client_kills", g_client_kills );
+        jo.member( "kills", g_kills_by_char );
         jo.end_object();
     }, "mp kill tally" );
 }
 
 // Subscribe once the host session is live.  Idempotent — safe to call every turn.
-// Loads any previously-saved tally for this world, UNLESS a New-character start
-// requested a reset (mp_kill_tally_mark_new_character) — a reused world can
-// already have a tally file from an earlier, unrelated playthrough.
+// Loads this world's per-character tally.  A New-character start
+// (mp_kill_tally_mark_new_character) zeroes only the host's new character, in
+// case an earlier character in this reused world had the same name; everyone
+// else's counts stay.
 static void mp_kill_tally_subscribe()
 {
     if( g_kill_counter_subscribed ) {
         return;
     }
-    g_host_kills = 0;
-    g_client_kills = 0;
+    g_kills_by_char.clear();
+    read_from_file_optional_json( mp_kill_tally_path(), [&]( const JsonValue &jv ) {
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        if( jo.has_object( "kills" ) ) {
+            jo.read( "kills", g_kills_by_char );
+        } else if( jo.has_int( "host_kills" ) ) {
+            // Pre-2026-10-15 per-role file.  The host's count belongs to the
+            // character loading it now.  The client's can't be attributed (any
+            // number of client characters may have added to it), so it's dropped.
+            g_kills_by_char[get_avatar().get_name()] = jo.get_int( "host_kills" );
+            mp_log( "[cdda-mp] KILL-TALLY: migrated per-role file — host_kills " +
+                    std::to_string( jo.get_int( "host_kills" ) ) + " -> " +
+                    get_avatar().get_name() + ", client_kills " +
+                    std::to_string( jo.get_int( "client_kills", 0 ) ) + " dropped (owner unknown)" );
+        }
+    } );
     if( g_kill_tally_reset_pending ) {
-        // Fresh playthrough (New character) — ignore any leftover tally file
-        // from a previous playthrough in this world and start clean.
         g_kill_tally_reset_pending = false;
+        g_kills_by_char.erase( get_avatar().get_name() );
         mp_save_kill_tally();
-    } else {
-        read_from_file_optional_json( mp_kill_tally_path(), [&]( const JsonValue &jv ) {
-            JsonObject jo = jv.get_object();
-            jo.allow_omitted_members();
-            g_host_kills = jo.get_int( "host_kills", 0 );
-            g_client_kills = jo.get_int( "client_kills", 0 );
-        } );
     }
+    mp_kill_tally_refresh();
     get_event_bus().subscribe( &g_kill_counter );
     get_event_bus().subscribe( &g_proxy_effect_probe );
     g_kill_counter_subscribed = true;
@@ -18476,6 +18519,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
     }
 
     npc *remote = g->critter_by_id<npc>( remote_player_npc_id );
+    mp_kill_tally_refresh();   // the proxy's name may have arrived since the last kill
     if( !remote ) {
         return "{\"type\":\"state\",\"connected\":false}";
     }
