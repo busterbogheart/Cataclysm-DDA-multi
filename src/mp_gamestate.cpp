@@ -18268,6 +18268,16 @@ static void apply_monster_sync( JsonObject &jo )
             }
             if( !occupant || occupant.get() == best ) {
                 best->setpos( target, false );
+            } else {
+                // DIAGNOSTIC (2026-10-15, GH#23-C class): the correction is skipped
+                // and nothing retries it, so this copy stays where it was until
+                // the host re-sends its record — which the delta gate does only
+                // when the monster changes again.  Suspected cause of the client
+                // walking onto a stale wasp copy (TELE-ONTO-MONSTER nid=11, 17:27).
+                mp_log( "[cdda-mp] MON-SYNC-CORRECT-BLOCKED: nid=" + std::to_string( nid ) + " " +
+                        best->type->id.str() + " stays at " + best->pos_abs().to_string() +
+                        ", host says " + target.to_string() + " — occupied by " +
+                        occupant->type->id.str() + " nid=" + std::to_string( occupant->mp_net_id ) );
             }
         }
 
