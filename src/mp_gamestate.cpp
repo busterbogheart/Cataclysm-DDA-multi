@@ -106,6 +106,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -719,6 +720,7 @@ static bool g_kill_counter_subscribed = false;
 // DIAGNOSTIC ONLY: name each one as it lands so stage 2 is built against what
 // actually happens in play.
 static bool g_applying_client_effects = false;   // set around the mirror's add_effect
+static void mp_hand_off_world_effect( const efftype_id &eff, const bodypart_id &bp );   // below
 
 struct mp_proxy_effect_probe : event_subscriber {
     using event_subscriber::notify;
@@ -743,7 +745,8 @@ struct mp_proxy_effect_probe : event_subscriber {
         }
         mp_log( "[cdda-mp] PROXY-WORLD-EFFECT: +" + eff.str() + "|" + bp.id().str() +
                 " int=" + std::to_string( e.get<int>( "intensity" ) ) + " dur=" + dur +
-                " — put on the proxy by the host's world; the client never receives it" );
+                " — put on the proxy by the host's world" );
+        mp_hand_off_world_effect( eff, bp );
     }
 };
 static mp_proxy_effect_probe g_proxy_effect_probe;
@@ -1513,6 +1516,7 @@ static const bodypart_str_id body_part_torso( "torso" );
 
 static const efftype_id effect_bleed( "bleed" );
 static const efftype_id effect_docile( "docile" );
+static const efftype_id effect_grabbed( "grabbed" );
 static const efftype_id effect_harnessed( "harnessed" );
 static const efftype_id effect_pet( "pet" );
 static const efftype_id effect_ridden( "ridden" );
@@ -2748,6 +2752,96 @@ static std::set<std::string> g_proxy_mirrored_effects;
 static std::map<std::string, int> g_proxy_effect_tombstones;
 static constexpr int MP_EFFECT_TOMBSTONE_TURNS = 100;
 
+// --- Stage 2: world-applied effects go to the client ----------------------------
+// Measured 2026-10-14 (PROXY-WORLD-EFFECT probe): bites, bleeding, stagger, zaps,
+// knockdowns, blindness and grabs all landed on the proxy and nowhere else.  The
+// client never got them (no infection from a bite, ever), and since the proxy runs
+// no turns they never ticked there either (a 2-turn zap sat at 2t for 25 s).
+//
+// So the host HANDS each one to the client, which applies it with SP add_effect
+// and ticks it like any of its own effects, and from then on treats it as
+// mirrored (client-owned): the client's next effects snapshot carries it back
+// onto the proxy with a live duration, and when the client's copy ends the mirror
+// takes it off the proxy.  Until the client's snapshot first lists it, a hand-off
+// is held against removal (a snapshot already in flight would drop it) up to its
+// expiry or MP_HANDOFF_GRACE_TURNS for a permanent one.
+//
+// Grabs stay HOST-owned: a grab belongs to the monster holding you, and breaking
+// it is resolved on the host (move_effects).  The client is only shown them, as
+// the full current set whenever it changes, and never mirrors them back.
+static std::string g_pending_world_effects;                 // queued for the next state packet
+static std::map<std::string, int> g_world_effect_handoffs;  // "id|bp" -> hold-until turn
+static constexpr int MP_HANDOFF_GRACE_TURNS = 20;
+
+static bool mp_world_effect_host_owned( const efftype_id &id )
+{
+    return id == effect_grabbed;
+}
+
+// NPC-AI bookkeeping the host's npc code can put on any NPC, the proxy included.
+// Never the player's, so never handed to the client.  Mount state syncs on its own.
+static bool mp_world_effect_npc_internal( const efftype_id &id )
+{
+    static const std::set<std::string> ids = {
+        "asked_to_train", "catch_up", "controlled", "hit_by_player", "npc_fire_bad",
+        "npc_flee_player", "npc_player_still_looking", "npc_run_away", "npc_suspend",
+        "stumbled_into_invisible", "ridden", "riding"
+    };
+    return ids.count( id.str() ) > 0;
+}
+
+static void mp_hand_off_world_effect( const efftype_id &eff, const bodypart_id &bp )
+{
+    if( mp_world_effect_host_owned( eff ) || mp_world_effect_npc_internal( eff ) ) {
+        return;
+    }
+    npc *proxy = get_partner_npc();
+    if( proxy == nullptr || !proxy->has_effect( eff, bp ) ) {
+        return;
+    }
+    const effect &ef = proxy->get_effect( eff, bp );
+    const int now = to_turn<int>( calendar::turn );
+    const int exp = ef.is_permanent() ? -1 : now + to_turns<int>( ef.get_duration() );
+    const std::string key = eff.str() + "|" + bp.id().str();
+    g_pending_world_effects += std::string( g_pending_world_effects.empty() ? "" : "," ) +
+                               "{\"id\":\"" + eff.str() + "\",\"bp\":\"" + bp.id().str() +
+                               "\",\"i\":" + std::to_string( ef.get_intensity() ) +
+                               ",\"exp\":" + std::to_string( exp ) + "}";
+    // Bleed comes back through client_bleed, which the effects mirror leaves alone.
+    if( eff != effect_bleed ) {
+        g_proxy_mirrored_effects.insert( key );
+        g_world_effect_handoffs[key] = exp < 0 ? now + MP_HANDOFF_GRACE_TURNS : std::max( exp, now + 2 );
+    }
+    mp_log( "[cdda-mp] WORLD-EFFECT-HANDOFF: " + key + " int=" + std::to_string( ef.get_intensity() ) +
+            " exp=" + ( exp < 0 ? std::string( "perm" ) : std::to_string( exp - now ) + "t" ) +
+            " — the client owns it from here" );
+}
+
+// State-packet fields: world effects handed off since the last packet, and the
+// host-owned ones (grabs) currently on the proxy, sent whenever that set changes.
+static std::string mp_world_effects_field( const npc &proxy )
+{
+    std::string out;
+    if( !g_pending_world_effects.empty() ) {
+        out += ",\"world_effects\":[" + g_pending_world_effects + "]";
+        g_pending_world_effects.clear();
+    }
+    std::string held;
+    for( const effect &ef : proxy.get_effects() ) {
+        if( mp_world_effect_host_owned( ef.get_id() ) ) {
+            held += std::string( held.empty() ? "" : "," ) + "{\"id\":\"" + ef.get_id().str() +
+                    "\",\"bp\":\"" + ef.get_bp().id().str() + "\",\"i\":" +
+                    std::to_string( ef.get_intensity() ) + "}";
+        }
+    }
+    static std::string s_last_held = "";
+    if( held != s_last_held ) {
+        s_last_held = held;
+        out += ",\"host_held_effects\":[" + held + "]";
+    }
+    return out;
+}
+
 static std::pair<efftype_id, bodypart_id> mp_effect_key_parts( const std::string &key )
 {
     const size_t bar = key.find( '|' );
@@ -2917,7 +3011,8 @@ static std::string mp_client_effects_json()
     std::string json = "[";
     int n = 0;
     for( const effect &eff : get_avatar().get_effects() ) {
-        if( eff.get_id() == effect_bleed ) {
+        // Grabs are host-owned and only shown here (host_held_effects).
+        if( eff.get_id() == effect_bleed || mp_world_effect_host_owned( eff.get_id() ) ) {
             continue;
         }
         const int expiry = eff.is_permanent() ? -1 :
@@ -5790,7 +5885,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     const int intensity = bo.get_int( "intensity", 0 );
                     if( !bp_str.empty() && intensity > 0 ) {
                         const bodypart_id bp = bodypart_str_id( bp_str ).id();
+                        // The client's own bleed: not a world effect to hand back.
+                        g_applying_client_effects = true;
                         remote->add_effect( effect_bleed, 2_turns, bp, /*permanent=*/false, intensity );
+                        g_applying_client_effects = false;
                     }
                 }
             }
@@ -5832,6 +5930,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                           time_duration::from_turns( expiry - now_turn );
                 const std::string key = et.str() + "|" + bp.id().str();
                 listed.insert( key );
+                g_world_effect_handoffs.erase( key );   // the client has it: normal mirroring
                 // Removed host-side by the world (see g_proxy_effect_tombstones):
                 // don't put it back while the client hasn't caught up yet.
                 if( g_proxy_effect_tombstones.count( key ) ) {
@@ -5873,6 +5972,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             for( const std::string &key : g_proxy_mirrored_effects ) {
                 if( now_keys.count( key ) ) {
                     continue;
+                }
+                // A world effect handed to the client that its snapshots haven't
+                // listed yet: keep it on the proxy until its hold-until turn.
+                const auto ho = g_world_effect_handoffs.find( key );
+                if( ho != g_world_effect_handoffs.end() ) {
+                    if( now_turn <= ho->second ) {
+                        now_keys.insert( key );
+                        continue;
+                    }
+                    g_world_effect_handoffs.erase( ho );
                 }
                 const size_t bar = key.find( '|' );
                 const efftype_id et( key.substr( 0, bar ) );
@@ -13215,6 +13324,76 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // Stage 2: effects the host's world put on our proxy (a bite, bleeding, a
+        // zap, a knockdown...), handed to us to own.  Applied through SP add_effect,
+        // so its apply message shows and we tick it like any effect of ours; our
+        // next effects snapshot carries it back onto the proxy.
+        if( jo.has_array( "world_effects" ) ) {
+            avatar &av = get_avatar();
+            const int now = to_turn<int>( calendar::turn );
+            for( const JsonValue &wv : jo.get_array( "world_effects" ) ) {
+                JsonObject wo = wv.get_object();
+                wo.allow_omitted_members();
+                const efftype_id et( wo.get_string( "id", "" ) );
+                if( !et.is_valid() ) {
+                    continue;
+                }
+                const bodypart_str_id bpsid( wo.get_string( "bp", "" ) );
+                const bodypart_id bp = bpsid.is_valid() ? bpsid.id() : bodypart_str_id::NULL_ID().id();
+                const int exp = wo.get_int( "exp", -1 );
+                const bool permanent = exp < 0;
+                if( !permanent && exp <= now ) {
+                    continue;   // already over on our clock
+                }
+                const time_duration dur = permanent ? 1_turns : time_duration::from_turns( exp - now );
+                av.add_effect( et, dur, bp, permanent, wo.get_int( "i", 1 ) );
+                mp_log( "[cdda-mp] CLI-WORLD-EFFECT: +" + et.str() + "|" + bp.id().str() +
+                        " i=" + std::to_string( wo.get_int( "i", 1 ) ) + " " +
+                        ( permanent ? std::string( "perm" ) : std::to_string( exp - now ) + "t" ) );
+            }
+        }
+
+        // Host-owned effects on our proxy (grabs): shown here as the host's current
+        // set.  Breaking a grab is resolved on the host when we try to move.
+        if( jo.has_array( "host_held_effects" ) ) {
+            avatar &av = get_avatar();
+            std::set<std::string> held;
+            std::vector<std::tuple<efftype_id, bodypart_id, int>> to_add;
+            for( const JsonValue &hv : jo.get_array( "host_held_effects" ) ) {
+                JsonObject ho = hv.get_object();
+                ho.allow_omitted_members();
+                const efftype_id et( ho.get_string( "id", "" ) );
+                const bodypart_str_id bpsid( ho.get_string( "bp", "" ) );
+                if( !et.is_valid() ) {
+                    continue;
+                }
+                const bodypart_id bp = bpsid.is_valid() ? bpsid.id() : bodypart_str_id::NULL_ID().id();
+                held.insert( et.str() + "|" + bp.id().str() );
+                to_add.emplace_back( et, bp, ho.get_int( "i", 1 ) );
+            }
+            std::vector<std::pair<efftype_id, bodypart_id>> to_remove;
+            for( const effect &ef : av.get_effects() ) {
+                if( mp_world_effect_host_owned( ef.get_id() ) &&
+                    !held.count( ef.get_id().str() + "|" + ef.get_bp().id().str() ) ) {
+                    to_remove.emplace_back( ef.get_id(), ef.get_bp() );
+                }
+            }
+            for( const auto &[et, bp] : to_remove ) {
+                av.remove_effect( et, bp );
+            }
+            for( const auto &[et, bp, i] : to_add ) {
+                if( !av.has_effect( et, bp ) ) {
+                    av.add_effect( et, 1_turns, bp, true, i );
+                }
+            }
+            std::string list;
+            for( const std::string &k : held ) {
+                list += ( list.empty() ? "" : " " ) + k;
+            }
+            mp_log( "[cdda-mp] CLI-HOST-HELD: [" + list + "] removed=" +
+                    std::to_string( to_remove.size() ) );
+        }
+
         // Pain the host inflicted on our proxy.  Only the RISE is applied: both
         // bodies decay pain on their own, and the proxy carries none of our
         // client-local pain sources, so an absolute overwrite would erase those.
@@ -18851,6 +19030,8 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            ",\"sounds\":" + mp_take_client_sounds_json( remote->pos_abs() ) +
            // Client-owned effects the host's world took off the proxy.
            mp_proxy_lost_effects_field( *remote ) +
+           // World effects for the client to own (stage 2) and the grabs it's shown.
+           mp_world_effects_field( *remote ) +
            // MP 2026-08-15 — turns this packet represents. 1 for an ordinary grant;
            // FF_BATCH_TURNS for a batched fast-forward grant, telling the client to
            // tick its activity that many times rather than once.
