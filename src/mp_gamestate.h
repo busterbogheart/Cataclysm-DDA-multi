@@ -314,6 +314,15 @@ bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest );
 // by then.  No-op outside a co-op session.
 void mp_pre_remove_dead();
 
+// Client: general guard for the red/red deadlock class.  Called from do_turn's
+// locked branch, just before the blocking handle_action(), i.e. when the client
+// sits at its top-level prompt with moves <= 0 and no activity.  If the newest
+// grant was never answered (moves were spent by something other than an action —
+// measured 2026-10-14: a passed pistol wielded on arrival, 89 -> -39), the host is
+// waiting on an answer this client will never send; send the idle wait.  No-op
+// when an ack is pending, the grant was answered, or not in client mode.
+void mp_client_locked_grant_guard();
+
 // Client: a spell's effect on a synced monster is being sent to the host as an
 // op (mp_on_monster_spell_op).  Re-baseline the hit report so the same change
 // isn't ALSO reported as damage: a polymorph's hp rescale, or a banished

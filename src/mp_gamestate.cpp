@@ -982,6 +982,12 @@ static uint32_t g_grant_seq = 0;
 // is a stale buffered duplicate and its moves value is ignored.
 static uint32_t g_client_last_grant_seq = 0;
 
+// Client: grant_seq of the last grant this client ANSWERED (any action or wait
+// that set the ack guard; every such site also stamps g_ack_set_time, which is
+// where this is recorded).  g_client_last_grant_seq > this means the newest grant
+// is still unanswered — the precondition mp_client_locked_grant_guard() checks.
+static uint32_t g_client_answered_seq = 0;
+
 // Server: set when the remote player has submitted at least one real action
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
@@ -12747,6 +12753,7 @@ static bool apply_one_state_message( const std::string &msg )
         // join reset here — the reconnected client is a fresh grant consumer.
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
+        g_client_answered_seq = 0;
         // Force a real re-teleport on the next state packet instead of the
         // "OUT OF BUBBLE, skip" no-chase path in client_teleport_avatar(). If
         // the host moved (or was moved) far enough while we were gone that
@@ -12819,6 +12826,7 @@ static bool apply_one_state_message( const std::string &msg )
             // got the reset. Mirror it here.
             g_client_waiting_for_ack = false;
             g_client_last_grant_seq = 0;
+            g_client_answered_seq = 0;
         }
 
         if( jo.has_object( "pos" ) ) {
@@ -13908,6 +13916,7 @@ static bool apply_one_state_message( const std::string &msg )
                                          "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                         g_client_waiting_for_ack = true;
                         g_ack_set_time = std::chrono::steady_clock::now();
+                        g_client_answered_seq = g_client_last_grant_seq;
                     }
                     // Mirror the host's per-turn redraw so the client's HUD
                     // (time, activity %, environmental messages) ticks live
@@ -13943,6 +13952,7 @@ static bool apply_one_state_message( const std::string &msg )
                                      "{\"type\":\"action\",\"action\":\"wait\"}" ) );
                     g_client_waiting_for_ack = true;
                     g_ack_set_time = std::chrono::steady_clock::now();
+                    g_client_answered_seq = g_client_last_grant_seq;
                     g->invalidate_main_ui_adaptor();
                 }
             } else {
@@ -14218,6 +14228,7 @@ void client_process_incoming()
         // so the server's first move grant isn't silently ignored after reconnect.
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
+        g_client_answered_seq = 0;
         // Same reason: clear the turn-catchup trackers so a leftover calendar
         // turn from a previous game (quit to menu, new world, same process)
         // can't be diffed against this fresh game's turn 0 and fast-forward
@@ -14311,6 +14322,7 @@ void client_process_incoming()
         get_avatar().set_moves( 0 );
         g_client_waiting_for_ack = true;
         g_ack_set_time = std::chrono::steady_clock::now();
+        g_client_answered_seq = g_client_last_grant_seq;
     }
     // Warn if the client is drifting too far from the host's reality bubble center.
     // is_valid() rejects negative IDs but MP proxy NPCs have negative IDs — check
@@ -15413,11 +15425,31 @@ void client_mark_action_sent()
             " last_seq=" + std::to_string( g_client_last_grant_seq ) );
     g_client_waiting_for_ack = true;
     g_ack_set_time = std::chrono::steady_clock::now();
+    g_client_answered_seq = g_client_last_grant_seq;
 }
 
 bool is_client_waiting_for_ack()
 {
     return g_client_waiting_for_ack;
+}
+
+void mp_client_locked_grant_guard()
+{
+    if( !is_client_mode() || g_client_waiting_for_ack ) {
+        return;
+    }
+    const avatar &u = get_avatar();
+    if( u.activity || u.get_moves() > 0 ) {
+        return;
+    }
+    if( g_client_last_grant_seq == 0 || g_client_last_grant_seq <= g_client_answered_seq ) {
+        return;   // nothing granted yet, or the newest grant was already answered
+    }
+    mp_log( "[cdda-mp] LOCKED-GRANT-GUARD: grant seq=" + std::to_string( g_client_last_grant_seq ) +
+            " never answered (last answered=" + std::to_string( g_client_answered_seq ) +
+            ") and moves=" + std::to_string( u.get_moves() ) +
+            " were spent outside an action — sending an idle wait so the host can't hang" );
+    client_dispatch_wait_for_activity( activity_id(), /*force_idle=*/true );
 }
 
 void mp_client_post_action( int pre_moves )

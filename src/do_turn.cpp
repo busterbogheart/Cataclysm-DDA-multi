@@ -1276,6 +1276,7 @@ bool game::do_turn()
                 // poll) handles cancel-via-5 properly, and the wait_popup logic
                 // displays progress.
                 if( !u.activity ) {
+                    cata_mp::mp_client_locked_grant_guard();
                     cata_mp::mp_log( "[cdda-mp] LOCKED-HA: enter handle_action, moves=" +
                                      std::to_string( u.get_moves() ) );
                     g->handle_action();
