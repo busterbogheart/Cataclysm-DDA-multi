@@ -6669,16 +6669,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         // with killer=proxy -> the co-op tally counts it as the
                         // client's, and the host's kill-tracker/achievements record
                         // the follower's kill (standard CDDA follower semantics).
-                        npc *proxy = remote_player_npc_id.is_valid()
+                        // Unless the client's copy died with no killer of ours
+                        // (k == 0): SP's debug "Kill all monsters" is
+                        // die( &m, nullptr ), which credits nobody.  Measured
+                        // 2026-10-15: a shot kill reads k=1, a debug kill-all k=0
+                        // for every monster (and used to add 9 client kills).
+                        npc *proxy = remote_player_npc_id.is_valid() && k != 0
                                      ? g->critter_by_id<npc>( remote_player_npc_id )
                                      : nullptr;
-                        // DIAGNOSTIC (kill credit, 2026-10-15): what SP would
-                        // credit.  Behaviour unchanged until the logs confirm a
-                        // normal client kill reads k=1.
                         mp_log( "[cdda-mp] HOST-KILL-CREDIT: nid=" + std::to_string( nid ) + " " +
-                                mon->type->id.str() + " k=" + std::to_string( k ) +
-                                " — credits the client; SP would credit " +
-                                ( k == 0 ? "NOBODY (no killer on the client)" : "the client" ) );
+                                mon->type->id.str() + " k=" + std::to_string( k ) + " — credits " +
+                                ( k == 0 ? "nobody (no killer on the client)" : "the client" ) );
                         mon->die( &m, proxy );
                         any_killed = true;
                     } else {
