@@ -8600,6 +8600,15 @@ static int mp_ff_lead_turns()
 // that a modal on either side stops the other within a second.
 static constexpr int MP_FF_MAX_LEAD_TURNS = 30;
 
+// The lead hold below falls through into the ordinary blocking wait.  That wait
+// re-checks should_fast_forward() every iteration and bails the moment it is
+// true — which, during FF, it always is, so the "hold" returned in 0 ms and never
+// held: measured 2026-10-14, 871 of 874 waits exited through that bail while the
+// client's lead climbed 30 -> 229 in two seconds.  This flag tells the wait loop
+// a hold is standing, so it waits for the client to catch up instead.
+static bool g_ff_lead_holding = false;
+static int64_t g_ff_hold_start_ms = 0;
+
 // Safety valve, and the reason this is not the 2026-06-21 mistake.  d1fdf8691e
 // throttled the BROADCAST during FF and deadlocked co-op, because the grant
 // rides inside serialize_remote_player_state and skipping the send skipped the
@@ -8612,6 +8621,8 @@ static constexpr int64_t MP_FF_HOLD_MAX_MS = 2000;
 
 void wait_for_client_action()
 {
+    // Per-call: only this call's FF branch may arm the lead hold for its wait loop.
+    g_ff_lead_holding = false;
     if( !remote_player_connected ) {
         return;
     }
@@ -8716,7 +8727,7 @@ void wait_for_client_action()
         // Held here rather than by skipping the grant: the client must still
         // RECEIVE its grants promptly (see the do-not-throttle note in
         // grant_client_turn), it just must not be handed unbounded turns.
-        static int64_t s_hold_start_ms = 0;
+        int64_t &s_hold_start_ms = g_ff_hold_start_ms;
         const int lead = mp_ff_lead_turns();
         if( lead >= MP_FF_MAX_LEAD_TURNS ) {
             const int64_t now_ms = mp_now_ms();
@@ -8728,7 +8739,9 @@ void wait_for_client_action()
             }
             if( now_ms - s_hold_start_ms < MP_FF_HOLD_MAX_MS ) {
                 // Fall through to the ordinary blocking wait below — proven code
-                // that pumps events and returns as soon as the client acks.
+                // that pumps events and returns as soon as the client acks — with
+                // its FF bail disabled for the duration (g_ff_lead_holding).
+                g_ff_lead_holding = true;
             } else {
                 mp_log( "[cdda-mp] FF-LEAD: hold exceeded " +
                         std::to_string( MP_FF_HOLD_MAX_MS ) + "ms with lead=" +
@@ -8857,7 +8870,33 @@ void wait_for_client_action()
                         " granted=" + std::to_string( g_granted_this_turn ? 1 : 0 ) );
             }
         }
-        if( ff_mid ) {
+        if( g_ff_lead_holding ) {
+            // A lead hold stands (see g_ff_lead_holding): wait for the client to
+            // catch up rather than taking the FF bail.
+            const int lead_now = mp_ff_lead_turns();
+            if( lead_now < MP_FF_MAX_LEAD_TURNS ) {
+                mp_log( "[cdda-mp] FF-LEAD: client caught up mid-wait, lead=" +
+                        std::to_string( lead_now ) );
+                g_ff_hold_start_ms = 0;
+                g_ff_lead_holding = false;
+                break;
+            }
+            if( !ff_mid ) {
+                // FF no longer applies (the partner's activity ended): from here this
+                // is an ordinary lockstep wait for the client's action.
+                mp_log( "[cdda-mp] FF-LEAD: fast-forward ended during the hold, lead=" +
+                        std::to_string( lead_now ) + " — waiting for the client normally" );
+                g_ff_hold_start_ms = 0;
+                g_ff_lead_holding = false;
+            } else if( mp_now_ms() - g_ff_hold_start_ms >= MP_FF_HOLD_MAX_MS ) {
+                mp_log( "[cdda-mp] FF-LEAD: hold exceeded " + std::to_string( MP_FF_HOLD_MAX_MS ) +
+                        "ms mid-wait with lead=" + std::to_string( lead_now ) +
+                        " — releasing one turn (safety valve)" );
+                g_ff_hold_start_ms = 0;
+                g_ff_lead_holding = false;
+                break;
+            }
+        } else if( ff_mid ) {
             mp_log( "[cdda-mp] SRV-WAIT: FAST-FORWARD engaged mid-wait, bailing" );
             break;
         }
