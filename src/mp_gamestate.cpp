@@ -18632,6 +18632,23 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
     if( !remote ) {
         return "{\"type\":\"state\",\"connected\":false}";
     }
+    // DIAGNOSTIC (friendly-fire mutiny, 2026-10-15): SP's npc::on_attacked turns
+    // any NPC the avatar damages hostile (make_angry -> mutiny), and the host sets
+    // the proxy's FOLLOW attitude only at spawn.  Log every change.
+    {
+        static std::string s_last_att;
+        const std::string att = "attitude=" + std::to_string( static_cast<int>( remote->get_attitude() ) ) +
+                                " player_ally=" + std::to_string( remote->is_player_ally() ) +
+                                " to_avatar=" + std::to_string( static_cast<int>(
+                                            remote->attitude_to( get_avatar() ) ) ) +
+                                " hit_by_player=" + std::to_string( remote->hit_by_player );
+        if( att != s_last_att ) {
+            mp_log( "[cdda-mp] PROXY-ATTITUDE: '" + remote->get_name() + "' " +
+                    ( s_last_att.empty() ? std::string() : s_last_att + " -> " ) + att +
+                    " (NPCATT 3=FOLLOW 10=KILL 17=FLEE_TEMP; to_avatar 0=hostile 1=neutral 2=friendly)" );
+            s_last_att = att;
+        }
+    }
 
     tripoint_bub_ms pos_bub = remote->pos_bub();
     tripoint_abs_ms pos = remote->pos_abs();
