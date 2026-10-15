@@ -3359,6 +3359,9 @@ static std::unordered_map<uint32_t, tripoint_abs_ms> g_mon_last_synced_pos;
 static std::optional<tripoint_abs_ms> g_standin_last_placed;
 static std::unordered_map<uint32_t, mp_local_move> g_client_local_mon_moves;
 static std::optional<mp_local_move> g_client_local_host_move;
+// DIAGNOSTIC (B5/B10 step 2, 2026-10-15): per nid, the effects ("id|bp") the
+// host's last record left on the copy (apply_mon_effects).
+static std::unordered_map<uint32_t, std::set<std::string>> g_mon_last_synced_effects;
 
 static void mp_client_capture_local_moves()
 {
@@ -3391,6 +3394,27 @@ static void mp_client_capture_local_moves()
                         " live copies (MON-DUP-NID) — its moves aren't reported" );
             }
             continue;
+        }
+        // DIAGNOSTIC (B5/B10 step 2): effects the client's world added to this
+        // copy since the host's last record (a knockback's stun; a client
+        // spell's effect, which the B3a op already sends, shows here too).
+        if( const auto se = g_mon_last_synced_effects.find( mon->mp_net_id );
+            se != g_mon_last_synced_effects.end() ) {
+            std::string local;
+            for( const effect &e : mon->get_effects() ) {
+                const std::string key = e.get_id().str() + "|" + e.get_bp().id().str();
+                if( !se->second.count( key ) ) {
+                    local += key + ":" + std::to_string( e.get_intensity() ) + ":" +
+                             std::to_string( to_turns<int>( e.get_duration() ) ) + "t ";
+                }
+            }
+            static std::unordered_map<uint32_t, std::string> s_last_local;
+            std::string &last = s_last_local[mon->mp_net_id];
+            if( !local.empty() && local != last ) {
+                mp_log( "[cdda-mp] MON-LOCAL-EFFECT: nid=" + std::to_string( mon->mp_net_id ) + " " +
+                        mon->type->id.str() + " [" + local + "] (not from the host)" );
+            }
+            last = local;
         }
         const auto it = g_mon_last_synced_pos.find( mon->mp_net_id );
         if( it == g_mon_last_synced_pos.end() || it->second == mon->pos_abs() ) {
@@ -13523,6 +13547,34 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_array( "host_effects" ) && client_host_npc_spawned ) {
             npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
             if( host_npc ) {
+                // DIAGNOSTIC (B5/B10 step 2, 2026-10-15): effects the client's own
+                // world put on the stand-in since the host last set them (a
+                // client knockback's stun, ...), which this clear wipes.  Logged
+                // per distinct set before deciding what to report to the host.
+                static std::set<std::string> s_host_set;   // "id|bp" as the host last sent
+                {
+                    std::string local;
+                    for( const effect &e : host_npc->get_effects() ) {
+                        const std::string key = e.get_id().str() + "|" + e.get_bp().id().str();
+                        if( !s_host_set.count( key ) ) {
+                            local += key + ":" + std::to_string( e.get_intensity() ) + ":" +
+                                     std::to_string( to_turns<int>( e.get_duration() ) ) + "t ";
+                        }
+                    }
+                    static std::string s_last_local;
+                    if( !local.empty() && local != s_last_local ) {
+                        mp_log( "[cdda-mp] STANDIN-LOCAL-EFFECT: [" + local + "] (not from the host)" );
+                    }
+                    s_last_local = local;
+                }
+                s_host_set.clear();
+                for( const JsonValue &ev : jo.get_array( "host_effects" ) ) {
+                    JsonObject eo = ev.get_object();
+                    eo.allow_omitted_members();
+                    const std::string bp_str = eo.get_string( "bp", "" );
+                    s_host_set.insert( eo.get_string( "id", "" ) + "|" +
+                                       ( bp_str.empty() ? bodypart_str_id::NULL_ID().str() : bp_str ) );
+                }
                 host_npc->clear_effects();
                 for( const JsonValue &ev : jo.get_array( "host_effects" ) ) {
                     JsonObject eo = ev.get_object();
@@ -13550,12 +13602,31 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_array( "host_hp" ) && client_host_npc_spawned ) {
             npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
             if( host_npc ) {
+                // DIAGNOSTIC (B5/B10 step 3, 2026-10-15): HP the stand-in lost or
+                // gained in the client's world since the host last set it (a
+                // client knockback's collision, a client-side explosion, or the
+                // client processing the stand-in's own effects).
+                static std::map<std::string, int> s_host_hp;   // bp -> as the host last sent
+                std::string local_hp;
+                for( const auto &[bp, last] : s_host_hp ) {
+                    const bodypart_str_id bpsid( bp );
+                    if( bpsid.is_valid() && host_npc->has_part( bpsid.id() ) ) {
+                        const int now = host_npc->get_part_hp_cur( bpsid.id() );
+                        if( now != last ) {
+                            local_hp += bp + ":" + std::to_string( now - last ) + " ";
+                        }
+                    }
+                }
+                if( !local_hp.empty() ) {
+                    mp_log( "[cdda-mp] STANDIN-LOCAL-HP: [" + local_hp + "] (not from the host)" );
+                }
                 for( const JsonValue &hv : jo.get_array( "host_hp" ) ) {
                     JsonObject ho = hv.get_object();
                     ho.allow_omitted_members();
                     const std::string bp_str = ho.get_string( "id", "" );
                     const int hp = ho.get_int( "hp", -1 );
                     if( bp_str.empty() || hp < 0 ) { continue; }
+                    s_host_hp[bp_str] = hp;
                     const bodypart_str_id bpsid( bp_str );
                     // has_part guard: the host proxy can lag the host's real body
                     // when a mutation that grants a bodypart hasn't been applied to
@@ -14497,6 +14568,7 @@ void client_process_incoming()
         g_client_local_mon_moves.clear();
         g_client_local_host_move.reset();
         g_mon_last_synced_pos.clear();
+        g_mon_last_synced_effects.clear();
         g_standin_last_placed.reset();
         g_client_pending_lost_host_wake = false;
         // And the effects mirror: force a full snapshot to the new proxy.
@@ -16618,6 +16690,12 @@ static void apply_mon_effects( monster &mon, JsonObject &mo, uint32_t nid )
     if( !changes.empty() ) {
         mp_log( "[cdda-mp] MON-EFFECT-SYNC: nid=" + std::to_string( nid ) + " " +
                 mon.type->id.str() + changes );
+    }
+    // DIAGNOSTIC (B5/B10 step 2): the set the host's record left on this copy.
+    std::set<std::string> &synced = g_mon_last_synced_effects[nid];
+    synced.clear();
+    for( const effect &e : mon.get_effects() ) {
+        synced.insert( e.get_id().str() + "|" + e.get_bp().id().str() );
     }
 }
 
