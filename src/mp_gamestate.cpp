@@ -12209,6 +12209,16 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
         g->add_npc_follower( host_npc->getID() );
     }
     const bool host_inb = m.inbounds( abs_pos );
+    // DIAGNOSTIC (B5/B10 displacement, 2026-10-15): the stand-in sits where the
+    // last sync put it unless something in the CLIENT's world moved it — a
+    // client push/pull spell, a knockback.  The host never hears of that move,
+    // and this sync puts it back.
+    static std::optional<tripoint_abs_ms> s_standin_last_placed;
+    if( s_standin_last_placed && host_npc->pos_abs() != *s_standin_last_placed ) {
+        mp_log( "[cdda-mp] HOST-STANDIN-SNAPBACK: moved locally " +
+                s_standin_last_placed->to_string() + " -> " + host_npc->pos_abs().to_string() +
+                ", host says " + abs_pos.to_string() );
+    }
     {
         // Diagnose "host overlay stuck on client": logs whenever the received host
         // abs position, its in-bounds status, or the overlay's current bubble tile
@@ -12254,6 +12264,7 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
             }
         }
     }
+    s_standin_last_placed = host_npc->pos_abs();
     // Apply driving state every tick so the proxy's flags track the host even when
     // position didn't change (idling at the wheel, cruise mode).
     host_npc->in_vehicle = host_in_vehicle;
@@ -17502,6 +17513,12 @@ static void mp_client_sync_die( monster &mon, map &m, const char *via )
             " death_eoc=" + std::to_string( de.eoc.has_value() ) );
 }
 
+// DIAGNOSTIC (B5/B10 displacement, 2026-10-15): the position the host's sync
+// last gave each monster copy.  The client runs no monster turns, so a copy
+// anywhere else was moved by something in the client's own world (a push or
+// pull spell, a knockback) that the host never heard about.
+static std::unordered_map<uint32_t, tripoint_abs_ms> g_mon_last_synced_pos;
+
 static void apply_monster_sync( JsonObject &jo )
 {
     if( !jo.has_array( "monsters" ) ) {
@@ -17804,6 +17821,17 @@ static void apply_monster_sync( JsonObject &jo )
             }
         }
 
+        // DIAGNOSTIC (B5/B10 displacement): moved locally since the last sync,
+        // and this record now moves it back (or not).
+        if( nid != 0 ) {
+            const auto prev = g_mon_last_synced_pos.find( nid );
+            if( prev != g_mon_last_synced_pos.end() && best->pos_abs() != prev->second ) {
+                mp_log( "[cdda-mp] MON-LOCAL-MOVE-REVERTED: nid=" + std::to_string( nid ) + " " +
+                        best->type->id.str() + " moved locally " + prev->second.to_string() +
+                        " -> " + best->pos_abs().to_string() + ", host says " + target.to_string() );
+            }
+        }
+
         // Correct position if the server disagrees.
         if( best->pos_abs() != target && m.inbounds( target ) ) {
             const shared_ptr_fast<monster> occupant = ct.find( target );
@@ -17833,6 +17861,11 @@ static void apply_monster_sync( JsonObject &jo )
             if( !occupant || occupant.get() == best ) {
                 best->setpos( target, false );
             }
+        }
+
+        // DIAGNOSTIC (B5/B10 displacement): where the sync last put this copy.
+        if( nid != 0 ) {
+            g_mon_last_synced_pos[nid] = best->pos_abs();
         }
 
         // Synthesise death messages from HP deltas before applying the new value.
@@ -18112,9 +18145,19 @@ static void apply_monster_sync( JsonObject &jo )
 
     // DIAGNOSTIC (B3a): every synced copy, not just this packet's records — a
     // monster the delta gate skipped keeps whatever the client's spell gave it.
+    static std::set<std::pair<uint32_t, tripoint_abs_ms>> s_displaced_logged;
     for( const auto &mon : ct.get_monsters_list() ) {
         if( mon ) {
             mp_diag_mon_effects( *mon, "client" );
+            const auto it = g_mon_last_synced_pos.find( mon->mp_net_id );
+            if( mon->mp_net_id != 0 && !mon->is_dead() && it != g_mon_last_synced_pos.end() &&
+                mon->pos_abs() != it->second &&
+                s_displaced_logged.emplace( mon->mp_net_id, mon->pos_abs() ).second ) {
+                mp_log( "[cdda-mp] MON-LOCAL-DISPLACED: nid=" + std::to_string( mon->mp_net_id ) +
+                        " " + mon->type->id.str() + " at " + mon->pos_abs().to_string() +
+                        ", host last said " + it->second.to_string() +
+                        " — moved in the client's world only" );
+            }
         }
     }
 
