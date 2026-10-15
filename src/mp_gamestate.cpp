@@ -3330,7 +3330,40 @@ static constexpr int CLIENT_PENDING_KILL_SYNCS = 3;
 // moves over was silently dropped and the host's copy came back (measured
 // 2026-10-14: client banish, ACT-END moves=100, MON-RESPAWN-DROPPED 3s later).
 // Filled by mp_pre_remove_dead(), drained by build_client_monster_hits().
-static std::unordered_map<uint32_t, int> g_client_harvested_kills;
+struct mp_harvested_kill {
+    int dealt = 0;
+    int k = 0;      // mp_client_kill_flag() at harvest time
+};
+static std::unordered_map<uint32_t, mp_harvested_kill> g_client_harvested_kills;
+
+// Client: who SP says killed this copy, for the host's kill credit.
+//  1 = our own avatar (or something it summoned), as SP's monster::die credits
+//  0 = anyone or anything else, or nothing (debug "Kill all monsters" passes no killer)
+// -1 = still alive: a plain hit, and the host decides whether it was the last one.
+// Creature::set_killer keeps the FIRST non-null killer, so a later die( nullptr )
+// can't erase the avatar's credit.
+static int mp_client_kill_flag( const monster &mon )
+{
+    if( !mon.is_dead() ) {
+        return -1;
+    }
+    const Creature *killer = mon.get_killer();
+    if( killer != nullptr && killer->as_character() == nullptr &&
+        killer->get_summoner() != nullptr ) {
+        killer = killer->get_summoner();
+    }
+    return killer != nullptr && killer->is_avatar() ? 1 : 0;
+}
+
+// DIAGNOSTIC (kill credit, 2026-10-15): one line per dead copy reported.
+static void mp_log_client_kill_report( const monster &mon, int dealt, const char *path )
+{
+    const Creature *killer = mon.get_killer();
+    mp_log( std::string( "[cdda-mp] CLI-KILL-REPORT: nid=" ) + std::to_string( mon.mp_net_id ) +
+            " " + mon.type->id.str() + " dealt=" + std::to_string( dealt ) +
+            " killer=" + ( killer ? "'" + killer->get_name() + "'" : std::string( "none" ) ) +
+            " k=" + std::to_string( mp_client_kill_flag( mon ) ) + " via=" + path );
+}
 
 // Client: fingerprint of the last host_worn list applied — avoids re-dressing every tick.
 static std::string g_client_host_worn_sig;
@@ -6599,6 +6632,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     ho.allow_omitted_members();
                     const uint32_t nid = static_cast<uint32_t>( ho.get_int( "nid", 0 ) );
                     const int dealt    = ho.get_int( "dealt", -1 );
+                    // Who killed the client's copy, when it's dead (see
+                    // mp_client_kill_flag): 1 = the client, 0 = no one / someone
+                    // else, -1 = the copy is still alive.
+                    const int k        = ho.get_int( "k", -1 );
                     if( nid == 0 || dealt <= 0 ) {
                         continue;
                     }
@@ -6635,6 +6672,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         npc *proxy = remote_player_npc_id.is_valid()
                                      ? g->critter_by_id<npc>( remote_player_npc_id )
                                      : nullptr;
+                        // DIAGNOSTIC (kill credit, 2026-10-15): what SP would
+                        // credit.  Behaviour unchanged until the logs confirm a
+                        // normal client kill reads k=1.
+                        mp_log( "[cdda-mp] HOST-KILL-CREDIT: nid=" + std::to_string( nid ) + " " +
+                                mon->type->id.str() + " k=" + std::to_string( k ) +
+                                " — credits the client; SP would credit " +
+                                ( k == 0 ? "NOBODY (no killer on the client)" : "the client" ) );
                         mon->die( &m, proxy );
                         any_killed = true;
                     } else {
@@ -14817,7 +14861,10 @@ void mp_pre_remove_dead()
         // so only the client's own kills produce a report here.
         const int dealt = mp_take_monster_hit_report( *mon );
         if( dealt > 0 ) {
-            g_client_harvested_kills[mon->mp_net_id] += dealt;
+            mp_harvested_kill &hk = g_client_harvested_kills[mon->mp_net_id];
+            hk.dealt += dealt;
+            hk.k = mp_client_kill_flag( *mon );
+            mp_log_client_kill_report( *mon, dealt, "harvest" );
             mp_log( "[cdda-mp] CLI-KILL-HARVEST: nid=" + std::to_string( mon->mp_net_id ) +
                     " " + mon->type->id.str() + " dealt=" + std::to_string( dealt ) +
                     " — dead copy leaving the tracker before any action reported it;"
@@ -14830,11 +14877,12 @@ static std::string build_client_monster_hits()
 {
     std::string hits;
     bool first = true;
-    for( const auto &[nid, dealt] : g_client_harvested_kills ) {
+    for( const auto &[nid, hk] : g_client_harvested_kills ) {
         if( !first ) { hits += ','; }
         first = false;
         hits += "{\"nid\":" + std::to_string( nid )
-             + ",\"dealt\":" + std::to_string( dealt ) + "}";
+             + ",\"dealt\":" + std::to_string( hk.dealt )
+             + ",\"k\":" + std::to_string( hk.k ) + "}";
     }
     g_client_harvested_kills.clear();
     for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
@@ -14854,10 +14902,15 @@ static std::string build_client_monster_hits()
         if( dealt <= 0 ) {
             continue;
         }
+        const int k = mp_client_kill_flag( *mon );
+        if( k >= 0 ) {
+            mp_log_client_kill_report( *mon, dealt, "scan" );
+        }
         if( !first ) { hits += ','; }
         first = false;
         hits += "{\"nid\":" + std::to_string( mon->mp_net_id )
-             + ",\"dealt\":" + std::to_string( dealt ) + "}";
+             + ",\"dealt\":" + std::to_string( dealt )
+             + ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
     }
     return first ? std::string() : ( "[" + hits + "]" );
 }
