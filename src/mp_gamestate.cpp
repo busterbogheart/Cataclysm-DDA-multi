@@ -7426,6 +7426,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             srv_emit_ack( "bump_host_fallthrough" );
             return;
         }
+        // Mirror avatar_action::move: being grabbed, downed, in a pit, snared,
+        // webbed or otherwise impeded turns a move into an escape attempt, and a
+        // failed attempt wastes the whole turn (SP: set_moves( 0 )).  Those
+        // effects are put on the proxy by the host's world and live only here, so
+        // this is the one place the check can run.  Without it the client walked
+        // straight out of grabs: measured 2026-10-14, the proxy grabbed on two
+        // parts ran 4 tiles with no break attempt, while the host avatar, held by
+        // the same zombies, failed 35 attempts before breaking free 5 times.
+        // Messages ("You try to break ...") reach the client through the proxy
+        // message relay, as the zombie prowler's drag already does.
+        if( !remote->move_effects( get_creature_tracker().creature_at( next ) != nullptr ) ) {
+            mp_log( "[cdda-mp] PROXY-MOVE-EFFECTS: move refused — escape attempt failed, turn spent" );
+            remote->set_moves( 0 );
+            srv_emit_ack( "move_effects" );
+            return;
+        }
         const shared_ptr_fast<monster> target = get_creature_tracker().find( next_abs );
         // Run the host-side drag FIRST (before the creature / impassable
         // checks below). Mirrors SP walk_move(): grabbed_move() runs before
