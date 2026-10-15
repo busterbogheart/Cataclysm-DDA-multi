@@ -12090,6 +12090,18 @@ static void remove_client_host_npc()
 // target is specifically the client's host-overlay proxy.
 void mp_diag_damage_dealt( Creature *source, Creature *target, int amount )
 {
+    // Host: damage landing on the client's proxy (B5 friendly fire, 2026-10-15).
+    // Pair with the client's BP-DAMAGE-SYNTH to see whether it reached them.
+    if( is_hosting() ) {
+        const npc *proxy = get_partner_npc();
+        if( proxy != nullptr && target == static_cast<const Creature *>( proxy ) ) {
+            mp_log( "[cdda-mp] PROXY-DAMAGE: source='" +
+                    ( source ? source->get_name() : std::string( "<null source>" ) ) +
+                    "' amount=" + std::to_string( amount ) + " hp_after=" +
+                    std::to_string( proxy->get_hp() ) + "/" + std::to_string( proxy->get_hp_max() ) );
+        }
+        return;
+    }
     if( !is_client_mode() || !client_host_npc_spawned || !client_host_npc_id.is_valid() ) {
         return;
     }

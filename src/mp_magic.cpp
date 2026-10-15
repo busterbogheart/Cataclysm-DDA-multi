@@ -378,12 +378,25 @@ void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *o
 void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
                                  const efftype_id &eff, const time_duration &dur )
 {
-    if( !is_client_mode() || !caster.is_avatar() ) {
+    if( !caster.is_avatar() || ( !is_client_mode() && !is_hosting() ) ) {
         return;
+    }
+    // DIAGNOSTIC (B5 friendly fire, 2026-10-15), both sides.  Support spells at
+    // the partner were forwarded before reaching here; this is the rest.
+    if( const Character *ch = target.as_character() ) {
+        if( is_partner_npc( ch->getID() ) ) {
+            mp_log( "[cdda-mp] PARTNER-SPELL-LOCAL-EFFECT: " + eff.str() + " " +
+                    std::to_string( to_turns<int>( dur ) ) + "t on '" + ch->name +
+                    "' (stand-in only, " + ( is_hosting() ? "host" : "client" ) + " cast)" );
+        }
+        return;   // NPCs aren't synced
+    }
+    if( !is_client_mode() ) {
+        return;   // the host's own monsters are authoritative already
     }
     const monster *mon = target.as_monster();
     if( mon == nullptr ) {
-        return;   // characters: the partner is forwarded earlier; NPCs aren't synced
+        return;
     }
     if( mon->mp_net_id == 0 ) {
         mp_log( "[cdda-mp] CLI-MON-OP: effect " + eff.str() + " on unsynced " +
@@ -668,6 +681,15 @@ bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &
     // Support only, for now -- see the note in the header.
     if( !sp.is_valid_target( spell_target::ally ) ||
         sp.is_valid_target( spell_target::hostile ) ) {
+        // DIAGNOSTIC (B5 friendly fire, 2026-10-15): this spell lands on the
+        // partner's stand-in in OUR world and nowhere else.  Host side, the
+        // stage-2 hand-off then passes its effects on (PROXY-WORLD-EFFECT);
+        // client side nothing reaches the host.
+        mp_log( "[cdda-mp] PARTNER-SPELL-LOCAL: " + sp.id().str() + " (" +
+                ( is_hosting() ? "host" : "client" ) + " cast) hit '" + tgt->name + "' — " +
+                ( sp.is_valid_target( spell_target::ally ) ? "ally+hostile spell"
+                  : "hostile-only spell (partner not FRIENDLY to the caster?)" ) +
+                ", applied to the stand-in in this world only" );
         return false;
     }
     const std::string payload = "{\"type\":\"partner_spell\",\"spell\":\"" + sp.id().str() +
