@@ -4974,7 +4974,8 @@ bool game::revive_corpse( const tripoint_bub_ms &p, item &it, int radius )
     }
     // If this is not here, the game may attempt to spawn a monster before the map exists,
     // leading to it querying for furniture, and crashing.
-    if( g->new_game || g->swapping_dimensions ) {
+    // MP: on the co-op client, corpse revival is the host's world event.
+    if( g->new_game || g->swapping_dimensions || cata_mp::mp_client_skips_corpse_revival() ) {
         return false;
     }
     if( it.has_flag( flag_FIELD_DRESS ) || it.has_flag( flag_FIELD_DRESS_FAILED ) ||

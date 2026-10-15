@@ -15433,6 +15433,21 @@ bool is_client_waiting_for_ack()
     return g_client_waiting_for_ack;
 }
 
+bool mp_client_skips_corpse_revival()
+{
+    if( !is_client_mode() ) {
+        return false;
+    }
+    // A ripe corpse is offered for revival on every item-processing pass, so log
+    // the first and then every 200th rather than each refusal.
+    static int s_skipped = 0;
+    if( s_skipped++ % 200 == 0 ) {
+        mp_log( "[cdda-mp] CORPSE-REVIVE-SKIP: left a corpse revival to the host (n=" +
+                std::to_string( s_skipped ) + ")" );
+    }
+    return true;
+}
+
 void mp_client_locked_grant_guard()
 {
     if( !is_client_mode() || g_client_waiting_for_ack ) {

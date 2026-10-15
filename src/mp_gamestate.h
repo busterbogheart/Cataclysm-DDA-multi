@@ -314,6 +314,15 @@ bool mp_teleport_refused( const Creature &who, const tripoint_abs_ms &dest );
 // by then.  No-op outside a co-op session.
 void mp_pre_remove_dead();
 
+// Client: true when game::revive_corpse() must not revive anything locally.
+// Corpse revival is the host's world event: the host revives the real corpse and
+// the risen monster arrives through monster sync, its corpse's removal through
+// tile sync.  Run locally it raised the client's own copies — measured
+// 2026-10-14: after an 8.6-hour shared wait, "A nearby corpse rises" x33 on the
+// client while the host (idle, sending no packets for 23 s) raised ~3, and the
+// next sync culled 32 mon_zombie(local).  False outside client mode.
+bool mp_client_skips_corpse_revival();
+
 // Client: general guard for the red/red deadlock class.  Called from do_turn's
 // locked branch, just before the blocking handle_action(), i.e. when the client
 // sits at its top-level prompt with moves <= 0 and no activity.  If the newest
