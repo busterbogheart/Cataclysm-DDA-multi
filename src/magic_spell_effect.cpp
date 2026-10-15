@@ -2142,3 +2142,14 @@ void spell_effect::slime_split_on_death( const spell &sp, Creature &caster,
         }
     }
 }
+
+// MP (ROADMAP B5, friendly fire): one tile's share of an attack spell -- the
+// damage_targets() SP runs for every tile a spell covers, for a single tile.
+// A co-op partner's hit on this player is resolved here, against the real
+// character, instead of on their stand-in in the caster's world.  Declared in
+// mp_magic.h; caller in mp_magic.cpp.
+void cata_mp::mp_spell_hit_single_target( const spell &sp, Creature &caster,
+        const tripoint_bub_ms &target )
+{
+    damage_targets( sp, caster, { target } );
+}

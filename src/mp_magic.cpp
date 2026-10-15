@@ -678,9 +678,15 @@ bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &
     if( tgt == nullptr || !is_partner_npc( tgt->getID() ) ) {
         return false;
     }
-    // Support only, for now -- see the note in the header.
-    if( !sp.is_valid_target( spell_target::ally ) ||
-        sp.is_valid_target( spell_target::hostile ) ) {
+    // Support spells, and friendly fire from the client (see the B5 note in
+    // the header): a spell that targets allies AND hostiles, hitting the host.
+    // The host's own friendly fire on the client is left to land on the proxy,
+    // which already reaches the client (proxy damage, effect hand-off).
+    const bool support = sp.is_valid_target( spell_target::ally ) &&
+                         !sp.is_valid_target( spell_target::hostile );
+    const bool friendly_fire = is_client_mode() && sp.is_valid_target( spell_target::ally ) &&
+                               sp.is_valid_target( spell_target::hostile );
+    if( !support && !friendly_fire ) {
         // DIAGNOSTIC (B5 friendly fire, 2026-10-15): this spell lands on the
         // partner's stand-in in OUR world and nowhere else.  Host side, the
         // stage-2 hand-off then passes its effects on (PROXY-WORLD-EFFECT);
@@ -693,7 +699,8 @@ bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &
         return false;
     }
     const std::string payload = "{\"type\":\"partner_spell\",\"spell\":\"" + sp.id().str() +
-                                "\",\"level\":" + std::to_string( sp.get_level() ) + "}";
+                                "\",\"level\":" + std::to_string( sp.get_level() ) +
+                                ( friendly_fire ? ",\"hit\":true" : "" ) + "}";
     mp_log( "[cdda-mp] PARTNER-SPELL-SEND: " + payload );
     if( is_client_mode() ) {
         client_send( payload );
@@ -713,12 +720,14 @@ void mp_handle_partner_spell( const std::string &msg )
     }
     std::string sp_str;
     int level = 0;
+    bool hit = false;
     try {
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
         jo.allow_omitted_members();
         sp_str = jo.get_string( "spell", "" );
         level = jo.get_int( "level", 0 );
+        hit = jo.get_bool( "hit", false );
     } catch( const std::exception &e ) {
         mp_log( std::string( "[cdda-mp] PARTNER-SPELL parse error: " ) + e.what() );
         return;
@@ -772,9 +781,25 @@ void mp_handle_partner_spell( const std::string &msg )
     // rather than preserving the original blast geometry.  Acceptable while
     // this is restricted to deliberate support -- the receiver IS the intended
     // beneficiary and any splash lands where the caster was aiming anyway.
+    const int hp_before = av.get_hp();
     g_applying_partner_spell = true;
-    sp.cast_all_effects( caster, av.pos_bub() );
+    if( hit ) {
+        // Friendly fire: only this tile's share, resolved against us -- our
+        // dodge, armor and resistances, as SP resolves a hit on an NPC ally.
+        // Not cast_all_effects, which would re-blast an area spell around us
+        // and hit the monsters the caster already hit.
+        mp_spell_hit_single_target( sp, caster, av.pos_bub() );
+    } else {
+        sp.cast_all_effects( caster, av.pos_bub() );
+    }
     g_applying_partner_spell = false;
+    if( hit ) {
+        mp_log( "[cdda-mp] PARTNER-SPELL-HIT: spell=" + sp_str + " level=" + std::to_string( level ) +
+                " hp " + std::to_string( hp_before ) + " -> " + std::to_string( av.get_hp() ) +
+                ( sp.effect_data().empty() ? std::string() :
+                  " effect " + sp.effect_data() + "=" +
+                  ( av.has_effect( efftype_id( sp.effect_data() ) ) ? "yes" : "no" ) ) );
+    }
     // Log the damage resolved against BOTH characters.  caster_dmg is what the
     // spell is now worth; self_dmg is what the old code would have produced.
     // While this is fresh, a log line showing the two still equal means the

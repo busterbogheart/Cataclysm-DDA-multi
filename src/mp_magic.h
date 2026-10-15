@@ -5,6 +5,7 @@
 #include <map>
 #include <string>
 
+#include "coords_fwd.h"
 #include "type_id.h"
 
 class Character;
@@ -109,6 +110,20 @@ void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *o
 // the client, the caster is our own avatar, and the target is a synced monster.
 void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
                                  const efftype_id &eff, const time_duration &dur );
+
+// --- Friendly fire from the client (ROADMAP B5) ---------------------------
+//
+// Measured 2026-10-15: a client Firebolt / Slow on the host landed only on the
+// host's stand-in in the client's world (HOST-PROXY-DAMAGE 20/15/11/20,
+// PARTNER-SPELL-LOCAL-EFFECT), and the host never lost HP or got slowed.  The
+// host's hits on the client already land (proxy damage -> BP-DAMAGE-SYNTH,
+// effects -> the stage-2 hand-off).  So the client now forwards a spell that
+// targets allies AND hostiles, like a heal, and the host resolves just the hit
+// on its own tile -- not cast_all_effects, which would re-blast an area spell
+// around the host.  Defined in magic_spell_effect.cpp, where damage_targets()
+// lives.
+void mp_spell_hit_single_target( const spell &sp, Creature &caster,
+                                 const tripoint_bub_ms &target );
 
 // Host: apply a {"type":"client_monster_op",...} packet.
 void mp_handle_client_monster_op( const std::string &msg );
