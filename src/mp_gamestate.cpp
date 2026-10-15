@@ -3336,6 +3336,90 @@ struct mp_harvested_kill {
 };
 static std::unordered_map<uint32_t, mp_harvested_kill> g_client_harvested_kills;
 
+// Client (B5/B10, 2026-10-15): moves the client's OWN world made to creatures the
+// host owns -- a synced monster copy or the host's stand-in, knocked back,
+// pushed or pulled by a client spell (Repulsion Wave, Sorcerer's Hand,
+// Graviton, ...) or any other client-side knockback.  Measured: the host never
+// heard of them, and its next sync put both back within 67 ms.  Mirrors act_pos
+// (the client's own teleports): the move is captured before a sync can undo it,
+// rides the client's next packet, and the host applies it as SP's
+// game::knockback does (setpos).  Until the host's word agrees, the client holds
+// the creature where its world put it; once sent, it gives up after
+// CLIENT_LOCAL_MOVE_HOLD_SYNCS disagreeing syncs (the host refused the tile).
+static constexpr int CLIENT_LOCAL_MOVE_HOLD_SYNCS = 3;
+struct mp_local_move {
+    tripoint_abs_ms to;
+    int syncs_left = CLIENT_LOCAL_MOVE_HOLD_SYNCS;
+    bool sent = false;
+};
+// Where the host's sync last put each monster copy / the host's stand-in.  The
+// client runs no monster turns and the stand-in has no AI, so anywhere else
+// means the client's world moved it.
+static std::unordered_map<uint32_t, tripoint_abs_ms> g_mon_last_synced_pos;
+static std::optional<tripoint_abs_ms> g_standin_last_placed;
+static std::unordered_map<uint32_t, mp_local_move> g_client_local_mon_moves;
+static std::optional<mp_local_move> g_client_local_host_move;
+
+static void mp_client_capture_local_moves()
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        const monster *mon = ptr.get();
+        // A ridden mount moves with its rider on both sides already (the rider
+        // sync), so its moves aren't the client's to report.
+        if( !mon || mon->mp_net_id == 0 || mon->is_dead() || mon->has_effect( effect_ridden ) ) {
+            continue;
+        }
+        const auto it = g_mon_last_synced_pos.find( mon->mp_net_id );
+        if( it == g_mon_last_synced_pos.end() || it->second == mon->pos_abs() ) {
+            continue;
+        }
+        mp_log( "[cdda-mp] CLI-LOCAL-MOVE: nid=" + std::to_string( mon->mp_net_id ) + " " +
+                mon->type->id.str() + " " + it->second.to_string() + " -> " +
+                mon->pos_abs().to_string() );
+        g_client_local_mon_moves[mon->mp_net_id] = mp_local_move{ mon->pos_abs() };
+        it->second = mon->pos_abs();
+    }
+    if( const npc *standin = get_partner_npc() ) {
+        if( g_standin_last_placed && standin->pos_abs() != *g_standin_last_placed ) {
+            mp_log( "[cdda-mp] CLI-LOCAL-MOVE: host stand-in " + g_standin_last_placed->to_string() +
+                    " -> " + standin->pos_abs().to_string() );
+            g_client_local_host_move = mp_local_move{ standin->pos_abs() };
+            g_standin_last_placed = standin->pos_abs();
+        }
+    }
+}
+
+// Client: a sync is about to place a creature at `host_says`.  Returns true to
+// keep it where the client's world moved it instead.
+static bool mp_client_hold_local_move( std::optional<mp_local_move> &lm,
+                                       const tripoint_abs_ms &host_says, const std::string &who )
+{
+    if( !lm ) {
+        return false;
+    }
+    if( host_says == lm->to ) {
+        mp_log( "[cdda-mp] CLI-LOCAL-MOVE-CONFIRMED: " + who + " at " + host_says.to_string() );
+        lm.reset();
+        return false;
+    }
+    if( !lm->sent ) {
+        return true;   // the host hasn't heard yet; this sync predates it
+    }
+    if( --lm->syncs_left > 0 ) {
+        mp_log( "[cdda-mp] CLI-LOCAL-MOVE-HOLD: " + who + " held at " + lm->to.to_string() +
+                ", host says " + host_says.to_string() + " (" + std::to_string( lm->syncs_left ) +
+                " left)" );
+        return true;
+    }
+    mp_log( "[cdda-mp] CLI-LOCAL-MOVE-GAVE-UP: " + who + " -> host's " + host_says.to_string() +
+            " (the host didn't apply " + lm->to.to_string() + ")" );
+    lm.reset();
+    return false;
+}
+
 // Client: who SP says killed this copy, for the host's kill credit.
 //  1 = our own avatar (or something it summoned), as SP's monster::die credits
 //  0 = anyone or anything else, or nothing (debug "Kill all monsters" passes no killer)
@@ -5169,6 +5253,84 @@ static void mp_receive_passed_item( Character &who, item &it, const char *side )
     mp_log( std::string( "[cdda-mp] TRADE-RECEIVE: " ) + side + " " + type + " -> " + where );
 }
 
+// Host (B5/B10, 2026-10-15): creatures the client's own world moved -- its
+// knockback, push or pull spells -- see g_client_local_mon_moves on the client.
+// Applied the way SP's game::knockback moves a creature (setpos), when the tile
+// is in the bubble, passable and free here too.  A refused move is logged; the
+// next broadcast still carries our position and the client gives up its hold.
+static void mp_host_apply_client_moves( const std::string &msg )
+{
+    map &here = get_map();
+    const auto place_ok = [&]( const Creature & who, const tripoint_abs_ms & to,
+    std::string & why ) {
+        if( !here.inbounds( to ) ) {
+            why = "outside the bubble";
+            return false;
+        }
+        const tripoint_bub_ms bub = here.get_bub( to );
+        if( here.impassable( bub ) ) {
+            why = "impassable here";
+            return false;
+        }
+        const Creature *occ = get_creature_tracker().creature_at( bub );
+        if( occ != nullptr && occ != &who ) {
+            why = "occupied by '" + occ->get_name() + "'";
+            return false;
+        }
+        return true;
+    };
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        if( jo.has_array( "client_moves" ) ) {
+            for( const JsonValue &mv : jo.get_array( "client_moves" ) ) {
+                JsonObject mo = mv.get_object();
+                const uint32_t nid = static_cast<uint32_t>( mo.get_int( "nid" ) );
+                const tripoint_abs_ms to( mo.get_int( "x" ), mo.get_int( "y" ), mo.get_int( "z" ) );
+                monster *mon = nullptr;
+                for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+                    if( ptr && ptr->mp_net_id == nid && !ptr->is_dead() ) {
+                        mon = ptr.get();
+                        break;
+                    }
+                }
+                std::string why;
+                if( mon == nullptr ) {
+                    mp_log( "[cdda-mp] HOST-CLIENT-MOVE: REFUSED nid=" + std::to_string( nid ) +
+                            " -> " + to.to_string() + ": no live host monster with this nid" );
+                } else if( !place_ok( *mon, to, why ) ) {
+                    mp_log( "[cdda-mp] HOST-CLIENT-MOVE: REFUSED nid=" + std::to_string( nid ) + " " +
+                            mon->type->id.str() + " " + mon->pos_abs().to_string() + " -> " +
+                            to.to_string() + ": " + why );
+                    mp_server_mon_force_resend( nid );
+                } else {
+                    mp_log( "[cdda-mp] HOST-CLIENT-MOVE: nid=" + std::to_string( nid ) + " " +
+                            mon->type->id.str() + " " + mon->pos_abs().to_string() + " -> " +
+                            to.to_string() );
+                    mon->setpos( here, here.get_bub( to ) );
+                }
+            }
+        }
+        if( jo.has_object( "client_host_moved" ) ) {
+            JsonObject mo = jo.get_object( "client_host_moved" );
+            const tripoint_abs_ms to( mo.get_int( "x" ), mo.get_int( "y" ), mo.get_int( "z" ) );
+            avatar &u = get_avatar();
+            std::string why;
+            if( !place_ok( u, to, why ) ) {
+                mp_log( "[cdda-mp] HOST-CLIENT-MOVE: REFUSED host avatar " + u.pos_abs().to_string() +
+                        " -> " + to.to_string() + ": " + why );
+            } else {
+                mp_log( "[cdda-mp] HOST-CLIENT-MOVE: host avatar " + u.pos_abs().to_string() + " -> " +
+                        to.to_string() );
+                u.setpos( here, here.get_bub( to ) );
+            }
+        }
+    } catch( const JsonError &e ) {
+        mp_log( "[cdda-mp] HOST-CLIENT-MOVE parse error: " + std::string( e.what() ) );
+    }
+}
+
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
     // Liveness: ANY message from the client (action, wait, or heartbeat) proves
@@ -6178,6 +6340,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         } catch( const JsonError &e ) {
             mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
         }
+    }
+
+    // B5/B10: creatures the client's own world moved (its knockback, push and
+    // pull spells), riding the same packet as act_pos and applied with it.
+    if( msg.find( "\"client_moves\":" ) != std::string::npos ||
+        msg.find( "\"client_host_moved\":" ) != std::string::npos ) {
+        mp_host_apply_client_moves( msg );
     }
 
     // World-light events the client's spell created (Artifact Light...): add them
@@ -12209,16 +12378,12 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
         g->add_npc_follower( host_npc->getID() );
     }
     const bool host_inb = m.inbounds( abs_pos );
-    // DIAGNOSTIC (B5/B10 displacement, 2026-10-15): the stand-in sits where the
-    // last sync put it unless something in the CLIENT's world moved it — a
-    // client push/pull spell, a knockback.  The host never hears of that move,
-    // and this sync puts it back.
-    static std::optional<tripoint_abs_ms> s_standin_last_placed;
-    if( s_standin_last_placed && host_npc->pos_abs() != *s_standin_last_placed ) {
-        mp_log( "[cdda-mp] HOST-STANDIN-SNAPBACK: moved locally " +
-                s_standin_last_placed->to_string() + " -> " + host_npc->pos_abs().to_string() +
-                ", host says " + abs_pos.to_string() );
-    }
+    // B5/B10: the client's own world moved the stand-in (a client knockback or
+    // pull)?  Capture it before this update puts it back, and hold it there
+    // until the host's position agrees (see g_client_local_host_move).
+    mp_client_capture_local_moves();
+    const bool hold_local_move = mp_client_hold_local_move( g_client_local_host_move, abs_pos,
+                                 "host stand-in" );
     {
         // Diagnose "host overlay stuck on client": logs whenever the received host
         // abs position, its in-bounds status, or the overlay's current bubble tile
@@ -12240,7 +12405,7 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
             mp_log( "[cdda-mp] HOST-OVERLAY: " + s );
         }
     }
-    if( host_inb ) {
+    if( host_inb && !hold_local_move ) {
         const tripoint_bub_ms bub = m.get_bub( abs_pos );
         if( bub != host_npc->pos_bub() ) {
             // Mirror SP avatar_action::move boarding semantics for the host proxy:
@@ -12264,7 +12429,7 @@ static void update_client_host_npc( const tripoint_abs_ms &abs_pos, const std::s
             }
         }
     }
-    s_standin_last_placed = host_npc->pos_abs();
+    g_standin_last_placed = host_npc->pos_abs();
     // Apply driving state every tick so the proxy's flags track the host even when
     // position didn't change (idling at the wheel, cruise mode).
     host_npc->in_vehicle = host_in_vehicle;
@@ -14308,6 +14473,11 @@ void client_process_incoming()
         g_last_host_proxy_pain = -1;
         // A kill held from a previous session names a nid on a different host.
         g_client_harvested_kills.clear();
+        // So do held local moves and the positions they're measured from.
+        g_client_local_mon_moves.clear();
+        g_client_local_host_move.reset();
+        g_mon_last_synced_pos.clear();
+        g_standin_last_placed.reset();
         g_client_pending_lost_host_wake = false;
         // And the effects mirror: force a full snapshot to the new proxy.
         g_client_effects_sig_sent.clear();
@@ -15153,6 +15323,33 @@ std::string client_enrich_action( const std::string &json )
             mp_log( "[cdda-mp] ACT-POS-SEND: " + g_client_pending_act_pos_desc + " on=" +
                     json.substr( 0, 48 ) );
             g_client_pending_act_pos.reset();
+        }
+        // B5/B10: moves the client's own world made to host-owned creatures; see
+        // g_client_local_mon_moves.  The host applies them before the action.
+        mp_client_capture_local_moves();
+        {
+            const auto pos_json = []( const tripoint_abs_ms & p ) {
+                return "\"x\":" + std::to_string( p.x() ) + ",\"y\":" + std::to_string( p.y() ) +
+                       ",\"z\":" + std::to_string( p.z() );
+            };
+            std::string moves;
+            for( auto &[nid, lm] : g_client_local_mon_moves ) {
+                if( !lm.sent ) {
+                    lm.sent = true;
+                    moves += std::string( moves.empty() ? "" : "," ) + "{\"nid\":" +
+                             std::to_string( nid ) + "," + pos_json( lm.to ) + "}";
+                }
+            }
+            if( !moves.empty() ) {
+                enriched += ",\"client_moves\":[" + moves + "]";
+                mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: monsters [" + moves + "]" );
+            }
+            if( g_client_local_host_move && !g_client_local_host_move->sent ) {
+                g_client_local_host_move->sent = true;
+                enriched += ",\"client_host_moved\":{" + pos_json( g_client_local_host_move->to ) + "}";
+                mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: host stand-in -> " +
+                        g_client_local_host_move->to.to_string() );
+            }
         }
         enriched += ",\"client_light\":" + mp_json_num( cl );
         enriched += ",\"client_bleed\":" + bleed_json;
@@ -17513,17 +17710,13 @@ static void mp_client_sync_die( monster &mon, map &m, const char *via )
             " death_eoc=" + std::to_string( de.eoc.has_value() ) );
 }
 
-// DIAGNOSTIC (B5/B10 displacement, 2026-10-15): the position the host's sync
-// last gave each monster copy.  The client runs no monster turns, so a copy
-// anywhere else was moved by something in the client's own world (a push or
-// pull spell, a knockback) that the host never heard about.
-static std::unordered_map<uint32_t, tripoint_abs_ms> g_mon_last_synced_pos;
-
 static void apply_monster_sync( JsonObject &jo )
 {
     if( !jo.has_array( "monsters" ) ) {
         return;
     }
+    // Before any record can put a locally moved copy back (B5/B10).
+    mp_client_capture_local_moves();
 
     creature_tracker &ct = get_creature_tracker();
     const std::vector<shared_ptr_fast<monster>> &mons = ct.get_monsters_list();
@@ -17821,19 +18014,25 @@ static void apply_monster_sync( JsonObject &jo )
             }
         }
 
-        // DIAGNOSTIC (B5/B10 displacement): moved locally since the last sync,
-        // and this record now moves it back (or not).
+        // B5/B10: a copy the client's own world moved stays there until the
+        // host's record agrees (see g_client_local_mon_moves).
+        bool hold_local_move = false;
         if( nid != 0 ) {
-            const auto prev = g_mon_last_synced_pos.find( nid );
-            if( prev != g_mon_last_synced_pos.end() && best->pos_abs() != prev->second ) {
-                mp_log( "[cdda-mp] MON-LOCAL-MOVE-REVERTED: nid=" + std::to_string( nid ) + " " +
-                        best->type->id.str() + " moved locally " + prev->second.to_string() +
-                        " -> " + best->pos_abs().to_string() + ", host says " + target.to_string() );
+            const auto lm_it = g_client_local_mon_moves.find( nid );
+            if( lm_it != g_client_local_mon_moves.end() ) {
+                std::optional<mp_local_move> lm = lm_it->second;
+                hold_local_move = mp_client_hold_local_move( lm, target, "nid=" + std::to_string( nid ) +
+                                  " " + best->type->id.str() );
+                if( lm ) {
+                    lm_it->second = *lm;
+                } else {
+                    g_client_local_mon_moves.erase( lm_it );
+                }
             }
         }
 
         // Correct position if the server disagrees.
-        if( best->pos_abs() != target && m.inbounds( target ) ) {
+        if( !hold_local_move && best->pos_abs() != target && m.inbounds( target ) ) {
             const shared_ptr_fast<monster> occupant = ct.find( target );
             // DIAGNOSTIC (GH#23 C, direction 2): ct.find() returns only a monster
             // (creature_tracker.h), so this guard is blind to the client's avatar
@@ -17863,7 +18062,7 @@ static void apply_monster_sync( JsonObject &jo )
             }
         }
 
-        // DIAGNOSTIC (B5/B10 displacement): where the sync last put this copy.
+        // Where the sync last put this copy (B5/B10).
         if( nid != 0 ) {
             g_mon_last_synced_pos[nid] = best->pos_abs();
         }
@@ -18145,19 +18344,9 @@ static void apply_monster_sync( JsonObject &jo )
 
     // DIAGNOSTIC (B3a): every synced copy, not just this packet's records — a
     // monster the delta gate skipped keeps whatever the client's spell gave it.
-    static std::set<std::pair<uint32_t, tripoint_abs_ms>> s_displaced_logged;
     for( const auto &mon : ct.get_monsters_list() ) {
         if( mon ) {
             mp_diag_mon_effects( *mon, "client" );
-            const auto it = g_mon_last_synced_pos.find( mon->mp_net_id );
-            if( mon->mp_net_id != 0 && !mon->is_dead() && it != g_mon_last_synced_pos.end() &&
-                mon->pos_abs() != it->second &&
-                s_displaced_logged.emplace( mon->mp_net_id, mon->pos_abs() ).second ) {
-                mp_log( "[cdda-mp] MON-LOCAL-DISPLACED: nid=" + std::to_string( mon->mp_net_id ) +
-                        " " + mon->type->id.str() + " at " + mon->pos_abs().to_string() +
-                        ", host last said " + it->second.to_string() +
-                        " — moved in the client's world only" );
-            }
         }
     }
 
