@@ -13355,6 +13355,13 @@ static bool apply_one_state_message( const std::string &msg )
 
         // Host-owned effects on our proxy (grabs): shown here as the host's current
         // set.  Breaking a grab is resolved on the host when we try to move.
+        // The set is remembered and re-asserted on EVERY packet, not only when the
+        // host's set changes: our own SP code drops a grab it thinks is orphaned
+        // (try_remove_grab removes a grab with no adjacent monster grabbing that
+        // part, and our synced monsters never carry "grabbing"), which made the
+        // grab vanish from the sidebar right after it appeared (CLI-HOST-HELD
+        // removed=0 when the host's set emptied, 2026-10-14).
+        static std::vector<std::tuple<efftype_id, bodypart_id, int>> s_host_held;
         if( jo.has_array( "host_held_effects" ) ) {
             avatar &av = get_avatar();
             std::set<std::string> held;
@@ -13392,6 +13399,21 @@ static bool apply_one_state_message( const std::string &msg )
             }
             mp_log( "[cdda-mp] CLI-HOST-HELD: [" + list + "] removed=" +
                     std::to_string( to_remove.size() ) );
+            s_host_held = std::move( to_add );
+        }
+        if( !s_host_held.empty() ) {
+            avatar &av = get_avatar();
+            int readded = 0;
+            for( const auto &[et, bp, i] : s_host_held ) {
+                if( !av.has_effect( et, bp ) ) {
+                    av.add_effect( et, 1_turns, bp, true, i );
+                    ++readded;
+                }
+            }
+            if( readded > 0 ) {
+                mp_log( "[cdda-mp] CLI-HOST-HELD-REASSERT: re-added " + std::to_string( readded ) +
+                        " host-held effect(s) our own SP code had removed" );
+            }
         }
 
         // Pain the host inflicted on our proxy.  Only the RISE is applied: both
