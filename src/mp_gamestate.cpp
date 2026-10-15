@@ -14238,6 +14238,24 @@ void client_process_incoming()
             last = msg;
         }
     }
+    // Catch-all activity-end report.  The specific detectors (activity loop,
+    // ORPHAN-IN-LOOP / -POST-LOOP, LOCKED-ACT-END) each watch one spot in the
+    // turn; an activity cancelled anywhere else went unreported.  Measured
+    // 2026-10-14: a distraction prompt ("The darkness makes you nervous") during
+    // the progress UI cancelled ACT_WAIT_FOLLOWERS at 22:15:58.485 (CANCEL_ACTIVITY_
+    // OR_IGNORE_QUERY -> CONFIRM), no ACT-END was ever sent, the client sat idle at
+    // its input with moves, and the host — still seeing a passive partner —
+    // fast-forwarded ~1800 turns (~30 game minutes) in two minutes without it.
+    // Runs on every drain (~60 Hz even idle), so the end is reported within a
+    // frame however the activity ended; client_send_activity_end() dedupes.
+    if( !g_client_turn_activity.empty() && !get_avatar().activity ) {
+        const std::string ended = g_client_turn_activity;
+        mp_log( "[cdda-mp] ACT-END CATCH-ALL: " + ended +
+                " ended without being reported — reporting now, moves=" +
+                std::to_string( get_avatar().get_moves() ) );
+        g_client_turn_activity.clear();
+        client_send_activity_end( ended );
+    }
     // Auto-fire pending autosmash when a grant arrives and no ack is outstanding.
     if( g_autosmash_pending && !g_client_autosmash_json.empty() &&
         get_avatar().get_moves() > 0 && !g_client_waiting_for_ack ) {
