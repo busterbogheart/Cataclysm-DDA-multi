@@ -3359,9 +3359,26 @@ static std::unordered_map<uint32_t, tripoint_abs_ms> g_mon_last_synced_pos;
 static std::optional<tripoint_abs_ms> g_standin_last_placed;
 static std::unordered_map<uint32_t, mp_local_move> g_client_local_mon_moves;
 static std::optional<mp_local_move> g_client_local_host_move;
-// DIAGNOSTIC (B5/B10 step 2, 2026-10-15): per nid, the effects ("id|bp") the
-// host's last record left on the copy (apply_mon_effects).
+// Effects the client's world gave host-owned creatures (B5/B10 step 2,
+// 2026-10-15): a client knockback's stun or knockdown.  Measured 17:23-17:24:
+// they appear on the copies and the host's stand-in ONLY right after a client
+// push (MON-LOCAL-EFFECT / STANDIN-LOCAL-EFFECT), never during ordinary play, so
+// anything beyond what the host last sent is the client's world acting.
+// Baselines: per nid, the effects ("id|bp") the host's last record left on the
+// copy (apply_mon_effects); and the set the host last sent for its stand-in
+// (host_effects).  A captured effect joins its baseline, so it's sent once.
 static std::unordered_map<uint32_t, std::set<std::string>> g_mon_last_synced_effects;
+static std::set<std::string> g_standin_host_effects;
+static bool g_standin_host_effects_known = false;
+struct mp_local_effect {
+    efftype_id id;
+    bodypart_id bp;
+    int intensity;
+    int turns;
+};
+static std::unordered_map<uint32_t, std::vector<mp_local_effect>> g_client_local_mon_effects;
+static std::vector<mp_local_effect> g_client_local_host_effects;
+static bool mp_world_effect_npc_internal( const efftype_id &id );   // above
 
 static void mp_client_capture_local_moves()
 {
@@ -3395,26 +3412,23 @@ static void mp_client_capture_local_moves()
             }
             continue;
         }
-        // DIAGNOSTIC (B5/B10 step 2): effects the client's world added to this
-        // copy since the host's last record (a knockback's stun; a client
-        // spell's effect, which the B3a op already sends, shows here too).
+        // Effects the client's world added to this copy since the host's last
+        // record (a knockback's stun).  A client spell's effect_str is already
+        // sent as the B3a op, and mp_client_note_op_effect() put it in the
+        // baseline, so it isn't sent twice.
         if( const auto se = g_mon_last_synced_effects.find( mon->mp_net_id );
             se != g_mon_last_synced_effects.end() ) {
-            std::string local;
             for( const effect &e : mon->get_effects() ) {
                 const std::string key = e.get_id().str() + "|" + e.get_bp().id().str();
-                if( !se->second.count( key ) ) {
-                    local += key + ":" + std::to_string( e.get_intensity() ) + ":" +
-                             std::to_string( to_turns<int>( e.get_duration() ) ) + "t ";
+                if( se->second.insert( key ).second ) {
+                    const int turns = e.is_permanent() ? -1 : to_turns<int>( e.get_duration() );
+                    g_client_local_mon_effects[mon->mp_net_id].push_back(
+                        mp_local_effect{ e.get_id(), e.get_bp(), e.get_intensity(), turns } );
+                    mp_log( "[cdda-mp] CLI-LOCAL-EFFECT: nid=" + std::to_string( mon->mp_net_id ) + " " +
+                            mon->type->id.str() + " +" + key + " int=" + std::to_string( e.get_intensity() ) +
+                            " " + std::to_string( turns ) + "t" );
                 }
             }
-            static std::unordered_map<uint32_t, std::string> s_last_local;
-            std::string &last = s_last_local[mon->mp_net_id];
-            if( !local.empty() && local != last ) {
-                mp_log( "[cdda-mp] MON-LOCAL-EFFECT: nid=" + std::to_string( mon->mp_net_id ) + " " +
-                        mon->type->id.str() + " [" + local + "] (not from the host)" );
-            }
-            last = local;
         }
         const auto it = g_mon_last_synced_pos.find( mon->mp_net_id );
         if( it == g_mon_last_synced_pos.end() || it->second == mon->pos_abs() ) {
@@ -3427,6 +3441,20 @@ static void mp_client_capture_local_moves()
         it->second = mon->pos_abs();
     }
     if( const npc *standin = get_partner_npc() ) {
+        if( g_standin_host_effects_known ) {
+            for( const effect &e : standin->get_effects() ) {
+                const std::string key = e.get_id().str() + "|" + e.get_bp().id().str();
+                if( mp_world_effect_npc_internal( e.get_id() ) ||
+                    !g_standin_host_effects.insert( key ).second ) {
+                    continue;
+                }
+                const int turns = e.is_permanent() ? -1 : to_turns<int>( e.get_duration() );
+                g_client_local_host_effects.push_back(
+                    mp_local_effect{ e.get_id(), e.get_bp(), e.get_intensity(), turns } );
+                mp_log( "[cdda-mp] CLI-LOCAL-EFFECT: host stand-in +" + key + " int=" +
+                        std::to_string( e.get_intensity() ) + " " + std::to_string( turns ) + "t" );
+            }
+        }
         if( g_standin_last_placed && standin->pos_abs() != *g_standin_last_placed ) {
             mp_log( "[cdda-mp] CLI-LOCAL-MOVE: host stand-in " + g_standin_last_placed->to_string() +
                     " -> " + standin->pos_abs().to_string() );
@@ -3434,6 +3462,11 @@ static void mp_client_capture_local_moves()
             g_standin_last_placed = standin->pos_abs();
         }
     }
+}
+
+void mp_client_note_op_effect( uint32_t nid, const efftype_id &eff )
+{
+    g_mon_last_synced_effects[nid].insert( eff.str() + "|" + bodypart_str_id::NULL_ID().str() );
 }
 
 // Client: a sync is about to place a creature at `host_says`.  Returns true to
@@ -5356,6 +5389,68 @@ static void mp_host_apply_client_moves( const std::string &msg )
                 }
             }
         }
+        // Step 2: the effects those pushes left, after the moves (SP stuns at the
+        // landing tile).  add_effect without force: the host decides immunity.
+        const auto read_effect = []( JsonObject & eo, efftype_id & id, bodypart_id & bp,
+        time_duration & dur, bool & perm, int &intensity ) {
+            id = efftype_id( eo.get_string( "eff", "" ) );
+            const bodypart_str_id bps( eo.get_string( "bp", "" ) );
+            bp = bps.is_valid() ? bps.id() : bodypart_str_id::NULL_ID().id();
+            const int turns = eo.get_int( "turns", 1 );
+            perm = turns < 0;
+            dur = time_duration::from_turns( std::max( 1, turns ) );
+            intensity = eo.get_int( "int", 1 );
+            return id.is_valid();
+        };
+        if( jo.has_array( "client_monster_effects" ) ) {
+            for( const JsonValue &ev : jo.get_array( "client_monster_effects" ) ) {
+                JsonObject eo = ev.get_object();
+                eo.allow_omitted_members();
+                const uint32_t nid = static_cast<uint32_t>( eo.get_int( "nid", 0 ) );
+                efftype_id id;
+                bodypart_id bp;
+                time_duration dur;
+                bool perm = false;
+                int intensity = 1;
+                monster *mon = nullptr;
+                for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+                    if( ptr && ptr->mp_net_id == nid && !ptr->is_dead() ) {
+                        mon = ptr.get();
+                        break;
+                    }
+                }
+                if( !read_effect( eo, id, bp, dur, perm, intensity ) || mon == nullptr ) {
+                    mp_log( "[cdda-mp] HOST-CLIENT-EFFECT: REFUSED nid=" + std::to_string( nid ) + " " +
+                            id.str() + ( mon ? ": unknown effect" : ": no live host monster" ) );
+                    continue;
+                }
+                mon->add_effect( id, dur, bp, perm, intensity );
+                mp_server_mon_force_resend( nid );
+                mp_log( "[cdda-mp] HOST-CLIENT-EFFECT: nid=" + std::to_string( nid ) + " " +
+                        mon->type->id.str() + " +" + id.str() + " " + to_string( dur ) + " -> " +
+                        ( mon->has_effect( id, bp ) ? "applied" : "NOT APPLIED (immune or blocked)" ) );
+            }
+        }
+        if( jo.has_array( "client_host_effects" ) ) {
+            avatar &u = get_avatar();
+            for( const JsonValue &ev : jo.get_array( "client_host_effects" ) ) {
+                JsonObject eo = ev.get_object();
+                eo.allow_omitted_members();
+                efftype_id id;
+                bodypart_id bp;
+                time_duration dur;
+                bool perm = false;
+                int intensity = 1;
+                if( !read_effect( eo, id, bp, dur, perm, intensity ) ) {
+                    mp_log( "[cdda-mp] HOST-CLIENT-EFFECT: REFUSED host avatar, unknown effect '" +
+                            id.str() + "'" );
+                    continue;
+                }
+                u.add_effect( id, dur, bp, perm, intensity );
+                mp_log( "[cdda-mp] HOST-CLIENT-EFFECT: host avatar +" + id.str() + " " + to_string( dur ) +
+                        " -> " + ( u.has_effect( id, bp ) ? "applied" : "NOT APPLIED (immune or blocked)" ) );
+            }
+        }
         if( jo.has_object( "client_host_moved" ) ) {
             JsonObject mo = jo.get_object( "client_host_moved" );
             const tripoint_abs_ms to( mo.get_int( "x" ), mo.get_int( "y" ), mo.get_int( "z" ) );
@@ -6389,7 +6484,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // B5/B10: creatures the client's own world moved (its knockback, push and
     // pull spells), riding the same packet as act_pos and applied with it.
     if( msg.find( "\"client_moves\":" ) != std::string::npos ||
-        msg.find( "\"client_host_moved\":" ) != std::string::npos ) {
+        msg.find( "\"client_host_moved\":" ) != std::string::npos ||
+        msg.find( "\"client_monster_effects\":" ) != std::string::npos ||
+        msg.find( "\"client_host_effects\":" ) != std::string::npos ) {
         mp_host_apply_client_moves( msg );
     }
 
@@ -13547,34 +13644,10 @@ static bool apply_one_state_message( const std::string &msg )
         if( jo.has_array( "host_effects" ) && client_host_npc_spawned ) {
             npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
             if( host_npc ) {
-                // DIAGNOSTIC (B5/B10 step 2, 2026-10-15): effects the client's own
-                // world put on the stand-in since the host last set them (a
-                // client knockback's stun, ...), which this clear wipes.  Logged
-                // per distinct set before deciding what to report to the host.
-                static std::set<std::string> s_host_set;   // "id|bp" as the host last sent
-                {
-                    std::string local;
-                    for( const effect &e : host_npc->get_effects() ) {
-                        const std::string key = e.get_id().str() + "|" + e.get_bp().id().str();
-                        if( !s_host_set.count( key ) ) {
-                            local += key + ":" + std::to_string( e.get_intensity() ) + ":" +
-                                     std::to_string( to_turns<int>( e.get_duration() ) ) + "t ";
-                        }
-                    }
-                    static std::string s_last_local;
-                    if( !local.empty() && local != s_last_local ) {
-                        mp_log( "[cdda-mp] STANDIN-LOCAL-EFFECT: [" + local + "] (not from the host)" );
-                    }
-                    s_last_local = local;
-                }
-                s_host_set.clear();
-                for( const JsonValue &ev : jo.get_array( "host_effects" ) ) {
-                    JsonObject eo = ev.get_object();
-                    eo.allow_omitted_members();
-                    const std::string bp_str = eo.get_string( "bp", "" );
-                    s_host_set.insert( eo.get_string( "id", "" ) + "|" +
-                                       ( bp_str.empty() ? bodypart_str_id::NULL_ID().str() : bp_str ) );
-                }
+                // B5/B10 step 2: effects the client's own world put on the
+                // stand-in (a client knockback's stun) go to the host before this
+                // clear wipes them; see g_client_local_host_effects.
+                mp_client_capture_local_moves();
                 host_npc->clear_effects();
                 for( const JsonValue &ev : jo.get_array( "host_effects" ) ) {
                     JsonObject eo = ev.get_object();
@@ -13594,6 +13667,14 @@ static bool apply_one_state_message( const std::string &msg )
                         host_npc->add_effect( et, dur, bpsid.id(), /*permanent=*/false, intensity );
                     }
                 }
+                // The baseline for B5/B10 step 2 is what is actually on the
+                // stand-in now: add_effect can move an effect to a main part or
+                // refuse it, and either would otherwise read as "local".
+                g_standin_host_effects.clear();
+                for( const effect &e : host_npc->get_effects() ) {
+                    g_standin_host_effects.insert( e.get_id().str() + "|" + e.get_bp().id().str() );
+                }
+                g_standin_host_effects_known = true;
             }
         }
 
@@ -14570,6 +14651,10 @@ void client_process_incoming()
         g_mon_last_synced_pos.clear();
         g_mon_last_synced_effects.clear();
         g_standin_last_placed.reset();
+        g_standin_host_effects.clear();
+        g_standin_host_effects_known = false;
+        g_client_local_mon_effects.clear();
+        g_client_local_host_effects.clear();
         g_client_pending_lost_host_wake = false;
         // And the effects mirror: force a full snapshot to the new proxy.
         g_client_effects_sig_sent.clear();
@@ -15441,6 +15526,32 @@ std::string client_enrich_action( const std::string &json )
                 enriched += ",\"client_host_moved\":{" + pos_json( g_client_local_host_move->to ) + "}";
                 mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: host stand-in -> " +
                         g_client_local_host_move->to.to_string() );
+            }
+            // Step 2: the effects the same pushes left (stun, knockdown).
+            const auto eff_json = []( const mp_local_effect & e ) {
+                return "\"eff\":\"" + e.id.str() + "\",\"bp\":\"" + e.bp.id().str() + "\",\"int\":" +
+                       std::to_string( e.intensity ) + ",\"turns\":" + std::to_string( e.turns );
+            };
+            std::string meff;
+            for( const auto &[nid, list] : g_client_local_mon_effects ) {
+                for( const mp_local_effect &e : list ) {
+                    meff += std::string( meff.empty() ? "" : "," ) + "{\"nid\":" + std::to_string( nid ) +
+                            "," + eff_json( e ) + "}";
+                }
+            }
+            g_client_local_mon_effects.clear();
+            if( !meff.empty() ) {
+                enriched += ",\"client_monster_effects\":[" + meff + "]";
+                mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: monsters [" + meff + "]" );
+            }
+            std::string heff;
+            for( const mp_local_effect &e : g_client_local_host_effects ) {
+                heff += std::string( heff.empty() ? "" : "," ) + "{" + eff_json( e ) + "}";
+            }
+            g_client_local_host_effects.clear();
+            if( !heff.empty() ) {
+                enriched += ",\"client_host_effects\":[" + heff + "]";
+                mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: host stand-in [" + heff + "]" );
             }
         }
         enriched += ",\"client_light\":" + mp_json_num( cl );

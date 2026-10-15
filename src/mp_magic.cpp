@@ -409,6 +409,7 @@ void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
         ",\"turns\":" + std::to_string( to_turns<int>( dur ) ) + "}";
     mp_log( "[cdda-mp] CLI-MON-OP-SEND: " + payload );
     client_send( payload );
+    mp_client_note_op_effect( mon->mp_net_id, eff );
 }
 
 void mp_handle_client_monster_op( const std::string &msg )

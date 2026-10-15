@@ -348,6 +348,11 @@ void mp_client_monster_op_sent( const monster &mon, bool killed );
 // keyframe.
 void mp_server_mon_force_resend( uint32_t nid );
 
+// Client: a B3a op just sent spell effect `eff` for monster `nid`.  Counts it as
+// already reported, so the local-effect capture (B5/B10 step 2) doesn't send
+// the same effect a second time.
+void mp_client_note_op_effect( uint32_t nid, const efftype_id &eff );
+
 // Client: true when monster::die should NOT run this monster's death spell
 // (`eoc` false) or death EOC (`eoc` true) in the client's world, because the
 // host runs the same death and owns what it creates.  A death spell that
