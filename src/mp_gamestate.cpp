@@ -3365,11 +3365,31 @@ static void mp_client_capture_local_moves()
     if( !is_client_mode() ) {
         return;
     }
+    // A nid held by two live copies (MON-DUP-NID, the resurrection-flicker
+    // class) has no single position to report: each copy looks "moved" from the
+    // other's, and reporting them flip-flopped nid=33 between two tiles within a
+    // millisecond (measured 2026-10-15 16:52:41).  Skip it until the sync
+    // resolves the duplicate.
+    std::unordered_map<uint32_t, int> copies;
+    for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
+        if( ptr && ptr->mp_net_id != 0 && !ptr->is_dead() ) {
+            ++copies[ptr->mp_net_id];
+        }
+    }
+    static std::unordered_set<uint32_t> s_dup_logged;
     for( const auto &ptr : get_creature_tracker().get_monsters_list() ) {
         const monster *mon = ptr.get();
         // A ridden mount moves with its rider on both sides already (the rider
         // sync), so its moves aren't the client's to report.
         if( !mon || mon->mp_net_id == 0 || mon->is_dead() || mon->has_effect( effect_ridden ) ) {
+            continue;
+        }
+        if( copies[mon->mp_net_id] > 1 ) {
+            if( s_dup_logged.insert( mon->mp_net_id ).second ) {
+                mp_log( "[cdda-mp] CLI-LOCAL-MOVE: nid=" + std::to_string( mon->mp_net_id ) +
+                        " has " + std::to_string( copies[mon->mp_net_id] ) +
+                        " live copies (MON-DUP-NID) — its moves aren't reported" );
+            }
             continue;
         }
         const auto it = g_mon_last_synced_pos.find( mon->mp_net_id );
