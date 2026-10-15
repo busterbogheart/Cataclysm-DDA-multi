@@ -375,6 +375,29 @@ void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *o
     mp_client_monster_op_sent( mon, std::string( op ) == "banish" );
 }
 
+void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
+                                 const efftype_id &eff, const time_duration &dur )
+{
+    if( !is_client_mode() || !caster.is_avatar() ) {
+        return;
+    }
+    const monster *mon = target.as_monster();
+    if( mon == nullptr ) {
+        return;   // characters: the partner is forwarded earlier; NPCs aren't synced
+    }
+    if( mon->mp_net_id == 0 ) {
+        mp_log( "[cdda-mp] CLI-MON-OP: effect " + eff.str() + " on unsynced " +
+                mon->type->id.str() + " — not sent" );
+        return;
+    }
+    const std::string payload =
+        "{\"type\":\"client_monster_op\",\"op\":\"effect\",\"nid\":" +
+        std::to_string( mon->mp_net_id ) + ",\"eff\":\"" + eff.str() + "\"" +
+        ",\"turns\":" + std::to_string( to_turns<int>( dur ) ) + "}";
+    mp_log( "[cdda-mp] CLI-MON-OP-SEND: " + payload );
+    client_send( payload );
+}
+
 void mp_handle_client_monster_op( const std::string &msg )
 {
     if( !is_hosting() ) {
@@ -382,6 +405,8 @@ void mp_handle_client_monster_op( const std::string &msg )
     }
     std::string op;
     std::string to;
+    std::string eff;
+    int turns = 0;
     uint32_t nid = 0;
     int fr = 0;
     bool pet = false;
@@ -394,6 +419,8 @@ void mp_handle_client_monster_op( const std::string &msg )
         nid = static_cast<uint32_t>( jo.get_int( "nid", 0 ) );
         fr = jo.get_int( "fr", 0 );
         pet = jo.get_bool( "pet", false );
+        eff = jo.get_string( "eff", "" );
+        turns = jo.get_int( "turns", 0 );
     } catch( const std::exception &e ) {
         mp_log( std::string( "[cdda-mp] HOST-MON-OP parse error: " ) + e.what() );
         return;
@@ -433,6 +460,27 @@ void mp_handle_client_monster_op( const std::string &msg )
         if( pet && !mon->has_effect( effect_pet ) ) {
             mon->add_effect( effect_pet, 1_turns, true );
         }
+    } else if( op == "effect" ) {
+        // add_effect_to_target(): the same call the client's spell made, on the
+        // host's monster.  Immunity and stacking are decided here.  Re-send the
+        // record either way, so a refused effect leaves the client's copy too.
+        const efftype_id eff_id( eff );
+        if( eff.empty() || !eff_id.is_valid() ) {
+            mp_log( "[cdda-mp] HOST-MON-OP: REJECTED effect nid=" + std::to_string( nid ) +
+                    ", unknown effect '" + eff + "'" );
+            mp_server_mon_force_resend( nid );
+            return;
+        }
+        const int had = mon->has_effect( eff_id ) ? to_turns<int>( mon->get_effect_dur( eff_id ) ) : 0;
+        mon->add_effect( eff_id, time_duration::from_turns( turns ) );
+        mp_server_mon_force_resend( nid );
+        mp_log( "[cdda-mp] HOST-MON-OP: effect nid=" + std::to_string( nid ) + " " +
+                mon->type->id.str() + " " + eff + " +" + std::to_string( turns ) + "t: " +
+                std::to_string( had ) + "t -> " +
+                ( mon->has_effect( eff_id ) ?
+                  std::to_string( to_turns<int>( mon->get_effect_dur( eff_id ) ) ) + "t" :
+                  std::string( "NOT APPLIED (immune or blocked)" ) ) );
+        return;
     } else if( op == "banish" ) {
         // banishment(): no drops, killed by the caster.  The proxy is the
         // client's character here, so the kill is credited the way SP credits

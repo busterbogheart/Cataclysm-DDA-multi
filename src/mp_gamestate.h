@@ -7,6 +7,7 @@
 #include "coordinates.h"
 #include "enums.h" // object_type — used by mp_client_dispatch_grab_if_changed
 #include "type_id.h" // itype_id — used by mp_log_craft_tool_shortfall
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -339,6 +340,13 @@ void mp_client_locked_grant_guard();
 // pending-kill guard so the host's in-flight "still alive" broadcasts don't
 // re-spawn it before the op lands.
 void mp_client_monster_op_sent( const monster &mon, bool killed );
+
+// Host: send this monster's full record on the next broadcast even if it looks
+// unchanged.  After a client op the host's monster may NOT have changed (an
+// immune monster refused the effect), and the client's copy, which already
+// applied the op locally, would otherwise keep the change until the next
+// keyframe.
+void mp_server_mon_force_resend( uint32_t nid );
 
 // Client: true when monster::die should NOT run this monster's death spell
 // (`eoc` false) or death EOC (`eoc` true) in the client's world, because the

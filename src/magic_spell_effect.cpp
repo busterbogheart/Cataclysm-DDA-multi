@@ -527,6 +527,7 @@ static void add_effect_to_target( const tripoint_bub_ms &target, const spell &sp
     }
     if( !bodypart_effected ) {
         critter->add_effect( spell_effect, dur_td );
+        cata_mp::mp_on_spell_effect_applied( *critter, caster, spell_effect, dur_td );
     }
 }
 

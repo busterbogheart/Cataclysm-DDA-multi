@@ -12,6 +12,7 @@ class Creature;
 class event_bus;
 class monster;
 class spell;
+class time_duration;
 
 // Co-op diagnostics for spell content (Magiclysm, Sorcerer, Xedra, anything else
 // that casts).  Magiclysm was downgraded from mod_coop::incompatible to
@@ -91,6 +92,23 @@ void mp_handle_client_summon( const std::string &msg );
 // (magic_spell_effect.cpp).  No-op unless we are the client, the caster is our
 // own avatar, and the monster is a synced one (has a net id).
 void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *op );
+
+// --- Client spell effects on monsters (ROADMAP B3a) -----------------------
+//
+// Measured 2026-10-15: a client Slow put magic_slowed on the client's copy of
+// the zombie only.  The host's monster never had it (so it moved at full
+// speed), and the copy kept it at full duration forever, because the client
+// runs no monster turns to tick it down.
+//
+// Unlike the B15 ops this sends the CALL, not the result: add_effect stacks
+// onto an effect the monster already has, so the host replays SP's own
+// add_effect( effect, duration ) on its monster and gets the same answer SP
+// would, immunity included.  The host's record then carries the outcome back
+// (effects in the monster sync).  Called from add_effect_to_target
+// (magic_spell_effect.cpp) right after SP's add_effect.  No-op unless we are
+// the client, the caster is our own avatar, and the target is a synced monster.
+void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
+                                 const efftype_id &eff, const time_duration &dur );
 
 // Host: apply a {"type":"client_monster_op",...} packet.
 void mp_handle_client_monster_op( const std::string &msg );

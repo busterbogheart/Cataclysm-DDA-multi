@@ -16177,6 +16177,118 @@ static void mp_diag_mon_effects( const monster &mon, const char *side )
             mon.type->id.str() + " (" + side + ") [" + mon_effects_desc( mon ) + "]" );
 }
 
+// Monster effects in the sync (B3, 2026-10-15).  These already have their own
+// record fields and appliers, so the effect list leaves them alone: ridden
+// (rider), docile (doc), run (flee, applied to the effect cache).
+static bool mp_mon_effect_synced( const efftype_id &id )
+{
+    return id != effect_ridden && id != effect_docile && id != effect_run;
+}
+
+// Host: the monster's effects as `,"eff":[["id",intensity,end_turn(,"bp")],...]`,
+// or "" when it has none.  end_turn is the absolute turn the effect runs out
+// (-1 = permanent) rather than the turns left: it stays the same while the
+// effect ticks down, so the delta gate still skips a monster whose effects
+// haven't changed.
+static std::string mon_effects_wire( const monster &mon )
+{
+    std::string out;
+    const int now = to_turn<int>( calendar::turn );
+    for( const effect &e : mon.get_effects() ) {
+        if( !mp_mon_effect_synced( e.get_id() ) ) {
+            continue;
+        }
+        out += out.empty() ? "[" : ",";
+        out += "[\"" + e.get_id().str() + "\"," + std::to_string( e.get_intensity() ) + "," +
+               std::to_string( e.is_permanent() ? -1 : now + to_turns<int>( e.get_duration() ) );
+        if( e.get_bp() != bodypart_str_id::NULL_ID() ) {
+            out += ",\"" + e.get_bp().id().str() + "\"";
+        }
+        out += "]";
+    }
+    return out.empty() ? out : ",\"eff\":" + out + "]";
+}
+
+// Client: make the copy's effects exactly the host's.  The client runs no
+// monster turns, so its copy never ticks or expires an effect on its own; the
+// host's record is the only thing that changes them, both ways.  A record
+// with no "eff" means the host's monster has none.  New effects are added with
+// force (the host already passed the immunity check) and deferred (no
+// process_one_effect: an effect's on-add damage would show up as a client hit
+// on the copy and be reported back, applying it twice).
+static void apply_mon_effects( monster &mon, JsonObject &mo, uint32_t nid )
+{
+    struct want_t {
+        int intensity;
+        int end_turn;
+    };
+    std::map<std::pair<efftype_id, bodypart_id>, want_t> want;
+    if( mo.has_array( "eff" ) ) {
+        for( const JsonValue &jv : mo.get_array( "eff" ) ) {
+            JsonArray ja = jv.get_array();
+            const efftype_id id( ja.get_string( 0 ) );
+            const int intensity = ja.get_int( 1 );
+            const int end_turn = ja.get_int( 2 );
+            bodypart_id bp = bodypart_str_id::NULL_ID();
+            if( ja.size() > 3 ) {
+                const bodypart_str_id bp_str( ja.get_string( 3 ) );
+                if( bp_str.is_valid() ) {
+                    bp = bp_str;
+                }
+            }
+            if( !id.is_valid() ) {
+                static std::unordered_set<std::string> s_unknown_logged;
+                if( s_unknown_logged.insert( id.str() ).second ) {
+                    mp_log( "[cdda-mp] MON-EFFECT-SYNC: host effect '" + id.str() +
+                            "' is unknown here — skipped" );
+                }
+                continue;
+            }
+            want[ { id, bp } ] = { intensity, end_turn };
+        }
+    }
+    std::string changes;
+    std::vector<std::pair<efftype_id, bodypart_id>> drop;
+    for( const effect &e : mon.get_effects() ) {
+        if( mp_mon_effect_synced( e.get_id() ) && !want.count( { e.get_id(), e.get_bp() } ) ) {
+            drop.emplace_back( e.get_id(), e.get_bp() );
+        }
+    }
+    for( const auto &[id, bp] : drop ) {
+        mon.remove_effect( id, bp );
+        changes += " -" + id.str();
+    }
+    const int now = to_turn<int>( calendar::turn );
+    for( const auto &[key, w] : want ) {
+        const auto &[id, bp] = key;
+        const bool perm = w.end_turn < 0;
+        const time_duration dur = time_duration::from_turns( perm ? 1 : std::max( 1, w.end_turn - now ) );
+        if( mon.has_effect( id, bp ) ) {
+            effect &e = mon.get_effect( id, bp );
+            if( e.get_intensity() != w.intensity ) {
+                e.set_intensity( w.intensity );
+                changes += " ~" + id.str();
+            }
+            if( perm != e.is_permanent() ) {
+                perm ? e.pause_effect() : e.unpause_effect();
+            }
+            e.set_duration( dur );
+        } else {
+            mon.add_effect( id, dur, bp, perm, w.intensity, /*force=*/true, /*deferred=*/true );
+            changes += " +" + id.str();
+        }
+    }
+    if( !changes.empty() ) {
+        mp_log( "[cdda-mp] MON-EFFECT-SYNC: nid=" + std::to_string( nid ) + " " +
+                mon.type->id.str() + changes );
+    }
+}
+
+void mp_server_mon_force_resend( uint32_t nid )
+{
+    g_server_mon_last_sent.erase( nid );
+}
+
 static std::string build_monster_list( const tripoint_abs_ms &center, int radius )
 {
     // Periodic keyframe: every KEYFRAME_INTERVAL broadcasts, drop the delta cache
@@ -16279,6 +16391,9 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
                + ",\"doc\":" + ( mon_ptr->has_effect( effect_docile ) ? "1" : "0" )
                + ( mon_ptr->faction.id() != mon_ptr->type->default_faction
                    ? ",\"fac\":\"" + mon_ptr->faction.id().str() + "\"" : std::string() )
+               // Effects (B3): slowed, downed, stunned, grabbing, pet ...  The
+               // client copy runs no turns, so this is its only source.
+               + mon_effects_wire( *mon_ptr )
                + ",\"facing\":" + std::to_string( mon_facing ) + rider_field + "}";
         // Delta gate: emit only if new or changed since last broadcast. nid + id
         // are stable, so an identical record string means x/y/z/hp/facing are all
@@ -17477,8 +17592,6 @@ static void apply_monster_sync( JsonObject &jo )
         }
 
         matched.insert( best );
-        // DIAGNOSTIC (B3a): did applying this record change the copy's effects?
-        const std::string effects_before = mon_effects_desc( *best );
 
         // Host is authoritative on type, as it already is on hp, friendliness and
         // position.  A monster changes type in place under the same nid
@@ -17567,10 +17680,9 @@ static void apply_monster_sync( JsonObject &jo )
                         " doc=" + std::to_string( docile ) + ")" );
             }
         }
-        if( const std::string effects_after = mon_effects_desc( *best );
-            effects_after != effects_before ) {
-            mp_log( "[cdda-mp] MON-EFFECTS-SYNC-ALTERED: nid=" + std::to_string( nid ) + " " +
-                    best->type->id.str() + " [" + effects_before + "] -> [" + effects_after + "]" );
+        // Host is authoritative on effects too (B3).
+        if( !best->is_dead() ) {
+            apply_mon_effects( *best, mo, nid );
         }
 
         // Silent-drop diagnostic: remember live nids; forget ones the host reports
