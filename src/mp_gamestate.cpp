@@ -16133,6 +16133,50 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
     return out;
 }
 
+// DIAGNOSTIC (B3a, 2026-10-15): a monster's effects as "id:intensity:turns",
+// "perm" for permanent ones.
+static std::string mon_effects_desc( const monster &mon )
+{
+    std::string out;
+    for( const effect &e : mon.get_effects() ) {
+        if( !out.empty() ) {
+            out += ' ';
+        }
+        out += e.get_id().str() + ":" + std::to_string( e.get_intensity() ) + ":" +
+               ( e.is_permanent() ? std::string( "perm" )
+                 : std::to_string( to_turns<int>( e.get_duration() ) ) );
+    }
+    return out;
+}
+
+// DIAGNOSTIC (B3a, 2026-10-15): the effects a monster carries on THIS side,
+// logged per nid when the set changes.  The gate is ids and intensities, with
+// durations counted in whole minutes, so a ticking effect logs about once a
+// minute rather than every turn, and a frozen one logs only once.  Host lines
+// come from the broadcast and client lines from each applied sync, so they pair
+// up by nid.  A client spell's debuff that never shows in a host line never
+// reached the host; one that drops out of a client line at a sync was wiped by it.
+static void mp_diag_mon_effects( const monster &mon, const char *side )
+{
+    if( mon.mp_net_id == 0 || mon.is_dead() ) {
+        return;
+    }
+    std::string key;
+    for( const effect &e : mon.get_effects() ) {
+        key += e.get_id().str() + ":" + std::to_string( e.get_intensity() ) + ":" +
+               ( e.is_permanent() ? std::string( "p" )
+                 : std::to_string( to_turns<int>( e.get_duration() ) / 60 ) ) + " ";
+    }
+    static std::unordered_map<uint32_t, std::string> s_last_key;
+    const auto [it, fresh] = s_last_key.emplace( mon.mp_net_id, key );
+    if( fresh ? key.empty() : it->second == key ) {
+        return;
+    }
+    it->second = key;
+    mp_log( "[cdda-mp] MON-EFFECTS: nid=" + std::to_string( mon.mp_net_id ) + " " +
+            mon.type->id.str() + " (" + side + ") [" + mon_effects_desc( mon ) + "]" );
+}
+
 static std::string build_monster_list( const tripoint_abs_ms &center, int radius )
 {
     // Periodic keyframe: every KEYFRAME_INTERVAL broadcasts, drop the delta cache
@@ -16180,6 +16224,7 @@ static std::string build_monster_list( const tripoint_abs_ms &center, int radius
         }
         const uint32_t nid = mon_ptr->mp_net_id;
         seen_nids.insert( nid );
+        mp_diag_mon_effects( *mon_ptr, "host" );
         // DIAGNOSTIC (B15): a monster that changes type in place keeps its nid
         // (monster::poly — polymorph spells, upgrades).  The client ignores "id"
         // on a nid match, so pair this with the client's MON-TYPE-MISMATCH.
@@ -17432,6 +17477,8 @@ static void apply_monster_sync( JsonObject &jo )
         }
 
         matched.insert( best );
+        // DIAGNOSTIC (B3a): did applying this record change the copy's effects?
+        const std::string effects_before = mon_effects_desc( *best );
 
         // Host is authoritative on type, as it already is on hp, friendliness and
         // position.  A monster changes type in place under the same nid
@@ -17519,6 +17566,11 @@ static void apply_monster_sync( JsonObject &jo )
                         " flee=" + std::to_string( mo.get_int( "flee", 0 ) ) +
                         " doc=" + std::to_string( docile ) + ")" );
             }
+        }
+        if( const std::string effects_after = mon_effects_desc( *best );
+            effects_after != effects_before ) {
+            mp_log( "[cdda-mp] MON-EFFECTS-SYNC-ALTERED: nid=" + std::to_string( nid ) + " " +
+                    best->type->id.str() + " [" + effects_before + "] -> [" + effects_after + "]" );
         }
 
         // Silent-drop diagnostic: remember live nids; forget ones the host reports
@@ -17835,6 +17887,14 @@ static void apply_monster_sync( JsonObject &jo )
                 " removed=" + std::to_string( n_culled ) +
                 ( culled_log.empty() ? "" : " [removed: " + culled_log + "]" ) +
                 ( remove_miss_log.empty() ? "" : " [remove_miss: " + remove_miss_log + "]" ) );
+    }
+
+    // DIAGNOSTIC (B3a): every synced copy, not just this packet's records — a
+    // monster the delta gate skipped keeps whatever the client's spell gave it.
+    for( const auto &mon : ct.get_monsters_list() ) {
+        if( mon ) {
+            mp_diag_mon_effects( *mon, "client" );
+        }
     }
 
     g->cleanup_dead();

@@ -603,6 +603,16 @@ bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &
     if( !caster.is_avatar() ) {
         return false;   // only our own casts can be forwarded
     }
+    // DIAGNOSTIC (B3a, 2026-10-15): our spell is about to put an effect on a
+    // monster.  Pair with MON-EFFECTS (both sides) to see whether it reaches the
+    // host and what later syncs do to the client's copy.
+    if( is_client_mode() && target.is_monster() && !sp.effect_data().empty() ) {
+        const monster *mon = target.as_monster();
+        mp_log( "[cdda-mp] CLI-SPELL-MON-EFFECT: " + sp.id().str() + " effect=" + sp.effect_data() +
+                " turns=" + std::to_string( to_turns<int>( time_duration::from_moves(
+                            sp.duration( caster ) ) ) ) +
+                " on " + mon->type->id.str() + " nid=" + std::to_string( mon->mp_net_id ) );
+    }
     const Character *tgt = target.as_character();
     if( tgt == nullptr || !is_partner_npc( tgt->getID() ) ) {
         return false;
