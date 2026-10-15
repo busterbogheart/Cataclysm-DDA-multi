@@ -394,10 +394,6 @@ void worldfactory::init()
         std::string worldname;
         size_t name_index = world_dir.find_last_of( "/\\" );
         worldname = world_dir.substr( name_index + 1 );
-        // MP: the co-op client's scratch world never appears in a world list.
-        if( cata_mp::mp_is_internal_world( worldname ) ) {
-            return;
-        }
 
         // create and store the world
         all_worlds[worldname] = std::make_unique<WORLD>();

@@ -630,8 +630,6 @@ void main_menu::load_char_templates()
 
 bool main_menu::opening_screen()
 {
-    // MP: back at the menu after a co-op session, keep the scratch world hidden.
-    cata_mp::mp_hide_internal_worlds();
     // set holiday based on local system time
     current_holiday = get_holiday_from_time();
 

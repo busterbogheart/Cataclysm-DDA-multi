@@ -3582,31 +3582,6 @@ void mp_on_world_exit()
     }
 }
 
-// The co-op client's scratch world: the throwaway world a joining client's game
-// runs in before it is teleported into the host's world.  Internal by design, and
-// rebuilt whenever the host's mod set differs, so nothing in it is a dependable
-// save.  Kept out of every world list (worldfactory::init skips it, and
-// mp_hide_internal_worlds drops it again after a session), so it is never shown or
-// selectable: user decision 2026-10-12, "is there a reason for it ever to be
-// visible or selected?".  mp_ensure_client_scratch_world() brings it in on demand.
-static const std::string MP_SCRATCH_WORLD_NAME = "Co-op (auto) - DO NOT SELECT";
-
-bool mp_is_internal_world( const std::string &name )
-{
-    return name == MP_SCRATCH_WORLD_NAME;
-}
-
-void mp_hide_internal_worlds()
-{
-    if( is_client_mode() || !world_generator ||
-        !world_generator->has_world( MP_SCRATCH_WORLD_NAME ) ) {
-        return;
-    }
-    // In-memory only: remove_world() erases the list entry and leaves the folder.
-    world_generator->remove_world( MP_SCRATCH_WORLD_NAME );
-    mp_log( "[cdda-mp] MENU: scratch world dropped from the world lists" );
-}
-
 void mp_abandon_client_join()
 {
     if( !is_client_mode() ) {
@@ -3623,9 +3598,6 @@ void mp_abandon_client_join()
             "closing the connection and leaving client mode" );
     client_close();
     set_client_mode( false );
-    // A join that got as far as character creation already loaded the scratch
-    // world; take it back out of the lists the menu is about to show.
-    mp_hide_internal_worlds();
 }
 
 static void purge_npcs_by_name( const std::string &name )
@@ -11084,7 +11056,7 @@ WORLD *mp_ensure_client_scratch_world()
     // Auto-created throwaway world the client spawns into before teleporting to
     // the host.  Named to make it obvious in the world menu that it's internal
     // and must not be hand-selected.  (ASCII only — this becomes a directory.)
-    const std::string &SCRATCH_NAME = MP_SCRATCH_WORLD_NAME;
+    static const std::string SCRATCH_NAME = "Co-op (auto) - DO NOT SELECT";
 
     // Build the mod set from the host's advertised list (received in 'welcome').
     // Mods are data definitions — recipes, professions, terrain types — that
@@ -11134,21 +11106,6 @@ WORLD *mp_ensure_client_scratch_world()
         }
         mp_log( "[cdda-mp] MENU: scratch world mods stale — rebuilding for host set" );
         world_generator->delete_world( SCRATCH_NAME, /*delete_folder=*/true );
-    }
-
-    // Not loaded (worldfactory::init skips it to keep it out of every world
-    // list), but its folder can still be on disk from an earlier run, possibly
-    // built for another host's mods.  It's disposable by design, so clear it
-    // rather than create a world over its leftovers.
-    {
-        const cata_path stale = PATH_INFO::savedir_path() / SCRATCH_NAME;
-        if( !world_generator->has_world( SCRATCH_NAME ) &&
-            std::filesystem::exists( stale.get_unrelative_path() ) ) {
-            std::error_code ec;
-            std::filesystem::remove_all( stale.get_unrelative_path(), ec );
-            mp_log( "[cdda-mp] MENU: cleared the scratch world left on disk" +
-                    std::string( ec ? " (error: " + ec.message() + ")" : "" ) );
-        }
     }
 
     WORLD *neww = world_generator->make_new_world( SCRATCH_NAME, mods );
