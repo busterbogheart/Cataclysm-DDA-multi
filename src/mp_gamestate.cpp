@@ -3497,6 +3497,73 @@ static bool mp_client_hold_local_move( std::optional<mp_local_move> &lm,
     return false;
 }
 
+// Client: the B5/B10 moves and effects not yet sent, as JSON fields to append to
+// an outgoing packet (empty when there are none).  Each is taken once.  `on`
+// names the packet for the log.
+static std::string mp_client_take_local_moves_json( const std::string &on )
+{
+    mp_client_capture_local_moves();
+    std::string out;
+    const auto pos_json = []( const tripoint_abs_ms & p ) {
+        return "\"x\":" + std::to_string( p.x() ) + ",\"y\":" + std::to_string( p.y() ) +
+               ",\"z\":" + std::to_string( p.z() );
+    };
+    std::string moves;
+    for( auto &[nid, lm] : g_client_local_mon_moves ) {
+        if( !lm.sent ) {
+            lm.sent = true;
+            moves += std::string( moves.empty() ? "" : "," ) + "{\"nid\":" +
+                     std::to_string( nid ) + "," + pos_json( lm.to ) + "}";
+        }
+    }
+    if( !moves.empty() ) {
+        out += ",\"client_moves\":[" + moves + "]";
+        mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: monsters [" + moves + "] on=" + on );
+    }
+    if( g_client_local_host_move && !g_client_local_host_move->sent ) {
+        g_client_local_host_move->sent = true;
+        out += ",\"client_host_moved\":{" + pos_json( g_client_local_host_move->to ) + "}";
+        mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: host stand-in -> " +
+                g_client_local_host_move->to.to_string() + " on=" + on );
+    }
+    // Step 2: the effects the same pushes left (stun, knockdown).
+    const auto eff_json = []( const mp_local_effect & e ) {
+        return "\"eff\":\"" + e.id.str() + "\",\"bp\":\"" + e.bp.id().str() + "\",\"int\":" +
+               std::to_string( e.intensity ) + ",\"turns\":" + std::to_string( e.turns );
+    };
+    std::string meff;
+    for( const auto &[nid, list] : g_client_local_mon_effects ) {
+        for( const mp_local_effect &e : list ) {
+            meff += std::string( meff.empty() ? "" : "," ) + "{\"nid\":" + std::to_string( nid ) +
+                    "," + eff_json( e ) + "}";
+        }
+    }
+    g_client_local_mon_effects.clear();
+    if( !meff.empty() ) {
+        out += ",\"client_monster_effects\":[" + meff + "]";
+        mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: monsters [" + meff + "] on=" + on );
+    }
+    std::string heff;
+    for( const mp_local_effect &e : g_client_local_host_effects ) {
+        heff += std::string( heff.empty() ? "" : "," ) + "{" + eff_json( e ) + "}";
+    }
+    g_client_local_host_effects.clear();
+    if( !heff.empty() ) {
+        out += ",\"client_host_effects\":[" + heff + "]";
+        mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: host stand-in [" + heff + "] on=" + on );
+    }
+    return out;
+}
+
+// Host: does this client packet carry B5/B10 moves or effects?
+static bool mp_msg_has_client_moves( const std::string &msg )
+{
+    return msg.find( "\"client_moves\":" ) != std::string::npos ||
+           msg.find( "\"client_host_moved\":" ) != std::string::npos ||
+           msg.find( "\"client_monster_effects\":" ) != std::string::npos ||
+           msg.find( "\"client_host_effects\":" ) != std::string::npos;
+}
+
 // Client: who SP says killed this copy, for the host's kill credit.
 //  1 = our own avatar (or something it summoned), as SP's monster::die credits
 //  0 = anyone or anything else, or nothing (debug "Kill all monsters" passes no killer)
@@ -5699,6 +5766,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
     if( msg.find( "\"action\":\"activity_end\"" ) != std::string::npos ) {
+        // B5/B10: the pushes the ended activity made (client_send_activity_end).
+        if( mp_msg_has_client_moves( msg ) ) {
+            mp_host_apply_client_moves( msg );
+        }
         const std::string id = jo.get_string( "activity_id", "" );
         const std::string prev = g_partner_activity;
         g_partner_activity.clear();
@@ -6483,10 +6554,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     // B5/B10: creatures the client's own world moved (its knockback, push and
     // pull spells), riding the same packet as act_pos and applied with it.
-    if( msg.find( "\"client_moves\":" ) != std::string::npos ||
-        msg.find( "\"client_host_moved\":" ) != std::string::npos ||
-        msg.find( "\"client_monster_effects\":" ) != std::string::npos ||
-        msg.find( "\"client_host_effects\":" ) != std::string::npos ) {
+    if( mp_msg_has_client_moves( msg ) ) {
         mp_host_apply_client_moves( msg );
     }
 
@@ -15503,57 +15571,8 @@ std::string client_enrich_action( const std::string &json )
         }
         // B5/B10: moves the client's own world made to host-owned creatures; see
         // g_client_local_mon_moves.  The host applies them before the action.
-        mp_client_capture_local_moves();
-        {
-            const auto pos_json = []( const tripoint_abs_ms & p ) {
-                return "\"x\":" + std::to_string( p.x() ) + ",\"y\":" + std::to_string( p.y() ) +
-                       ",\"z\":" + std::to_string( p.z() );
-            };
-            std::string moves;
-            for( auto &[nid, lm] : g_client_local_mon_moves ) {
-                if( !lm.sent ) {
-                    lm.sent = true;
-                    moves += std::string( moves.empty() ? "" : "," ) + "{\"nid\":" +
-                             std::to_string( nid ) + "," + pos_json( lm.to ) + "}";
-                }
-            }
-            if( !moves.empty() ) {
-                enriched += ",\"client_moves\":[" + moves + "]";
-                mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: monsters [" + moves + "]" );
-            }
-            if( g_client_local_host_move && !g_client_local_host_move->sent ) {
-                g_client_local_host_move->sent = true;
-                enriched += ",\"client_host_moved\":{" + pos_json( g_client_local_host_move->to ) + "}";
-                mp_log( "[cdda-mp] CLI-LOCAL-MOVE-SEND: host stand-in -> " +
-                        g_client_local_host_move->to.to_string() );
-            }
-            // Step 2: the effects the same pushes left (stun, knockdown).
-            const auto eff_json = []( const mp_local_effect & e ) {
-                return "\"eff\":\"" + e.id.str() + "\",\"bp\":\"" + e.bp.id().str() + "\",\"int\":" +
-                       std::to_string( e.intensity ) + ",\"turns\":" + std::to_string( e.turns );
-            };
-            std::string meff;
-            for( const auto &[nid, list] : g_client_local_mon_effects ) {
-                for( const mp_local_effect &e : list ) {
-                    meff += std::string( meff.empty() ? "" : "," ) + "{\"nid\":" + std::to_string( nid ) +
-                            "," + eff_json( e ) + "}";
-                }
-            }
-            g_client_local_mon_effects.clear();
-            if( !meff.empty() ) {
-                enriched += ",\"client_monster_effects\":[" + meff + "]";
-                mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: monsters [" + meff + "]" );
-            }
-            std::string heff;
-            for( const mp_local_effect &e : g_client_local_host_effects ) {
-                heff += std::string( heff.empty() ? "" : "," ) + "{" + eff_json( e ) + "}";
-            }
-            g_client_local_host_effects.clear();
-            if( !heff.empty() ) {
-                enriched += ",\"client_host_effects\":[" + heff + "]";
-                mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: host stand-in [" + heff + "]" );
-            }
-        }
+        // Usually already sent with the activity_end of the cast that made them.
+        enriched += mp_client_take_local_moves_json( "action" );
         enriched += ",\"client_light\":" + mp_json_num( cl );
         enriched += ",\"client_bleed\":" + bleed_json;
         // Full effect set for the proxy, only when it changed — see
@@ -16285,8 +16304,12 @@ void client_send_activity_end( const std::string &activity_id_str )
         return;
     }
     g_client_activity_ended_since_start = activity_id_str;
+    // A push the activity's finish() made (a cast Repulsion Wave) goes now, as
+    // SP's lands when the cast resolves.  Measured 2026-10-18: riding the next
+    // action instead, the host's knockback showed 9 s after the client's.
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_end\","
-                             "\"activity_id\":\"" + activity_id_str + "\"}";
+                             "\"activity_id\":\"" + activity_id_str + "\"" +
+                             mp_client_take_local_moves_json( "activity_end" ) + "}";
     const player_activity &cur = get_avatar().activity;
     mp_log( "[cdda-mp] ACT-END SEND: id=" + activity_id_str
             + " g_client_turn_activity=" + g_client_turn_activity
