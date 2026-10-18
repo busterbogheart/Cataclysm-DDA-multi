@@ -12153,6 +12153,29 @@ void process_mp_events()
                     // breadcrumb names the exact client message being applied when the
                     // main thread stops, the same way the client apply steps do.
                     mp_apply_step step( "host-apply:" + event.data.substr( 0, 60 ) );
+                    // DIAG 2026-10-18: a handler that opens a blocking SP UI can
+                    // run the next client message INSIDE itself.  Measured
+                    // 2026-10-15: a client Firebolt's hit opened the host's "You
+                    // were attacked!" stop-waiting query (character_health.cpp),
+                    // and the client's wait was acked (26.964) before the hit's
+                    // handler returned (29.733).  Logs each nested apply.
+                    static int s_apply_depth = 0;
+                    static std::string s_apply_outer;
+                    if( s_apply_depth > 0 ) {
+                        mp_log( "[cdda-mp] MP-EVENTS-NESTED: depth=" + std::to_string( s_apply_depth + 1 ) +
+                                " applying " + event.data.substr( 0, 60 ) + " INSIDE " + s_apply_outer );
+                    }
+                    struct depth_guard {
+                        std::string saved;
+                        explicit depth_guard( const std::string &now ) : saved( s_apply_outer ) {
+                            s_apply_outer = now;
+                            ++s_apply_depth;
+                        }
+                        ~depth_guard() {
+                            --s_apply_depth;
+                            s_apply_outer = saved;
+                        }
+                    } guard( event.data.substr( 0, 60 ) );
                     handle_remote_action( event.session_id, event.data );
                 }
                 if( !is_state_sync( event.data ) ) {
