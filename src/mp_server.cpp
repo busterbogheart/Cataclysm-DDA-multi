@@ -41,6 +41,7 @@ std::string mp_get_host_world_name();
 std::string mp_get_host_player_name();
 std::string mp_host_omt_welcome_field();
 std::string mp_host_active_mods_field();
+bool mp_host_welcome_ready();
 
 // Heartbeat-based RTT: the client measures the true network round-trip (its
 // heartbeat -> our immediate io-thread echo -> back) and mirrors that number to
@@ -621,6 +622,16 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
                 session->disconnect();
                 return;
             }
+        }
+        // Not in our world yet: the welcome would carry no world, no mods and
+        // seed 0.  Measured 2026-10-18: a client that probed during the host's
+        // world load got exactly that, built a vanilla world (no Magiclysm), and
+        // only saw the real welcome 16 s later.  Tell it to ask again.
+        if( !mp_host_welcome_ready() ) {
+            mp_log( "[cdda-mp] PROBE held — host world still loading (no welcome snapshot yet); "
+                    "told " + session->peer + " to retry" );
+            session->send( "{\"type\":\"host_loading\"}\n" );
+            return;
         }
         // Probe accepted — send world name + seed + host OMT so the client can
         // display "Joining <world>" AND adopt the seed + spawn location before

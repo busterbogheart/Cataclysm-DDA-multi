@@ -591,6 +591,9 @@ std::string mp_host_omt_welcome_field();
 // "" if not captured). The client rebuilds its co-op world with this exact set so
 // recipes/professions/terrain match. Net-thread safe.
 std::string mp_host_active_mods_field();
+// True once a host turn has captured the welcome snapshot (world name, mods,
+// position) -- false while the host is still loading its world. Net-thread safe.
+bool mp_host_welcome_ready();
 // Client: the host's OMT from the welcome — start_game spawns here in client mode
 // instead of the character's scenario start_location (invalid if not a client join).
 tripoint_abs_omt mp_client_spawn_omt();

@@ -410,7 +410,8 @@ bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms )
 
 bool client_connect( const std::string &host, uint16_t port,
                      const std::string &name, const std::string &password,
-                     const std::string &version )
+                     const std::string &version,
+                     const std::function<void( int )> &on_host_loading )
 {
     g_client = std::make_unique<client_impl>();
 
@@ -492,14 +493,54 @@ bool client_connect( const std::string &host, uint16_t port,
         return false;
     }
 
-    // Wait up to 5 s for welcome or error.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 5 );
+    // Wait up to 5 s for welcome or error.  A host still loading its world
+    // answers host_loading instead (its welcome would carry no world, no mods
+    // and seed 0 -- measured 2026-10-18, the client built a vanilla world from
+    // it).  Probe again a second later, for as long as the host keeps answering,
+    // up to MP_HOST_LOAD_WAIT_MAX.
+    constexpr auto MP_HOST_LOAD_WAIT_MAX = std::chrono::minutes( 5 );
+    const auto started = std::chrono::steady_clock::now();
+    auto deadline = started + std::chrono::seconds( 5 );
+    bool host_loading = false;
+    std::chrono::steady_clock::time_point reprobe_at{};
     while( std::chrono::steady_clock::now() < deadline ) {
+        const auto now = std::chrono::steady_clock::now();
+        if( host_loading && reprobe_at != std::chrono::steady_clock::time_point{} && now >= reprobe_at ) {
+            reprobe_at = {};
+            asio::error_code rwec;
+            asio::write( g_client->sock, asio::buffer( join_msg ), rwec );
+            if( rwec ) {
+                g_connect_error = "Lost the connection while the host was loading.";
+                mp_log( "[cdda-mp] HANDSHAKE: re-probe failed while the host loads — " + rwec.message() );
+                g_client.reset();
+                return false;
+            }
+        }
+        if( host_loading && on_host_loading ) {
+            on_host_loading( static_cast<int>(
+                                 std::chrono::duration_cast<std::chrono::seconds>( now - started ).count() ) );
+        }
         std::string msg;
         // On a mid-game reconnect the response is routed to g_handshake_queue by
         // client_recv_pop(); on an initial connect the game loop isn't running so
         // it arrives on g_recv_queue.  Check both.
         if( g_handshake_queue.pop( msg ) || g_recv_queue.pop( msg ) ) {
+            if( msg.find( "\"type\":\"host_loading\"" ) != std::string::npos ) {
+                if( !host_loading ) {
+                    mp_log( "[cdda-mp] HANDSHAKE: host is still loading its world — waiting, "
+                            "probing again every 1s" );
+                }
+                host_loading = true;
+                if( now - started > MP_HOST_LOAD_WAIT_MAX ) {
+                    g_connect_error = "The host is still loading its world after 5 minutes.";
+                    mp_log( "[cdda-mp] HANDSHAKE: gave up — host still loading after 5 min" );
+                    g_client.reset();
+                    return false;
+                }
+                deadline = now + std::chrono::seconds( 5 );
+                reprobe_at = now + std::chrono::seconds( 1 );
+                continue;
+            }
             if( msg.find( "\"type\":\"error\"" ) != std::string::npos ) {
                 // Extract human-readable error for the caller.
                 g_connect_error = "Server rejected connection.";
@@ -572,7 +613,11 @@ bool client_connect( const std::string &host, uint16_t port,
                 std::cout << "[cdda-mp] Connected to " << host << ":" << port
                           << " as '" << name << "' — version accepted." << std::endl;
                 mp_log( "[cdda-mp] HANDSHAKE: host accepted our version — connected to " +
-                        host + ":" + std::to_string( port ) + " as '" + name + "'" );
+                        host + ":" + std::to_string( port ) + " as '" + name + "'" +
+                        ( host_loading ? " (after waiting " + std::to_string(
+                              std::chrono::duration_cast<std::chrono::seconds>(
+                                  std::chrono::steady_clock::now() - started ).count() ) +
+                          "s for the host to load)" : std::string() ) );
                 // Remember params for a later reconnect.  Do NOT enable reconnect
                 // or heartbeats yet — the client is about to enter char creation
                 // (pre-auth); both are armed in client_send_join() once JOINED, so
@@ -723,7 +768,8 @@ bool client_recv_pop( std::string &out )
         // connected, etc.) still flow to the game loop.
         if( g_rc_in_progress.load() &&
             ( out.find( "\"type\":\"welcome\"" ) != std::string::npos ||
-              out.find( "\"type\":\"error\"" ) != std::string::npos ) ) {
+              out.find( "\"type\":\"error\"" ) != std::string::npos ||
+              out.find( "\"type\":\"host_loading\"" ) != std::string::npos ) ) {
             g_handshake_queue.push( std::move( out ) );
             continue;
         }

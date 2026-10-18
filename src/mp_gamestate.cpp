@@ -2462,6 +2462,19 @@ std::string mp_get_host_world_name()
     return g_host_world_name;
 }
 
+// Network-thread safe: has a host turn captured the welcome snapshot (world name,
+// mod list, position) yet?  grant_client_turn() captures all three each turn, so
+// they're empty until the host's first turn in its world.  A probe answered
+// before then sends an empty world and no mods (measured 2026-10-18).
+bool mp_host_welcome_ready()
+{
+    if( !g_host_omt_valid.load() || mp_get_host_world_name().empty() ) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lk( g_host_active_mods_mtx );
+    return !g_host_active_mods.empty();
+}
+
 std::string mp_client_host_world_name()
 {
     return g_client_host_world_name;
@@ -11537,12 +11550,16 @@ WORLD *mp_ensure_client_scratch_world()
     // can't be streamed, only loaded. The client MUST load the host's exact set
     // or its character/recipes/terrain silently diverge (vanilla character,
     // missing recipes, void terrain outside the streamed bubble — issue #18).
-    // Fall back to plain dda if the host advertised nothing (older host, or the
-    // per-turn capture hasn't run yet).
-    std::vector<std::string> host_mods = mp_client_host_mods();
+    // An empty list is never "no mods" (every world loads dda): it meant the
+    // host was still loading, and the old fallback to plain dda built a vanilla
+    // world for a Magiclysm host (measured 2026-10-18).  The host now holds the
+    // probe until its list exists, so refuse rather than guess.
+    const std::vector<std::string> host_mods = mp_client_host_mods();
     if( host_mods.empty() ) {
-        host_mods = { "dda" };
-        mp_log( "[cdda-mp] MENU: host advertised no mods — scratch world = dda only" );
+        popup( _( "Can't join: the host didn't send its mod list.\n\n"
+                  "Rejoin once the host is in its world." ) );
+        mp_log( "[cdda-mp] MENU: REFUSED join — host advertised no mods (host not in its world?)" );
+        return nullptr;
     }
 
     // Hard-refuse the join if the client is missing any host mod on disk.
@@ -11969,7 +11986,21 @@ bool mp_menu_join_session()
         return false;
     }
     set_client_mode( true );
-    if( !client_connect( host, port, "player2", std::string(), getVersionString() ) ) {
+    // Shown only while a host that's still loading its world holds the probe.
+    std::unique_ptr<static_popup> loading_popup;
+    const auto on_host_loading = [&loading_popup]( int waited_s ) {
+        if( !loading_popup ) {
+            loading_popup = std::make_unique<static_popup>();
+        }
+        loading_popup->message( _( "Waiting for the host to finish loading its world…  (%d s)" ),
+                                waited_s );
+        ui_manager::redraw();
+        refresh_display();
+        inp_mngr.pump_events();
+    };
+    if( !client_connect( host, port, "player2", std::string(), getVersionString(),
+                         on_host_loading ) ) {
+        loading_popup.reset();
         const std::string err = client_connect_error();
         popup( "%s", err.empty()
                //~ %1$s is the host address, %2$d is the port number 
@@ -11978,6 +12009,7 @@ bool mp_menu_join_session()
         set_client_mode( false );
         return false;
     }
+    loading_popup.reset();
     mp_log( "[cdda-mp] MENU: client connected to " + host + ":" + std::to_string( port ) );
     // Log the running binary's exact version (the string the join handshake
     // sends) so the client log shows what's actually executing — catches the

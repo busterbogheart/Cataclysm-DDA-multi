@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace cata_mp {
@@ -21,9 +22,13 @@ bool tcp_probe( const std::string &host, uint16_t port, int timeout_ms );
 // Connect to server and validate version/password immediately.
 // Returns true on success (welcome received).  On false, call
 // client_connect_error() to get the human-readable rejection reason.
+// A host still loading its world answers "host_loading"; the probe is repeated
+// until it's ready, calling on_host_loading( seconds waited ) on the calling
+// thread while it waits (the menu shows a message; other callers pass none).
 bool client_connect( const std::string &host, uint16_t port,
                      const std::string &name, const std::string &password = "",
-                     const std::string &version = "" );
+                     const std::string &version = "",
+                     const std::function<void( int )> &on_host_loading = {} );
 // Error text from the last failed client_connect() call.
 std::string client_connect_error();
 
