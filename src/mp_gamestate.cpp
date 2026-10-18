@@ -12424,12 +12424,16 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         // GH#23 B: also capture WHICH nids, so the invisibility window of a dropped
         // monster can be measured against its later MON-RESPAWN-DROPPED line — the
         // count alone can't tell you whether the same monster keeps falling out.
+        // 2026-10-18: per-nid copy counts, so a copy the shift brings BACK is
+        // logged too (TELE-MON-GAIN).  Measured 2026-10-15: nid=33 dropped at a
+        // bubble-edge shift (16:48:49), the sync spawned a replacement, and the
+        // shift back (16:52:41) restored the old copy beside it (MON-DUP-NID).
         int mons_before = 0;
-        std::unordered_set<uint32_t> nids_before;
+        std::unordered_map<uint32_t, int> nids_before;
         for( const auto &p : get_creature_tracker().get_monsters_list() ) {
             if( p && p->mp_net_id != 0 && !p->is_dead() ) {
                 ++mons_before;
-                nids_before.insert( p->mp_net_id );
+                ++nids_before[p->mp_net_id];
             }
         }
         if( new_pos.z() != u.pos_bub().z() ) {
@@ -12448,20 +12452,36 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         }
         g->update_map( u );
         int mons_after = 0;
+        std::unordered_map<uint32_t, int> nids_after;
+        std::unordered_map<uint32_t, std::string> where_after;
         for( const auto &p : get_creature_tracker().get_monsters_list() ) {
             if( p && p->mp_net_id != 0 && !p->is_dead() ) {
                 ++mons_after;
-                nids_before.erase( p->mp_net_id );   // survived the shift
+                ++nids_after[p->mp_net_id];
+                where_after[p->mp_net_id] += " " + p->pos_abs().to_string();
             }
         }
-        if( mons_after < mons_before ) {
-            std::string lost;
-            for( const uint32_t n : nids_before ) {
+        std::string lost;
+        for( const auto &[n, c] : nids_before ) {
+            if( nids_after[n] < c ) {
                 lost += std::to_string( n ) + ' ';
             }
+        }
+        std::string gained;
+        for( const auto &[n, c] : nids_after ) {
+            const auto b = nids_before.find( n );
+            if( c > ( b == nids_before.end() ? 0 : b->second ) ) {
+                gained += std::to_string( n ) + " x" + std::to_string( c ) + " @" + where_after[n] + "; ";
+            }
+        }
+        if( !lost.empty() ) {
             mp_log( "[cdda-mp] TELE-MON-DROP: synced monsters " + std::to_string( mons_before ) +
                     " -> " + std::to_string( mons_after ) + " across update_map (delta=" +
                     std::to_string( mons_before - mons_after ) + ") lost_nids=[" + lost + "]" );
+        }
+        if( !gained.empty() ) {
+            mp_log( "[cdda-mp] TELE-MON-GAIN: update_map brought back synced copies [" + gained +
+                    "] (x2+ = now a duplicate)" );
         }
     }
 }
