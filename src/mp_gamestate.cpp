@@ -14693,6 +14693,9 @@ void client_resolve_pending_ui()
     // Drains blocking UI deferred out of the network-recv path (apply_one_state_
     // message).  MUST be called from the main do_turn loop, where a top-level UI
     // context is valid — never from inside packet processing.
+    // Host side of the same rule (do_turn calls this for both roles): the
+    // stop-activity queries a client's friendly-fire hit deferred (2026-10-18).
+    mp_host_resolve_pending_ui();
     if( g_client_smash_query_pending ) {
         g_client_smash_query_pending = false;
         g_client_autosmash = query_yn( _( "Keep smashing until destroyed?" ) );

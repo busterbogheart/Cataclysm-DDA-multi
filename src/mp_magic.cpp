@@ -4,8 +4,10 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "bodypart.h"
+#include "cata_scope_helpers.h"
 #include "line.h"
 
 #include "avatar.h"
@@ -33,6 +35,8 @@
 #include "string_formatter.h"
 #include "translations.h"
 #include "type_id.h"
+#include "uistate.h"
+#include "enums.h"
 
 static const efftype_id effect_pet( "pet" );
 
@@ -652,7 +656,37 @@ namespace
 // Set while we are applying a spell that arrived from the partner, so the
 // application cannot dispatch straight back and ping-pong.
 bool g_applying_partner_spell = false;
+
+// Host (2026-10-18): the stop-activity queries a partner's hit would have asked
+// ("Ouch, something hurts!", "You were attacked by X!"), raised from the main
+// loop by mp_host_resolve_pending_ui() instead of inside the packet handler.
+// Measured 2026-10-18 (same-machine, host waiting with `|`): SP's on_hurt opened
+// "You were attacked" INSIDE mp_handle_partner_spell, and its input wait applied
+// the client's next messages inside the unfinished hit (MP-EVENTS-NESTED: the
+// client's wait at 19:38:36, and at 19:40:22 a client MOVE, walking the proxy
+// that is this hit's caster).  The client already defers the same queries for
+// the host's hits (client_resolve_pending_ui).
+std::vector<std::pair<distraction_type, std::string>> g_host_pending_hit_queries;
 } // namespace
+
+void mp_host_resolve_pending_ui()
+{
+    if( g_host_pending_hit_queries.empty() ) {
+        return;
+    }
+    // Swap out first: a query that cancels the activity makes the rest moot,
+    // and SP asks again on the next distraction anyway.
+    std::vector<std::pair<distraction_type, std::string>> queries;
+    queries.swap( g_host_pending_hit_queries );
+    for( const auto &[type, text] : queries ) {
+        const bool cancelled = g->cancel_activity_or_ignore_query( type, text );
+        mp_log( "[cdda-mp] PARTNER-SPELL-HIT-QUERY: '" + text + "' asked from the main loop -> " +
+                ( cancelled ? "activity cancelled" : "kept going" ) );
+        if( cancelled ) {
+            break;
+        }
+    }
+}
 
 bool mp_dispatch_spell_at_partner( const spell &sp, Creature &caster, Creature &target )
 {
@@ -783,13 +817,44 @@ void mp_handle_partner_spell( const std::string &msg )
     // this is restricted to deliberate support -- the receiver IS the intended
     // beneficiary and any splash lands where the caster was aiming anyway.
     const int hp_before = av.get_hp();
+    const int pain_before = av.get_pain();
     g_applying_partner_spell = true;
     if( hit ) {
         // Friendly fire: only this tile's share, resolved against us -- our
         // dodge, armor and resistances, as SP resolves a hit on an NPC ally.
         // Not cast_all_effects, which would re-blast an area spell around us
         // and hit the monsters the caster already hit.
-        mp_spell_hit_single_target( sp, caster, av.pos_bub() );
+        //
+        // With the pain and attack distractions off for the hit, so SP's
+        // react_to_felt_pain / on_hurt can't open their query in here (see
+        // g_host_pending_hit_queries); the rest of on_hurt (waking, adrenaline)
+        // still runs.  Restored before anything else can read them.
+        const bool ask_pain = uistate.distraction_pain;
+        const bool ask_attack = uistate.distraction_attack;
+        const bool busy = av.activity || av.has_distant_destination();
+        {
+            restore_on_out_of_scope<bool> restore_pain( uistate.distraction_pain );
+            restore_on_out_of_scope<bool> restore_attack( uistate.distraction_attack );
+            uistate.distraction_pain = false;
+            uistate.distraction_attack = false;
+            mp_spell_hit_single_target( sp, caster, av.pos_bub() );
+        }
+        // The queries SP would have asked, in its order (pain inside the damage,
+        // then on_hurt).  Only if we were busy: SP's query asks nothing without
+        // an activity, and a later one must not be stopped by this hit.
+        if( busy && is_hosting() ) {
+            if( ask_pain && av.get_pain() - pain_before >= 2 ) {
+                g_host_pending_hit_queries.emplace_back( distraction_type::pain,
+                        _( "Ouch, something hurts!" ) );
+            }
+            if( ask_attack && av.get_hp() < hp_before &&
+                !av.has_effect( efftype_id( "narcosis" ) ) ) {
+                g_host_pending_hit_queries.emplace_back( distraction_type::attacked,
+                        av.sees( get_map(), caster )
+                        ? string_format( _( "You were attacked by %s!" ), caster.disp_name() )
+                        : std::string( _( "You were attacked by something you can't see!" ) ) );
+            }
+        }
     } else {
         sp.cast_all_effects( caster, av.pos_bub() );
     }

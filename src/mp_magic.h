@@ -239,6 +239,10 @@ bool mp_spell_menu_browse_only( const Character &who );
 // Symmetric -- host and client both send and both receive.
 void mp_handle_partner_spell( const std::string &msg );
 
+// Host: ask the stop-activity queries a partner's friendly-fire hit deferred out
+// of packet processing.  Called from the main loop (client_resolve_pending_ui).
+void mp_host_resolve_pending_ui();
+
 // Host: apply a {"type":"client_hp",...} packet to the proxy.  Runs in
 // handle_remote_action, which process_mp_events() drains before
 // grant_client_turn() and therefore before serialize_remote_player_state() --
