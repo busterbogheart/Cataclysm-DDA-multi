@@ -3356,6 +3356,14 @@ struct mp_local_move {
 // client runs no monster turns and the stand-in has no AI, so anywhere else
 // means the client's world moved it.
 static std::unordered_map<uint32_t, tripoint_abs_ms> g_mon_last_synced_pos;
+// DIAGNOSTIC (2026-10-18, the stale wasp copy): where the host's latest record
+// put each nid, and when it arrived -- for TELE-ONTO-MONSTER, to tell a blocked
+// correction from a host that stopped sending the monster.
+struct mp_mon_record_seen {
+    tripoint_abs_ms host_pos;
+    int64_t ms = 0;
+};
+static std::unordered_map<uint32_t, mp_mon_record_seen> g_mon_last_record;
 static std::optional<tripoint_abs_ms> g_standin_last_placed;
 static std::unordered_map<uint32_t, mp_local_move> g_client_local_mon_moves;
 static std::optional<mp_local_move> g_client_local_host_move;
@@ -12409,6 +12417,22 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         // stops the stack.  Pairs with MON-SYNC-ONTO-PLAYER below: exactly one of
         // the two should fire for a given d0, and which one names the culprit.
         if( const monster *sitting = get_creature_tracker().creature_at<monster>( abs_pos, true ) ) {
+            // How stale is this copy?  Host record elsewhere + old = the host
+            // stopped re-sending it; record here = the host agrees it's here.
+            std::string rec = "none";
+            if( const auto r = g_mon_last_record.find( sitting->mp_net_id ); r != g_mon_last_record.end() ) {
+                rec = "@" + r->second.host_pos.to_string() + " " +
+                      std::to_string( mp_now_ms() - r->second.ms ) + "ms ago";
+            }
+            int copies = 0;
+            for( const auto &p : get_creature_tracker().get_monsters_list() ) {
+                if( p && !p->is_dead() && p->mp_net_id == sitting->mp_net_id ) {
+                    ++copies;
+                }
+            }
+            mp_log( "[cdda-mp] TELE-ONTO-MONSTER-STALE: nid=" + std::to_string( sitting->mp_net_id ) +
+                    " copy @" + sitting->pos_abs().to_string() + ", host's last record " + rec +
+                    ", live copies=" + std::to_string( copies ) );
             mp_log( "[cdda-mp] TELE-ONTO-MONSTER: avatar teleport to " +
                     std::to_string( abs_pos.x() ) + "," + std::to_string( abs_pos.y() ) +
                     "," + std::to_string( abs_pos.z() ) + " lands on " +
@@ -18077,6 +18101,9 @@ static void apply_monster_sync( JsonObject &jo )
         const tripoint_abs_ms target{
             mo.get_int( "x" ), mo.get_int( "y" ), mo.get_int( "z" )
         };
+        if( nid != 0 ) {
+            g_mon_last_record[nid] = mp_mon_record_seen{ target, mp_now_ms() };
+        }
 
         // Host confirmed this monster dead — drop the pending-kill suppress. The
         // corpse arrives via the host's authoritative kill (item/tile sync), so
