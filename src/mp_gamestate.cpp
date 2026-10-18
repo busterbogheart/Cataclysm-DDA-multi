@@ -2462,10 +2462,11 @@ std::string mp_get_host_world_name()
     return g_host_world_name;
 }
 
-// Network-thread safe: has a host turn captured the welcome snapshot (world name,
-// mod list, position) yet?  grant_client_turn() captures all three each turn, so
-// they're empty until the host's first turn in its world.  A probe answered
-// before then sends an empty world and no mods (measured 2026-10-18).
+// Network-thread safe: has the welcome snapshot (world name, mod list, position)
+// been captured yet?  mp_capture_host_welcome_snapshot() runs just before a menu
+// host's listener starts, so this is only false for a --host launch, whose
+// listener is up before any world loads.  A probe answered from an empty
+// snapshot sends no world and no mods (measured 2026-10-18).
 bool mp_host_welcome_ready()
 {
     if( !g_host_omt_valid.load() || mp_get_host_world_name().empty() ) {
@@ -8736,15 +8737,19 @@ static std::string build_map_sync()
 // Public API
 // ---------------------------------------------------------------------------
 
-void grant_client_turn()
+// Host: capture the join 'welcome' snapshot on the game thread, for the network
+// thread to send without touching game state.  Called every host turn
+// (grant_client_turn) AND just before the listener starts
+// (mp_start_pending_host_thread): measured 2026-10-18, the listener started at
+// the top of the host's first turn, a popup then held that turn for 50 s, and
+// a client probing in between got an empty world, no mods and seed 0 because
+// this ran only further down the turn.
+static void mp_capture_host_welcome_snapshot()
 {
-    // Capture the world seed each host turn (game-thread read of g->get_seed())
-    // so the network thread can put it in the join 'welcome' without touching
-    // game state. Runs before the connected-check so it's current the moment a
-    // client joins. Seed is constant for a session; the store is idempotent.
+    // World seed (g->get_seed()); constant for a session, the store is idempotent.
     g_host_world_seed.store( g->get_seed() );
-    // Capture the host avatar's OMT for the join 'welcome' so a client spawns into
-    // the host's area, not its own scenario start_location.
+    // The host avatar's OMT, so a client spawns into the host's area, not its
+    // own scenario start_location.
     mp_capture_host_omt( get_avatar().pos_abs_omt() );
     if( world_generator && world_generator->active_world ) {
         mp_set_host_world_name( world_generator->active_world->world_name );
@@ -8752,10 +8757,15 @@ void grant_client_turn()
         // (recipes/professions/terrain can't be streamed, only loaded — #18).
         mp_set_host_active_mods( world_generator->active_world->active_mod_order );
     }
-    // Cache the host's character name for the join 'welcome' so the client's
-    // join dialog can show whose game it is. Runs before the connected-check so
-    // it's current the moment a client probes.
+    // The host's character name, so the client's join dialog can show whose
+    // game it is.
     mp_set_host_player_name( get_avatar().name );
+}
+
+void grant_client_turn()
+{
+    // Before the connected-check, so it's current the moment a client probes.
+    mp_capture_host_welcome_snapshot();
     if( !remote_player_connected ) {
         return;
     }
@@ -11335,6 +11345,9 @@ static void mp_start_pending_host_thread()
     mp_log( "[cdda-mp] HOST-THREAD-CHECK: pending=" + std::to_string( g_pending_host_start ) +
             " already_started=" + std::to_string( g_host_thread_actually_started ) +
             " host_mode=" + std::to_string( is_host_mode() ) );
+    // The world is loaded, so the welcome's contents are known now; capture them
+    // before a client can probe, not later in this turn (see the helper).
+    mp_capture_host_welcome_snapshot();
     const uint16_t listen_port = mp_host_port();
     std::thread( [listen_port]() {
         run_server( listen_port, std::string(), getVersionString() );
