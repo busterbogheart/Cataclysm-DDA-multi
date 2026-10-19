@@ -1038,6 +1038,7 @@ bool game::do_turn()
                     // clock timestamp so it can be directly compared against the
                     // client's CLI mp_dispatch SEND cadence from the same test.
                     const tripoint_abs_ms pre_pos = cata_mp::is_hosting() ? u.pos_abs() : tripoint_abs_ms();
+                    const int pre_moves = u.get_moves();
                     const cata_mp::mp_client_action_scope mp_action_scope;
                     const bool acted = handle_action();
                     if( cata_mp::is_hosting() ) {
@@ -1045,8 +1046,7 @@ bool game::do_turn()
                                          std::to_string( acted ) +
                                          " post_moves=" + std::to_string( u.get_moves() ) );
                         if( u.pos_abs() != pre_pos ) {
-                            cata_mp::mp_log( "[cdda-mp] HOST-MOVE-STEP: " +
-                                             pre_pos.to_string() + " -> " + u.pos_abs().to_string() );
+                            cata_mp::mp_note_host_step( pre_pos, pre_moves );
                         }
                     }
                     if( acted ) {

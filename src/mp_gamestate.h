@@ -951,6 +951,13 @@ void host_broadcast_vehicle_step();
 // grant cycle.  No-op when not hosting or no remote player connected.
 void host_broadcast_post_action();
 
+// TEMP diag (GH #19, "client always slower than host"): called from do_turn
+// after the host's handle_action() moved the avatar.  Logs HOST-MOVE-STEP, plus
+// HOST-MOVE-COST / HOST-MOVE-COST-EFFECTS for a plain one-tile walk in the same
+// shape as the client's CLI-MOVE-COST and the proxy's SRV-MOVE-COST lines, and
+// counts the step into the MOVE-PACE tally.  No-op when not hosting.
+void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves );
+
 // Call every do_turn iteration regardless of whether the host acted.  Flushes
 // a broadcast on a wall-clock cadence (MP_IDLE_BROADCAST_MS) so an idle host
 // (zero input for an extended stretch) doesn't stall queued state — e.g. a

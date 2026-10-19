@@ -1035,6 +1035,46 @@ static uint32_t g_client_answered_seq = 0;
 // this turn.  Cleared by grant_client_turn(); checked by wait_for_client_action().
 static bool g_client_acted_this_turn = false;
 
+// TEMP diag (GH #19, "client always slower than host"): per-turn tally of where
+// each player's movement AP goes, flushed as MOVE-PACE lines every
+// MOVE_PACE_WINDOW grants while either player is walking.  The per-step
+// HOST/SRV/CLI-MOVE-COST lines say what ONE step cost; this says how many steps
+// each player actually got over the same game turns, and where the client's
+// granted AP went when it didn't become a step.
+struct mp_move_pace_tally {
+    int turns = 0;
+    int host_steps = 0;
+    int host_ap = 0;
+    int cli_steps = 0;
+    int cli_ap = 0;
+    // speed added by grant_client_turn()
+    int cli_granted = 0;
+    // positive balance clipped by grant_client_turn()'s one-turn ap_cap clamp
+    int cli_capped = 0;
+    // leftover AP zeroed by the move handler's min( 0, … ) after an action
+    int cli_wiped = 0;
+    // turns with no grant (paying off an expensive step's debt)
+    int cli_debt_turns = 0;
+
+    void add( const mp_move_pace_tally &o ) {
+        turns += o.turns;
+        host_steps += o.host_steps;
+        host_ap += o.host_ap;
+        cli_steps += o.cli_steps;
+        cli_ap += o.cli_ap;
+        cli_granted += o.cli_granted;
+        cli_capped += o.cli_capped;
+        cli_wiped += o.cli_wiped;
+        cli_debt_turns += o.cli_debt_turns;
+    }
+};
+static mp_move_pace_tally g_pace_win;
+// Sum of consecutive windows with movement; an idle window ends the run, so
+// each footrace gets its own total.
+static mp_move_pace_tally g_pace_run;
+static int g_pace_win_start_turn = 0;
+static constexpr int MOVE_PACE_WINDOW = 20;
+
 // MP 2026-08-30 — FF LEAD CONTROL.  Highest grant_seq the client says it has
 // applied, echoed as "cseq" on every action/wait.  0 = never reported (older
 // client), which makes mp_ff_lead_turns() return 0 and disables the window.
@@ -8173,6 +8213,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             const int prev_moves = g_remote_moves;
             const int ap_cost = remote->run_cost( mcost, diag );
             g_remote_moves -= ap_cost;
+            ++g_pace_win.cli_steps;
+            g_pace_win.cli_ap += ap_cost;
             // TEMP diag (GH #19, host-vs-client move cadence): mirrors the
             // client's own CLI-MOVE-COST log (handle_action.cpp) for the same
             // move, so the two can be diffed directly — same mcost/ap_cost here
@@ -8258,9 +8300,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         // grant_client_turn()'s "+= speed" makes the client skip turns until it's
         // paid off (the SP move economy).  Cap surplus at 0 so a cheap move can't
         // bank budget across turns (preserves one-action-per-grant).
+        const int wiped = std::max( 0, g_remote_moves );
+        g_pace_win.cli_wiped += wiped;
         g_remote_moves = std::min( 0, g_remote_moves );
         mp_log( "[cdda-mp] SRV-ACK: moves=" + std::to_string( g_remote_moves ) +
-                " (debt-carry) ack to client, grant_seq=" + std::to_string( g_grant_seq ) );
+                " (debt-carry) wiped=" + std::to_string( wiped ) +
+                " ack to client, grant_seq=" + std::to_string( g_grant_seq ) );
     } else {
         mp_log( "[cdda-mp] SRV-FREE: no-op move (wall/bump), sending free=true, moves=" + std::to_string( g_remote_moves ) );
     }
@@ -8762,6 +8807,98 @@ static void mp_capture_host_welcome_snapshot()
     mp_set_host_player_name( get_avatar().name );
 }
 
+static std::string mp_move_pace_side( int steps, int ap )
+{
+    return "steps=" + std::to_string( steps ) + " ap=" + std::to_string( ap ) +
+           " ap/step=" + ( steps > 0 ? std::to_string( ap / steps ) : std::string( "-" ) );
+}
+
+static void mp_move_pace_log( const std::string &label, const mp_move_pace_tally &t,
+                              int cli_speed )
+{
+    mp_log( "[cdda-mp] MOVE-PACE " + label + " turns=" + std::to_string( t.turns ) +
+            " | host " + mp_move_pace_side( t.host_steps, t.host_ap ) +
+            " speed=" + std::to_string( get_avatar().get_speed() ) +
+            " | client " + mp_move_pace_side( t.cli_steps, t.cli_ap ) +
+            " speed=" + std::to_string( cli_speed ) +
+            " granted=" + std::to_string( t.cli_granted ) +
+            " capped=" + std::to_string( t.cli_capped ) +
+            " wiped=" + std::to_string( t.cli_wiped ) +
+            " debt_turns=" + std::to_string( t.cli_debt_turns ) );
+}
+
+// TEMP diag (GH #19): runs once per grant_client_turn(), i.e. once per calendar
+// turn outside fast-forward.  Every MOVE_PACE_WINDOW turns, logs the window and
+// the running total if either player stepped in it; an idle window ends the run.
+static void mp_move_pace_tick( int cli_speed )
+{
+    if( g_pace_win.turns == 0 ) {
+        g_pace_win_start_turn = to_turn<int>( calendar::turn );
+    }
+    if( ++g_pace_win.turns < MOVE_PACE_WINDOW ) {
+        return;
+    }
+    if( g_pace_win.host_steps > 0 || g_pace_win.cli_steps > 0 ) {
+        g_pace_run.add( g_pace_win );
+        mp_move_pace_log( "window t" + std::to_string( g_pace_win_start_turn ) + ".." +
+                          std::to_string( to_turn<int>( calendar::turn ) ), g_pace_win, cli_speed );
+        mp_move_pace_log( "run", g_pace_run, cli_speed );
+    } else {
+        g_pace_run = mp_move_pace_tally();
+    }
+    g_pace_win = mp_move_pace_tally();
+}
+
+void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves )
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    avatar &u = get_avatar();
+    const tripoint_abs_ms post_pos = u.pos_abs();
+    mp_log( "[cdda-mp] HOST-MOVE-STEP: " + pre_pos.to_string() + " -> " + post_pos.to_string() );
+    const tripoint_rel_ms offset = post_pos - pre_pos;
+    // Only a plain one-tile walk compares with the client's CLI/SRV-MOVE-COST
+    // lines; stairs, vehicles and teleports move the avatar too.
+    if( u.in_vehicle || offset.z() != 0 || std::abs( offset.x() ) > 1 ||
+        std::abs( offset.y() ) > 1 ) {
+        return;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms next = here.get_bub( post_pos );
+    // Same diag rule as SP game::walk_move().
+    const bool diag = trigdist && offset.x() != 0 && offset.y() != 0;
+    const int mcost = here.combined_movecost( here.get_bub( pre_pos ), next );
+    // What the step actually cost; run_cost_now re-derives it after the step
+    // (stamina already burned), so a gap between the two is that, not a bug.
+    const int ap_spent = pre_moves - u.get_moves();
+    ++g_pace_win.host_steps;
+    g_pace_win.host_ap += ap_spent;
+    mp_log( "[cdda-mp] HOST-MOVE-COST dir_offset=(" + std::to_string( offset.x() ) + "," +
+            std::to_string( offset.y() ) + ") diag=" + std::to_string( diag ) +
+            " trigdist=" + std::to_string( trigdist ) +
+            " mcost=" + std::to_string( mcost ) +
+            " ap_spent=" + std::to_string( ap_spent ) +
+            " run_cost_now=" + std::to_string( u.run_cost( mcost, diag ) ) +
+            " moves=" + std::to_string( pre_moves ) + "->" + std::to_string( u.get_moves() ) +
+            " speed=" + std::to_string( u.get_speed() ) +
+            " move_mode=" + u.move_mode.str() +
+            " stamina=" + std::to_string( u.get_stamina() ) +
+            " stamina_max=" + std::to_string( u.get_stamina_max() ) +
+            " ter=" + here.ter( next ).id().str() );
+    float diag_movecost = static_cast<float>( mcost );
+    if( diag ) {
+        diag_movecost /= M_SQRT2;
+    }
+    std::string eff_log;
+    for( const run_cost_effect &e : u.run_cost_effects( diag_movecost ) ) {
+        eff_log += e.description + "(x" + std::to_string( e.times ) +
+                   "+" + std::to_string( e.plus ) + ") ";
+    }
+    mp_log( "[cdda-mp] HOST-MOVE-COST-EFFECTS final=" + std::to_string( diag_movecost ) +
+            " [" + eff_log + "]" );
+}
+
 void grant_client_turn()
 {
     // Before the connected-check, so it's current the moment a client probes.
@@ -8806,6 +8943,7 @@ void grant_client_turn()
     // host's monmove() solo so the world keeps moving while the client pays off the
     // expensive move (SP-faithful: a costly step burns several turns).
     g_remote_moves += remote->get_speed();
+    g_pace_win.cli_granted += remote->get_speed();
     // MP FIX 2026-08-15 — clamp the POSITIVE balance to a single turn's speed.
     //
     // Measured (CRAFT-HOST / CRAFT-CLIENT, same character, same recipe, 0%-loss
@@ -8845,12 +8983,16 @@ void grant_client_turn()
     const bool ff_now_for_cap = should_fast_forward();
     const int ap_cap = remote->get_speed() * ( ff_now_for_cap ? FF_BATCH_TURNS : 1 );
     if( g_remote_moves > ap_cap ) {
+        g_pace_win.cli_capped += g_remote_moves - ap_cap;
         g_remote_moves = ap_cap;
     }
     g_granted_this_turn = ( g_remote_moves > 0 );
     if( g_granted_this_turn ) {
         ++g_grant_seq;
+    } else {
+        ++g_pace_win.cli_debt_turns;
     }
+    mp_move_pace_tick( remote->get_speed() );
     const player_activity &ha = get_avatar().activity;
     // turn= is the shared game clock (the client logs calendar_turn in its state
     // packets) — use it to align the host and client logs by game turn, immune to
