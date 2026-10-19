@@ -958,6 +958,12 @@ void host_broadcast_post_action();
 // counts the step into the MOVE-PACE tally.  No-op when not hosting.
 void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves );
 
+// TEMP diag (GH #19): "speed=99 base=100 bonus=-1 [Pain:-7 Thirst:-3 …]", the
+// same speed_bonus_effects the character sheet lists.  Appended to the
+// HOST/SRV/CLI-MOVE-COST lines: the host's copy of the client was granting
+// from speed 110 while the client's own sheet said 99 (2026-10-19).
+std::string mp_speed_breakdown( const Character &c );
+
 // Call every do_turn iteration regardless of whether the host acted.  Flushes
 // a broadcast on a wall-clock cadence (MP_IDLE_BROADCAST_MS) so an idle host
 // (zero input for an extended stretch) doesn't stall queued state — e.g. a

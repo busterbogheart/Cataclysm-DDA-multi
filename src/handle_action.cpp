@@ -2878,6 +2878,7 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                                      " stam=" + std::to_string( pre_stam ) + "->" +
                                      std::to_string( player_character.get_stamina() ) +
                                      " stamina_max=" + std::to_string( player_character.get_stamina_max() ) +
+                                     " " + cata_mp::mp_speed_breakdown( player_character ) +
                                      " ter=" + here.ter( next_pos ).id().str() );
                     // TEMP diag (GH #19, continued): the individual limb-score modifiers
                     // (limb_run_cost_mod/footing/speed) came back IDENTICAL between this

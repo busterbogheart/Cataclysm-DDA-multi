@@ -8235,6 +8235,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     " stamina=" + std::to_string( remote->get_stamina() ) +
                     " stamina_max=" + std::to_string( remote->get_stamina_max() ) +
                     " can_run=" + std::to_string( remote->can_run() ) +
+                    " " + mp_speed_breakdown( *remote ) +
                     " ter=" + m.ter( next ).id().str() );
             // TEMP diag (GH #19, continued): the individual limb-score modifiers came
             // back IDENTICAL between this proxy and the real client in the last test
@@ -8866,6 +8867,17 @@ static void mp_move_pace_tick( int cli_speed )
     g_pace_win = mp_move_pace_tally();
 }
 
+std::string mp_speed_breakdown( const Character &c )
+{
+    std::string out = "speed=" + std::to_string( c.get_speed() ) +
+                      " base=" + std::to_string( c.get_speed_base() ) +
+                      " bonus=" + std::to_string( c.get_speed_bonus() ) + " [";
+    for( const speed_bonus_effect &e : c.get_speed_bonus_effects() ) {
+        out += e.description + ":" + std::to_string( e.bonus ) + " ";
+    }
+    return out + "]";
+}
+
 void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves )
 {
     if( !is_hosting() ) {
@@ -8889,8 +8901,12 @@ void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves )
     // What the step actually cost; run_cost_now re-derives it after the step
     // (stamina already burned), so a gap between the two is that, not a bug.
     const int ap_spent = pre_moves - u.get_moves();
-    ++g_pace_win.host_steps;
-    g_pace_win.host_ap += ap_spent;
+    // Only once a client is in: before the first grant nothing flushes the
+    // window, so the host's solo steps would land in the first MOVE-PACE line.
+    if( g_proxy_was_alive ) {
+        ++g_pace_win.host_steps;
+        g_pace_win.host_ap += ap_spent;
+    }
     mp_log( "[cdda-mp] HOST-MOVE-COST dir_offset=(" + std::to_string( offset.x() ) + "," +
             std::to_string( offset.y() ) + ") diag=" + std::to_string( diag ) +
             " trigdist=" + std::to_string( trigdist ) +
@@ -8898,7 +8914,7 @@ void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves )
             " ap_spent=" + std::to_string( ap_spent ) +
             " run_cost_now=" + std::to_string( u.run_cost( mcost, diag ) ) +
             " moves=" + std::to_string( pre_moves ) + "->" + std::to_string( u.get_moves() ) +
-            " speed=" + std::to_string( u.get_speed() ) +
+            " " + mp_speed_breakdown( u ) +
             " move_mode=" + u.move_mode.str() +
             " stamina=" + std::to_string( u.get_stamina() ) +
             " stamina_max=" + std::to_string( u.get_stamina_max() ) +
