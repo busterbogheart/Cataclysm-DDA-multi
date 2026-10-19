@@ -8025,6 +8025,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // Track whether this action consumed a turn.  Wall bumps and other no-ops
     // must not lock the client — they get a "free":true response instead.
     bool acted = false;
+    // A plain walk/run step onto the next tile (not melee, door, or drag).
+    bool stepped = false;
 
     // Move or attack, matching single-player bump-to-attack behavior.
     // Check for a creature first — melee_attack applies regardless of tile passability.
@@ -8276,6 +8278,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 remote->move_mode = walk_id;
             }
             acted = true;
+            stepped = true;
         } else {
             // Bump-to-open: try to open a door on the target tile (follows CDDA rules —
             // respects locks, handles etc).  If it's not openable, it's a wall bump.
@@ -8292,7 +8295,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // kills) for forwarding to the client regardless of NPC name filter.
     flush_action_msgs( pre_action_msg, remote->name );
 
-    if( acted ) {
+    // GH #19 (measured 2026-10-19, MOVE-PACE): SP keeps acting while moves > 0 —
+    // game::walk_move() charges run_cost() and do_turn() calls handle_action()
+    // again while budget remains, carrying any overspend as debt.  The client got
+    // exactly one step per turn instead (leftover wiped below), so a character
+    // whose step costs less than its speed fell behind the host: ~10% walking,
+    // ~1/3 running.  A step that leaves budget is a partial turn, exactly like
+    // pldrive's: send the leftover back with free=true and keep waiting for this
+    // turn's next action.  The leftover never outlives the turn — the client
+    // spends it on another step (going into debt) or ends the turn with a wait.
+    // Melee, doors and drag still end the turn (not yet measured).
+    const bool partial_step = stepped && g_remote_moves > 0;
+    if( partial_step ) {
+        mp_log( "[cdda-mp] SRV-PARTIAL: step left moves=" + std::to_string( g_remote_moves ) +
+                ", client keeps the turn, grant_seq=" + std::to_string( g_grant_seq ) );
+    } else if( acted ) {
         g_client_acted_this_turn = true;
         // FIX #2/#3: carry an expensive move's AP debt instead of wiping it.
         // g_remote_moves here is (granted budget - real ap_cost).  If the move
@@ -8332,7 +8349,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             }
         }
         std::string state = serialize_remote_player_state();
-        if( !acted ) {
+        if( !acted || partial_step ) {
             state = state.substr( 0, state.size() - 1 ) + ",\"free\":true}";
         }
         srv->post_broadcast( state + "\n" );
