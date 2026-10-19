@@ -8975,14 +8975,6 @@ void grant_client_turn()
     // a "deficit turn" — no grant — and wait_for_client_action() advances the
     // host's monmove() solo so the world keeps moving while the client pays off the
     // expensive move (SP-faithful: a costly step burns several turns).
-    //
-    // Refresh the cached speed bonus first, as Character::process_turn() does
-    // right before its own `moves += get_speed()`.  The proxy's NPC turn is
-    // skipped, so nothing else recalculates it: it stayed frozen at its last
-    // value (measured 2026-10-19, GH #19: proxy speed=110 [Bio/Mut/Etc:10] vs
-    // the client's own 99 [Pain:-7 Thirst:-3 Bio/Mut/Etc:9], though thirst is
-    // synced via client_needs), and the client was granted 11 AP too many.
-    remote->recalc_speed_bonus();
     g_remote_moves += remote->get_speed();
     g_pace_win.cli_granted += remote->get_speed();
     // MP FIX 2026-08-15 — clamp the POSITIVE balance to a single turn's speed.
