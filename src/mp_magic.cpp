@@ -24,6 +24,9 @@
 #include "game.h"
 #include "json_loader.h"
 #include "magic.h"
+#include "magic_enchantment.h"
+#include "damage.h"
+#include "enum_conversions.h"
 #include "map.h"
 #include "monster.h"
 #include "mp_client_conn.h"
@@ -957,6 +960,43 @@ void mp_log_proxy_magic_state()
             " mana=" + std::to_string( proxy->magic->available_mana() ) +
             "/" + std::to_string( proxy->magic->max_mana( *proxy ) ) +
             " known=[" + ( known.empty() ? "none" : known ) + "]" );
+}
+
+void mp_log_enchant_sig_if_changed( const Character &c, const char *tag )
+{
+    const enchant_cache &ec = *c.enchantment_cache;
+    std::string sig;
+    for( int i = 0; i < static_cast<int>( enchant_vals::mod::NUM_MOD ); ++i ) {
+        const enchant_vals::mod m = static_cast<enchant_vals::mod>( i );
+        const double add = ec.get_value_add( m );
+        const double mul = ec.get_value_multiply( m );
+        if( add == 0.0 && mul == 0.0 ) {
+            continue;
+        }
+        sig += io::enum_to_string<enchant_vals::mod>( m ) + ":";
+        if( add != 0.0 ) {
+            sig += string_format( "%+g", add );
+        }
+        if( mul != 0.0 ) {
+            sig += string_format( "x%+g", mul );
+        }
+        sig += " ";
+    }
+    for( const damage_type &dt : damage_type::get_all() ) {
+        const int armor_add = ec.get_armor_add( dt.id );
+        const double armor_mul = ec.get_armor_multiply( dt.id );
+        if( armor_add != 0 || armor_mul != 0.0 ) {
+            sig += "armor." + dt.id.str() + ":" + string_format( "%+d", armor_add ) +
+                   string_format( "x%+g", armor_mul ) + " ";
+        }
+    }
+    static std::map<std::string, std::string> s_last;
+    std::string &last = s_last[tag];
+    if( sig == last ) {
+        return;
+    }
+    last = sig;
+    mp_log( std::string( "[cdda-mp] " ) + tag + ": " + ( sig.empty() ? "none" : sig ) );
 }
 
 // Casts shorter than this never prompt.  3000 moves = 30 turns at speed 100, the

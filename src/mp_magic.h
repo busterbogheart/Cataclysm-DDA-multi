@@ -52,6 +52,14 @@ std::string mp_last_cast_spell();
 // asserting it.
 void mp_log_proxy_magic_state();
 
+// TEMP diag (B3b/B4, 2026-10-19): logs `tag: <every non-default enchantment
+// value>` whenever c's enchantment cache differs from what this tag last
+// logged.  The client logs its own character (CLI-ENCH) and the host logs the
+// client's copy (PROXY-ENCH), so the two can be diffed directly.  A spell buff
+// whose enchantment reads u_spell_level() (Dark Sight: NIGHT_VIS) only matches
+// if the copy has both the effect (B3b) and the client's spell levels (B4).
+void mp_log_enchant_sig_if_changed( const Character &c, const char *tag );
+
 // --- Client summon registration (ROADMAP B1) ------------------------------
 //
 // Measured 2026-08-25: a spell-summoned monster on the client is placed with

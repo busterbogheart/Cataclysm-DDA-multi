@@ -6577,6 +6577,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             }
         } catch( const JsonError & ) {}
     }
+    // After the effects and spellbook mirrors above: compare with CLI-ENCH.
+    mp_log_enchant_sig_if_changed( *remote, "PROXY-ENCH" );
     if( msg.find( "\"client_hp_max_parts\":" ) != std::string::npos ) {
         try {
             JsonValue jv = json_loader::from_string( msg );
@@ -15939,6 +15941,8 @@ std::string client_enrich_action( const std::string &json )
         // The host grants this character's AP from its real speed — see the
         // host's mp_client_grant_speed().
         enriched += ",\"client_speed\":" + std::to_string( av.get_speed() );
+        // Compare with the host's PROXY-ENCH for the copy of this character.
+        mp_log_enchant_sig_if_changed( av, "CLI-ENCH" );
         const std::string monster_hits = build_client_monster_hits();
         if( !monster_hits.empty() ) {
             enriched += ",\"client_monster_hits\":" + monster_hits;
