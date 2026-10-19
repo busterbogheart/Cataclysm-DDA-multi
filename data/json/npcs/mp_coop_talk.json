@@ -1,0 +1,9 @@
+[
+  {
+    "type": "talk_topic",
+    "//": "Co-op: the first topic of a host NPC's local copy on the client (apply_npc_sync in src/mp_gamestate.cpp).  The copy is a stand-in with no real dialogue state, so talking to it can't reach the real NPC yet.",
+    "id": "TALK_MP_HOST_NPC",
+    "dynamic_line": "(Co-op) You can't talk to your partner's NPCs yet.  Your partner can talk, trade and take missions with them.",
+    "responses": [ { "text": "Okay.", "topic": "TALK_DONE" } ]
+  }
+]
