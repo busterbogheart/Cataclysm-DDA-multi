@@ -939,6 +939,24 @@ static std::unordered_map<uint32_t, tripoint_abs_ms> g_client_veh_pos;
 // Server: cumulative AP for the remote player (replaces the NPC's own moves which
 // are skipped by monmove since is_remote_player() returns true).
 static int g_remote_moves = 0;
+// Server: the client's own get_speed(), sent with every action as client_speed.
+// 0 until the first report.  See mp_client_grant_speed().
+static int g_client_speed = 0;
+
+// The speed the client's AP grant is computed from.  SP adds get_speed() to
+// moves in Character::process_turn(), right after recalc_speed_bonus() refreshes
+// the cached bonus; the client runs exactly that on its real character, so its
+// reported speed IS the SP number.  The proxy's own get_speed() reads a cached
+// bonus that nothing refreshes (its NPC turn is skipped) and it went stale:
+// 110 vs the client's 99, missing Pain and Thirst (measured 2026-10-19, GH #19).
+// Calling recalc_speed_bonus() on the proxy is no fix — without SP's
+// reset_bonuses() first it compounds every turn (492654c037, reverted), and the
+// proxy has no copy of the client's pain anyway.  Falls back to the proxy
+// before the first report.
+static int mp_client_grant_speed( const npc &remote )
+{
+    return g_client_speed > 0 ? g_client_speed : remote.get_speed();
+}
 // Server: true if grant_client_turn() issued a real grant this turn (the client's
 // carried move budget was positive).  False on a "deficit turn" — the client is
 // still paying off an expensive move's AP debt — and wait_for_client_action()
@@ -4205,6 +4223,7 @@ static void remove_remote_player( bool announce = true )
     remote_player_connected = false;
     remote_player_npc_id = character_id();
     g_proxy_was_alive = false;
+    g_client_speed = 0;
     g_separation_tier = 0;
     g_separation_settled = false;
     // Do NOT reset g_grant_seq here.  It must stay monotonically increasing so
@@ -6312,6 +6331,25 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 if( mode_id.is_valid() ) {
                     remote->move_mode = mode_id;
                 }
+            }
+        } catch( const JsonError & ) {}
+    }
+
+    // The client's own speed — the AP grant is computed from it.  See
+    // mp_client_grant_speed().
+    if( msg.find( "\"client_speed\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_int( "client_speed" ) ) {
+                const int reported = jo.get_int( "client_speed" );
+                if( reported != g_client_speed ) {
+                    mp_log( "[cdda-mp] CLIENT-SPEED: " + std::to_string( g_client_speed ) + " -> " +
+                            std::to_string( reported ) + " (proxy get_speed()=" +
+                            std::to_string( remote->get_speed() ) + ")" );
+                }
+                g_client_speed = reported;
             }
         } catch( const JsonError & ) {}
     }
@@ -8975,8 +9013,9 @@ void grant_client_turn()
     // a "deficit turn" — no grant — and wait_for_client_action() advances the
     // host's monmove() solo so the world keeps moving while the client pays off the
     // expensive move (SP-faithful: a costly step burns several turns).
-    g_remote_moves += remote->get_speed();
-    g_pace_win.cli_granted += remote->get_speed();
+    const int grant_speed = mp_client_grant_speed( *remote );
+    g_remote_moves += grant_speed;
+    g_pace_win.cli_granted += grant_speed;
     // MP FIX 2026-08-15 — clamp the POSITIVE balance to a single turn's speed.
     //
     // Measured (CRAFT-HOST / CRAFT-CLIENT, same character, same recipe, 0%-loss
@@ -9014,7 +9053,7 @@ void grant_client_turn()
     // packet will actually represent. Outside FF that is 1 and the behavior is
     // identical to before.
     const bool ff_now_for_cap = should_fast_forward();
-    const int ap_cap = remote->get_speed() * ( ff_now_for_cap ? FF_BATCH_TURNS : 1 );
+    const int ap_cap = grant_speed * ( ff_now_for_cap ? FF_BATCH_TURNS : 1 );
     if( g_remote_moves > ap_cap ) {
         g_pace_win.cli_capped += g_remote_moves - ap_cap;
         g_remote_moves = ap_cap;
@@ -9025,7 +9064,7 @@ void grant_client_turn()
     } else {
         ++g_pace_win.cli_debt_turns;
     }
-    mp_move_pace_tick( remote->get_speed() );
+    mp_move_pace_tick( grant_speed );
     const player_activity &ha = get_avatar().activity;
     // turn= is the shared game clock (the client logs calendar_turn in its state
     // packets) — use it to align the host and client logs by game turn, immune to
@@ -9174,7 +9213,7 @@ void grant_client_turn()
             // The negative/debt case is untouched: a deficit turn issues no grant
             // (g_granted_this_turn is false) and must keep paying itself off.
             if( ff_now && batch_turns > 1 && g_remote_moves > 0 ) {
-                g_remote_moves = remote->get_speed() * batch_turns;
+                g_remote_moves = mp_client_grant_speed( *remote ) * batch_turns;
             }
             g_batch_turns_to_send = batch_turns;
             state = serialize_remote_player_state();
@@ -15897,6 +15936,9 @@ std::string client_enrich_action( const std::string &json )
             enriched += ",\"client_veh_cargo_changes\":" + veh_cargo_changes;
         }
         enriched += ",\"client_stamina\":" + std::to_string( av.get_stamina() );
+        // The host grants this character's AP from its real speed — see the
+        // host's mp_client_grant_speed().
+        enriched += ",\"client_speed\":" + std::to_string( av.get_speed() );
         const std::string monster_hits = build_client_monster_hits();
         if( !monster_hits.empty() ) {
             enriched += ",\"client_monster_hits\":" + monster_hits;
