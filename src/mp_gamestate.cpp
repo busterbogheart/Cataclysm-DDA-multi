@@ -5442,6 +5442,46 @@ static mp_proxy_bump mp_proxy_bump_monster( npc &proxy, monster &critter,
     return result;
 }
 
+// The proxy walking into one of the host world's NPCs.  Mirrors how an SP
+// companion moves into another NPC (npc::move_to, npcmove.cpp): a hostile one is
+// attacked; a non-hostile, awake one is asked to step aside (move_away_from, the
+// same push npc::move_to gives its fellow NPCs), and the walker takes the tile if
+// it cleared.  Otherwise no step, and — like a bump into a wall — no AP spent.
+// SP's player opens npc_menu here instead (talk/push/attack); co-op phase 1
+// (2026-10-19) has no remote talk yet, so the client gets the companion's push.
+// Before this, the move handler only looked for monsters and set the proxy down
+// ON the NPC: the client walked through every host-world NPC.
+static mp_proxy_bump mp_proxy_bump_npc( npc &proxy, npc &other, const tripoint_bub_ms &dest )
+{
+    const Creature::Attitude att = proxy.attitude_to( other );
+    mp_proxy_bump result = mp_proxy_bump::blocked;
+    if( att == Creature::Attitude::HOSTILE ) {
+        result = mp_proxy_bump::attack;
+    } else if( other.in_sleep_state() ) {
+        proxy.add_msg_player_or_npc( m_info, _( "%s is in the way." ),
+                                     _( "<npcname> is blocked by %s." ), other.get_name() );
+    } else {
+        std::set<tripoint_bub_ms> nomove{ proxy.pos_bub() };
+        other.move_away_from( proxy.pos_bub(), true, &nomove );
+        if( other.pos_bub() != dest ) {
+            proxy.add_msg_player_or_npc( _( "%s steps aside for you." ),
+                                         _( "%s steps aside for <npcname>." ), other.get_name() );
+            result = mp_proxy_bump::step;
+        } else {
+            proxy.add_msg_player_or_npc( m_info, _( "%s is in the way." ),
+                                         _( "<npcname> is blocked by %s." ), other.get_name() );
+        }
+    }
+    mp_log( "[cdda-mp] PROXY-BUMP-NPC: npc=\"" + other.get_name() + "\" id=" +
+            std::to_string( other.getID().get_value() ) +
+            " att=" + std::to_string( static_cast<int>( att ) ) +
+            " npc_att=" + std::to_string( static_cast<int>( other.get_attitude() ) ) +
+            " asleep=" + std::to_string( other.in_sleep_state() ) +
+            " result=" + ( result == mp_proxy_bump::attack ? "attack" :
+                           result == mp_proxy_bump::blocked ? "blocked" : "step" ) );
+    return result;
+}
+
 // A passed item arriving is the GIVER's action, not the receiver's, so placing
 // it never costs the receiver moves and never opens a menu.  Order: a pocket;
 // else wield it if the hands are free (what a bare i_add() does, but at no
@@ -8100,6 +8140,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
             return;
         }
         const shared_ptr_fast<monster> target = get_creature_tracker().find( next_abs );
+        // A host-world NPC in the way (never the proxy itself).
+        npc *const target_npc = target ? nullptr :
+                                get_creature_tracker().creature_at<npc>( next_abs );
         // Run the host-side drag FIRST (before the creature / impassable
         // checks below). Mirrors SP walk_move(): grabbed_move() runs before
         // the actual step so a successful push shifts the furniture forward
@@ -8116,7 +8159,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         // and the player should NOT step (collision / shift / too heavy);
         // FALSE on a successful pull/push where the player should step.
         bool drag_handled_turn = false;
-        if( remote->get_grab_type() != object_type::NONE && !target ) {
+        if( remote->get_grab_type() != object_type::NONE && !target && !target_npc ) {
             const tripoint_rel_ms drag_dp( offset.x, offset.y, offset.z );
             const tripoint_bub_ms proxy_pos = remote->pos_bub();
             const tripoint_bub_ms fpos = proxy_pos + remote->grab_point;
@@ -8157,10 +8200,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         // A monster in the way is attacked only if SP would attack it; a friendly
         // one is displaced and the step proceeds below.  See mp_proxy_bump_monster().
         const mp_proxy_bump bump = target ? mp_proxy_bump_monster( *remote, *target, next )
+                                   : target_npc ? mp_proxy_bump_npc( *remote, *target_npc, next )
                                    : mp_proxy_bump::step;
         if( bump == mp_proxy_bump::attack ) {
             // melee_attack() charges moves on the NPC internally; capture the result.
-            remote->melee_attack( *target, true );
+            if( target ) {
+                remote->melee_attack( *target, true );
+            } else {
+                remote->melee_attack( *target_npc, true );
+            }
             g_remote_moves = remote->get_moves();
             acted = true;
         } else if( bump == mp_proxy_bump::blocked ) {
