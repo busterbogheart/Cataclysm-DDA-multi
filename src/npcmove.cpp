@@ -78,6 +78,7 @@
 #include "messages.h"
 #include "mission.h"
 #include "monster.h"
+#include "mp_gamestate.h"
 #include "mtype.h"
 #include "npc.h"
 #include "npc_attack.h"
@@ -3732,7 +3733,7 @@ void npc::move_to( const tripoint_bub_ms &pt, bool no_bashing, std::set<tripoint
             return;
         }
 
-        if( critter->is_avatar() ) {
+        if( critter->is_avatar() || cata_mp::mp_npc_treats_as_player( *this, *critter ) ) {
             if( sees( here, *critter ) ) {
                 say( chat_snippets().snip_let_me_pass.translated() );
             } else {
@@ -3743,7 +3744,7 @@ void npc::move_to( const tripoint_bub_ms &pt, bool no_bashing, std::set<tripoint
         // Let NPCs push each other when non-hostile
         // TODO: Have them attack each other when hostile
         npc *np = dynamic_cast<npc *>( critter );
-        if( np != nullptr && !np->in_sleep_state() ) {
+        if( np != nullptr && !np->in_sleep_state() && !cata_mp::is_remote_player( np->getID() ) ) {
             std::unique_ptr<std::set<tripoint_bub_ms>> newnomove;
             std::set<tripoint_bub_ms> *realnomove;
             if( nomove != nullptr ) {

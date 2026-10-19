@@ -8955,6 +8955,22 @@ static void mp_move_pace_tick( int cli_speed )
     g_pace_win = mp_move_pace_tally();
 }
 
+bool mp_npc_treats_as_player( const npc &mover, const Creature &critter )
+{
+    const Character *ch = critter.as_character();
+    if( ch == nullptr || !is_remote_player( ch->getID() ) ) {
+        return false;
+    }
+    static int s_logged = 0;
+    if( s_logged < 50 ) {
+        ++s_logged;
+        mp_log( "[cdda-mp] NPC-PASS-CLIENT: \"" + mover.get_name() +
+                "\" wants past the client's proxy: asks, doesn't shove (#" +
+                std::to_string( s_logged ) + ")" );
+    }
+    return true;
+}
+
 std::string mp_speed_breakdown( const Character &c )
 {
     std::string out = "speed=" + std::to_string( c.get_speed() ) +

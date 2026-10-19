@@ -958,6 +958,13 @@ void host_broadcast_post_action();
 // counts the step into the MOVE-PACE tally.  No-op when not hosting.
 void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves );
 
+// npc::move_to (npcmove.cpp): true when `critter` is the co-op client's proxy,
+// so a host-world NPC treats it as SP NPCs treat the player — asks "let me
+// pass" but never shoves it.  The proxy is an npc, so otherwise move_to pushes
+// it like any fellow NPC (move_away_from), and the host moving the proxy
+// teleports the client.  Logs NPC-PASS-CLIENT when it applies.
+bool mp_npc_treats_as_player( const npc &mover, const Creature &critter );
+
 // TEMP diag (GH #19): "speed=99 base=100 bonus=-1 [Pain:-7 Thirst:-3 …]", the
 // same speed_bonus_effects the character sheet lists.  Appended to the
 // HOST/SRV/CLI-MOVE-COST lines: the host's copy of the client was granting
