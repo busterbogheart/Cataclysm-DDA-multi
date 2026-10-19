@@ -26,6 +26,7 @@
 #include "color.h"
 #include "construction.h"
 #include "coordinates.h"
+#include "faction.h"
 #include "creature_tracker.h"
 #include "cursesdef.h"
 #include "game.h"
@@ -931,6 +932,11 @@ static std::unordered_map<uint32_t, bool> g_server_mon_death_drops;
 // full set. Pruned of nids that leave the broadcast radius (forces a re-send on
 // re-entry, since their state may have changed while away).
 static std::unordered_map<uint32_t, std::string> g_server_mon_last_sent;
+// Server: NPC sync delta gate (see mp_build_npc_sync_json): host NPC id -> the
+// core record / the appearance JSON last sent.  Cleared on a client join and
+// every 120 broadcasts so the client always rebuilds from a full set.
+static std::map<int, std::string> g_server_npc_last_sent;
+static std::map<int, std::string> g_server_npc_app_sent;
 
 // Client: maps server vehicle network IDs to the last-known absolute tile position.
 // Used to look up the vehicle object before moving it to the server-authoritative position.
@@ -3895,15 +3901,48 @@ static void mp_cleanup_stale_npcs()
 // host-world NPCs aren't synced, so every other active NPC is a local phantom.
 // Mirrors the monster/vehicle local-cull.  Runs each client drain; the active
 // NPC list is tiny so it's cheap.
+// Since NPC co-op phase 1 (2026-10-19) the host's NPCs ARE synced: their local
+// copies (g_client_npc_copies, built by apply_npc_sync) are kept too.
+
+// Client: one entry per host-world NPC the host reports in range, keyed by the
+// HOST's character id.  Holds the last record (so a copy can be rebuilt after it
+// left the client's map without the host resending) and the local copy's id.
+struct mp_npc_copy_state {
+    bool spawned = false;
+    character_id local;
+    tripoint_abs_ms pos;
+    std::string name;
+    int att = 0;
+    std::string fac;
+    bool left = false;
+    std::vector<std::pair<std::string, int>> hp;
+    bool has_app = false;
+    bool app_dirty = false;
+    bool male = false;
+    std::vector<std::pair<std::string, std::string>> worn;   // type, variant
+    std::string wield;
+    std::vector<std::pair<std::string, std::string>> muts;   // trait, variant
+};
+static std::map<int, mp_npc_copy_state> g_client_npc_copies;
+
 static void mp_cull_local_npcs()
 {
     if( !is_client_mode() ) {
         return;
     }
+    std::set<character_id> synced;
+    for( const auto &kv : g_client_npc_copies ) {
+        if( kv.second.spawned ) {
+            synced.insert( kv.second.local );
+        }
+    }
     std::vector<character_id> to_remove;
     for( npc &n : g->all_npcs() ) {
         if( n.getID() == client_host_npc_id ) {
             continue;   // the host's proxy — the one NPC we keep
+        }
+        if( synced.count( n.getID() ) ) {
+            continue;   // a host NPC's local copy
         }
         to_remove.push_back( n.getID() );
     }
@@ -3917,6 +3956,215 @@ static void mp_cull_local_npcs()
     }
     if( !to_remove.empty() ) {
         g->cleanup_dead();
+    }
+}
+
+static void mp_remove_npc_copy( int host_id, mp_npc_copy_state &st, const char *why )
+{
+    if( !st.spawned ) {
+        return;
+    }
+    mp_log( "[cdda-mp] CLI-NPC-SYNC-REMOVE: host_id=" + std::to_string( host_id ) + " local=" +
+            std::to_string( st.local.get_value() ) + " name=\"" + st.name + "\" why=" + why );
+    g->remove_npc( st.local );
+    overmap_buffer.remove_npc( st.local );
+    g->cleanup_dead();
+    st.spawned = false;
+    st.local = character_id();
+    // A rebuilt copy is a bare NPC: dress it again from the cached look.
+    st.app_dirty = st.has_app;
+}
+
+// Dress a copy from its cached look: sex, worn and wielded items by type, traits.
+// Same calls as the host's own copy on the client (the host_worn block), minus the
+// full item objects, which a copy that is only looked at doesn't need.
+static void mp_dress_npc_copy( npc &copy, const mp_npc_copy_state &st )
+{
+    copy.male = st.male;
+    std::vector<item> worn;
+    for( const auto &[type, variant] : st.worn ) {
+        const itype_id tid( type );
+        if( !tid.is_valid() ) {
+            continue;
+        }
+        item it( tid );
+        if( !variant.empty() ) {
+            it.set_itype_variant( variant );
+        }
+        worn.push_back( std::move( it ) );
+    }
+    const character_id local = copy.getID();
+    auto do_worn = [local, items = std::move( worn )]() mutable {
+        npc *c = g->critter_by_id<npc>( local );
+        if( c == nullptr ) {
+            return;
+        }
+        c->clear_worn();
+        for( item &it : items ) {
+            c->worn.wear_item( *c, it, false, false, true, true );
+        }
+    };
+    if( mp_ui_holds_item_refs() ) {
+        mp_defer_item_apply( std::move( do_worn ) );
+    } else {
+        do_worn();
+    }
+    const itype_id wid( st.wield );
+    if( !st.wield.empty() && wid.is_valid() ) {
+        copy.set_wielded_item( item( wid ) );
+    } else {
+        copy.remove_weapon();
+    }
+    std::set<trait_id> want_ids;
+    for( const auto &[trait, variant] : st.muts ) {
+        want_ids.insert( trait_id( trait ) );
+    }
+    std::vector<trait_id> to_unset;
+    for( const trait_id &existing : copy.get_mutations() ) {
+        if( !want_ids.count( existing ) ) {
+            to_unset.push_back( existing );
+        }
+    }
+    for( const trait_id &old : to_unset ) {
+        copy.unset_mutation( old );
+    }
+    for( const auto &[trait, variant] : st.muts ) {
+        const trait_id tid( trait );
+        if( !tid.is_valid() ) {
+            continue;
+        }
+        const mutation_variant *var = variant.empty() ? nullptr : tid.obj().variant( variant );
+        if( !copy.has_trait( tid ) ) {
+            copy.set_mutation( tid, var );
+        } else if( var != nullptr ) {
+            copy.set_mut_variant( tid, var );
+        }
+    }
+}
+
+// Client side of mp_build_npc_sync_json (NPC co-op phase 1, 2026-10-19).  Keeps a
+// local copy of each host-world NPC the host reports in range: built like the
+// host's own copy (update_client_host_npc: a bare normalize()d npc placed through
+// the overmap buffer), moved, re-dressed when its look changes, HP set from the
+// host every packet, and removed when the host stops reporting it or it leaves
+// this client's map.  Copies never act — the client runs no NPC turns — and the
+// client's moves into one go to the host (mp_proxy_bump_npc).  Talking to a copy
+// opens TALK_MP_HOST_NPC (data/json/npcs/mp_coop_talk.json): no remote talk yet.
+static void apply_npc_sync( const JsonObject &jn )
+{
+    std::set<int> ids;
+    for( const JsonValue &v : jn.get_array( "ids" ) ) {
+        ids.insert( v.get_int() );
+    }
+    for( const JsonValue &rv : jn.get_array( "recs" ) ) {
+        JsonObject r = rv.get_object();
+        r.allow_omitted_members();
+        mp_npc_copy_state &st = g_client_npc_copies[r.get_int( "id" )];
+        st.pos = tripoint_abs_ms( r.get_int( "x" ), r.get_int( "y" ), r.get_int( "z" ) );
+        st.name = r.get_string( "name", "" );
+        st.att = r.get_int( "att", 0 );
+        st.fac = r.get_string( "fac", "" );
+        st.left = r.get_bool( "left", false );
+        st.hp.clear();
+        for( JsonArray hp : r.get_array( "hp" ) ) {
+            st.hp.emplace_back( hp.get_string( 0 ), hp.get_int( 1 ) );
+        }
+        if( r.has_object( "app" ) ) {
+            JsonObject a = r.get_object( "app" );
+            a.allow_omitted_members();
+            st.male = a.get_bool( "male", false );
+            st.worn.clear();
+            for( JsonArray w : a.get_array( "worn" ) ) {
+                st.worn.emplace_back( w.get_string( 0 ), w.get_string( 1 ) );
+            }
+            st.wield = a.get_string( "wield", "" );
+            st.muts.clear();
+            for( JsonArray m : a.get_array( "muts" ) ) {
+                st.muts.emplace_back( m.get_string( 0 ), m.get_string( 1 ) );
+            }
+            st.has_app = true;
+            st.app_dirty = true;
+        }
+    }
+
+    map &here = get_map();
+    for( auto it = g_client_npc_copies.begin(); it != g_client_npc_copies.end(); ) {
+        const int host_id = it->first;
+        mp_npc_copy_state &st = it->second;
+        if( !ids.count( host_id ) ) {
+            mp_remove_npc_copy( host_id, st, "host_stopped_reporting" );
+            it = g_client_npc_copies.erase( it );
+            continue;
+        }
+        ++it;
+        if( st.name.empty() ) {
+            continue;   // in range, but no record yet
+        }
+        const tripoint_bub_ms bub = here.get_bub( st.pos );
+        if( !here.inbounds( bub ) ) {
+            mp_remove_npc_copy( host_id, st, "off_client_map" );
+            continue;
+        }
+        npc *copy = st.spawned ? g->critter_by_id<npc>( st.local ) : nullptr;
+        if( st.spawned && copy == nullptr ) {
+            // Gone from under us (unloaded, or killed in the client's world).
+            mp_log( "[cdda-mp] CLI-NPC-SYNC-LOST: host_id=" + std::to_string( host_id ) +
+                    " name=\"" + st.name + "\" — rebuilding" );
+            overmap_buffer.remove_npc( st.local );
+            st.spawned = false;
+            st.app_dirty = st.has_app;
+        }
+        if( copy == nullptr ) {
+            shared_ptr_fast<npc> fresh = make_shared_fast<npc>();
+            fresh->normalize();
+            fresh->setID( g->assign_npc_id() );
+            fresh->name = st.name;
+            // Attitude and faction before it's on the map, so set_attitude's
+            // "<npcname> gets angry!" can't fire for a copy merely appearing.
+            fresh->set_attitude( static_cast<npc_attitude>( st.att ) );
+            if( !st.fac.empty() && g->faction_manager_ptr->get( faction_id( st.fac ), false ) ) {
+                fresh->set_fac( faction_id( st.fac ) );
+            }
+            fresh->chatbin.first_topic = "TALK_MP_HOST_NPC";
+            fresh->set_value( "mp_synced_npc", std::to_string( host_id ) );
+            fresh->spawn_at_precise( st.pos );
+            overmap_buffer.insert_npc( fresh );
+            g->load_npcs();
+            copy = g->critter_by_id<npc>( fresh->getID() );
+            if( copy == nullptr ) {
+                mp_log( "[cdda-mp] CLI-NPC-SYNC-SPAWN-FAILED: host_id=" + std::to_string( host_id ) +
+                        " name=\"" + st.name + "\"" );
+                overmap_buffer.remove_npc( fresh->getID() );
+                continue;
+            }
+            st.spawned = true;
+            st.local = copy->getID();
+            mp_log( "[cdda-mp] CLI-NPC-SYNC-SPAWN: host_id=" + std::to_string( host_id ) +
+                    " local=" + std::to_string( st.local.get_value() ) + " name=\"" + st.name +
+                    "\" att=" + std::to_string( st.att ) + " fac=" + st.fac + " pos=" +
+                    st.pos.to_string() );
+        }
+        if( copy->pos_abs() != st.pos ) {
+            copy->setpos( here, bub );
+        }
+        if( static_cast<int>( copy->get_attitude() ) != st.att ) {
+            copy->set_attitude( static_cast<npc_attitude>( st.att ) );
+        }
+        copy->facing = st.left ? FacingDirection::LEFT : FacingDirection::RIGHT;
+        for( const auto &[part, hp] : st.hp ) {
+            const bodypart_id bp( part );
+            if( copy->has_part( bp ) ) {
+                copy->set_part_hp_cur( bp, hp );
+            }
+        }
+        if( st.app_dirty ) {
+            mp_dress_npc_copy( *copy, st );
+            st.app_dirty = false;
+            mp_log( "[cdda-mp] CLI-NPC-SYNC-DRESS: host_id=" + std::to_string( host_id ) +
+                    " name=\"" + st.name + "\" worn=" + std::to_string( st.worn.size() ) +
+                    " wield=" + ( st.wield.empty() ? "none" : st.wield ) +
+                    " traits=" + std::to_string( st.muts.size() ) );
+        }
     }
 }
 
@@ -3945,6 +4193,9 @@ void mp_on_world_exit()
     client_host_npc_spawned = false;
     client_host_npc_id = character_id();
     g_client_host_worn_sig.clear();
+    // Same for the host NPCs' local copies: their ids belong to the world that
+    // just unloaded.
+    g_client_npc_copies.clear();
     // A world exit ends any co-op session.  Clear the host/client session mode so
     // the NEXT game started from the menu is treated as plain single-player.
     // set_client_mode(false) was previously only called on a *connect failure*, so
@@ -4155,6 +4406,8 @@ static void spawn_remote_player( const std::string &name )
     g_server_veh_parts_count.clear();
     g_server_veh_live_nids.clear();
     g_server_mon_last_sent.clear();   // force full monster snapshot to the fresh client (delta cache)
+    g_server_npc_last_sent.clear();   // and every NPC record + appearance
+    g_server_npc_app_sent.clear();
     g_separation_tier = 0;
     g_separation_settled = false;
     g_last_forwarded_msg_count = Messages::appended_total();  // don't forward pre-connect history
@@ -14197,6 +14450,15 @@ static bool apply_one_state_message( const std::string &msg )
                     + std::string( e.what() ) );
         }
         try {
+            mp_apply_step _s( "npc" );
+            if( jo.has_object( "npcs" ) ) {
+                apply_npc_sync( jo.get_object( "npcs" ) );
+            }
+        } catch( const std::exception &e ) {
+            mp_log( "[cdda-mp] apply_npc_sync threw (isolated, handshake preserved): "
+                    + std::string( e.what() ) );
+        }
+        try {
             mp_apply_step _s( "tile" );
             apply_tile_changes( jo );
         } catch( const std::exception &e ) {
@@ -17238,6 +17500,123 @@ void mp_server_mon_force_resend( uint32_t nid )
     g_server_mon_last_sent.erase( nid );
 }
 
+// NPC co-op phase 1 (2026-10-19): the host world's NPCs near the client, so the
+// client can see them.  {"ids":[every NPC id in range],"recs":[changed records]}.
+// A record carries position, name, attitude, faction, facing and per-part HP,
+// plus "app" (sex, worn and wielded types, traits) only when the NPC's look
+// changed.  Same box as build_monster_list (Chebyshev 84, same z, around the
+// client's proxy) and the same kind of delta gate, with a full resend every 120
+// broadcasts and on a client join.  Worn items go as type + variant only: the
+// copy is for looking at, and the NPC's pockets stay on the host.  Never the
+// proxy itself.  The client side is apply_npc_sync().
+static std::string mp_build_npc_sync_json( const tripoint_abs_ms &center )
+{
+    constexpr int radius = 84;
+    static int s_broadcasts = 0;
+    if( ++s_broadcasts >= 120 ) {
+        s_broadcasts = 0;
+        g_server_npc_last_sent.clear();
+        g_server_npc_app_sent.clear();
+    }
+    std::string ids;
+    std::string recs;
+    std::set<int> present;
+    for( npc &n : g->all_npcs() ) {
+        if( n.is_dead() || is_remote_player( n.getID() ) ) {
+            continue;
+        }
+        const tripoint_abs_ms p = n.pos_abs();
+        if( p.z() != center.z() || std::abs( p.x() - center.x() ) > radius ||
+            std::abs( p.y() - center.y() ) > radius ) {
+            continue;
+        }
+        const int id = n.getID().get_value();
+        present.insert( id );
+        ids += ( ids.empty() ? "" : "," ) + std::to_string( id );
+
+        std::ostringstream core_os;
+        {
+            JsonOut out( core_os );
+            out.start_object();
+            out.member( "id", id );
+            out.member( "x", p.x() );
+            out.member( "y", p.y() );
+            out.member( "z", p.z() );
+            out.member( "name", n.get_name() );
+            out.member( "att", static_cast<int>( n.get_attitude() ) );
+            out.member( "fac", n.get_fac_id().str() );
+            out.member( "left", n.facing == FacingDirection::LEFT );
+            out.member( "hp" );
+            out.start_array();
+            for( const bodypart_id &bp : n.get_all_body_parts() ) {
+                out.start_array();
+                out.write( bp.id().str() );
+                out.write( n.get_part_hp_cur( bp ) );
+                out.end_array();
+            }
+            out.end_array();
+            out.end_object();
+        }
+        std::ostringstream app_os;
+        {
+            JsonOut out( app_os );
+            out.start_object();
+            out.member( "male", n.male );
+            out.member( "worn" );
+            out.start_array();
+            std::vector<const item *> worn;
+            n.worn.inv_dump( worn );
+            for( const item *it : worn ) {
+                out.start_array();
+                out.write( it->typeId().str() );
+                out.write( it->has_itype_variant() ? it->itype_variant().id : std::string() );
+                out.end_array();
+            }
+            out.end_array();
+            const item_location wielded = n.get_wielded_item();
+            out.member( "wield", wielded ? wielded->typeId().str() : std::string() );
+            out.member( "muts" );
+            out.start_array();
+            for( const trait_and_var &tv : n.get_mutations_variants() ) {
+                out.start_array();
+                out.write( tv.trait.str() );
+                out.write( tv.variant );
+                out.end_array();
+            }
+            out.end_array();
+            out.end_object();
+        }
+        const std::string core = core_os.str();
+        const std::string app = app_os.str();
+        const bool core_changed = g_server_npc_last_sent[id] != core;
+        const bool app_changed = g_server_npc_app_sent[id] != app;
+        if( !core_changed && !app_changed ) {
+            continue;
+        }
+        g_server_npc_last_sent[id] = core;
+        std::string rec = core;
+        if( app_changed ) {
+            g_server_npc_app_sent[id] = app;
+            rec = core.substr( 0, core.size() - 1 ) + ",\"app\":" + app + "}";
+        }
+        recs += ( recs.empty() ? "" : "," ) + rec;
+    }
+    for( auto it = g_server_npc_last_sent.begin(); it != g_server_npc_last_sent.end(); ) {
+        if( present.count( it->first ) ) {
+            ++it;
+        } else {
+            g_server_npc_app_sent.erase( it->first );
+            it = g_server_npc_last_sent.erase( it );
+        }
+    }
+    static std::string s_last_ids;
+    if( ids != s_last_ids ) {
+        s_last_ids = ids;
+        mp_log( "[cdda-mp] HOST-NPC-SYNC: npcs in range now [" + ids + "]" );
+    }
+    return "{\"ids\":[" + ids + "],\"recs\":[" + recs + "]}";
+}
+
 static std::string build_monster_list( const tripoint_abs_ms &center, int radius )
 {
     // Periodic keyframe: every KEYFRAME_INTERVAL broadcasts, drop the delta cache
@@ -19514,6 +19893,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
     // divergent local-mapgen monsters.  Must match the client's cull radius in
     // apply_monster_sync.
     std::string monsters     = build_monster_list( pos, 84 );
+    const std::string npcs_json = mp_build_npc_sync_json( pos );
     const auto srp_t_monsters = srpclk::now();
 
     // Death-based monster removal (mirrors removed_vehicles, but glitch-proof).
@@ -20323,6 +20703,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            }() +
            ",\"monsters\":" + monsters +
            ",\"removed_monsters\":" + removed_monsters_json +
+           ",\"npcs\":" + npcs_json +
            ",\"tile_changes\":" + tile_changes +
            // MP PERF 2026-08-15 — suppress the vehicles block when it is
            // byte-identical to the one we last sent. Measured at 57,321 bytes
