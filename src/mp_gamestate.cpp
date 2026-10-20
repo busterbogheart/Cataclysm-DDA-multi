@@ -4181,6 +4181,16 @@ static void apply_npc_sync( const JsonObject &jn )
             copy->set_attitude( static_cast<npc_attitude>( st.att ) );
         }
         copy->facing = st.left ? FacingDirection::LEFT : FacingDirection::RIGHT;
+        bool dressed = false;
+        if( st.app_dirty ) {
+            dressed = true;
+            mp_dress_npc_copy( *copy, st );
+            st.app_dirty = false;
+            mp_log( "[cdda-mp] CLI-NPC-SYNC-DRESS: host_id=" + std::to_string( host_id ) +
+                    " name=\"" + st.name + "\" worn=" + std::to_string( st.worn.size() ) +
+                    " wield=" + ( st.wield.empty() ? "none" : st.wield ) +
+                    " traits=" + std::to_string( st.muts.size() ) );
+        }
         if( st.hp_dirty ) {
             for( const auto &[part, hp] : st.hp ) {
                 const bodypart_id bp( part );
@@ -4200,13 +4210,23 @@ static void apply_npc_sync( const JsonObject &jn )
             }
             st.hp_dirty = false;
         }
-        if( st.app_dirty ) {
-            mp_dress_npc_copy( *copy, st );
-            st.app_dirty = false;
-            mp_log( "[cdda-mp] CLI-NPC-SYNC-DRESS: host_id=" + std::to_string( host_id ) +
-                    " name=\"" + st.name + "\" worn=" + std::to_string( st.worn.size() ) +
-                    " wield=" + ( st.wield.empty() ? "none" : st.wield ) +
-                    " traits=" + std::to_string( st.muts.size() ) );
+        // set_mutation/unset_mutation call recalc_hp (mutation.cpp), which resets the
+        // copy's max to its default stats and scales its current HP — so HP is
+        // applied AFTER dressing, and a dress with no new host HP puts the host's
+        // max and what we last reported straight back (measured 2026-10-20: every
+        // dress after the HP match read as damage on the next report).
+        if( dressed && !st.hp_dirty ) {
+            for( const auto &[part, rep] : st.reported ) {
+                const bodypart_id bp( part );
+                if( !copy->has_part( bp ) ) {
+                    continue;
+                }
+                const auto mx = st.hpmax.find( part );
+                if( mx != st.hpmax.end() ) {
+                    copy->set_part_hp_max( bp, mx->second );
+                }
+                copy->set_part_hp_cur( bp, rep );
+            }
         }
     }
 }
@@ -16153,19 +16173,6 @@ static std::string build_client_npc_hits()
             const bodypart_id bp( part );
             if( !copy->has_part( bp ) ) {
                 continue;
-            }
-            // SP recomputes a bare copy's max HP from its default stats after we
-            // matched it to the host's (measured 2026-10-20: copy_max 71 vs host_max
-            // 81), clamping its current HP.  That clamp is not damage: only the drop
-            // BELOW the clamped value counts; then restore the host's max and the
-            // clamped HP.
-            const auto host_mx = st.hpmax.find( part );
-            if( !copy->is_dead() && host_mx != st.hpmax.end() &&
-                copy->get_part_hp_max( bp ) != host_mx->second ) {
-                const int clamped = std::min( rep, copy->get_part_hp_max( bp ) );
-                const int real = std::max( 0, clamped - copy->get_part_hp_cur( bp ) );
-                copy->set_part_hp_max( bp, host_mx->second );
-                copy->set_part_hp_cur( bp, rep - real );
             }
             const int cur = copy->is_dead() ? 0 : copy->get_part_hp_cur( bp );
             const int dealt = rep - cur;
