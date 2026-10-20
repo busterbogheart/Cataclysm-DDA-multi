@@ -7543,6 +7543,59 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
     }
 
+    // NPC phase 2 (A3): damage the client dealt to a host-NPC copy (ranged, thrown,
+    // spell) — see build_client_npc_hits.  Applied per bodypart to the REAL NPC as a
+    // subtraction from its current HP, with the client's proxy as the source, so a
+    // lethal hit dies on the host with the proxy as killer (corpse and loot
+    // host-side, reaching the client by tile sync).  Reactions (A4/A5) come later.
+    if( msg.find( "\"client_npc_hits\":" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            if( jo.has_array( "client_npc_hits" ) ) {
+                map &m = get_map();
+                npc *proxy = remote_player_npc_id.is_valid()
+                             ? g->critter_by_id<npc>( remote_player_npc_id ) : nullptr;
+                for( const JsonValue &hv : jo.get_array( "client_npc_hits" ) ) {
+                    JsonObject ho = hv.get_object();
+                    ho.allow_omitted_members();
+                    const int id = ho.get_int( "id", 0 );
+                    const int k  = ho.get_int( "k", -1 );
+                    npc *target = id != 0 ? g->critter_by_id<npc>( character_id( id ) ) : nullptr;
+                    if( target == nullptr || target->is_dead() ) {
+                        mp_log( "[cdda-mp] HOST-NPC-HIT-MISS: id=" + std::to_string( id ) +
+                                ( target ? " (already dead)" : " (no host NPC with this id)" ) );
+                        continue;
+                    }
+                    int total = 0;
+                    for( JsonArray part : ho.get_array( "parts" ) ) {
+                        const bodypart_id bp( part.get_string( 0 ) );
+                        const int dealt = part.get_int( 1 );
+                        if( dealt <= 0 || !target->has_part( bp ) ) {
+                            continue;
+                        }
+                        target->apply_damage( proxy, bp, dealt );
+                        total += dealt;
+                    }
+                    const bool dead = target->is_dead_state();
+                    mp_log( "[cdda-mp] HOST-NPC-HIT: id=" + std::to_string( id ) + " name=\"" +
+                            target->get_name() + "\" total=" + std::to_string( total ) +
+                            " k=" + std::to_string( k ) + " hp_after=" +
+                            std::to_string( target->get_hp() ) + " dead=" + std::to_string( dead ) );
+                    if( dead ) {
+                        // As the monster path: the proxy is the killer unless the
+                        // client's copy died with none of ours (k == 0).
+                        target->die( &m, k != 0 ? proxy : nullptr );
+                    }
+                }
+                g->cleanup_dead();
+            }
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] npc_hits parse error: " + std::string( e.what() ) );
+        }
+    }
+
     // Partner-menu swap: swap host's avatar with the client's proxy NPC.
     // Triggered when the client picked "Swap positions" from the bump menu.
     if( msg.find( "\"action\":\"swap_with_partner\"" ) != std::string::npos ) {
