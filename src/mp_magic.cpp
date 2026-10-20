@@ -482,7 +482,20 @@ void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
                     std::to_string( to_turns<int>( dur ) ) + "t on '" + ch->name +
                     "' (stand-in only, " + ( is_hosting() ? "host" : "client" ) + " cast)" );
         }
-        return;   // NPCs aren't synced
+        // NPC phase 2 (B): a host NPC's local copy on the client is a stand-in; the
+        // real NPC lives on the host, so the effect is replayed there.  The id is the
+        // HOST's character id, kept on the copy as the "mp_synced_npc" value.
+        if( is_client_mode() ) {
+            if( const diag_value *tag = ch->maybe_get_value( "mp_synced_npc" ) ) {
+                const std::string payload =
+                    "{\"type\":\"client_monster_op\",\"op\":\"npc_effect\",\"npc\":" +
+                    tag->str() + ",\"eff\":\"" + eff.str() + "\"" +
+                    ",\"turns\":" + std::to_string( to_turns<int>( dur ) ) + "}";
+                mp_log( "[cdda-mp] CLI-NPC-OP-SEND: " + payload );
+                client_send( payload );
+            }
+        }
+        return;
     }
     if( !is_client_mode() ) {
         return;   // the host's own monsters are authoritative already
@@ -515,6 +528,7 @@ void mp_handle_client_monster_op( const std::string &msg )
     std::string eff;
     int turns = 0;
     uint32_t nid = 0;
+    int npc_id = 0;
     int fr = 0;
     bool pet = false;
     try {
@@ -524,12 +538,33 @@ void mp_handle_client_monster_op( const std::string &msg )
         op = jo.get_string( "op", "" );
         to = jo.get_string( "to", "" );
         nid = static_cast<uint32_t>( jo.get_int( "nid", 0 ) );
+        npc_id = jo.get_int( "npc", 0 );
         fr = jo.get_int( "fr", 0 );
         pet = jo.get_bool( "pet", false );
         eff = jo.get_string( "eff", "" );
         turns = jo.get_int( "turns", 0 );
     } catch( const std::exception &e ) {
         mp_log( std::string( "[cdda-mp] HOST-MON-OP parse error: " ) + e.what() );
+        return;
+    }
+    if( op == "npc_effect" ) {
+        // NPC phase 2 (B): add_effect_to_target on the host's real NPC, the same call
+        // the client's spell made on its copy.  Immunity and stacking decided here.
+        npc *target = npc_id != 0 ? g->critter_by_id<npc>( character_id( npc_id ) ) : nullptr;
+        const efftype_id eff_id( eff );
+        if( target == nullptr || target->is_dead() || eff.empty() || !eff_id.is_valid() ) {
+            mp_log( "[cdda-mp] HOST-NPC-OP: REJECTED effect npc=" + std::to_string( npc_id ) +
+                    " eff='" + eff + "'" + ( target == nullptr ? " — no host NPC with this id" : "" ) );
+            return;
+        }
+        const int had = target->has_effect( eff_id ) ? to_turns<int>( target->get_effect_dur( eff_id ) ) : 0;
+        target->add_effect( eff_id, time_duration::from_turns( turns ) );
+        mp_log( "[cdda-mp] HOST-NPC-OP: effect npc=" + std::to_string( npc_id ) + " \"" +
+                target->get_name() + "\" " + eff + " +" + std::to_string( turns ) + "t: " +
+                std::to_string( had ) + "t -> " +
+                ( target->has_effect( eff_id ) ?
+                  std::to_string( to_turns<int>( target->get_effect_dur( eff_id ) ) ) + "t" :
+                  std::string( "NOT APPLIED (immune or blocked)" ) ) );
         return;
     }
     monster *mon = nullptr;
