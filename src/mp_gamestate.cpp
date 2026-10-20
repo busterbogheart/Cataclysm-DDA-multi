@@ -6006,6 +6006,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         mp_handle_client_summon( msg );
         return;
     }
+    // Same for a client-cast summoned vehicle (B12).  Body in mp_magic.cpp.
+    if( msg.find( "\"type\":\"client_summon_vehicle\"" ) != std::string::npos ) {
+        mp_handle_client_summon_vehicle( msg );
+        return;
+    }
 
     // Client charmed, polymorphed or banished a synced monster.  Out-of-band
     // for the same reason as client_summon, and drained before the next grant

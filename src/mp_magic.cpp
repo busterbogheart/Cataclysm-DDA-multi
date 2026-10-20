@@ -40,6 +40,9 @@
 #include "type_id.h"
 #include "uistate.h"
 #include "enums.h"
+#include "units.h"
+#include "veh_type.h"
+#include "vehicle.h"
 
 static const efftype_id effect_pet( "pet" );
 
@@ -315,6 +318,68 @@ void mp_handle_client_summon( const std::string &msg )
             std::to_string( abs.z() ) + ")" +
             " friendly=" + std::to_string( friendly ) +
             " turns=" + std::to_string( turns ) );
+}
+
+void mp_handle_client_summon_vehicle( const std::string &msg )
+{
+    if( !is_hosting() ) {
+        return;
+    }
+    std::string proto_str;
+    tripoint_abs_ms abs;
+    bool permanent = false;
+    int turns = 0;
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        proto_str = jo.get_string( "proto", "" );
+        abs = tripoint_abs_ms{ jo.get_int( "x", 0 ), jo.get_int( "y", 0 ), jo.get_int( "z", 0 ) };
+        permanent = jo.get_bool( "permanent", false );
+        turns = jo.get_int( "turns", 0 );
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] HOST-SUMMON-VEH parse error: " ) + e.what() );
+        return;
+    }
+    const vproto_id proto( proto_str );
+    if( proto_str.empty() || !proto.is_valid() ) {
+        mp_log( "[cdda-mp] HOST-SUMMON-VEH: REJECTED, invalid vehicle '" + proto_str + "'" );
+        return;
+    }
+    map &here = get_map();
+    if( !here.inbounds( abs ) ) {
+        // The client already paid for the cast; out of the host's bubble is the
+        // pair being too far apart, not a bug here (same as HOST-SUMMON).
+        mp_log( "[cdda-mp] HOST-SUMMON-VEH: REJECTED, out of bubble abs=" + abs.to_string() );
+        return;
+    }
+    const tripoint_bub_ms bub = here.get_bub( abs );
+    // spawn_summoned_vehicle's own check, against the host's world.
+    if( here.veh_at( bub ) ) {
+        mp_log( "[cdda-mp] HOST-SUMMON-VEH: REJECTED, already a vehicle at " + abs.to_string() );
+        return;
+    }
+    // Exactly spawn_summoned_vehicle's placement and settings, with the client's
+    // proxy as the owner (the caster, in the host's world).
+    vehicle *veh = here.add_vehicle( proto, bub, -90_degrees, 100, veh_spawn_status::PRISTINE,
+                                     false, true );
+    if( veh == nullptr ) {
+        mp_log( "[cdda-mp] HOST-SUMMON-VEH: REJECTED, add_vehicle failed for " + proto_str +
+                " at " + abs.to_string() );
+        return;
+    }
+    veh->unlock();
+    veh->magic = true;
+    if( !permanent ) {
+        veh->summon_time_limit = time_duration::from_turns( turns );
+    }
+    if( npc *proxy = get_partner_npc() ) {
+        veh->set_owner( *proxy );
+    }
+    // No net id here: the vehicle broadcast assigns one to any new vehicle, the
+    // same single allocator HOST-SUMMON relies on for monsters.
+    mp_log( "[cdda-mp] HOST-SUMMON-VEH-PLACE: " + proto_str + " \"" + veh->name + "\" abs=" +
+            abs.to_string() + ( permanent ? " permanent" : " turns=" + std::to_string( turns ) ) );
 }
 
 // A spell (or any of its extra effects, recursively) that changes world state

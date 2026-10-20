@@ -86,6 +86,21 @@ void mp_on_summon_placed( monster &mon, int summon_turns, bool permanent );
 // Host: apply a {"type":"client_summon",...} packet.
 void mp_handle_client_summon( const std::string &msg );
 
+// --- Client summoned vehicles (ROADMAP B12) -------------------------------
+//
+// spell_effect::spawn_summoned_vehicle (Technomancer's Summon Floating Disk,
+// Mojocycle, Co-op cycle) places a vehicle in the caster's world.  On the client
+// that vehicle never gets a host net id, so the host never has it and the
+// client's local-vehicle cull deletes it.  Same fix as B1's summons: the client
+// asks the host to place it with SP's exact settings and the ordinary vehicle
+// sync delivers it back (its snapshot carries `magic` and `summon_time_limit`).
+// Unlike a monster summon there is nothing to clean up afterwards: the callout
+// runs BEFORE the local add_vehicle, because SP drops the vehicle on the exact
+// target tile.  Returns true when it handled the cast (we are the client and the
+// caster is our own avatar); spawn_summoned_vehicle then places nothing locally.
+// Host: apply a {"type":"client_summon_vehicle",...} packet.
+void mp_handle_client_summon_vehicle( const std::string &msg );
+
 // --- Client monster-identity spells (ROADMAP B15) -------------------------
 //
 // Measured 2026-10-14: a client charm, polymorph or banish changed only the
