@@ -4072,6 +4072,9 @@ static void mp_dress_npc_copy( npc &copy, const mp_npc_copy_state &st )
 // this client's map.  Copies never act — the client runs no NPC turns — and the
 // client's moves into one go to the host (mp_proxy_bump_npc).  Talking to a copy
 // opens TALK_MP_HOST_NPC (data/json/npcs/mp_coop_talk.json): no remote talk yet.
+static bool mp_npc_copy_undo_hp_drift( int host_id, mp_npc_copy_state &st, npc &copy,
+                                       const char *phase );
+
 static void apply_npc_sync( const JsonObject &jn )
 {
     std::set<int> ids;
@@ -4241,6 +4244,8 @@ static void apply_npc_sync( const JsonObject &jn )
                 copy->set_part_hp_cur( bp, rep );
             }
         }
+        // Anything else that recomputed the copy's HP since the last pass.
+        mp_npc_copy_undo_hp_drift( host_id, st, *copy, "sync" );
     }
 }
 
@@ -16175,6 +16180,39 @@ void mp_pre_remove_dead()
 // shape as build_client_monster_hits).  "k": 1/0 when the copy died locally
 // (1 = the client's avatar was the killer), absent while it lives.  The host
 // applies it in a later commit; CLI-NPC-COPY-HIT logs every report.
+// A bare copy's max HP is recomputed by SP whenever anything calls recalc_hp
+// (set_mutation/unset_mutation, wearing items, ...), which also scales its current
+// HP.  Neither is damage.  If the copy's max no longer matches the host's, put the
+// host's max and the last-reported HP back and say so — measured 2026-10-20: a
+// recompute with no dress in sight (18:37:07, three NPCs, entering a new place)
+// was reported as damage and applied to the real NPCs.  CLI-NPC-MAX-DRIFT names
+// the NPC and the phase so the trigger can be found.
+static bool mp_npc_copy_undo_hp_drift( int host_id, mp_npc_copy_state &st, npc &copy,
+                                       const char *phase )
+{
+    bool drifted = false;
+    std::string detail;
+    for( const auto &[part, rep] : st.reported ) {
+        const bodypart_id bp( part );
+        const auto mx = st.hpmax.find( part );
+        if( !copy.has_part( bp ) || mx == st.hpmax.end() ||
+            copy.get_part_hp_max( bp ) == mx->second ) {
+            continue;
+        }
+        drifted = true;
+        detail += " " + part + ":" + std::to_string( copy.get_part_hp_max( bp ) ) + "/" +
+                  std::to_string( mx->second ) + " cur=" + std::to_string( copy.get_part_hp_cur( bp ) ) +
+                  " rep=" + std::to_string( rep );
+        copy.set_part_hp_max( bp, mx->second );
+        copy.set_part_hp_cur( bp, rep );
+    }
+    if( drifted ) {
+        mp_log( "[cdda-mp] CLI-NPC-MAX-DRIFT: host_id=" + std::to_string( host_id ) + " name=\"" +
+                st.name + "\" phase=" + phase + " (copy_max/host_max)" + detail );
+    }
+    return drifted;
+}
+
 // One copy's damage since its last report as a client_npc_hits entry ("" when
 // none), advancing the reported baseline.  k: -1 alive, 1/0 killer flag.
 // restore=true (the lethal path, A6) also puts the copy's HP back at the baseline
@@ -16261,6 +16299,7 @@ static std::string build_client_npc_hits()
         if( copy == nullptr ) {
             continue;
         }
+        mp_npc_copy_undo_hp_drift( host_id, st, *copy, "scan" );
         const std::string entry = mp_npc_copy_take_hit( host_id, st, *copy, -1, false );
         if( !entry.empty() ) {
             out += ( out.empty() ? "" : "," ) + entry;
