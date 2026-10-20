@@ -16272,7 +16272,20 @@ static std::string mp_npc_copy_take_hit( int host_id, mp_npc_copy_state &st, npc
             st.name + "\" total=" + std::to_string( total ) + " parts=" + parts +
             " k=" + std::to_string( k ) + " hp_after=" + std::to_string( copy.get_hp() ) +
             " activity=" + get_avatar().activity.id().str() + " src=" + src +
-            " since_cast=" + std::to_string( since ) + ( restore ? " lethal=1" : "" ) );
+            " since_cast=" + std::to_string( since ) + ( restore ? " lethal=1" : "" ) +
+            // DIAGNOSTIC (2026-10-20): copies lose a few HP per part with no attack
+            // and no max-HP drift when the client enters a new place (18:56:46,
+            // four NPCs).  The copy's effects and needs say whether it's an effect
+            // ticking, starvation or catch-up on load.
+            " fx=" + [&]() {
+                std::string out;
+                for( const effect &eff : copy.get_effects() ) {
+                    out += ( out.empty() ? "" : "," ) + eff.get_id().str();
+                }
+                return out;
+            }() + " hunger=" + std::to_string( copy.get_hunger() ) + " thirst=" +
+            std::to_string( copy.get_thirst() ) + " kcal=" +
+            std::to_string( copy.get_stored_kcal() ) );
     return "{\"id\":" + std::to_string( host_id ) + ",\"parts\":[" + parts + "]" +
            ",\"src\":\"" + src + "\"" +
            ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
