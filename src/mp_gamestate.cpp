@@ -3464,7 +3464,6 @@ struct mp_local_effect {
 };
 static std::unordered_map<uint32_t, std::vector<mp_local_effect>> g_client_local_mon_effects;
 static std::vector<mp_local_effect> g_client_local_host_effects;
-static bool mp_world_effect_npc_internal( const efftype_id &id );   // above
 
 static void mp_client_capture_local_moves()
 {
