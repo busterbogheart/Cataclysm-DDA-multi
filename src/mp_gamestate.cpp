@@ -3927,6 +3927,7 @@ struct mp_npc_copy_state {
     // CHANGED, so damage the client dealt locally survives until it is reported
     // and the host's record answers it.
     bool hp_dirty = false;
+    std::map<std::string, int> hpmax;   // the host NPC's max per bodypart
     // Per-bodypart HP already told to the host (or last set from its record);
     // the baseline build_client_npc_hits() diffs the copy against.
     std::map<std::string, int> reported;
@@ -4074,11 +4075,16 @@ static void apply_npc_sync( const JsonObject &jn )
         st.fac = r.get_string( "fac", "" );
         st.left = r.get_bool( "left", false );
         std::vector<std::pair<std::string, int>> new_hp;
+        std::map<std::string, int> new_max;
         for( JsonArray hp : r.get_array( "hp" ) ) {
             new_hp.emplace_back( hp.get_string( 0 ), hp.get_int( 1 ) );
+            if( hp.size() > 2 ) {
+                new_max[hp.get_string( 0 )] = hp.get_int( 2 );
+            }
         }
-        if( new_hp != st.hp ) {
+        if( new_hp != st.hp || new_max != st.hpmax ) {
             st.hp = std::move( new_hp );
+            st.hpmax = std::move( new_max );
             st.hp_dirty = true;
         }
         if( r.has_object( "app" ) ) {
@@ -4179,8 +4185,17 @@ static void apply_npc_sync( const JsonObject &jn )
             for( const auto &[part, hp] : st.hp ) {
                 const bodypart_id bp( part );
                 if( copy->has_part( bp ) ) {
+                    // The copy is a bare normalize()d NPC whose own max differs
+                    // from the host NPC's; match it, or set_part_hp_cur clamps and
+                    // the clamp reads as damage the client dealt (measured
+                    // 2026-10-20: spawn-time CLI-NPC-COPY-HIT of 12-168 on every
+                    // copy, applied to the real NPCs on the host).
+                    const auto mx = st.hpmax.find( part );
+                    if( mx != st.hpmax.end() ) {
+                        copy->set_part_hp_max( bp, mx->second );
+                    }
                     copy->set_part_hp_cur( bp, hp );
-                    st.reported[part] = hp;
+                    st.reported[part] = copy->get_part_hp_cur( bp );
                 }
             }
             st.hp_dirty = false;
@@ -17780,6 +17795,7 @@ static std::string mp_build_npc_sync_json( const tripoint_abs_ms &center )
                 out.start_array();
                 out.write( bp.id().str() );
                 out.write( n.get_part_hp_cur( bp ) );
+                out.write( n.get_part_hp_max( bp ) );
                 out.end_array();
             }
             out.end_array();
