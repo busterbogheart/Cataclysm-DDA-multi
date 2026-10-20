@@ -27,6 +27,7 @@
 #include "construction.h"
 #include "coordinates.h"
 #include "faction.h"
+#include "flag.h"
 #include "creature_tracker.h"
 #include "cursesdef.h"
 #include "game.h"
@@ -16168,6 +16169,11 @@ std::string client_enrich_action( const std::string &json )
                 worn_sig += '|';
                 worn_sig += it->itype_variant().id;
             }
+            // A Magiclysm shift only flags the worn items in place; make that a
+            // change too, so the proxy gets the flagged items (B9).
+            if( it->has_flag( json_flag_SHAPESHIFTED_ARMOR ) ) {
+                worn_sig += '~';
+            }
             worn_sig += ',';
         }
         item_location wielded = av.get_wielded_item();
@@ -16548,8 +16554,21 @@ character_id get_remote_player_npc_character_id()
 void client_resync_worn()
 {
     avatar &av = get_avatar();
-    std::vector<item *> worn_items;
-    av.worn.inv_dump( worn_items );
+    // Every worn item except INTEGRATED ones.  Integrated armor (fur, chitin, a
+    // shifted form's hide) comes from traits, and the proxy grows its own when
+    // the appearance sync gives it the trait.  SHAPESHIFTED_ARMOR is the
+    // client's real clothing folded into a Magiclysm form and must be sent:
+    // the mutable inv_dump overload used here before skips both, so a
+    // bear-form client's proxy wore nothing at all (measured 2026-10-19, B9:
+    // client worn=12 shapeshifted=10, host worn=0).
+    std::vector<const item *> all_worn;
+    av.worn.inv_dump( all_worn );
+    std::vector<const item *> worn_items;
+    for( const item *it : all_worn ) {
+        if( !it->has_flag( flag_INTEGRATED ) ) {
+            worn_items.push_back( it );
+        }
+    }
 
     // Send ALL active mutations — chargen cosmetics (skin/hair/eye) plus
     // physical mutations (Fangs, Sleek Fur, Spines, Feathered Arms, etc.) —
@@ -16627,8 +16646,6 @@ void client_resync_worn()
                  + ",\"ma_style\":\"" + ma_style_str + "\"}";
     // B9 diag (2026-10-19): shapeshifted armor on the client, to compare with the
     // host's "worn_sync applied: worn=… shapeshifted=…" for the proxy.
-    std::vector<const item *> all_worn;
-    av.worn.inv_dump( all_worn );
     int shifted = 0;
     for( const item *wi : all_worn ) {
         shifted += wi->has_flag( json_flag_SHAPESHIFTED_ARMOR ) ? 1 : 0;
