@@ -7632,9 +7632,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             " k=" + std::to_string( k ) + " hp_after=" +
                             std::to_string( target->get_hp() ) + " dead=" + std::to_string( dead ) );
                     if( dead ) {
+                        const std::string dead_name = target->get_name();
+                        const bool host_sees = get_player_character().sees( m, *target );
                         // As the monster path: the proxy is the killer unless the
                         // client's copy died with none of ours (k == 0).
                         target->die( &m, k != 0 ? proxy : nullptr );
+                        // A7: SP's "X dies!" is gated on the HOST's sight; the client
+                        // killed it, so say so when the host didn't see (flush_action_msgs
+                        // forwards plain add_msgs from this action).
+                        if( !host_sees ) {
+                            add_msg( _( "%s dies!" ), dead_name );
+                        }
                     }
                 }
                 g->cleanup_dead();
@@ -16169,9 +16177,84 @@ void mp_pre_remove_dead()
 // shape as build_client_monster_hits).  "k": 1/0 when the copy died locally
 // (1 = the client's avatar was the killer), absent while it lives.  The host
 // applies it in a later commit; CLI-NPC-COPY-HIT logs every report.
+// One copy's damage since its last report as a client_npc_hits entry ("" when
+// none), advancing the reported baseline.  k: -1 alive, 1/0 killer flag.
+// restore=true (the lethal path, A6) also puts the copy's HP back at the baseline
+// it had before the hit, so the copy doesn't die locally.
+static std::string mp_npc_copy_take_hit( int host_id, mp_npc_copy_state &st, npc &copy, int k,
+                                         bool restore )
+{
+    std::string parts;
+    int total = 0;
+    for( auto &[part, rep] : st.reported ) {
+        const bodypart_id bp( part );
+        if( !copy.has_part( bp ) ) {
+            continue;
+        }
+        const int cur = copy.is_dead() ? 0 : copy.get_part_hp_cur( bp );
+        const int dealt = rep - cur;
+        if( dealt > 0 ) {
+            parts += ( parts.empty() ? "" : "," ) + std::string( "[\"" ) + part + "\"," +
+                     std::to_string( dealt ) + "]";
+            total += dealt;
+        }
+        if( restore ) {
+            copy.set_part_hp_cur( bp, rep );
+        } else {
+            rep = cur;
+        }
+    }
+    if( parts.empty() ) {
+        return std::string();
+    }
+    mp_log( "[cdda-mp] CLI-NPC-COPY-HIT: host_id=" + std::to_string( host_id ) + " name=\"" +
+            st.name + "\" total=" + std::to_string( total ) + " parts=" + parts +
+            " k=" + std::to_string( k ) + " hp_after=" + std::to_string( copy.get_hp() ) +
+            " activity=" + get_avatar().activity.id().str() +
+            ( restore ? " lethal=1" : "" ) );
+    return "{\"id\":" + std::to_string( host_id ) + ",\"parts\":[" + parts + "]" +
+           ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
+}
+
+// Lethal reports (A6) wait here for the next enriched action.
+static std::vector<std::string> g_client_npc_lethal_hits;
+
+// NPC phase 2 (A6): called at the top of npc::die.  A client-side NPC copy never
+// dies locally — SP would leave a client-only corpse and the copy's clothes as
+// loot while the host's NPC lives on (measured 2026-10-20: Father Greenwood "died"
+// and came back).  The killing blow is queued as a report (k = 1 if the avatar
+// killed it) for the host to apply with SP's own die, the copy's HP goes back to
+// what the host last said, and the copy is removed when the host stops reporting
+// the NPC.
+bool mp_client_npc_copy_dies( npc &n, Creature *killer )
+{
+    const diag_value *tag = n.maybe_get_value( "mp_synced_npc" );
+    if( !is_client_mode() || tag == nullptr ) {
+        return false;
+    }
+    const int host_id = std::stoi( tag->str() );
+    const auto it = g_client_npc_copies.find( host_id );
+    if( it == g_client_npc_copies.end() ) {
+        return false;
+    }
+    const int k = killer != nullptr && killer->is_avatar() ? 1 : 0;
+    const std::string entry = mp_npc_copy_take_hit( host_id, it->second, n, k, true );
+    mp_log( "[cdda-mp] CLI-NPC-COPY-DIE-SUPPRESSED: host_id=" + std::to_string( host_id ) +
+            " name=\"" + n.get_name() + "\" k=" + std::to_string( k ) +
+            ( entry.empty() ? " (no new damage to report)" : " — lethal hit queued" ) );
+    if( !entry.empty() ) {
+        g_client_npc_lethal_hits.push_back( entry );
+    }
+    return true;
+}
+
 static std::string build_client_npc_hits()
 {
     std::string out;
+    for( const std::string &entry : g_client_npc_lethal_hits ) {
+        out += ( out.empty() ? "" : "," ) + entry;
+    }
+    g_client_npc_lethal_hits.clear();
     for( auto &[host_id, st] : g_client_npc_copies ) {
         if( !st.spawned ) {
             continue;
@@ -16180,55 +16263,10 @@ static std::string build_client_npc_hits()
         if( copy == nullptr ) {
             continue;
         }
-        std::string parts;
-        int total = 0;
-        for( auto &[part, rep] : st.reported ) {
-            const bodypart_id bp( part );
-            if( !copy->has_part( bp ) ) {
-                continue;
-            }
-            const int cur = copy->is_dead() ? 0 : copy->get_part_hp_cur( bp );
-            const int dealt = rep - cur;
-            // DIAGNOSTIC (2026-10-20): a drop with no attack behind it (Father
-            // Greenwood/Jane Schulz reported at join even after the max-HP match).
-            // Shows whether the copy's max drifted from the host's record.
-            if( dealt > 0 ) {
-                const auto mx = st.hpmax.find( part );
-                int host_cur = -1;
-                for( const auto &hp_entry : st.hp ) {
-                    if( hp_entry.first == part ) {
-                        host_cur = hp_entry.second;
-                    }
-                }
-                mp_log( "[cdda-mp] CLI-NPC-COPY-HIT-PART: host_id=" + std::to_string( host_id ) +
-                        " " + part + " rep=" + std::to_string( rep ) + " cur=" +
-                        std::to_string( cur ) + " copy_max=" +
-                        std::to_string( copy->get_part_hp_max( bp ) ) + " host_max=" +
-                        ( mx != st.hpmax.end() ? std::to_string( mx->second ) : std::string( "?" ) ) +
-                        " host_cur=" + std::to_string( host_cur ) );
-            }
-            if( dealt > 0 ) {
-                parts += ( parts.empty() ? "" : "," ) + std::string( "[\"" ) + part + "\"," +
-                         std::to_string( dealt ) + "]";
-                total += dealt;
-            }
-            rep = cur;
+        const std::string entry = mp_npc_copy_take_hit( host_id, st, *copy, -1, false );
+        if( !entry.empty() ) {
+            out += ( out.empty() ? "" : "," ) + entry;
         }
-        if( parts.empty() ) {
-            continue;
-        }
-        int k = -1;
-        if( copy->is_dead() ) {
-            const Creature *killer = copy->get_killer();
-            k = killer != nullptr && killer->is_avatar() ? 1 : 0;
-        }
-        mp_log( "[cdda-mp] CLI-NPC-COPY-HIT: host_id=" + std::to_string( host_id ) + " name=\"" +
-                st.name + "\" total=" + std::to_string( total ) + " parts=" + parts +
-                " k=" + std::to_string( k ) + " hp_after=" + std::to_string( copy->get_hp() ) +
-                " activity=" + get_avatar().activity.id().str() );
-        out += ( out.empty() ? "" : "," ) + std::string( "{\"id\":" ) + std::to_string( host_id ) +
-               ",\"parts\":[" + parts + "]" +
-               ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
     }
     return out.empty() ? std::string() : ( "[" + out + "]" );
 }

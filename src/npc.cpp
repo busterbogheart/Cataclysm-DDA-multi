@@ -3244,6 +3244,9 @@ void npc::die( map *here, Creature *nkiller )
         // *only* set to true in this function!
         return;
     }
+    if( cata_mp::mp_client_npc_copy_dies( *this, nkiller ) ) {
+        return;
+    }
     prevent_death_reminder = false;
     dialogue d( get_talker_for( this ), nkiller == nullptr ? nullptr : get_talker_for( nkiller ) );
     for( effect_on_condition_id &eoc : death_eocs ) {

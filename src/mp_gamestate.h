@@ -964,6 +964,9 @@ void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves );
 // it like any fellow NPC (move_away_from), and the host moving the proxy
 // teleports the client.  Logs NPC-PASS-CLIENT when it applies.
 bool mp_npc_treats_as_player( const npc &mover, const Creature &critter );
+// NPC phase 2 (A6): top of npc::die — true = a client-side copy of a host NPC, death
+// suppressed and reported to the host instead.
+bool mp_client_npc_copy_dies( npc &n, Creature *killer );
 
 // melee.cpp: true when `attacker` is the co-op client's proxy and itself sees
 // `target`.  SP picks a hit's full text ("You chop …" vs "You hit something.")
