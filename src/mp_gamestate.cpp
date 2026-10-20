@@ -4072,18 +4072,29 @@ static void apply_npc_sync( const JsonObject &jn )
         if( r.has_object( "app" ) ) {
             JsonObject a = r.get_object( "app" );
             a.allow_omitted_members();
-            st.male = a.get_bool( "male", false );
-            st.worn.clear();
+            const bool male = a.get_bool( "male", false );
+            std::vector<std::pair<std::string, std::string>> worn;
             for( JsonArray w : a.get_array( "worn" ) ) {
-                st.worn.emplace_back( w.get_string( 0 ), w.get_string( 1 ) );
+                worn.emplace_back( w.get_string( 0 ), w.get_string( 1 ) );
             }
-            st.wield = a.get_string( "wield", "" );
-            st.muts.clear();
+            const std::string wield = a.get_string( "wield", "" );
+            std::vector<std::pair<std::string, std::string>> muts;
             for( JsonArray m : a.get_array( "muts" ) ) {
-                st.muts.emplace_back( m.get_string( 0 ), m.get_string( 1 ) );
+                muts.emplace_back( m.get_string( 0 ), m.get_string( 1 ) );
             }
-            st.has_app = true;
-            st.app_dirty = true;
+            // The host resends every look on its 120-broadcast keyframe; only a
+            // look that actually changed re-dresses the copy (measured
+            // 2026-10-19: 18-20 strip-and-redress cycles per keyframe).
+            const bool same = st.has_app && st.male == male && st.worn == worn &&
+                              st.wield == wield && st.muts == muts;
+            if( !same ) {
+                st.male = male;
+                st.worn = std::move( worn );
+                st.wield = wield;
+                st.muts = std::move( muts );
+                st.has_app = true;
+                st.app_dirty = true;
+            }
         }
     }
 
