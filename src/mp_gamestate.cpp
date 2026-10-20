@@ -6427,8 +6427,32 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     if( !remote2 ) {
                         return;
                     }
+                    // Keep the proxy's own INTEGRATED armor across the rebuild: it
+                    // comes from its traits (set_mutation grew it when the
+                    // appearance sync added the trait) and the client never sends
+                    // it.  clear_worn() empties the whole list, so before this
+                    // every worn_sync stripped a fur / chitin / shifted-form hide
+                    // that nothing re-added (B9 follow-up, 2026-10-19).
+                    std::vector<item> integrated;
+                    {
+                        std::vector<const item *> current;
+                        std::as_const( remote2->worn ).inv_dump( current );
+                        for( const item *wi : current ) {
+                            if( wi->has_flag( flag_INTEGRATED ) ) {
+                                integrated.push_back( *wi );
+                            }
+                        }
+                    }
                     remote2->clear_worn();
+                    for( item &kept : integrated ) {
+                        remote2->worn.wear_item( *remote2, kept, false, false, true, true );
+                    }
                     for( item &worn_item : items ) {
+                        // A client that predates the INTEGRATED filter on its side
+                        // may still send integrated items; the proxy has its own.
+                        if( worn_item.has_flag( flag_INTEGRATED ) ) {
+                            continue;
+                        }
                         // wear_item(who, item, interactive, do_calc_encumbrance, do_sort, quiet)
                         auto result = remote2->worn.wear_item( *remote2, worn_item,
                                                               false, false, true, true );
