@@ -1969,7 +1969,8 @@ void npc::on_attacked( const Creature &attacker )
 
     hallucination_die( &here, nullptr );
 
-    if( attacker.is_avatar() && !is_enemy() && !is_dead() && !guaranteed_hostile() ) {
+    if( ( attacker.is_avatar() || cata_mp::mp_is_client_proxy( attacker ) ) && !is_enemy() &&
+        !is_dead() && !guaranteed_hostile() ) {
         make_angry();
         hit_by_player = true;
     }

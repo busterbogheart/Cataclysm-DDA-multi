@@ -964,6 +964,9 @@ void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves );
 // it like any fellow NPC (move_away_from), and the host moving the proxy
 // teleports the client.  Logs NPC-PASS-CLIENT when it applies.
 bool mp_npc_treats_as_player( const npc &mover, const Creature &critter );
+// NPC phase 2 (A5): true for the host-side proxy of the remote client — npc::on_attacked
+// counts it like the avatar so a ranged hit angers a neutral NPC, as when the host shoots it.
+bool mp_is_client_proxy( const Creature &c );
 // NPC phase 2 (A6): top of npc::die — true = a client-side copy of a host NPC, death
 // suppressed and reported to the host instead.
 bool mp_client_npc_copy_dies( npc &n, Creature *killer );

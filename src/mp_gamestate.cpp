@@ -7615,6 +7615,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     ho.allow_omitted_members();
                     const int id = ho.get_int( "id", 0 );
                     const int k  = ho.get_int( "k", -1 );
+                    const bool from_spell = ho.get_string( "src", "other" ) == "spell";
                     npc *target = id != 0 ? g->critter_by_id<npc>( character_id( id ) ) : nullptr;
                     if( target == nullptr || target->is_dead() ) {
                         mp_log( "[cdda-mp] HOST-NPC-HIT-MISS: id=" + std::to_string( id ) +
@@ -7634,8 +7635,21 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     const bool dead = target->is_dead_state();
                     mp_log( "[cdda-mp] HOST-NPC-HIT: id=" + std::to_string( id ) + " name=\"" +
                             target->get_name() + "\" total=" + std::to_string( total ) +
-                            " k=" + std::to_string( k ) + " hp_after=" +
-                            std::to_string( target->get_hp() ) + " dead=" + std::to_string( dead ) );
+                            " k=" + std::to_string( k ) + " src=" + ( from_spell ? "spell" : "other" ) +
+                            " hp_after=" + std::to_string( target->get_hp() ) +
+                            " dead=" + std::to_string( dead ) );
+                    // A4: reactions mirror SP — a ranged/thrown hit runs on_attacked
+                    // with the attacker (npc.cpp counts the proxy like the avatar), a
+                    // spell never does (SP's damage_targets doesn't, even for the avatar).
+                    if( !dead && !from_spell && proxy != nullptr ) {
+                        const bool was_enemy = target->is_enemy();
+                        target->on_attacked( *proxy );
+                        mp_log( "[cdda-mp] HOST-NPC-HIT-REACT: id=" + std::to_string( id ) +
+                                " name=\"" + target->get_name() + "\" was_enemy=" +
+                                std::to_string( was_enemy ) + " now_enemy=" +
+                                std::to_string( target->is_enemy() ) + " att=" +
+                                std::to_string( static_cast<int>( target->get_attitude() ) ) );
+                    }
                     if( dead ) {
                         const std::string dead_name = target->get_name();
                         // As the monster path: the proxy is the killer unless the
@@ -9391,6 +9405,12 @@ static void mp_move_pace_tick( int cli_speed )
         g_pace_run = mp_move_pace_tally();
     }
     g_pace_win = mp_move_pace_tally();
+}
+
+bool mp_is_client_proxy( const Creature &c )
+{
+    const Character *ch = c.as_character();
+    return ch != nullptr && is_remote_player( ch->getID() );
 }
 
 bool mp_npc_treats_as_player( const npc &mover, const Creature &critter )
@@ -16243,12 +16263,18 @@ static std::string mp_npc_copy_take_hit( int host_id, mp_npc_copy_state &st, npc
     if( parts.empty() ) {
         return std::string();
     }
+    // "spell" when a cast resolved this turn or last, else "other" (ranged / thrown):
+    // the host mirrors SP, where a ranged hit angers a neutral NPC (on_attacked) and
+    // spell damage never does.  turns_since is logged so a misread can be measured.
+    const int since = cata_mp::mp_turns_since_last_cast();
+    const char *src = since >= 0 && since <= 1 ? "spell" : "other";
     mp_log( "[cdda-mp] CLI-NPC-COPY-HIT: host_id=" + std::to_string( host_id ) + " name=\"" +
             st.name + "\" total=" + std::to_string( total ) + " parts=" + parts +
             " k=" + std::to_string( k ) + " hp_after=" + std::to_string( copy.get_hp() ) +
-            " activity=" + get_avatar().activity.id().str() +
-            ( restore ? " lethal=1" : "" ) );
+            " activity=" + get_avatar().activity.id().str() + " src=" + src +
+            " since_cast=" + std::to_string( since ) + ( restore ? " lethal=1" : "" ) );
     return "{\"id\":" + std::to_string( host_id ) + ",\"parts\":[" + parts + "]" +
+           ",\"src\":\"" + src + "\"" +
            ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
 }
 
