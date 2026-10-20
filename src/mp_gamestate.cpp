@@ -16154,6 +16154,19 @@ static std::string build_client_npc_hits()
             if( !copy->has_part( bp ) ) {
                 continue;
             }
+            // SP recomputes a bare copy's max HP from its default stats after we
+            // matched it to the host's (measured 2026-10-20: copy_max 71 vs host_max
+            // 81), clamping its current HP.  That clamp is not damage: only the drop
+            // BELOW the clamped value counts; then restore the host's max and the
+            // clamped HP.
+            const auto host_mx = st.hpmax.find( part );
+            if( !copy->is_dead() && host_mx != st.hpmax.end() &&
+                copy->get_part_hp_max( bp ) != host_mx->second ) {
+                const int clamped = std::min( rep, copy->get_part_hp_max( bp ) );
+                const int real = std::max( 0, clamped - copy->get_part_hp_cur( bp ) );
+                copy->set_part_hp_max( bp, host_mx->second );
+                copy->set_part_hp_cur( bp, rep - real );
+            }
             const int cur = copy->is_dead() ? 0 : copy->get_part_hp_cur( bp );
             const int dealt = rep - cur;
             // DIAGNOSTIC (2026-10-20): a drop with no attack behind it (Father
