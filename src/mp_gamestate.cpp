@@ -7633,16 +7633,14 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             std::to_string( target->get_hp() ) + " dead=" + std::to_string( dead ) );
                     if( dead ) {
                         const std::string dead_name = target->get_name();
-                        const bool host_sees = get_player_character().sees( m, *target );
                         // As the monster path: the proxy is the killer unless the
                         // client's copy died with none of ours (k == 0).
                         target->die( &m, k != 0 ? proxy : nullptr );
-                        // A7: SP's "X dies!" is gated on the HOST's sight; the client
-                        // killed it, so say so when the host didn't see (flush_action_msgs
-                        // forwards plain add_msgs from this action).
-                        if( !host_sees ) {
-                            add_msg( _( "%s dies!" ), dead_name );
-                        }
+                        // A7: SP's "X dies!" goes to the HOST's message log (when it
+                        // sees it), and the host's own log lines aren't relayed
+                        // (measured 2026-10-20: host_capture_avatar_msgs REJECTs "Arturo
+                        // Maldonado dies!").  The client killed it, so tell the client.
+                        g_action_msgs_pending.push_back( string_format( _( "%s dies!" ), dead_name ) );
                     }
                 }
                 g->cleanup_dead();
