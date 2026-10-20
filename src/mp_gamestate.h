@@ -965,6 +965,15 @@ void mp_note_host_step( const tripoint_abs_ms &pre_pos, int pre_moves );
 // teleports the client.  Logs NPC-PASS-CLIENT when it applies.
 bool mp_npc_treats_as_player( const npc &mover, const Creature &critter );
 
+// melee.cpp: true when `attacker` is the co-op client's proxy and itself sees
+// `target`.  SP picks a hit's full text ("You chop …" vs "You hit something.")
+// by whether the PLAYER sees the target; on the host the player is the host's
+// character, so the client's own hits read "You hit something." whenever the
+// host couldn't see the fight (measured 2026-10-19).  (Misses use plain
+// is_remote_player: SP always tells the attacking player "You miss.".)  Logs
+// MELEE-VIEW when it changes the outcome.
+bool mp_remote_attacker_sees( const Character &attacker, const Creature &target );
+
 // TEMP diag (GH #19): "speed=99 base=100 bonus=-1 [Pain:-7 Thirst:-3 …]", the
 // same speed_bonus_effects the character sheet lists.  Appended to the
 // HOST/SRV/CLI-MOVE-COST lines: the host's copy of the client was granting

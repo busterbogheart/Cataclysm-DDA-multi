@@ -9235,6 +9235,26 @@ bool mp_npc_treats_as_player( const npc &mover, const Creature &critter )
     return true;
 }
 
+bool mp_remote_attacker_sees( const Character &attacker, const Creature &target )
+{
+    if( !is_remote_player( attacker.getID() ) ) {
+        return false;
+    }
+    map &here = get_map();
+    const bool proxy_sees = attacker.sees( here, target );
+    const bool host_sees = get_player_character().sees( here, target );
+    if( proxy_sees && !host_sees ) {
+        static int s_logged = 0;
+        if( s_logged < 30 ) {
+            ++s_logged;
+            mp_log( "[cdda-mp] MELEE-VIEW: client's attack on \"" + target.disp_name() +
+                    "\" told from the client's view (the host can't see it) #" +
+                    std::to_string( s_logged ) );
+        }
+    }
+    return proxy_sees;
+}
+
 std::string mp_speed_breakdown( const Character &c )
 {
     std::string out = "speed=" + std::to_string( c.get_speed() ) +

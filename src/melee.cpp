@@ -734,7 +734,8 @@ bool Character::melee_attack_abstract( Creature &t, bool allow_special,
             } else {
                 add_msg( _( "You miss." ) );
             }
-        } else if( player_character.sees( here, *this ) ) {
+        } else if( player_character.sees( here, *this ) ||
+                   cata_mp::is_remote_player( getID() ) ) {
             if( miss_recovery.id != tec_none ) {
                 add_msg_if_npc( miss_recovery.npc_message.translated(), t.disp_name() );
             } else if( stumble_pen >= 60 ) {
@@ -762,7 +763,8 @@ bool Character::melee_attack_abstract( Creature &t, bool allow_special,
     } else {
         melee::melee_stats.hit_count += 1;
         // Remember if we see the monster at start - it may change
-        const bool seen = player_character.sees( here, t );
+        const bool seen = player_character.sees( here, t ) ||
+                          cata_mp::mp_remote_attacker_sees( *this, t );
         // Start of attacks.
         const bool critical_hit = scored_crit( t.dodge_roll(), cur_weap );
         if( critical_hit ) {
@@ -932,7 +934,8 @@ bool Character::melee_attack_abstract( Creature &t, bool allow_special,
             }
 
             // Treat monster as seen if we see it before or after the attack
-            if( seen || player_character.sees( here, t ) ) {
+            if( seen || player_character.sees( here, t ) ||
+                cata_mp::mp_remote_attacker_sees( *this, t ) ) {
                 std::string message = melee_message( technique, *this, dealt_dam );
                 player_hit_message( this, message, t, dam, critical_hit, technique.id != tec_none,
                                     dealt_dam.wp_hit );
