@@ -995,6 +995,8 @@ static unsigned long long g_last_forwarded_msg_count = 0;
 // verbatim (after NPC→"You" substitution) regardless of NPC name filter.
 // Cleared by serialize_remote_player_state() when it consumes them.
 static std::vector<std::string> g_action_msgs_pending;
+static void srv_apply_client_npc_hits( const JsonObject &jo );
+
 
 // Server: messages from the avatar's own actions, forwarded to the client with
 // "You" → host character name so the client sees attributed host hits.
@@ -6032,6 +6034,81 @@ static void mp_host_apply_client_moves( const std::string &msg )
     }
 }
 
+// NPC phase 2 (A3): damage the client dealt to a host-NPC copy (ranged, thrown,
+// spell) — see build_client_npc_hits.  Applied per bodypart to the REAL NPC as a
+// subtraction from its current HP, with the client's proxy as the source, so a
+// lethal hit dies on the host with the proxy as killer (corpse and loot
+// host-side, reaching the client by tile sync).  A4: a non-spell hit runs the NPC's
+// on_attacked.  Arrives either on an enriched action (client_npc_hits member) or,
+// for a kill, as its own out-of-band message the moment the client's copy would
+// have died (type client_npc_hits), so the corpse doesn't wait for the client's
+// next action.
+static void srv_apply_client_npc_hits( const JsonObject &jo )
+{
+    if( !jo.has_array( "client_npc_hits" ) ) {
+        return;
+    }
+    {
+        map &m = get_map();
+        npc *proxy = remote_player_npc_id.is_valid()
+                     ? g->critter_by_id<npc>( remote_player_npc_id ) : nullptr;
+        for( const JsonValue &hv : jo.get_array( "client_npc_hits" ) ) {
+            JsonObject ho = hv.get_object();
+            ho.allow_omitted_members();
+            const int id = ho.get_int( "id", 0 );
+            const int k  = ho.get_int( "k", -1 );
+            const bool from_spell = ho.get_string( "src", "other" ) == "spell";
+            npc *target = id != 0 ? g->critter_by_id<npc>( character_id( id ) ) : nullptr;
+            if( target == nullptr || target->is_dead() ) {
+                mp_log( "[cdda-mp] HOST-NPC-HIT-MISS: id=" + std::to_string( id ) +
+                        ( target ? " (already dead)" : " (no host NPC with this id)" ) );
+                continue;
+            }
+            int total = 0;
+            for( JsonArray part : ho.get_array( "parts" ) ) {
+                const bodypart_id bp( part.get_string( 0 ) );
+                const int dealt = part.get_int( 1 );
+                if( dealt <= 0 || !target->has_part( bp ) ) {
+                    continue;
+                }
+                target->apply_damage( proxy, bp, dealt );
+                total += dealt;
+            }
+            const bool dead = target->is_dead_state();
+            mp_log( "[cdda-mp] HOST-NPC-HIT: id=" + std::to_string( id ) + " name=\"" +
+                    target->get_name() + "\" total=" + std::to_string( total ) +
+                    " k=" + std::to_string( k ) + " src=" + ( from_spell ? "spell" : "other" ) +
+                    " hp_after=" + std::to_string( target->get_hp() ) +
+                    " dead=" + std::to_string( dead ) );
+            // A4: reactions mirror SP — a ranged/thrown hit runs on_attacked
+            // with the attacker (npc.cpp counts the proxy like the avatar), a
+            // spell never does (SP's damage_targets doesn't, even for the avatar).
+            if( !dead && !from_spell && proxy != nullptr ) {
+                const bool was_enemy = target->is_enemy();
+                target->on_attacked( *proxy );
+                mp_log( "[cdda-mp] HOST-NPC-HIT-REACT: id=" + std::to_string( id ) +
+                        " name=\"" + target->get_name() + "\" was_enemy=" +
+                        std::to_string( was_enemy ) + " now_enemy=" +
+                        std::to_string( target->is_enemy() ) + " att=" +
+                        std::to_string( static_cast<int>( target->get_attitude() ) ) );
+            }
+            if( dead ) {
+                const std::string dead_name = target->get_name();
+                // As the monster path: the proxy is the killer unless the
+                // client's copy died with none of ours (k == 0).
+                target->die( &m, k != 0 ? proxy : nullptr );
+                // A7: SP's "X dies!" goes to the HOST's message log (when it
+                // sees it), and the host's own log lines aren't relayed
+                // (measured 2026-10-20: host_capture_avatar_msgs REJECTs "Arturo
+                // Maldonado dies!").  The client killed it, so tell the client.
+                g_action_msgs_pending.push_back( string_format( _( "%s dies!" ), dead_name ) );
+            }
+        }
+        g->cleanup_dead();
+
+    }
+}
+
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
     // Liveness: ANY message from the client (action, wait, or heartbeat) proves
@@ -6128,6 +6205,19 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // so the next broadcast already carries the change.  Body in mp_magic.cpp.
     if( msg.find( "\"type\":\"client_monster_op\"" ) != std::string::npos ) {
         mp_handle_client_monster_op( msg );
+        return;
+    }
+
+    // A client NPC copy's killing blow (A6), sent the moment it happened.
+    if( msg.find( "\"type\":\"client_npc_hits\"" ) != std::string::npos ) {
+        try {
+            JsonValue jv = json_loader::from_string( msg );
+            JsonObject jo = jv.get_object();
+            jo.allow_omitted_members();
+            srv_apply_client_npc_hits( jo );
+        } catch( const JsonError &e ) {
+            mp_log( "[cdda-mp] npc_hits (out-of-band) parse error: " + std::string( e.what() ) );
+        }
         return;
     }
 
@@ -7636,74 +7726,12 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         }
     }
 
-    // NPC phase 2 (A3): damage the client dealt to a host-NPC copy (ranged, thrown,
-    // spell) — see build_client_npc_hits.  Applied per bodypart to the REAL NPC as a
-    // subtraction from its current HP, with the client's proxy as the source, so a
-    // lethal hit dies on the host with the proxy as killer (corpse and loot
-    // host-side, reaching the client by tile sync).  Reactions (A4/A5) come later.
     if( msg.find( "\"client_npc_hits\":" ) != std::string::npos ) {
         try {
             JsonValue jv = json_loader::from_string( msg );
             JsonObject jo = jv.get_object();
             jo.allow_omitted_members();
-            if( jo.has_array( "client_npc_hits" ) ) {
-                map &m = get_map();
-                npc *proxy = remote_player_npc_id.is_valid()
-                             ? g->critter_by_id<npc>( remote_player_npc_id ) : nullptr;
-                for( const JsonValue &hv : jo.get_array( "client_npc_hits" ) ) {
-                    JsonObject ho = hv.get_object();
-                    ho.allow_omitted_members();
-                    const int id = ho.get_int( "id", 0 );
-                    const int k  = ho.get_int( "k", -1 );
-                    const bool from_spell = ho.get_string( "src", "other" ) == "spell";
-                    npc *target = id != 0 ? g->critter_by_id<npc>( character_id( id ) ) : nullptr;
-                    if( target == nullptr || target->is_dead() ) {
-                        mp_log( "[cdda-mp] HOST-NPC-HIT-MISS: id=" + std::to_string( id ) +
-                                ( target ? " (already dead)" : " (no host NPC with this id)" ) );
-                        continue;
-                    }
-                    int total = 0;
-                    for( JsonArray part : ho.get_array( "parts" ) ) {
-                        const bodypart_id bp( part.get_string( 0 ) );
-                        const int dealt = part.get_int( 1 );
-                        if( dealt <= 0 || !target->has_part( bp ) ) {
-                            continue;
-                        }
-                        target->apply_damage( proxy, bp, dealt );
-                        total += dealt;
-                    }
-                    const bool dead = target->is_dead_state();
-                    mp_log( "[cdda-mp] HOST-NPC-HIT: id=" + std::to_string( id ) + " name=\"" +
-                            target->get_name() + "\" total=" + std::to_string( total ) +
-                            " k=" + std::to_string( k ) + " src=" + ( from_spell ? "spell" : "other" ) +
-                            " hp_after=" + std::to_string( target->get_hp() ) +
-                            " dead=" + std::to_string( dead ) );
-                    // A4: reactions mirror SP — a ranged/thrown hit runs on_attacked
-                    // with the attacker (npc.cpp counts the proxy like the avatar), a
-                    // spell never does (SP's damage_targets doesn't, even for the avatar).
-                    if( !dead && !from_spell && proxy != nullptr ) {
-                        const bool was_enemy = target->is_enemy();
-                        target->on_attacked( *proxy );
-                        mp_log( "[cdda-mp] HOST-NPC-HIT-REACT: id=" + std::to_string( id ) +
-                                " name=\"" + target->get_name() + "\" was_enemy=" +
-                                std::to_string( was_enemy ) + " now_enemy=" +
-                                std::to_string( target->is_enemy() ) + " att=" +
-                                std::to_string( static_cast<int>( target->get_attitude() ) ) );
-                    }
-                    if( dead ) {
-                        const std::string dead_name = target->get_name();
-                        // As the monster path: the proxy is the killer unless the
-                        // client's copy died with none of ours (k == 0).
-                        target->die( &m, k != 0 ? proxy : nullptr );
-                        // A7: SP's "X dies!" goes to the HOST's message log (when it
-                        // sees it), and the host's own log lines aren't relayed
-                        // (measured 2026-10-20: host_capture_avatar_msgs REJECTs "Arturo
-                        // Maldonado dies!").  The client killed it, so tell the client.
-                        g_action_msgs_pending.push_back( string_format( _( "%s dies!" ), dead_name ) );
-                    }
-                }
-                g->cleanup_dead();
-            }
+            srv_apply_client_npc_hits( jo );
         } catch( const JsonError &e ) {
             mp_log( "[cdda-mp] npc_hits parse error: " + std::string( e.what() ) );
         }
@@ -16332,9 +16360,6 @@ static std::string mp_npc_copy_take_hit( int host_id, mp_npc_copy_state &st, npc
            ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
 }
 
-// Lethal reports (A6) wait here for the next enriched action.
-static std::vector<std::string> g_client_npc_lethal_hits;
-
 // NPC phase 2 (A6): called at the top of npc::die.  A client-side NPC copy never
 // dies locally — SP would leave a client-only corpse and the copy's clothes as
 // loot while the host's NPC lives on (measured 2026-10-20: Father Greenwood "died"
@@ -16359,7 +16384,12 @@ bool mp_client_npc_copy_dies( npc &n, Creature *killer )
             " name=\"" + n.get_name() + "\" k=" + std::to_string( k ) +
             ( entry.empty() ? " (no new damage to report)" : " — lethal hit queued" ) );
     if( !entry.empty() ) {
-        g_client_npc_lethal_hits.push_back( entry );
+        // Out-of-band, now: the killing blow often lands inside a cast that resolves
+        // AFTER this turn's action was sent, and an enriched action is the only other
+        // carrier — measured 2026-10-20: the host heard of a spell kill 46 s late, the
+        // corpse reached the client only then.
+        client_send( "{\"type\":\"client_npc_hits\",\"client_npc_hits\":[" + entry + "]}" );
+        mp_log( "[cdda-mp] CLI-NPC-LETHAL-SENT: host_id=" + std::to_string( host_id ) );
     }
     it->second.kill_pending = true;
     it->second.kill_suppress = 8;
@@ -16369,10 +16399,6 @@ bool mp_client_npc_copy_dies( npc &n, Creature *killer )
 static std::string build_client_npc_hits()
 {
     std::string out;
-    for( const std::string &entry : g_client_npc_lethal_hits ) {
-        out += ( out.empty() ? "" : "," ) + entry;
-    }
-    g_client_npc_lethal_hits.clear();
     mp_flush_npc_copy_kills();
     for( auto &[host_id, st] : g_client_npc_copies ) {
         if( !st.spawned ) {
