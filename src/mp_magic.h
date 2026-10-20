@@ -98,6 +98,8 @@ void mp_handle_client_summon( const std::string &msg );
 // runs BEFORE the local add_vehicle, because SP drops the vehicle on the exact
 // target tile.  Returns true when it handled the cast (we are the client and the
 // caster is our own avatar); spawn_summoned_vehicle then places nothing locally.
+bool mp_client_summon_vehicle( const spell &sp, Creature &caster, const tripoint_bub_ms &target );
+
 // Host: apply a {"type":"client_summon_vehicle",...} packet.
 void mp_handle_client_summon_vehicle( const std::string &msg );
 

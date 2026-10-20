@@ -1422,6 +1422,10 @@ void spell_effect::spawn_summoned_vehicle( const spell &sp, Creature &caster,
         caster.add_msg_if_player( m_bad, _( "There is already a vehicle there." ) );
         return;
     }
+    // MP: a co-op client's summoned vehicle is placed by the host (ROADMAP B12).
+    if( cata_mp::mp_client_summon_vehicle( sp, caster, target ) ) {
+        return;
+    }
     if( vehicle *veh = here.add_vehicle( sp.summon_vehicle_id(), target, -90_degrees,
                                          100, veh_spawn_status::PRISTINE, false, true ) ) {
         veh->unlock();

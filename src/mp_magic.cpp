@@ -320,6 +320,27 @@ void mp_handle_client_summon( const std::string &msg )
             " turns=" + std::to_string( turns ) );
 }
 
+bool mp_client_summon_vehicle( const spell &sp, Creature &caster, const tripoint_bub_ms &target )
+{
+    if( !is_client_mode() || !caster.is_avatar() ) {
+        return false;   // the host, or not our own cast: SP places it as usual
+    }
+    const tripoint_abs_ms abs = get_map().get_abs( target );
+    const bool permanent = sp.has_flag( spell_flag::PERMANENT );
+    const int turns = permanent ? 0 : to_turns<int>( sp.duration_turns( caster ) );
+    const std::string payload =
+        std::string( "{\"type\":\"client_summon_vehicle\",\"proto\":\"" ) +
+        sp.summon_vehicle_id().str() +
+        "\",\"x\":" + std::to_string( abs.x() ) +
+        ",\"y\":" + std::to_string( abs.y() ) +
+        ",\"z\":" + std::to_string( abs.z() ) +
+        ",\"permanent\":" + ( permanent ? "true" : "false" ) +
+        ",\"turns\":" + std::to_string( turns ) + "}";
+    mp_log( "[cdda-mp] CLI-SUMMON-VEH-SEND: " + payload );
+    client_send( payload );
+    return true;
+}
+
 void mp_handle_client_summon_vehicle( const std::string &msg )
 {
     if( !is_hosting() ) {
