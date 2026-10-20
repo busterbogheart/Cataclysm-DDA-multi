@@ -16161,17 +16161,18 @@ static std::string build_client_npc_hits()
             // Shows whether the copy's max drifted from the host's record.
             if( dealt > 0 ) {
                 const auto mx = st.hpmax.find( part );
+                int host_cur = -1;
+                for( const auto &hp_entry : st.hp ) {
+                    if( hp_entry.first == part ) {
+                        host_cur = hp_entry.second;
+                    }
+                }
                 mp_log( "[cdda-mp] CLI-NPC-COPY-HIT-PART: host_id=" + std::to_string( host_id ) +
                         " " + part + " rep=" + std::to_string( rep ) + " cur=" +
                         std::to_string( cur ) + " copy_max=" +
                         std::to_string( copy->get_part_hp_max( bp ) ) + " host_max=" +
                         ( mx != st.hpmax.end() ? std::to_string( mx->second ) : std::string( "?" ) ) +
-                        " host_cur=" + std::to_string( [&]() {
-                            for( const auto &[hp_part, hp_val] : st.hp ) {
-                                if( hp_part == part ) { return hp_val; }
-                            }
-                            return -1;
-                        }() ) );
+                        " host_cur=" + std::to_string( host_cur ) );
             }
             if( dealt > 0 ) {
                 parts += ( parts.empty() ? "" : "," ) + std::string( "[\"" ) + part + "\"," +
