@@ -3931,6 +3931,11 @@ struct mp_npc_copy_state {
     // Per-bodypart HP already told to the host (or last set from its record);
     // the baseline build_client_npc_hits() diffs the copy against.
     std::map<std::string, int> reported;
+    // NPC phase 2 (A6): the copy was "killed" on the client.  Its lethal hit is
+    // queued for the host; until the host's reply (it stops reporting the NPC) the
+    // copy must not stand there looking alive, nor be rebuilt from the cache.
+    bool kill_pending = false;   // hide the copy at the next safe point
+    int kill_suppress = 0;       // sync passes left in which it isn't rebuilt
 };
 static std::map<int, mp_npc_copy_state> g_client_npc_copies;
 
@@ -3945,6 +3950,37 @@ static void mp_remove_npc_from_game( const character_id &id )
         get_avatar().get_mon_visible().remove_npc( n );
     }
     g->remove_npc( id );
+}
+
+// Hide the copies whose death npc::die suppressed (mp_client_npc_copy_dies).  Not
+// done inside die: SP calls it from loops over the active NPC list, and erasing
+// there would invalidate the iterator.  Runs at the top of every client drain and
+// when the lethal report is built, so the NPC leaves the screen as soon as the
+// client is next able to run it (measured 2026-10-20: a spell kill's copy stood
+// there at full HP for 78 s, until the client's next action carried the report).
+static void mp_flush_npc_copy_kills()
+{
+    bool any = false;
+    for( auto &[host_id, st] : g_client_npc_copies ) {
+        if( !st.kill_pending ) {
+            continue;
+        }
+        st.kill_pending = false;
+        if( !st.spawned ) {
+            continue;
+        }
+        mp_log( "[cdda-mp] CLI-NPC-COPY-KILL-HIDE: host_id=" + std::to_string( host_id ) +
+                " name=\"" + st.name + "\" — copy removed until the host answers" );
+        mp_remove_npc_from_game( st.local );
+        overmap_buffer.remove_npc( st.local );
+        st.spawned = false;
+        st.local = character_id();
+        st.app_dirty = st.has_app;
+        any = true;
+    }
+    if( any ) {
+        g->cleanup_dead();
+    }
 }
 
 static void mp_cull_local_npcs()
@@ -4148,6 +4184,10 @@ static void apply_npc_sync( const JsonObject &jn )
         const tripoint_bub_ms bub = here.get_bub( st.pos );
         if( !here.inbounds( bub ) ) {
             mp_remove_npc_copy( host_id, st, "off_client_map" );
+            continue;
+        }
+        if( !st.spawned && st.kill_suppress > 0 ) {
+            --st.kill_suppress;   // killed on this client; the host hasn't answered yet
             continue;
         }
         npc *copy = st.spawned ? g->critter_by_id<npc>( st.local ) : nullptr;
@@ -15574,6 +15614,7 @@ void client_process_incoming()
     }
 
     mp_cleanup_stale_npcs();
+    mp_flush_npc_copy_kills();
     mp_cull_local_npcs();   // drop client-local phantom NPCs (keep only host proxy)
 
     // Send the join message on the first tick — the save is loaded by now.
@@ -16320,6 +16361,8 @@ bool mp_client_npc_copy_dies( npc &n, Creature *killer )
     if( !entry.empty() ) {
         g_client_npc_lethal_hits.push_back( entry );
     }
+    it->second.kill_pending = true;
+    it->second.kill_suppress = 8;
     return true;
 }
 
@@ -16330,6 +16373,7 @@ static std::string build_client_npc_hits()
         out += ( out.empty() ? "" : "," ) + entry;
     }
     g_client_npc_lethal_hits.clear();
+    mp_flush_npc_copy_kills();
     for( auto &[host_id, st] : g_client_npc_copies ) {
         if( !st.spawned ) {
             continue;
