@@ -3934,6 +3934,19 @@ struct mp_npc_copy_state {
 };
 static std::map<int, mp_npc_copy_state> g_client_npc_copies;
 
+// game::remove_npc erases the NPC from the active list but leaves the raw npc*
+// in the avatar's monster_visible_info; the next sidebar redraw (the compass
+// legend) reads it.  SP's cleanup_dead drops it first (game.cpp), so every MP path
+// that removes an NPC copy must too — measured 2026-10-20: SIGSEGV in
+// display::colorized_compass_text right after CLI-NPC-SYNC-REMOVE.
+static void mp_remove_npc_from_game( const character_id &id )
+{
+    if( npc *n = g->critter_by_id<npc>( id ) ) {
+        get_avatar().get_mon_visible().remove_npc( n );
+    }
+    g->remove_npc( id );
+}
+
 static void mp_cull_local_npcs()
 {
     if( !is_client_mode() ) {
@@ -3960,7 +3973,7 @@ static void mp_cull_local_npcs()
             mp_log( "[cdda-mp] CLI-NPC-CULL-LOCAL: id=" +
                     std::to_string( id.get_value() ) + " name=\"" + n->name + "\"" );
         }
-        g->remove_npc( id );             // active (loaded) copy
+        mp_remove_npc_from_game( id );   // active (loaded) copy
         overmap_buffer.remove_npc( id ); // overmap copy, so it can't re-load
     }
     if( !to_remove.empty() ) {
@@ -3975,7 +3988,7 @@ static void mp_remove_npc_copy( int host_id, mp_npc_copy_state &st, const char *
     }
     mp_log( "[cdda-mp] CLI-NPC-SYNC-REMOVE: host_id=" + std::to_string( host_id ) + " local=" +
             std::to_string( st.local.get_value() ) + " name=\"" + st.name + "\" why=" + why );
-    g->remove_npc( st.local );
+    mp_remove_npc_from_game( st.local );
     overmap_buffer.remove_npc( st.local );
     g->cleanup_dead();
     st.spawned = false;
