@@ -16156,6 +16156,23 @@ static std::string build_client_npc_hits()
             }
             const int cur = copy->is_dead() ? 0 : copy->get_part_hp_cur( bp );
             const int dealt = rep - cur;
+            // DIAGNOSTIC (2026-10-20): a drop with no attack behind it (Father
+            // Greenwood/Jane Schulz reported at join even after the max-HP match).
+            // Shows whether the copy's max drifted from the host's record.
+            if( dealt > 0 ) {
+                const auto mx = st.hpmax.find( part );
+                mp_log( "[cdda-mp] CLI-NPC-COPY-HIT-PART: host_id=" + std::to_string( host_id ) +
+                        " " + part + " rep=" + std::to_string( rep ) + " cur=" +
+                        std::to_string( cur ) + " copy_max=" +
+                        std::to_string( copy->get_part_hp_max( bp ) ) + " host_max=" +
+                        ( mx != st.hpmax.end() ? std::to_string( mx->second ) : std::string( "?" ) ) +
+                        " host_cur=" + std::to_string( [&]() {
+                            for( const auto &[hp_part, hp_val] : st.hp ) {
+                                if( hp_part == part ) { return hp_val; }
+                            }
+                            return -1;
+                        }() ) );
+            }
             if( dealt > 0 ) {
                 parts += ( parts.empty() ? "" : "," ) + std::string( "[\"" ) + part + "\"," +
                          std::to_string( dealt ) + "]";
