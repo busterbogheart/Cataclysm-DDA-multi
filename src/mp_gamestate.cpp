@@ -3923,6 +3923,13 @@ struct mp_npc_copy_state {
     std::vector<std::pair<std::string, std::string>> worn;   // type, variant
     std::string wield;
     std::vector<std::pair<std::string, std::string>> muts;   // trait, variant
+    // NPC phase 2 (A2): the host's HP record only overwrites the copy when it
+    // CHANGED, so damage the client dealt locally survives until it is reported
+    // and the host's record answers it.
+    bool hp_dirty = false;
+    // Per-bodypart HP already told to the host (or last set from its record);
+    // the baseline build_client_npc_hits() diffs the copy against.
+    std::map<std::string, int> reported;
 };
 static std::map<int, mp_npc_copy_state> g_client_npc_copies;
 
@@ -4066,9 +4073,13 @@ static void apply_npc_sync( const JsonObject &jn )
         st.att = r.get_int( "att", 0 );
         st.fac = r.get_string( "fac", "" );
         st.left = r.get_bool( "left", false );
-        st.hp.clear();
+        std::vector<std::pair<std::string, int>> new_hp;
         for( JsonArray hp : r.get_array( "hp" ) ) {
-            st.hp.emplace_back( hp.get_string( 0 ), hp.get_int( 1 ) );
+            new_hp.emplace_back( hp.get_string( 0 ), hp.get_int( 1 ) );
+        }
+        if( new_hp != st.hp ) {
+            st.hp = std::move( new_hp );
+            st.hp_dirty = true;
         }
         if( r.has_object( "app" ) ) {
             JsonObject a = r.get_object( "app" );
@@ -4151,6 +4162,7 @@ static void apply_npc_sync( const JsonObject &jn )
             }
             st.spawned = true;
             st.local = copy->getID();
+            st.hp_dirty = true;   // a fresh copy has default HP
             mp_log( "[cdda-mp] CLI-NPC-SYNC-SPAWN: host_id=" + std::to_string( host_id ) +
                     " local=" + std::to_string( st.local.get_value() ) + " name=\"" + st.name +
                     "\" att=" + std::to_string( st.att ) + " fac=" + st.fac + " pos=" +
@@ -4163,11 +4175,15 @@ static void apply_npc_sync( const JsonObject &jn )
             copy->set_attitude( static_cast<npc_attitude>( st.att ) );
         }
         copy->facing = st.left ? FacingDirection::LEFT : FacingDirection::RIGHT;
-        for( const auto &[part, hp] : st.hp ) {
-            const bodypart_id bp( part );
-            if( copy->has_part( bp ) ) {
-                copy->set_part_hp_cur( bp, hp );
+        if( st.hp_dirty ) {
+            for( const auto &[part, hp] : st.hp ) {
+                const bodypart_id bp( part );
+                if( copy->has_part( bp ) ) {
+                    copy->set_part_hp_cur( bp, hp );
+                    st.reported[part] = hp;
+                }
             }
+            st.hp_dirty = false;
         }
         if( st.app_dirty ) {
             mp_dress_npc_copy( *copy, st );
@@ -16047,6 +16063,57 @@ void mp_pre_remove_dead()
     }
 }
 
+// NPC phase 2 (A1): damage the client dealt to host-NPC copies since the last
+// report, per bodypart, as a DELTA against what the host was last told (same
+// shape as build_client_monster_hits).  "k": 1/0 when the copy died locally
+// (1 = the client's avatar was the killer), absent while it lives.  The host
+// applies it in a later commit; CLI-NPC-COPY-HIT logs every report.
+static std::string build_client_npc_hits()
+{
+    std::string out;
+    for( auto &[host_id, st] : g_client_npc_copies ) {
+        if( !st.spawned ) {
+            continue;
+        }
+        npc *copy = g->critter_by_id<npc>( st.local );
+        if( copy == nullptr ) {
+            continue;
+        }
+        std::string parts;
+        int total = 0;
+        for( auto &[part, rep] : st.reported ) {
+            const bodypart_id bp( part );
+            if( !copy->has_part( bp ) ) {
+                continue;
+            }
+            const int cur = copy->is_dead() ? 0 : copy->get_part_hp_cur( bp );
+            const int dealt = rep - cur;
+            if( dealt > 0 ) {
+                parts += ( parts.empty() ? "" : "," ) + std::string( "[\"" ) + part + "\"," +
+                         std::to_string( dealt ) + "]";
+                total += dealt;
+            }
+            rep = cur;
+        }
+        if( parts.empty() ) {
+            continue;
+        }
+        int k = -1;
+        if( copy->is_dead() ) {
+            const Creature *killer = copy->get_killer();
+            k = killer != nullptr && killer->is_avatar() ? 1 : 0;
+        }
+        mp_log( "[cdda-mp] CLI-NPC-COPY-HIT: host_id=" + std::to_string( host_id ) + " name=\"" +
+                st.name + "\" total=" + std::to_string( total ) + " parts=" + parts +
+                " k=" + std::to_string( k ) + " hp_after=" + std::to_string( copy->get_hp() ) +
+                " activity=" + get_avatar().activity.id().str() );
+        out += ( out.empty() ? "" : "," ) + std::string( "{\"id\":" ) + std::to_string( host_id ) +
+               ",\"parts\":[" + parts + "]" +
+               ( k >= 0 ? ",\"k\":" + std::to_string( k ) : std::string() ) + "}";
+    }
+    return out.empty() ? std::string() : ( "[" + out + "]" );
+}
+
 static std::string build_client_monster_hits()
 {
     std::string hits;
@@ -16355,6 +16422,10 @@ std::string client_enrich_action( const std::string &json )
         const std::string monster_hits = build_client_monster_hits();
         if( !monster_hits.empty() ) {
             enriched += ",\"client_monster_hits\":" + monster_hits;
+        }
+        const std::string npc_hits = build_client_npc_hits();
+        if( !npc_hits.empty() ) {
+            enriched += ",\"client_npc_hits\":" + npc_hits;
         }
         enriched += ",\"char_stats\":" + char_stats;
         enriched += ",\"client_facing\":" + std::to_string(
