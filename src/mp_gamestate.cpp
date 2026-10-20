@@ -1636,6 +1636,7 @@ static const efftype_id effect_ridden( "ridden" );
 static const efftype_id effect_run( "run" );
 
 static const json_character_flag json_flag_CANNOT_MOVE( "CANNOT_MOVE" );
+static const flag_id json_flag_SHAPESHIFTED_ARMOR( "SHAPESHIFTED_ARMOR" );
 
 static const trait_id trait_HEAVYSLEEPER( "HEAVYSLEEPER" );
 static const trait_id trait_HEAVYSLEEPER2( "HEAVYSLEEPER2" );
@@ -6442,6 +6443,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                         worn_list += wi->typeId().str() + ' ';
                     }
                     mp_log( "[cdda-mp] worn_sync applied: [" + worn_list + "]" );
+                    // The inv_dump above skips shapeshifted / integrated items, so
+                    // after a Magiclysm shift the list alone reads as "armor gone".
+                    // B9 diag (2026-10-19): count what the proxy really wears.
+                    std::vector<const item *> all_worn;
+                    std::as_const( remote2->worn ).inv_dump( all_worn );
+                    int shifted = 0;
+                    for( const item *wi : all_worn ) {
+                        shifted += wi->has_flag( json_flag_SHAPESHIFTED_ARMOR ) ? 1 : 0;
+                    }
+                    mp_log( "[cdda-mp] worn_sync applied: worn=" + std::to_string( all_worn.size() ) +
+                            " shapeshifted=" + std::to_string( shifted ) );
                     // Log overlay IDs the NPC would generate (confirm tileset coverage).
                     std::string ov_log;
                     for( const auto &ov : remote2->get_overlay_ids() ) {
@@ -6536,6 +6548,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 }
                 int removed = 0;
                 int added = 0;
+                std::string removed_ids;
+                std::string added_ids;
                 std::vector<trait_id> to_unset;
                 for( const trait_id &existing : remote->get_mutations() ) {
                     if( !want_ids.count( existing ) ) {
@@ -6545,11 +6559,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 for( const trait_id &old : to_unset ) {
                     remote->unset_mutation( old );
                     ++removed;
+                    removed_ids += old.str() + ' ';
                 }
                 for( const auto &[tid, var] : want ) {
                     if( !remote->has_trait( tid ) ) {
                         remote->set_mutation( tid, var );
                         ++added;
+                        added_ids += tid.str() + ' ';
                     } else if( var != nullptr ) {
                         // Already present: update the variant in place rather
                         // than unset+set, which would re-fire the mutation's
@@ -6561,7 +6577,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 if( removed > 0 || added > 0 ) {
                     mp_log( "[cdda-mp] worn_sync: appearance diff removed "
                             + std::to_string( removed ) + " added " + std::to_string( added )
-                            + " (unchanged " + std::to_string( want.size() - added ) + ")" );
+                            + " (unchanged " + std::to_string( want.size() - added ) + ")"
+                            + " -[" + removed_ids + "] +[" + added_ids + "]" );
                     // Mutations recompute max HP (mutation.cpp → recalc_hp).
                     mp_pin_proxy_hp_max( *remote, "mutations" );
                 }
@@ -9261,7 +9278,8 @@ bool mp_remote_attacker_sees( const Character &attacker, const Creature &target 
 
 std::string mp_speed_breakdown( const Character &c )
 {
-    std::string out = "speed=" + std::to_string( c.get_speed() ) +
+    std::string out = "size=" + std::to_string( static_cast<int>( c.get_size() ) ) +
+                      " speed=" + std::to_string( c.get_speed() ) +
                       " base=" + std::to_string( c.get_speed_base() ) +
                       " bonus=" + std::to_string( c.get_speed_bonus() ) + " [";
     for( const speed_bonus_effect &e : c.get_speed_bonus_effects() ) {
@@ -16607,8 +16625,18 @@ void client_resync_worn()
                  + ",\"wielded_obj\":" + wielded_obj_json
                  + ",\"client_inv\":" + inv_json
                  + ",\"ma_style\":\"" + ma_style_str + "\"}";
+    // B9 diag (2026-10-19): shapeshifted armor on the client, to compare with the
+    // host's "worn_sync applied: worn=… shapeshifted=…" for the proxy.
+    std::vector<const item *> all_worn;
+    av.worn.inv_dump( all_worn );
+    int shifted = 0;
+    for( const item *wi : all_worn ) {
+        shifted += wi->has_flag( json_flag_SHAPESHIFTED_ARMOR ) ? 1 : 0;
+    }
     mp_log( "[cdda-mp] worn_sync send: inv_items=" + std::to_string( av.inv->size() )
-            + " inv_bytes=" + std::to_string( inv_json.size() ) );
+            + " inv_bytes=" + std::to_string( inv_json.size() )
+            + " worn=" + std::to_string( all_worn.size() )
+            + " shapeshifted=" + std::to_string( shifted ) );
     client_send( worn_json );
 }
 
