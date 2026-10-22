@@ -3468,6 +3468,10 @@ struct mp_local_effect {
 };
 static std::unordered_map<uint32_t, std::vector<mp_local_effect>> g_client_local_mon_effects;
 static std::vector<mp_local_effect> g_client_local_host_effects;
+// The same for host NPCs' copies (2026-10-22), keyed by the host's NPC id; filled by
+// mp_client_capture_npc_copy_effects, which lives with the copies further down.
+static std::vector<std::pair<int, mp_local_effect>> g_client_local_npc_effects;
+static void mp_client_capture_npc_copy_effects();
 
 static void mp_client_capture_local_moves()
 {
@@ -3551,6 +3555,7 @@ static void mp_client_capture_local_moves()
             g_standin_last_placed = standin->pos_abs();
         }
     }
+    mp_client_capture_npc_copy_effects();
 }
 
 void mp_client_note_op_effect( uint32_t nid, const efftype_id &eff )
@@ -3641,6 +3646,16 @@ static std::string mp_client_take_local_moves_json( const std::string &on )
         out += ",\"client_host_effects\":[" + heff + "]";
         mp_log( "[cdda-mp] CLI-LOCAL-EFFECT-SEND: host stand-in [" + heff + "] on=" + on );
     }
+    std::string neff;
+    for( const auto &[host_id, e] : g_client_local_npc_effects ) {
+        neff += std::string( neff.empty() ? "" : "," ) + "{\"npc\":" + std::to_string( host_id ) +
+                "," + eff_json( e ) + "}";
+    }
+    g_client_local_npc_effects.clear();
+    if( !neff.empty() ) {
+        out += ",\"client_npc_effects\":[" + neff + "]";
+        mp_log( "[cdda-mp] CLI-NPC-LOCAL-EFFECT-SEND: [" + neff + "] on=" + on );
+    }
     return out;
 }
 
@@ -3650,7 +3665,8 @@ static bool mp_msg_has_client_moves( const std::string &msg )
     return msg.find( "\"client_moves\":" ) != std::string::npos ||
            msg.find( "\"client_host_moved\":" ) != std::string::npos ||
            msg.find( "\"client_monster_effects\":" ) != std::string::npos ||
-           msg.find( "\"client_host_effects\":" ) != std::string::npos;
+           msg.find( "\"client_host_effects\":" ) != std::string::npos ||
+           msg.find( "\"client_npc_effects\":" ) != std::string::npos;
 }
 
 // Client: who SP says killed this copy, for the host's kill credit.
@@ -3937,6 +3953,13 @@ struct mp_npc_copy_state {
     // queued for the host; until the host's reply (it stops reporting the NPC) the
     // copy must not be rebuilt from the cache.
     int kill_suppress = 0;       // sync passes left in which it isn't rebuilt
+    // NPC status effects (2026-10-22): the host NPC's effects from its record (id,
+    // intensity, end turn, body part), put on the copy when they change; and the
+    // "id|bp" set the copy carried after that -- the baseline the client's own
+    // additions are diffed against (mp_client_capture_npc_copy_effects).
+    std::vector<std::tuple<std::string, int, int, std::string>> eff;
+    bool eff_dirty = false;
+    std::set<std::string> eff_synced;
 };
 static std::map<int, mp_npc_copy_state> g_client_npc_copies;
 
@@ -4079,6 +4102,120 @@ static void mp_remove_npc_copy( int host_id, mp_npc_copy_state &st, const char *
     st.app_dirty = st.has_app;
 }
 
+// NPC status effects, host -> client (2026-10-22): make the copy's effects exactly
+// the host NPC's, as apply_mon_effects does for monsters.  The client runs no NPC
+// turns, so a copy never ticks or ends an effect itself (measured 2026-10-22: a
+// copy's blind stayed at 30 turns and its slow at 120 while the host's ticked down).
+// Added with force (the host already passed the immunity check) and deferred (no
+// on-add processing, whose damage would read as a client hit on the copy).
+static void mp_apply_npc_copy_effects( int host_id, mp_npc_copy_state &st, npc &copy )
+{
+    std::map<std::pair<efftype_id, bodypart_id>, std::pair<int, int>> want;
+    for( const auto &[id_str, intensity, end_turn, bp_str] : st.eff ) {
+        const efftype_id id( id_str );
+        if( !id.is_valid() ) {
+            static std::unordered_set<std::string> s_unknown_logged;
+            if( s_unknown_logged.insert( id_str ).second ) {
+                mp_log( "[cdda-mp] NPC-EFFECT-SYNC: host effect '" + id_str + "' is unknown here — skipped" );
+            }
+            continue;
+        }
+        bodypart_id bp = bodypart_str_id::NULL_ID();
+        if( !bp_str.empty() ) {
+            const bodypart_str_id bps( bp_str );
+            if( bps.is_valid() ) {
+                bp = bps;
+            }
+        }
+        want[ { id, bp } ] = { intensity, end_turn };
+    }
+    std::string changes;
+    std::vector<std::pair<efftype_id, bodypart_id>> drop;
+    for( const effect &e : copy.get_effects() ) {
+        if( !mp_world_effect_npc_internal( e.get_id() ) && !want.count( { e.get_id(), e.get_bp() } ) ) {
+            drop.emplace_back( e.get_id(), e.get_bp() );
+        }
+    }
+    for( const auto &[id, bp] : drop ) {
+        copy.remove_effect( id, bp );
+        changes += " -" + id.str();
+    }
+    const int now = to_turn<int>( calendar::turn );
+    for( const auto &[key, w] : want ) {
+        const auto &[id, bp] = key;
+        const auto &[intensity, end_turn] = w;
+        const bool perm = end_turn < 0;
+        const time_duration dur = time_duration::from_turns( perm ? 1 : std::max( 1, end_turn - now ) );
+        if( copy.has_effect( id, bp ) ) {
+            effect &e = copy.get_effect( id, bp );
+            if( e.get_intensity() != intensity ) {
+                e.set_intensity( intensity );
+                changes += " ~" + id.str();
+            }
+            if( perm != e.is_permanent() ) {
+                perm ? e.pause_effect() : e.unpause_effect();
+            }
+            e.set_duration( dur );
+        } else {
+            copy.add_effect( id, dur, bp, perm, intensity, /*force=*/true, /*deferred=*/true );
+            changes += " +" + id.str();
+        }
+    }
+    if( !changes.empty() ) {
+        mp_log( "[cdda-mp] NPC-EFFECT-SYNC: npc=" + std::to_string( host_id ) + " \"" + st.name + "\"" +
+                changes );
+    }
+    st.eff_synced.clear();
+    for( const effect &e : copy.get_effects() ) {
+        st.eff_synced.insert( e.get_id().str() + "|" + e.get_bp().id().str() );
+    }
+}
+
+// NPC status effects, client -> host (2026-10-22): what the client's world gave a
+// copy since the host's record last set its effects -- a body-part spell's effect
+// (Blinding Flash's blind@eyes never reaches mp_on_spell_effect_applied), a hit's
+// bleed or knockdown, fire on its tile -- as CLI-LOCAL-EFFECT does for monsters.
+// Each joins the baseline, so it's queued once; it rides the next action or
+// activity end (mp_client_take_local_moves_json) and the host adds it to its NPC.
+static void mp_client_capture_npc_copy_effects()
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    for( auto &[host_id, st] : g_client_npc_copies ) {
+        if( !st.spawned ) {
+            continue;
+        }
+        const npc *copy = g->critter_by_id<npc>( st.local );
+        if( copy == nullptr || copy->is_dead() ) {
+            continue;
+        }
+        for( const effect &e : copy->get_effects() ) {
+            if( mp_world_effect_npc_internal( e.get_id() ) ) {
+                continue;
+            }
+            const std::string key = e.get_id().str() + "|" + e.get_bp().id().str();
+            if( !st.eff_synced.insert( key ).second ) {
+                continue;
+            }
+            const int turns = e.is_permanent() ? -1 : to_turns<int>( e.get_duration() );
+            g_client_local_npc_effects.emplace_back( host_id,
+                    mp_local_effect{ e.get_id(), e.get_bp(), e.get_intensity(), turns } );
+            mp_log( "[cdda-mp] CLI-NPC-LOCAL-EFFECT: npc=" + std::to_string( host_id ) + " \"" + st.name +
+                    "\" +" + key + " int=" + std::to_string( e.get_intensity() ) + " " +
+                    std::to_string( turns ) + "t" );
+        }
+    }
+}
+
+void mp_client_note_npc_op_effect( int host_id, const efftype_id &eff )
+{
+    const auto it = g_client_npc_copies.find( host_id );
+    if( it != g_client_npc_copies.end() ) {
+        it->second.eff_synced.insert( eff.str() + "|" + bodypart_str_id::NULL_ID().str() );
+    }
+}
+
 // Dress a copy from its cached look: sex, worn and wielded items by type, traits.
 // Same calls as the host's own copy on the client (the host_worn block), minus the
 // full item objects, which a copy that is only looked at doesn't need.
@@ -4193,6 +4330,8 @@ static void mp_diag_npc_effects( const npc &n, int host_id, const char *side )
 
 static void apply_npc_sync( const JsonObject &jn )
 {
+    // Before any record can put the host's effects back on a copy.
+    mp_client_capture_npc_copy_effects();
     std::set<int> ids;
     for( const JsonValue &v : jn.get_array( "ids" ) ) {
         ids.insert( v.get_int() );
@@ -4218,6 +4357,17 @@ static void apply_npc_sync( const JsonObject &jn )
             st.hp = std::move( new_hp );
             st.hpmax = std::move( new_max );
             st.hp_dirty = true;
+        }
+        std::vector<std::tuple<std::string, int, int, std::string>> new_eff;
+        if( r.has_array( "eff" ) ) {
+            for( JsonArray e : r.get_array( "eff" ) ) {
+                new_eff.emplace_back( e.get_string( 0 ), e.get_int( 1 ), e.get_int( 2 ),
+                                      e.size() > 3 ? e.get_string( 3 ) : std::string() );
+            }
+        }
+        if( new_eff != st.eff ) {
+            st.eff = std::move( new_eff );
+            st.eff_dirty = true;
         }
         if( r.has_object( "app" ) ) {
             JsonObject a = r.get_object( "app" );
@@ -4305,6 +4455,7 @@ static void apply_npc_sync( const JsonObject &jn )
             st.spawned = true;
             st.local = copy->getID();
             st.hp_dirty = true;   // a fresh copy has default HP
+            st.eff_dirty = true;  // and no effects
             mp_log( "[cdda-mp] CLI-NPC-SYNC-SPAWN: host_id=" + std::to_string( host_id ) +
                     " local=" + std::to_string( st.local.get_value() ) + " name=\"" + st.name +
                     "\" att=" + std::to_string( st.att ) + " fac=" + st.fac + " pos=" +
@@ -4363,6 +4514,10 @@ static void apply_npc_sync( const JsonObject &jn )
                 }
                 copy->set_part_hp_cur( bp, rep );
             }
+        }
+        if( st.eff_dirty || dressed ) {
+            mp_apply_npc_copy_effects( host_id, st, *copy );
+            st.eff_dirty = false;
         }
         // Anything else that recomputed the copy's HP since the last pass.
         mp_npc_copy_undo_hp_drift( host_id, st, *copy, "sync" );
@@ -6073,6 +6228,34 @@ static void mp_host_apply_client_moves( const std::string &msg )
                 mp_log( "[cdda-mp] HOST-CLIENT-EFFECT: nid=" + std::to_string( nid ) + " " +
                         mon->type->id.str() + " +" + id.str() + " " + to_string( dur ) + " -> " +
                         ( mon->has_effect( id, bp ) ? "applied" : "NOT APPLIED (immune or blocked)" ) );
+            }
+        }
+        // NPC status effects (2026-10-22): what the client's world gave a host NPC's
+        // copy (mp_client_capture_npc_copy_effects).  The record is resent either way,
+        // so a refused effect also leaves the copy.
+        if( jo.has_array( "client_npc_effects" ) ) {
+            for( const JsonValue &ev : jo.get_array( "client_npc_effects" ) ) {
+                JsonObject eo = ev.get_object();
+                eo.allow_omitted_members();
+                const int npc_id = eo.get_int( "npc", 0 );
+                efftype_id id;
+                bodypart_id bp;
+                time_duration dur;
+                bool perm = false;
+                int intensity = 1;
+                npc *target = npc_id != 0 && !is_remote_player( character_id( npc_id ) ) ?
+                              g->critter_by_id<npc>( character_id( npc_id ) ) : nullptr;
+                if( !read_effect( eo, id, bp, dur, perm, intensity ) || target == nullptr ||
+                    target->is_dead() ) {
+                    mp_log( "[cdda-mp] HOST-CLIENT-NPC-EFFECT: REFUSED npc=" + std::to_string( npc_id ) + " " +
+                            id.str() + ( target ? ": unknown effect" : ": no live host NPC" ) );
+                    continue;
+                }
+                target->add_effect( id, dur, bp, perm, intensity );
+                mp_server_npc_force_resend( npc_id );
+                mp_log( "[cdda-mp] HOST-CLIENT-NPC-EFFECT: npc=" + std::to_string( npc_id ) + " \"" +
+                        target->get_name() + "\" +" + id.str() + "@" + bp.id().str() + " " + to_string( dur ) +
+                        " -> " + ( target->has_effect( id, bp ) ? "applied" : "NOT APPLIED (immune or blocked)" ) );
             }
         }
         if( jo.has_array( "client_host_effects" ) ) {
@@ -15757,6 +15940,7 @@ void client_process_incoming()
         g_standin_host_effects_known = false;
         g_client_local_mon_effects.clear();
         g_client_local_host_effects.clear();
+        g_client_local_npc_effects.clear();
         g_client_pending_lost_host_wake = false;
         // And the effects mirror: force a full snapshot to the new proxy.
         g_client_effects_sig_sent.clear();
@@ -18080,6 +18264,11 @@ void mp_server_mon_force_resend( uint32_t nid )
     g_server_mon_last_sent.erase( nid );
 }
 
+void mp_server_npc_force_resend( int id )
+{
+    g_server_npc_last_sent.erase( id );
+}
+
 // NPC co-op phase 1 (2026-10-19): the host world's NPCs near the client, so the
 // client can see them.  {"ids":[every NPC id in range],"recs":[changed records]}.
 // A record carries position, name, attitude, faction, facing and per-part HP,
@@ -18134,6 +18323,26 @@ static std::string mp_build_npc_sync_json( const tripoint_abs_ms &center )
                 out.write( bp.id().str() );
                 out.write( n.get_part_hp_cur( bp ) );
                 out.write( n.get_part_hp_max( bp ) );
+                out.end_array();
+            }
+            out.end_array();
+            // NPC status effects (2026-10-22): [id, intensity, end_turn(, bp)] as the
+            // monsters' mon_effects_wire, minus NPC-AI bookkeeping.  The absolute end
+            // turn stays put while an effect ticks, so it doesn't defeat the gate.
+            out.member( "eff" );
+            out.start_array();
+            const int now = to_turn<int>( calendar::turn );
+            for( const effect &e : n.get_effects() ) {
+                if( mp_world_effect_npc_internal( e.get_id() ) ) {
+                    continue;
+                }
+                out.start_array();
+                out.write( e.get_id().str() );
+                out.write( e.get_intensity() );
+                out.write( e.is_permanent() ? -1 : now + to_turns<int>( e.get_duration() ) );
+                if( e.get_bp() != bodypart_str_id::NULL_ID() ) {
+                    out.write( e.get_bp().id().str() );
+                }
                 out.end_array();
             }
             out.end_array();

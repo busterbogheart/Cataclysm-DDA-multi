@@ -514,6 +514,7 @@ void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
                     ",\"turns\":" + std::to_string( to_turns<int>( dur ) ) + "}";
                 mp_log( "[cdda-mp] CLI-NPC-OP-SEND: " + payload );
                 client_send( payload );
+                mp_client_note_npc_op_effect( std::stoi( tag->str() ), eff );
             }
         }
         return;
@@ -580,6 +581,7 @@ void mp_handle_client_monster_op( const std::string &msg )
         }
         const int had = target->has_effect( eff_id ) ? to_turns<int>( target->get_effect_dur( eff_id ) ) : 0;
         target->add_effect( eff_id, time_duration::from_turns( turns ) );
+        mp_server_npc_force_resend( npc_id );   // a refused effect leaves the client's copy too
         mp_log( "[cdda-mp] HOST-NPC-OP: effect npc=" + std::to_string( npc_id ) + " \"" +
                 target->get_name() + "\" " + eff + " +" + std::to_string( turns ) + "t: " +
                 std::to_string( had ) + "t -> " +

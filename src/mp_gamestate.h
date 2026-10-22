@@ -353,6 +353,11 @@ void mp_server_mon_force_resend( uint32_t nid );
 // the same effect a second time.
 void mp_client_note_op_effect( uint32_t nid, const efftype_id &eff );
 
+// The NPC counterparts (2026-10-22): resend host NPC `id`'s record (an npc_effect op
+// it refused), and count an npc_effect op as reported for copy `host_id`.
+void mp_server_npc_force_resend( int id );
+void mp_client_note_npc_op_effect( int host_id, const efftype_id &eff );
+
 // Client: true when monster::die should NOT run this monster's death spell
 // (`eoc` false) or death EOC (`eoc` true) in the client's world, because the
 // host runs the same death and owns what it creates.  A death spell that
