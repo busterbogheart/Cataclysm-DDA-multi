@@ -4113,6 +4113,40 @@ static void mp_dress_npc_copy( npc &copy, const mp_npc_copy_state &st )
 static bool mp_npc_copy_undo_hp_drift( int host_id, mp_npc_copy_state &st, npc &copy,
                                        const char *phase );
 
+// DIAGNOSTIC (NPC status effects, 2026-10-22): an NPC's effects on THIS side as
+// "id@bodypart:intensity:turns", logged per host NPC id when the set changes --
+// the NPC counterpart of MON-EFFECTS.  The body part is shown because a spell
+// aimed at one (Blinding Flash's eyes) takes its own branch in
+// add_effect_to_target, which never reaches mp_on_spell_effect_applied.  Durations
+// gate in whole minutes, so a ticking effect logs about once a minute.  Host lines
+// come from the NPC broadcast and client lines from each applied sync, so they
+// pair up by npc id: an effect a client action gave the copy that never shows in a
+// host line never reached the host's real NPC.
+static void mp_diag_npc_effects( const npc &n, int host_id, const char *side )
+{
+    std::string key;
+    std::string desc;
+    for( const effect &e : n.get_effects() ) {
+        const std::string bp = e.get_bp().id().str();
+        const std::string id = e.get_id().str() +
+                               ( bp == bodypart_str_id::NULL_ID().str() ? "" : "@" + bp );
+        key += id + ":" + std::to_string( e.get_intensity() ) + ":" +
+               ( e.is_permanent() ? std::string( "p" )
+                 : std::to_string( to_turns<int>( e.get_duration() ) / 60 ) ) + " ";
+        desc += ( desc.empty() ? "" : " " ) + id + ":" + std::to_string( e.get_intensity() ) + ":" +
+                ( e.is_permanent() ? std::string( "perm" )
+                  : std::to_string( to_turns<int>( e.get_duration() ) ) );
+    }
+    static std::unordered_map<int, std::string> s_last_key;
+    const auto [it, fresh] = s_last_key.emplace( host_id, key );
+    if( fresh ? key.empty() : it->second == key ) {
+        return;
+    }
+    it->second = key;
+    mp_log( "[cdda-mp] NPC-EFFECTS: npc=" + std::to_string( host_id ) + " \"" + n.get_name() +
+            "\" (" + side + ") [" + desc + "]" );
+}
+
 static void apply_npc_sync( const JsonObject &jn )
 {
     std::set<int> ids;
@@ -4288,6 +4322,7 @@ static void apply_npc_sync( const JsonObject &jn )
         }
         // Anything else that recomputed the copy's HP since the last pass.
         mp_npc_copy_undo_hp_drift( host_id, st, *copy, "sync" );
+        mp_diag_npc_effects( *copy, host_id, "client" );
     }
 }
 
@@ -18023,6 +18058,7 @@ static std::string mp_build_npc_sync_json( const tripoint_abs_ms &center )
         }
         const int id = n.getID().get_value();
         present.insert( id );
+        mp_diag_npc_effects( n, id, "host" );
         ids += ( ids.empty() ? "" : "," ) + std::to_string( id );
 
         std::ostringstream core_os;
