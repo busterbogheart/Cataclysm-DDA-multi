@@ -468,6 +468,27 @@ void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *o
     mp_client_monster_op_sent( mon, std::string( op ) == "banish" );
 }
 
+void mp_on_spell_mod_moves( const Creature &target, const Creature &caster, int delta )
+{
+    if( !is_client_mode() && !is_hosting() ) {
+        return;
+    }
+    std::string who = target.disp_name();
+    if( const monster *mon = target.as_monster() ) {
+        who = mon->type->id.str() + " nid=" + std::to_string( mon->mp_net_id );
+    } else if( const Character *ch = target.as_character() ) {
+        if( const diag_value *tag = ch->maybe_get_value( "mp_synced_npc" ) ) {
+            who = "'" + ch->name + "' host_npc=" + tag->str();
+        }
+    }
+    const bool client_cast = is_client_mode() && caster.is_avatar();
+    mp_log( std::string( "[cdda-mp] SPELL-MOD-MOVES: side=" ) + ( is_hosting() ? "host" : "client" ) +
+            " caster=" + caster.disp_name() + " target=" + who +
+            " delta=" + std::to_string( delta ) +
+            " moves_after=" + std::to_string( target.get_moves() ) +
+            ( client_cast ? " (client world only — not sent to the host)" : "" ) );
+}
+
 void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
                                  const efftype_id &eff, const time_duration &dur )
 {

@@ -1582,7 +1582,9 @@ void spell_effect::mod_moves( const spell &sp, Creature &caster, const tripoint_
             continue;
         }
         sp.make_sound( potential_target, caster );
-        critter->mod_moves( sp.damage( caster ) );
+        const int moves_delta = sp.damage( caster );
+        critter->mod_moves( moves_delta );
+        cata_mp::mp_on_spell_mod_moves( *critter, caster, moves_delta );
     }
 }
 

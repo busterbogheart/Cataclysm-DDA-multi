@@ -136,6 +136,13 @@ void mp_on_monster_spell_op( monster &mon, const Creature &caster, const char *o
 void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
                                  const efftype_id &eff, const time_duration &dur );
 
+// DIAG (2026-10-21, 2b "haste/slow on monsters"): a mod_moves spell (Impalement,
+// Cold Snap, Final Grasp ...) changes the target's moves, which no screen shows.
+// Called from spell_effect::mod_moves (magic_spell_effect.cpp) right after SP's
+// mod_moves.  Logs who cast it, on what, the delta and the moves after; nothing
+// carries a client's change to the host, so the log says so.
+void mp_on_spell_mod_moves( const Creature &target, const Creature &caster, int delta );
+
 // --- Friendly fire from the client (ROADMAP B5) ---------------------------
 //
 // Measured 2026-10-15: a client Firebolt / Slow on the host landed only on the
