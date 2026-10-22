@@ -16587,6 +16587,19 @@ std::string client_enrich_action( const std::string &json )
         worn_sig += std::to_string( av.weight_carried().value() );
         worn_sig += '/';
         worn_sig += std::to_string( av.inv->size() );
+        // Traits ride worn_sync too (its "appearance" list), so a mutation gained
+        // or lost on its own must flip the signature, or the proxy keeps the old
+        // traits until the next outfit change.  Measured 2026-10-21: a client's
+        // Debug 9000 HP never reached the proxy; when an effect expired, SP
+        // recomputed the proxy's max HP from its own traits and clamped the
+        // client's HP to 85.
+        worn_sig += ';';
+        for( const trait_and_var &tv : av.get_mutations_variants() ) {
+            worn_sig += tv.trait.str();
+            worn_sig += '|';
+            worn_sig += tv.variant;
+            worn_sig += ',';
+        }
         if( worn_sig != g_client_worn_baseline ) {
             g_client_worn_baseline = worn_sig;
             client_resync_worn();
