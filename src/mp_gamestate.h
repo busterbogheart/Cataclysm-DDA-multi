@@ -388,6 +388,20 @@ bool partner_in_interactive_activity();
 // Called once per game turn from do_turn() when in client mode.
 void client_process_incoming();
 
+// Held around the network drains target_ui's input loop runs (ranged.cpp): a
+// creature those drains remove stays allocated until the next drain outside the
+// guard, since target_ui keeps raw pointers to its target and target list.
+struct mp_aim_drain_guard {
+    mp_aim_drain_guard();
+    ~mp_aim_drain_guard();
+    mp_aim_drain_guard( const mp_aim_drain_guard & ) = delete;
+    mp_aim_drain_guard &operator=( const mp_aim_drain_guard & ) = delete;
+};
+
+// game::cleanup_dead for MP code; skipped inside an mp_aim_drain_guard, where the
+// dead wait for SP's own cleanup_dead at the next turn boundary.
+void mp_cleanup_dead();
+
 // Run blocking UI that was deferred out of the network-recv path (e.g. the smash
 // "Keep smashing?" prompt).  Call from do_turn() right after
 // client_process_incoming(), where a top-level UI context is valid.

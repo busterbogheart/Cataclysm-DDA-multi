@@ -3246,6 +3246,7 @@ void npc::die( map *here, Creature *nkiller )
         return;
     }
     if( cata_mp::mp_client_npc_copy_dies( *this, nkiller ) ) {
+        dead = true;
         return;
     }
     prevent_death_reminder = false;

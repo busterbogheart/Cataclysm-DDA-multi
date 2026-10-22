@@ -3935,11 +3935,79 @@ struct mp_npc_copy_state {
     std::map<std::string, int> reported;
     // NPC phase 2 (A6): the copy was "killed" on the client.  Its lethal hit is
     // queued for the host; until the host's reply (it stops reporting the NPC) the
-    // copy must not stand there looking alive, nor be rebuilt from the cache.
-    bool kill_pending = false;   // hide the copy at the next safe point
+    // copy must not be rebuilt from the cache.
     int kill_suppress = 0;       // sync passes left in which it isn't rebuilt
 };
 static std::map<int, mp_npc_copy_state> g_client_npc_copies;
+
+// While a player aims, target_ui holds raw Creature pointers (its target and its
+// target list) and redraws from inside the network drain its input loop runs
+// (ranged.cpp).  SP never deletes a creature with that screen open -- dead ones
+// wait for cleanup_dead at the next turn boundary -- but the drain's removals did:
+// measured 2026-10-22, SIGABRT (pure virtual) in target_ui::panel_target_info
+// right after CLI-NPC-COPY-KILL-HIDE deleted a shotgun kill's NPC copy mid-aim.
+// So a drain run under mp_aim_drain_guard takes creatures out of the world as
+// usual but keeps each one allocated until the next drain outside the guard, and
+// leaves dead ones for SP's cleanup_dead.
+static int g_aim_drain_depth = 0;
+static std::vector<shared_ptr_fast<Creature>> g_aim_held;
+static int g_aim_cleanup_skips = 0;
+
+mp_aim_drain_guard::mp_aim_drain_guard()
+{
+    ++g_aim_drain_depth;
+}
+
+mp_aim_drain_guard::~mp_aim_drain_guard()
+{
+    --g_aim_drain_depth;
+}
+
+// Call just before MP code deletes a creature (remove_zombie / remove_npc).
+static void mp_hold_removed_creature( const Creature &c, const char *why )
+{
+    if( g_aim_drain_depth == 0 ) {
+        return;
+    }
+    shared_ptr_fast<Creature> held;
+    if( const monster *mon = c.as_monster() ) {
+        for( const shared_ptr_fast<monster> &ptr : get_creature_tracker().get_monsters_list() ) {
+            if( ptr.get() == mon ) {
+                held = ptr;
+                break;
+            }
+        }
+    } else if( const npc *n = c.as_npc() ) {
+        held = g->shared_from( *n );
+    }
+    mp_log( std::string( "[cdda-mp] AIM-HOLD: " ) + why + " \"" + c.disp_name() + "\"" +
+            ( held ? " — kept allocated until the aim screen closes" :
+              " — NOT FOUND in the tracker, deleted mid-aim" ) );
+    if( held ) {
+        g_aim_held.push_back( std::move( held ) );
+    }
+}
+
+void mp_cleanup_dead()
+{
+    if( g_aim_drain_depth > 0 ) {
+        ++g_aim_cleanup_skips;   // SP's cleanup_dead clears them at the turn boundary
+        return;
+    }
+    g->cleanup_dead();
+}
+
+// Top of every drain: outside the aim screen, what it kept alive can go.
+static void mp_release_aim_held()
+{
+    if( g_aim_drain_depth > 0 || ( g_aim_held.empty() && g_aim_cleanup_skips == 0 ) ) {
+        return;
+    }
+    mp_log( "[cdda-mp] AIM-HOLD-RELEASE: held=" + std::to_string( g_aim_held.size() ) +
+            " cleanup_skips=" + std::to_string( g_aim_cleanup_skips ) );
+    g_aim_held.clear();
+    g_aim_cleanup_skips = 0;
+}
 
 // game::remove_npc erases the NPC from the active list but leaves the raw npc*
 // in the avatar's monster_visible_info; the next sidebar redraw (the compass
@@ -3950,39 +4018,15 @@ static void mp_remove_npc_from_game( const character_id &id )
 {
     if( npc *n = g->critter_by_id<npc>( id ) ) {
         get_avatar().get_mon_visible().remove_npc( n );
+        mp_hold_removed_creature( *n, "remove_npc" );
     }
     g->remove_npc( id );
 }
 
-// Hide the copies whose death npc::die suppressed (mp_client_npc_copy_dies).  Not
-// done inside die: SP calls it from loops over the active NPC list, and erasing
-// there would invalidate the iterator.  Runs at the top of every client drain and
-// when the lethal report is built, so the NPC leaves the screen as soon as the
-// client is next able to run it (measured 2026-10-20: a spell kill's copy stood
-// there at full HP for 78 s, until the client's next action carried the report).
-static void mp_flush_npc_copy_kills()
+static void mp_remove_zombie( monster &mon, const char *why )
 {
-    bool any = false;
-    for( auto &[host_id, st] : g_client_npc_copies ) {
-        if( !st.kill_pending ) {
-            continue;
-        }
-        st.kill_pending = false;
-        if( !st.spawned ) {
-            continue;
-        }
-        mp_log( "[cdda-mp] CLI-NPC-COPY-KILL-HIDE: host_id=" + std::to_string( host_id ) +
-                " name=\"" + st.name + "\" — copy removed until the host answers" );
-        mp_remove_npc_from_game( st.local );
-        overmap_buffer.remove_npc( st.local );
-        st.spawned = false;
-        st.local = character_id();
-        st.app_dirty = st.has_app;
-        any = true;
-    }
-    if( any ) {
-        g->cleanup_dead();
-    }
+    mp_hold_removed_creature( mon, why );
+    g->remove_zombie( mon );
 }
 
 static void mp_cull_local_npcs()
@@ -4015,7 +4059,7 @@ static void mp_cull_local_npcs()
         overmap_buffer.remove_npc( id ); // overmap copy, so it can't re-load
     }
     if( !to_remove.empty() ) {
-        g->cleanup_dead();
+        mp_cleanup_dead();
     }
 }
 
@@ -4028,7 +4072,7 @@ static void mp_remove_npc_copy( int host_id, mp_npc_copy_state &st, const char *
             std::to_string( st.local.get_value() ) + " name=\"" + st.name + "\" why=" + why );
     mp_remove_npc_from_game( st.local );
     overmap_buffer.remove_npc( st.local );
-    g->cleanup_dead();
+    mp_cleanup_dead();
     st.spawned = false;
     st.local = character_id();
     // A rebuilt copy is a bare NPC: dress it again from the cached look.
@@ -4617,6 +4661,7 @@ static void remove_remote_player( bool announce = true )
         get_avatar().get_mon_visible().remove_npc( remote );
         // Clean despawn — the partner quit/disconnected, they are NOT dead.
         // die() drops a corpse carrying all their gear (a pickup-able loot dupe).
+        mp_hold_removed_creature( *remote, "remote_player_left" );
         g->remove_npc( remote_player_npc_id );
     }
     // Remove from overmap buffer so the NPC doesn't get written back into the
@@ -6139,7 +6184,7 @@ static void srv_apply_client_npc_hits( const JsonObject &jo )
                 g_action_msgs_pending.push_back( string_format( _( "%s dies!" ), dead_name ) );
             }
         }
-        g->cleanup_dead();
+        mp_cleanup_dead();
 
     }
 }
@@ -7753,7 +7798,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                            + " dealt=" + std::to_string( dealt ) + " new_hp=" + std::to_string( new_hp ) );
                 }
                 if( any_killed ) {
-                    g->cleanup_dead();
+                    mp_cleanup_dead();
                 }
             }
         } catch( const JsonError &e ) {
@@ -12981,6 +13026,7 @@ static void check_separation_warning( const tripoint_abs_ms &a, const tripoint_a
 
 void process_mp_events()
 {
+    mp_release_aim_held();
     // If the menu armed host mode but the world wasn't loaded yet, the
     // listen-server thread was deferred until now.  Starts on the first
     // do_turn() after the avatar exists so a client connecting can actually
@@ -13427,6 +13473,7 @@ static void remove_client_host_npc()
     // active copy and the overmap copy without a death.
     npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
     if( host_npc ) {
+        mp_hold_removed_creature( *host_npc, "host_left" );
         g->remove_npc( client_host_npc_id );
     }
     if( client_host_npc_id.is_valid() ) {
@@ -15655,6 +15702,7 @@ void mp_client_asleep_wait()
 
 void client_process_incoming()
 {
+    mp_release_aim_held();
     // After the host has died (or the socket dropped), drain the queue silently
     // and do nothing else — prevents the lost-connection spam.
     if( g_server_died ) {
@@ -15677,7 +15725,6 @@ void client_process_incoming()
     }
 
     mp_cleanup_stale_npcs();
-    mp_flush_npc_copy_kills();
     mp_cull_local_npcs();   // drop client-local phantom NPCs (keep only host proxy)
 
     // Send the join message on the first tick — the save is loaded by now.
@@ -16399,9 +16446,11 @@ static std::string mp_npc_copy_take_hit( int host_id, mp_npc_copy_state &st, npc
 // dies locally — SP would leave a client-only corpse and the copy's clothes as
 // loot while the host's NPC lives on (measured 2026-10-20: Father Greenwood "died"
 // and came back).  The killing blow is queued as a report (k = 1 if the avatar
-// killed it) for the host to apply with SP's own die, the copy's HP goes back to
-// what the host last said, and the copy is removed when the host stops reporting
-// the NPC.
+// killed it) for the host to apply with SP's own die, and the copy is dead the SP
+// way: npc::die marks it dead when this returns true, so it leaves the screen and
+// every target list at once, and SP's cleanup_dead erases it at the next turn
+// boundary.  Nothing here deletes it -- this can run while a target_ui holds raw
+// pointers to creatures (see g_aim_drain_depth).
 bool mp_client_npc_copy_dies( npc &n, Creature *killer )
 {
     const diag_value *tag = n.maybe_get_value( "mp_synced_npc" );
@@ -16426,15 +16475,20 @@ bool mp_client_npc_copy_dies( npc &n, Creature *killer )
         client_send( "{\"type\":\"client_npc_hits\",\"client_npc_hits\":[" + entry + "]}" );
         mp_log( "[cdda-mp] CLI-NPC-LETHAL-SENT: host_id=" + std::to_string( host_id ) );
     }
-    it->second.kill_pending = true;
-    it->second.kill_suppress = 8;
+    mp_npc_copy_state &st = it->second;
+    mp_log( "[cdda-mp] CLI-NPC-COPY-DEAD: host_id=" + std::to_string( host_id ) + " name=\"" +
+            st.name + "\" local=" + std::to_string( st.local.get_value() ) +
+            " — dead until SP's cleanup_dead; not rebuilt until the host answers" );
+    st.spawned = false;
+    st.local = character_id();
+    st.app_dirty = st.has_app;   // a rebuilt copy is a bare NPC
+    st.kill_suppress = 8;
     return true;
 }
 
 static std::string build_client_npc_hits()
 {
     std::string out;
-    mp_flush_npc_copy_kills();
     for( auto &[host_id, st] : g_client_npc_copies ) {
         if( !st.spawned ) {
             continue;
@@ -19707,7 +19761,7 @@ static void apply_monster_sync( JsonObject &jo )
             culled_log += mon->type->id.str() +
                           ( mp_is_summoned( *mon ) ? "(local,SUMMON) " : "(local) " );
             ++n_culled;
-            g->remove_zombie( *mon );
+            mp_remove_zombie( *mon, "cull_local" );
         }
     }
 
@@ -19764,7 +19818,7 @@ static void apply_monster_sync( JsonObject &jo )
             culled_log += mon->type->id.str() +
                           ( mp_is_summoned( *mon ) ? "(phantom,SUMMON) " : "(phantom) " );
             ++n_culled;
-            g->remove_zombie( *mon );          // clean despawn, no corpse
+            mp_remove_zombie( *mon, "cull_phantom" );        // clean despawn, no corpse
         }
         static int s_last_phantom = -1;
         if( n_phantom != s_last_phantom || !phantom_cull.empty() ) {
@@ -19819,7 +19873,7 @@ static void apply_monster_sync( JsonObject &jo )
                     // death message, no death spell.  If it comes back into
                     // range the host re-broadcasts it and it re-spawns here.
                     g_net_id_map.erase( it );
-                    g->remove_zombie( gone );
+                    mp_remove_zombie( gone, "host_removed_gone" );
                 } else {
                     if( removal == "nodrops" ) {
                         gone.death_drops = false;   // as banishment() sets it
@@ -19879,7 +19933,7 @@ static void apply_monster_sync( JsonObject &jo )
                           ",ghost) ";
             ++n_culled;
             g_net_id_map.erase( mon->mp_net_id );
-            g->remove_zombie( *mon );
+            mp_remove_zombie( *mon, "ghost" );
         }
     }
 
@@ -19902,7 +19956,7 @@ static void apply_monster_sync( JsonObject &jo )
         }
     }
 
-    g->cleanup_dead();
+    mp_cleanup_dead();
 }
 
 static std::string build_viewport( const tripoint_bub_ms &center )

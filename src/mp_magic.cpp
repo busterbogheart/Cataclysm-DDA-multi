@@ -651,7 +651,7 @@ void mp_handle_client_monster_op( const std::string &msg )
         mp_log( "[cdda-mp] HOST-MON-OP: banish nid=" + std::to_string( nid ) + " " + before );
         mon->death_drops = false;
         mon->die( &get_map(), get_partner_npc() );
-        g->cleanup_dead();
+        mp_cleanup_dead();
         return;
     } else {
         mp_log( "[cdda-mp] HOST-MON-OP: REJECTED unknown op '" + op + "'" );

@@ -3026,13 +3026,17 @@ target_handler::trajectory target_ui::run()
         // actions every frame; client pulls host updates on the idle TIMEOUT.
         // Safe re-entrancy: client_process_incoming() DEFERS interactive
         // activities (ACT_AIM) instead of ticking them (mp_gamestate.cpp), so
-        // it can't re-enter this target_ui::run().
-        if( cata_mp::is_hosting() ) {
-            cata_mp::process_mp_events();
-        }
-        if( cata_mp::is_client_mode() && action == "TIMEOUT" ) {
-            cata_mp::client_process_incoming();
-            g->invalidate_main_ui_adaptor();
+        // it can't re-enter this target_ui::run().  The guard keeps any creature
+        // these drains remove allocated while dst_critter/targets may point at it.
+        {
+            const cata_mp::mp_aim_drain_guard aim_drain;
+            if( cata_mp::is_hosting() ) {
+                cata_mp::process_mp_events();
+            }
+            if( cata_mp::is_client_mode() && action == "TIMEOUT" ) {
+                cata_mp::client_process_incoming();
+                g->invalidate_main_ui_adaptor();
+            }
         }
 
         // If an aiming mode is selected, use "*_SHOT" instead of "FIRE"
