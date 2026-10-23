@@ -1275,6 +1275,23 @@ static std::string g_client_activity_ended_since_start;
 static std::optional<tripoint_abs_ms> g_client_pending_act_pos;
 static std::string g_client_pending_act_pos_desc;
 
+// Client: the pending act_pos as a JSON field to append to an outgoing packet, or
+// "" when there is none.  Taken once.  The activity end carries it too: a teleport
+// cast's end went out first and the host's reply put the client back (measured
+// 2026-10-21 22:01, Translocate Self: ACT-END SEND in the same ms as, and before,
+// ACT-POS-PENDING dist=21; the jump stuck only on the next wait 4 s later).
+static std::string mp_client_take_act_pos_json( const std::string &on )
+{
+    if( !g_client_pending_act_pos ) {
+        return "";
+    }
+    const tripoint_abs_ms p = *g_client_pending_act_pos;
+    g_client_pending_act_pos.reset();
+    mp_log( "[cdda-mp] ACT-POS-SEND: " + g_client_pending_act_pos_desc + " on=" + on );
+    return ",\"act_pos\":{\"x\":" + std::to_string( p.x() ) + ",\"y\":" + std::to_string( p.y() ) +
+           ",\"z\":" + std::to_string( p.z() ) + "}";
+}
+
 // Map-sync sent-set and forward declaration — defined later in the map-streaming
 // section but referenced in the move handler (process_remote_action).
 static std::set<tripoint_abs_sm> g_map_sync_sent;
@@ -6372,6 +6389,38 @@ static void srv_apply_client_npc_hits( const JsonObject &jo )
     }
 }
 
+// Host: move the client's proxy to the packet's "act_pos" (see
+// mp_client_take_act_pos_json), if it has one.  Same check as position_sync.
+// Returns whether it moved.
+static bool mp_host_apply_act_pos( const std::string &msg, npc &remote, map &m )
+{
+    if( msg.find( "\"act_pos\":" ) == std::string::npos ) {
+        return false;
+    }
+    try {
+        JsonValue jv = json_loader::from_string( msg );
+        JsonObject jo = jv.get_object();
+        jo.allow_omitted_members();
+        JsonObject pos = jo.get_object( "act_pos" );
+        const tripoint_abs_ms to{ pos.get_int( "x" ), pos.get_int( "y" ), pos.get_int( "z" ) };
+        const tripoint_abs_ms from = remote.pos_abs();
+        const std::string desc = "from=" + std::to_string( from.x() ) + "," +
+                                 std::to_string( from.y() ) + "," + std::to_string( from.z() ) +
+                                 " to=" + std::to_string( to.x() ) + "," + std::to_string( to.y() ) +
+                                 "," + std::to_string( to.z() ) +
+                                 " dist=" + std::to_string( rl_dist( from, to ) );
+        if( m.inbounds( to ) ) {
+            remote.setpos( m, m.get_bub( to ) );
+            mp_log( "[cdda-mp] ACT-POS-APPLY: " + desc );
+            return true;
+        }
+        mp_log( "[cdda-mp] ACT-POS-REJECT: out of bounds " + desc );
+    } catch( const JsonError &e ) {
+        mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
+    }
+    return false;
+}
+
 static void handle_remote_action( const std::string &/*name*/, const std::string &msg )
 {
     // Liveness: ANY message from the client (action, wait, or heartbeat) proves
@@ -6619,6 +6668,9 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
     if( msg.find( "\"action\":\"activity_end\"" ) != std::string::npos ) {
+        // B6: where the ended activity put the client (a teleport cast), before the
+        // ack's broadcast reports its position.
+        mp_host_apply_act_pos( msg, *remote, m );
         // B5/B10: the pushes the ended activity made (client_send_activity_end).
         if( mp_msg_has_client_moves( msg ) ) {
             mp_host_apply_client_moves( msg );
@@ -7439,32 +7491,8 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // B6: a move the client's activity made (a teleport spell's finish()),
     // riding whatever packet the client sent next.  Applied BEFORE the action
     // below, so a move sent right after a teleport starts from the new tile, and
-    // a wait's ack broadcasts the new position.  Same check as position_sync.
-    bool act_pos_moved = false;
-    if( msg.find( "\"act_pos\":" ) != std::string::npos ) {
-        try {
-            JsonValue jv = json_loader::from_string( msg );
-            JsonObject jo = jv.get_object();
-            jo.allow_omitted_members();
-            JsonObject pos = jo.get_object( "act_pos" );
-            const tripoint_abs_ms to{ pos.get_int( "x" ), pos.get_int( "y" ), pos.get_int( "z" ) };
-            const tripoint_abs_ms from = remote->pos_abs();
-            const std::string desc = "from=" + std::to_string( from.x() ) + "," +
-                                     std::to_string( from.y() ) + "," + std::to_string( from.z() ) +
-                                     " to=" + std::to_string( to.x() ) + "," + std::to_string( to.y() ) +
-                                     "," + std::to_string( to.z() ) +
-                                     " dist=" + std::to_string( rl_dist( from, to ) );
-            if( m.inbounds( to ) ) {
-                remote->setpos( m, m.get_bub( to ) );
-                act_pos_moved = true;
-                mp_log( "[cdda-mp] ACT-POS-APPLY: " + desc );
-            } else {
-                mp_log( "[cdda-mp] ACT-POS-REJECT: out of bounds " + desc );
-            }
-        } catch( const JsonError &e ) {
-            mp_log( std::string( "[cdda-mp] ACT-POS-REJECT: parse error " ) + e.what() );
-        }
-    }
+    // a wait's ack broadcasts the new position.
+    const bool act_pos_moved = mp_host_apply_act_pos( msg, *remote, m );
 
     // B5/B10: creatures the client's own world moved (its knockback, push and
     // pull spells), riding the same packet as act_pos and applied with it.
@@ -16957,14 +16985,7 @@ std::string client_enrich_action( const std::string &json )
         }
         // B6: a move the activity loop made rides the next packet; see
         // g_client_pending_act_pos.  The host applies it before the action.
-        if( g_client_pending_act_pos ) {
-            const tripoint_abs_ms &p = *g_client_pending_act_pos;
-            enriched += ",\"act_pos\":{\"x\":" + std::to_string( p.x() ) + ",\"y\":" +
-                        std::to_string( p.y() ) + ",\"z\":" + std::to_string( p.z() ) + "}";
-            mp_log( "[cdda-mp] ACT-POS-SEND: " + g_client_pending_act_pos_desc + " on=" +
-                    json.substr( 0, 48 ) );
-            g_client_pending_act_pos.reset();
-        }
+        enriched += mp_client_take_act_pos_json( json.substr( 0, 48 ) );
         // B5/B10: moves the client's own world made to host-owned creatures; see
         // g_client_local_mon_moves.  The host applies them before the action.
         // Usually already sent with the activity_end of the cast that made them.
@@ -17490,6 +17511,23 @@ void mp_client_note_activity_loop_start()
 void mp_client_note_activity_loop_end()
 {
     g_client_in_activity_loop = false;
+    // The move first, so the activity end below carries it as act_pos (see
+    // mp_client_take_act_pos_json).
+    if( g_client_activity_loop_pos ) {
+        const tripoint_abs_ms from = *g_client_activity_loop_pos;
+        const tripoint_abs_ms to = get_avatar().pos_abs();
+        g_client_activity_loop_pos.reset();
+        if( to != from ) {
+            g_client_pending_act_pos = to;
+            g_client_pending_act_pos_desc = "act=" + ( g_client_turn_activity.empty() ? std::string( "none" ) :
+                                            g_client_turn_activity ) +
+                                            " from=" + std::to_string( from.x() ) + "," + std::to_string( from.y() ) + "," +
+                                            std::to_string( from.z() ) + " to=" + std::to_string( to.x() ) + "," +
+                                            std::to_string( to.y() ) + "," + std::to_string( to.z() ) +
+                                            " dist=" + std::to_string( rl_dist( from, to ) );
+            mp_log( "[cdda-mp] ACT-POS-PENDING: " + g_client_pending_act_pos_desc );
+        }
+    }
     // The activity ended inside this loop: tell the host now.  do_turn's other
     // end reports (ORPHAN-IN-LOOP / ORPHAN-POST-LOOP) only run with moves left
     // over.  Measured 2026-10-13 (B7): Utility Molding's finish() left the client
@@ -17503,23 +17541,6 @@ void mp_client_note_activity_loop_end()
         client_send_activity_end( g_client_loop_start_activity );
     }
     g_client_loop_start_activity.clear();
-    if( !g_client_activity_loop_pos ) {
-        return;
-    }
-    const tripoint_abs_ms from = *g_client_activity_loop_pos;
-    const tripoint_abs_ms to = get_avatar().pos_abs();
-    g_client_activity_loop_pos.reset();
-    if( to == from ) {
-        return;
-    }
-    g_client_pending_act_pos = to;
-    g_client_pending_act_pos_desc = "act=" + ( g_client_turn_activity.empty() ? std::string( "none" ) :
-                                    g_client_turn_activity ) +
-                                    " from=" + std::to_string( from.x() ) + "," + std::to_string( from.y() ) + "," +
-                                    std::to_string( from.z() ) + " to=" + std::to_string( to.x() ) + "," +
-                                    std::to_string( to.y() ) + "," + std::to_string( to.z() ) +
-                                    " dist=" + std::to_string( rl_dist( from, to ) );
-    mp_log( "[cdda-mp] ACT-POS-PENDING: " + g_client_pending_act_pos_desc );
 }
 
 void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_idle )
@@ -17735,6 +17756,7 @@ void client_send_activity_end( const std::string &activity_id_str )
     // action instead, the host's knockback showed 9 s after the client's.
     const std::string json = "{\"type\":\"action\",\"action\":\"activity_end\","
                              "\"activity_id\":\"" + activity_id_str + "\"" +
+                             mp_client_take_act_pos_json( "activity_end" ) +
                              mp_client_take_local_moves_json( "activity_end" ) + "}";
     const player_activity &cur = get_avatar().activity;
     mp_log( "[cdda-mp] ACT-END SEND: id=" + activity_id_str
