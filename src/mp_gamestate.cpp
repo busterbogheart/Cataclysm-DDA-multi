@@ -3091,8 +3091,13 @@ static std::string g_client_spells_sig_sent;
 static std::string g_client_hp_max_sig_sent;               // client
 static std::map<std::string, int> g_client_hp_max_by_part; // host: bp id → max
 
-// Host: set the proxy's per-part max to the client's (clamping current HP down
-// if needed; the client's max-drop logic reads that as recompute, not damage).
+// Host: set the proxy's per-part max to the client's, scaling current HP with it
+// the way SP scales it on every max change (calc_all_parts_hp: new_cur = ceil( cur
+// * new_max / old_max )).  Clamping alone made each recompute/pin pair a net loss:
+// SP's recalc_hp scaled current down with a lower max, the pin raised max back and
+// left current behind.  Measured 2026-10-24: a joining client's proxy went 77 -> 50
+// per part (head 61 -> 25), sent down as authoritative.  Rounded, not ceil'd, so a
+// down-then-up pair returns to where it started instead of creeping up a point.
 static void mp_pin_proxy_hp_max( npc &proxy, const char *why )
 {
     std::string changed;
@@ -3106,12 +3111,15 @@ static void mp_pin_proxy_hp_max( npc &proxy, const char *why )
         if( before == mx ) {
             continue;
         }
+        const int cur_before = proxy.get_part_hp_cur( bp );
+        const int cur_after = before > 0 ?
+                              std::clamp( static_cast<int>( std::lround( static_cast<double>( cur_before ) * mx / before ) ),
+                                          0, mx ) : mx;
         proxy.set_part_hp_max( bp, mx );
-        if( proxy.get_part_hp_cur( bp ) > mx ) {
-            proxy.set_part_hp_cur( bp, mx );
-        }
+        proxy.set_part_hp_cur( bp, cur_after );
         changed += ( changed.empty() ? "" : " " ) + bp_str + ":" + std::to_string( before ) +
-                   "->" + std::to_string( mx );
+                   "->" + std::to_string( mx ) + "(cur " + std::to_string( cur_before ) + "->" +
+                   std::to_string( cur_after ) + ")";
     }
     if( !changed.empty() ) {
         // Rate-limited per reason: the kcal re-pin can fire every few turns.
