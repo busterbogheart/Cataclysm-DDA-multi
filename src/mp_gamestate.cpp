@@ -4779,6 +4779,11 @@ static void spawn_remote_player( const std::string &name )
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
     g_host_act_pos_seq = 0;   // the joining client counts its act_pos sends from 0
+    // The previous client's max HP must not be pinned onto this one.  Measured
+    // 2026-10-24: a new client (max 77) had its proxy pinned to 91, the last
+    // client's, until its own values arrived 9 s later.  Until then the proxy
+    // keeps the max it derives itself.
+    g_client_hp_max_by_part.clear();
     // MP DIAG (2026-07-29, rejoin resync scope): both resyncs below are bounded
     // to the HOST'S CURRENT position — build_tile_changes(host_pos, 20) and
     // build_map_sync_z's MAPSIZE bubble — neither replays changes to tiles the
@@ -14486,6 +14491,7 @@ static bool apply_one_state_message( const std::string &msg )
         g_client_last_grant_seq = 0;
         g_client_answered_seq = 0;
         g_client_act_pos_seq = 0;
+        g_client_hp_max_sig_sent.clear();   // re-send our max HP to this host
         // Force a real re-teleport on the next state packet instead of the
         // "OUT OF BUBBLE, skip" no-chase path in client_teleport_avatar(). If
         // the host moved (or was moved) far enough while we were gone that
@@ -14560,6 +14566,7 @@ static bool apply_one_state_message( const std::string &msg )
             g_client_last_grant_seq = 0;
             g_client_answered_seq = 0;
             g_client_act_pos_seq = 0;
+            g_client_hp_max_sig_sent.clear();   // re-send our max HP to this host
         }
 
         // A state built before the host processed our last act_pos still carries
