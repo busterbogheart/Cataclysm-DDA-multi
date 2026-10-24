@@ -1106,6 +1106,11 @@ void client_dispatch_wait_for_activity( const activity_id &pre_id = activity_id(
 // instead of snapping the client back (B6).
 void mp_client_note_activity_loop_start();
 void mp_client_note_activity_loop_end();
+// The same position capture around do_turn's in-input-loop activity runner,
+// where an activity cheaper than the turn's moves (a quick cast) finishes.
+// No-ops off the client.
+void mp_client_note_input_loop_activity_start();
+void mp_client_note_input_loop_activity_end();
 
 // Per-spell fast-forward (B8).  Every spell runs as ACT_SPELLCASTING, which is
 // interactive because finish() can open the targeting UI or a menu.  Called

@@ -17500,19 +17500,18 @@ void client_set_autosmash_json( const std::string &json )
     g_client_autosmash_json = json;
 }
 
-void mp_client_note_activity_loop_start()
+// The position half of the activity-loop hooks.  Also brackets do_turn's
+// in-input-loop activity runner: a cast cheaper than the turn's moves finishes
+// there and never reaches the activity loop.  Measured 2026-10-24, Translocate
+// Self: 2 of 3 successful casts ended via ORPHAN-IN-LOOP with no ACT-POS-PENDING,
+// and the host's next state put the client back.
+static void mp_client_arm_activity_pos()
 {
     g_client_activity_loop_pos = get_avatar().pos_abs();
-    g_client_in_activity_loop = true;
-    const player_activity &act = get_avatar().activity;
-    g_client_loop_start_activity = act ? act.id().str() : std::string();
 }
 
-void mp_client_note_activity_loop_end()
+static void mp_client_take_activity_pos()
 {
-    g_client_in_activity_loop = false;
-    // The move first, so the activity end below carries it as act_pos (see
-    // mp_client_take_act_pos_json).
     if( g_client_activity_loop_pos ) {
         const tripoint_abs_ms from = *g_client_activity_loop_pos;
         const tripoint_abs_ms to = get_avatar().pos_abs();
@@ -17528,6 +17527,22 @@ void mp_client_note_activity_loop_end()
             mp_log( "[cdda-mp] ACT-POS-PENDING: " + g_client_pending_act_pos_desc );
         }
     }
+}
+
+void mp_client_note_activity_loop_start()
+{
+    mp_client_arm_activity_pos();
+    g_client_in_activity_loop = true;
+    const player_activity &act = get_avatar().activity;
+    g_client_loop_start_activity = act ? act.id().str() : std::string();
+}
+
+void mp_client_note_activity_loop_end()
+{
+    g_client_in_activity_loop = false;
+    // The move first, so the activity end below carries it as act_pos (see
+    // mp_client_take_act_pos_json).
+    mp_client_take_activity_pos();
     // The activity ended inside this loop: tell the host now.  do_turn's other
     // end reports (ORPHAN-IN-LOOP / ORPHAN-POST-LOOP) only run with moves left
     // over.  Measured 2026-10-13 (B7): Utility Molding's finish() left the client
@@ -17541,6 +17556,21 @@ void mp_client_note_activity_loop_end()
         client_send_activity_end( g_client_loop_start_activity );
     }
     g_client_loop_start_activity.clear();
+}
+
+void mp_client_note_input_loop_activity_start()
+{
+    if( is_client_mode() && get_avatar().activity ) {
+        mp_client_arm_activity_pos();
+    }
+}
+
+void mp_client_note_input_loop_activity_end()
+{
+    // Before ORPHAN-IN-LOOP, so the activity end it sends carries the move.
+    if( is_client_mode() ) {
+        mp_client_take_activity_pos();
+    }
 }
 
 void client_dispatch_wait_for_activity( const activity_id &pre_id, bool force_idle )

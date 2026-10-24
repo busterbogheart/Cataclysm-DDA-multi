@@ -1090,9 +1090,11 @@ bool game::do_turn()
                 // avatar processes moves for activities started by handle_action()
                 const activity_id iter_pre_act = u.activity ? u.activity.id()
                                                  : activity_id::NULL_ID();
+                cata_mp::mp_client_note_input_loop_activity_start();
                 while( u.get_moves() > 0 && u.activity ) {
                     u.activity.do_turn( u );
                 }
+                cata_mp::mp_client_note_input_loop_activity_end();
                 // Client: if a multi-turn activity just ended mid-input-loop
                 // (e.g. a 1-tick ACT_DROP that finished with moves to spare),
                 // emit the end signal immediately so the host's lockstep
