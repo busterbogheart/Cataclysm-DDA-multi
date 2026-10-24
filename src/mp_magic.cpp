@@ -485,8 +485,35 @@ void mp_on_spell_mod_moves( const Creature &target, const Creature &caster, int 
     mp_log( std::string( "[cdda-mp] SPELL-MOD-MOVES: side=" ) + ( is_hosting() ? "host" : "client" ) +
             " caster=" + caster.disp_name() + " target=" + who +
             " delta=" + std::to_string( delta ) +
-            " moves_after=" + std::to_string( target.get_moves() ) +
-            ( client_cast ? " (client world only — not sent to the host)" : "" ) );
+            " moves_after=" + std::to_string( target.get_moves() ) );
+    if( !client_cast || delta == 0 ) {
+        return;
+    }
+    // A client cast changed a stand-in's moves; the creature that acts is the
+    // host's, so replay the same mod_moves there.  Measured 2026-10-24:
+    // Impalement's -62 / -87 hit only the client's copy and the zombie dog kept
+    // its full turns on the host.
+    std::string payload;
+    if( const monster *mon = target.as_monster() ) {
+        if( mon->mp_net_id == 0 ) {
+            mp_log( "[cdda-mp] CLI-MON-OP: mod_moves on unsynced " + mon->type->id.str() +
+                    " — not sent" );
+            return;
+        }
+        payload = "{\"type\":\"client_monster_op\",\"op\":\"mod_moves\",\"nid\":" +
+                  std::to_string( mon->mp_net_id ) + ",\"delta\":" + std::to_string( delta ) + "}";
+    } else if( const Character *ch = target.as_character() ) {
+        const diag_value *tag = ch->maybe_get_value( "mp_synced_npc" );
+        if( tag == nullptr ) {
+            return;   // the partner or the caster; not a host NPC's copy
+        }
+        payload = "{\"type\":\"client_monster_op\",\"op\":\"npc_mod_moves\",\"npc\":" +
+                  tag->str() + ",\"delta\":" + std::to_string( delta ) + "}";
+    } else {
+        return;
+    }
+    mp_log( "[cdda-mp] CLI-MON-OP-SEND: " + payload );
+    client_send( payload );
 }
 
 void mp_on_spell_effect_applied( Creature &target, const Creature &caster,
@@ -549,6 +576,7 @@ void mp_handle_client_monster_op( const std::string &msg )
     std::string to;
     std::string eff;
     int turns = 0;
+    int delta = 0;
     uint32_t nid = 0;
     int npc_id = 0;
     int fr = 0;
@@ -565,6 +593,7 @@ void mp_handle_client_monster_op( const std::string &msg )
         pet = jo.get_bool( "pet", false );
         eff = jo.get_string( "eff", "" );
         turns = jo.get_int( "turns", 0 );
+        delta = jo.get_int( "delta", 0 );
     } catch( const std::exception &e ) {
         mp_log( std::string( "[cdda-mp] HOST-MON-OP parse error: " ) + e.what() );
         return;
@@ -588,6 +617,22 @@ void mp_handle_client_monster_op( const std::string &msg )
                 ( target->has_effect( eff_id ) ?
                   std::to_string( to_turns<int>( target->get_effect_dur( eff_id ) ) ) + "t" :
                   std::string( "NOT APPLIED (immune or blocked)" ) ) );
+        return;
+    }
+    if( op == "npc_mod_moves" ) {
+        // spell_effect::mod_moves() on the host's real NPC, as the client's spell
+        // did on its copy.
+        npc *target = npc_id != 0 ? g->critter_by_id<npc>( character_id( npc_id ) ) : nullptr;
+        if( target == nullptr || target->is_dead() ) {
+            mp_log( "[cdda-mp] HOST-NPC-OP: REJECTED mod_moves npc=" + std::to_string( npc_id ) +
+                    " — no host NPC with this id" );
+            return;
+        }
+        const int had = target->get_moves();
+        target->mod_moves( delta );
+        mp_log( "[cdda-mp] HOST-NPC-OP: mod_moves npc=" + std::to_string( npc_id ) + " \"" +
+                target->get_name() + "\" " + std::to_string( delta ) + ": " +
+                std::to_string( had ) + " -> " + std::to_string( target->get_moves() ) );
         return;
     }
     monster *mon = nullptr;
@@ -645,6 +690,14 @@ void mp_handle_client_monster_op( const std::string &msg )
                 ( mon->has_effect( eff_id ) ?
                   std::to_string( to_turns<int>( mon->get_effect_dur( eff_id ) ) ) + "t" :
                   std::string( "NOT APPLIED (immune or blocked)" ) ) );
+        return;
+    } else if( op == "mod_moves" ) {
+        // spell_effect::mod_moves() on the host's monster, the one that acts.
+        const int had = mon->get_moves();
+        mon->mod_moves( delta );
+        mp_log( "[cdda-mp] HOST-MON-OP: mod_moves nid=" + std::to_string( nid ) + " " +
+                mon->type->id.str() + " " + std::to_string( delta ) + ": " +
+                std::to_string( had ) + " -> " + std::to_string( mon->get_moves() ) );
         return;
     } else if( op == "banish" ) {
         // banishment(): no drops, killed by the caster.  The proxy is the
