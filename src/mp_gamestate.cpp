@@ -1274,6 +1274,15 @@ static std::string g_client_loop_start_activity;
 static std::string g_client_activity_ended_since_start;
 static std::optional<tripoint_abs_ms> g_client_pending_act_pos;
 static std::string g_client_pending_act_pos_desc;
+// Sequence of act_pos moves.  The host echoes the last one it processed as the
+// state's "pos_seq"; a state carrying an older one was built before the host knew
+// of the move and its "pos" is skipped.  Measured 2026-10-24, Translocate Self:
+// the host's grant from before the cast sat queued while the client was in the
+// destination menu and, applied 41 ms after the act_pos went out, put the client
+// back for 41 s.  Reset on every join/rejoin so a restarted host's 0 can't be
+// read as stale forever.
+static int g_client_act_pos_seq = 0;
+static int g_host_act_pos_seq = 0;
 
 // Client: the pending act_pos as a JSON field to append to an outgoing packet, or
 // "" when there is none.  Taken once.  The activity end carries it too: a teleport
@@ -1287,9 +1296,11 @@ static std::string mp_client_take_act_pos_json( const std::string &on )
     }
     const tripoint_abs_ms p = *g_client_pending_act_pos;
     g_client_pending_act_pos.reset();
-    mp_log( "[cdda-mp] ACT-POS-SEND: " + g_client_pending_act_pos_desc + " on=" + on );
+    mp_log( "[cdda-mp] ACT-POS-SEND: " + g_client_pending_act_pos_desc + " seq=" +
+            std::to_string( g_client_act_pos_seq ) + " on=" + on );
     return ",\"act_pos\":{\"x\":" + std::to_string( p.x() ) + ",\"y\":" + std::to_string( p.y() ) +
-           ",\"z\":" + std::to_string( p.z() ) + "}";
+           ",\"z\":" + std::to_string( p.z() ) + ",\"seq\":" + std::to_string( g_client_act_pos_seq ) +
+           "}";
 }
 
 // Map-sync sent-set and forward declaration — defined later in the map-streaming
@@ -4759,6 +4770,7 @@ static void spawn_remote_player( const std::string &name )
     remote_player_connected = true;
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
+    g_host_act_pos_seq = 0;   // the joining client counts its act_pos sends from 0
     // MP DIAG (2026-07-29, rejoin resync scope): both resyncs below are bounded
     // to the HOST'S CURRENT position — build_tile_changes(host_pos, 20) and
     // build_map_sync_z's MAPSIZE bubble — neither replays changes to tiles the
@@ -6402,13 +6414,18 @@ static bool mp_host_apply_act_pos( const std::string &msg, npc &remote, map &m )
         JsonObject jo = jv.get_object();
         jo.allow_omitted_members();
         JsonObject pos = jo.get_object( "act_pos" );
+        pos.allow_omitted_members();
         const tripoint_abs_ms to{ pos.get_int( "x" ), pos.get_int( "y" ), pos.get_int( "z" ) };
+        // Processed, applied or not: a rejected move's correction is the host's
+        // position, which the client must then accept.
+        g_host_act_pos_seq = pos.get_int( "seq", g_host_act_pos_seq );
         const tripoint_abs_ms from = remote.pos_abs();
         const std::string desc = "from=" + std::to_string( from.x() ) + "," +
                                  std::to_string( from.y() ) + "," + std::to_string( from.z() ) +
                                  " to=" + std::to_string( to.x() ) + "," + std::to_string( to.y() ) +
                                  "," + std::to_string( to.z() ) +
-                                 " dist=" + std::to_string( rl_dist( from, to ) );
+                                 " dist=" + std::to_string( rl_dist( from, to ) ) +
+                                 " seq=" + std::to_string( g_host_act_pos_seq );
         if( m.inbounds( to ) ) {
             remote.setpos( m, m.get_bub( to ) );
             mp_log( "[cdda-mp] ACT-POS-APPLY: " + desc );
@@ -14428,6 +14445,7 @@ static bool apply_one_state_message( const std::string &msg )
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
         g_client_answered_seq = 0;
+        g_client_act_pos_seq = 0;
         // Force a real re-teleport on the next state packet instead of the
         // "OUT OF BUBBLE, skip" no-chase path in client_teleport_avatar(). If
         // the host moved (or was moved) far enough while we were gone that
@@ -14501,9 +14519,21 @@ static bool apply_one_state_message( const std::string &msg )
             g_client_waiting_for_ack = false;
             g_client_last_grant_seq = 0;
             g_client_answered_seq = 0;
+            g_client_act_pos_seq = 0;
         }
 
-        if( jo.has_object( "pos" ) ) {
+        // A state built before the host processed our last act_pos still carries
+        // our pre-move position (see g_client_act_pos_seq).
+        const int pos_seq = jo.get_int( "pos_seq", g_client_act_pos_seq );
+        if( jo.has_object( "pos" ) && pos_seq < g_client_act_pos_seq ) {
+            JsonObject pos = jo.get_object( "pos" );
+            pos.allow_omitted_members();
+            mp_log( "[cdda-mp] POS-STALE-SKIP: state pos_seq=" + std::to_string( pos_seq ) +
+                    " < sent=" + std::to_string( g_client_act_pos_seq ) + " pos=" +
+                    std::to_string( pos.get_int( "x" ) ) + "," + std::to_string( pos.get_int( "y" ) ) +
+                    " avatar=" + std::to_string( get_avatar().pos_abs().x() ) + "," +
+                    std::to_string( get_avatar().pos_abs().y() ) );
+        } else if( jo.has_object( "pos" ) ) {
             mp_apply_step _s( "teleport" );
             JsonObject pos = jo.get_object( "pos" );
             pos.allow_omitted_members();
@@ -15947,6 +15977,7 @@ void client_process_incoming()
         g_client_waiting_for_ack = false;
         g_client_last_grant_seq = 0;
         g_client_answered_seq = 0;
+        g_client_act_pos_seq = 0;
         // Same reason: clear the turn-catchup trackers so a leftover calendar
         // turn from a previous game (quit to menu, new world, same process)
         // can't be diffed against this fresh game's turn 0 and fast-forward
@@ -17517,6 +17548,9 @@ static void mp_client_take_activity_pos()
         const tripoint_abs_ms to = get_avatar().pos_abs();
         g_client_activity_loop_pos.reset();
         if( to != from ) {
+            // Counted at the move, not the send: a state applied while this waits
+            // for the next packet is just as stale.
+            ++g_client_act_pos_seq;
             g_client_pending_act_pos = to;
             g_client_pending_act_pos_desc = "act=" + ( g_client_turn_activity.empty() ? std::string( "none" ) :
                                             g_client_turn_activity ) +
@@ -21434,6 +21468,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            "\"pos\":{\"x\":" + std::to_string( pos.x() ) +
            ",\"y\":" + std::to_string( pos.y() ) +
            ",\"z\":" + std::to_string( pos.z() ) + "},"
+           "\"pos_seq\":" + std::to_string( g_host_act_pos_seq ) + ","
            "\"host_pos\":{\"x\":" + std::to_string( host_pos.x() ) +
            ",\"y\":" + std::to_string( host_pos.y() ) +
            ",\"z\":" + std::to_string( host_pos.z() ) + "},"
