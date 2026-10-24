@@ -47,6 +47,7 @@
 #include "messages.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "mp_world_events.h"
 #include "mtype.h"
 #include "npc.h"
 #include "overmapbuffer.h"
@@ -1839,6 +1840,7 @@ void map::maybe_apply_field_effect( const std::vector<field_effect> &vfe, Creatu
 
 void map::creature_in_field( Creature &critter )
 {
+    const cata_mp::mp_field_contact_scope mp_field_contact( critter );
     if( critter.is_monster() ) {
         monster_in_field( *static_cast<monster *>( &critter ) );
     } else {

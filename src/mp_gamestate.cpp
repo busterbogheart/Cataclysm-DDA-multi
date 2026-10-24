@@ -15489,6 +15489,20 @@ static bool apply_one_state_message( const std::string &msg )
                                     std::to_string( s_bg_total ) +
                                     " (client-local regen diverging from the host proxy)" );
                         }
+                        // DIAGNOSTIC (2026-10-24, fire in both worlds): regen drift is
+                        // +1..+5; a big host RAISE means the client's own world took HP
+                        // the host's didn't (pair with the client's FIELD-HIT lines).
+                        // local_hp is the lowest this part got before the host corrected
+                        // it, the number that says how close the client came to dying
+                        // in its own world.
+                        if( new_hp - local_hp >= 10 ) {
+                            static int s_restore = 0;
+                            if( ++s_restore <= 30 || s_restore % 50 == 0 ) {
+                                mp_log( "[cdda-mp] HP-AUTHORITY-RESTORE #" + std::to_string( s_restore ) +
+                                        ": bp=" + bp_str + " client_local=" + std::to_string( local_hp ) +
+                                        " host_says=" + std::to_string( new_hp ) );
+                            }
+                        }
                     }
                 }
                 g_last_bodypart_hp[bp_str] = new_hp;
