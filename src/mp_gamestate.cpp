@@ -1665,6 +1665,7 @@ static const efftype_id effect_harnessed( "harnessed" );
 static const efftype_id effect_pet( "pet" );
 static const efftype_id effect_ridden( "ridden" );
 static const efftype_id effect_run( "run" );
+static const efftype_id effect_stunned( "stunned" );
 
 static const json_character_flag json_flag_CANNOT_MOVE( "CANNOT_MOVE" );
 static const flag_id json_flag_SHAPESHIFTED_ARMOR( "SHAPESHIFTED_ARMOR" );
@@ -16927,9 +16928,62 @@ static void client_capture_avatar_msgs()
     mp_msg_prune_suppressed( cur );
 }
 
+// DIAGNOSTIC (2026-10-24, user: no warning stepping from clear air into smoke).
+// The client's danger prompt (handle_action.cpp, before dispatch) calls SP's
+// get_dangerous_tile on the CLIENT's copy of the fields, which only changes when
+// the host sends it (the client doesn't process fields).  Logs, for a move with a
+// field on either tile, what the client saw there and what SP would warn about.
+static void mp_log_move_hazard( const std::string &json )
+{
+    if( json.find( "\"action\":\"move\"" ) == std::string::npos ) {
+        return;
+    }
+    const size_t dp = json.find( "\"dir\":\"" );
+    if( dp == std::string::npos ) {
+        return;
+    }
+    const size_t ds = dp + 7;
+    const std::string dir = json.substr( ds, json.find( '"', ds ) - ds );
+    static const std::map<std::string, point_rel_ms> offsets = {
+        { "n", point_rel_ms( 0, -1 ) }, { "s", point_rel_ms( 0, 1 ) },
+        { "e", point_rel_ms( 1, 0 ) }, { "w", point_rel_ms( -1, 0 ) },
+        { "ne", point_rel_ms( 1, -1 ) }, { "nw", point_rel_ms( -1, -1 ) },
+        { "se", point_rel_ms( 1, 1 ) }, { "sw", point_rel_ms( -1, 1 ) }
+    };
+    const auto it = offsets.find( dir );
+    if( it == offsets.end() ) {
+        return;
+    }
+    const avatar &av = get_avatar();
+    map &here = get_map();
+    const tripoint_bub_ms cur = av.pos_bub();
+    const tripoint_bub_ms dest = cur + it->second;
+    const auto fields_str = [&here]( const tripoint_bub_ms & p ) {
+        std::string out;
+        for( const auto &fe : here.field_at( p ) ) {
+            out += ( out.empty() ? "" : " " ) + fe.first.id().str() + ":" +
+                   std::to_string( fe.second.get_field_intensity() );
+        }
+        return out;
+    };
+    const std::string here_f = fields_str( cur );
+    const std::string dest_f = fields_str( dest );
+    if( here_f.empty() && dest_f.empty() ) {
+        return;
+    }
+    std::string warned;
+    for( const std::string &s : g->get_dangerous_tile( dest ) ) {
+        warned += ( warned.empty() ? "" : ", " ) + s;
+    }
+    mp_log( "[cdda-mp] CLI-MOVE-HAZARD: dir=" + dir + " here=[" + here_f + "] dest=[" + dest_f +
+            "] sp_warns=[" + warned + "] blind=" + std::to_string( av.is_blind() ) +
+            " stunned=" + std::to_string( av.has_effect( effect_stunned ) ) );
+}
+
 std::string client_enrich_action( const std::string &json )
 {
     const avatar &av = get_avatar();
+    mp_log_move_hazard( json );
     client_capture_avatar_msgs();
 
     std::string bleed_json = "[";

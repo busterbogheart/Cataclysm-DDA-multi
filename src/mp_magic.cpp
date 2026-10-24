@@ -815,7 +815,23 @@ mp_debug_body_edit_scope::~mp_debug_body_edit_scope()
 
 void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta )
 {
-    if( g_hp_scope_depth == 0 || delta == 0 || !is_client_mode() || !who.is_avatar() ) {
+    if( delta == 0 || !is_client_mode() || !who.is_avatar() ) {
+        return;
+    }
+    if( g_hp_scope_depth == 0 ) {
+        // DIAGNOSTIC (2026-10-24, fire in both worlds): HP the client's own world
+        // took outside any reporting scope (a lingering effect's damage, a fall,
+        // a client-world blast), which the host's next HP sync will undo unless
+        // the host's world dealt the same.  Regen (+) is the expected unreported
+        // kind and isn't logged.
+        if( delta < 0 ) {
+            static int s_unreported = 0;
+            if( ++s_unreported <= 50 || s_unreported % 100 == 0 ) {
+                mp_log( "[cdda-mp] CLI-HP-UNREPORTED #" + std::to_string( s_unreported ) + ": bp=" +
+                        bp.id().str() + " delta=" + std::to_string( delta ) +
+                        " (client world only; the host's HP sync will overwrite it)" );
+            }
+        }
         return;
     }
     g_hp_pending[bp.id().str()] += delta;
