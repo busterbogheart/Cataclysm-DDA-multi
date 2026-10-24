@@ -18736,6 +18736,18 @@ static void apply_tile_changes( JsonObject &jo )
                     new_item.deserialize( io );
                     if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
                         applied += new_item.typeId().str() + ' ';
+                        // DIAGNOSTIC (2026-10-24, host grenade on the client): a live
+                        // item arriving here is a working copy that counts down in this
+                        // world too.  Pairs with EXPLOSION (mp_world_events.cpp).
+                        if( new_item.active ) {
+                            mp_log( std::string( "[cdda-mp] SYNC-LIVE-ITEM: side=" ) +
+                                    ( is_client_mode() ? "client" : "host" ) + " " +
+                                    new_item.typeId().str() + " @ " + std::to_string( abs.x() ) + "," +
+                                    std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
+                                    " countdown_in=" + ( new_item.countdown_point == calendar::turn_max ?
+                                            std::string( "none" ) :
+                                            std::to_string( to_turns<int>( new_item.countdown_point - calendar::turn ) ) + "t" ) );
+                        }
                         new_items.push_back( std::move( new_item ) );
                     }
                 } catch( const JsonError & ) {}

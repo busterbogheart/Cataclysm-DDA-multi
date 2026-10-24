@@ -48,6 +48,7 @@
 #include "messages.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "mp_world_events.h"
 #include "mtype.h"
 #include "npc.h"
 #include "options.h"
@@ -570,6 +571,7 @@ void explosion( const Creature *source, map *here, const tripoint_bub_ms &p,
 void _make_explosion( map *m, const Creature *source, const tripoint_bub_ms &p,
                       const explosion_data &ex )
 {
+    cata_mp::mp_note_explosion( "blast", m->get_abs( p ), source, ex.power );
     map &bubble_map = reality_bubble();
 
     if( bubble_map.inbounds( m->get_abs( p ) ) ) {
@@ -629,6 +631,7 @@ void _make_explosion( map *m, const Creature *source, const tripoint_bub_ms &p,
 
 void flashbang( const tripoint_bub_ms &p, bool player_immune, const int radius )
 {
+    cata_mp::mp_note_explosion( "flashbang", get_map().get_abs( p ), nullptr, radius );
 
     auto penalize_char = []( map & here, Character & guy, const tripoint_bub_ms & p,
     const int radius )->void {
@@ -750,6 +753,7 @@ void scrambler_blast( const tripoint_bub_ms &p )
 void emp_blast( const tripoint_bub_ms &p )
 {
     map &here = get_map();
+    cata_mp::mp_note_explosion( "emp", here.get_abs( p ), nullptr, 0 );
 
     Character &player_character = get_player_character();
     const bool sight = player_character.sees( here, p );
