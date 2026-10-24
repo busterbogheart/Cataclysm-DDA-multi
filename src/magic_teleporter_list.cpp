@@ -22,6 +22,7 @@
 #include "json.h"
 #include "map.h"
 #include "map_iterator.h"
+#include "map_scale_constants.h"
 #include "mapdata.h"
 #include "messages.h"
 #include "mp_gamestate.h"
@@ -81,8 +82,8 @@ bool teleporter_list::place_avatar_overmap( Character &you, const tripoint_abs_o
     if( !global_dest ) {
         return false;
     }
-    tripoint_omt_ms local_dest = omt_dest.get_omt( *global_dest ) + point( 60,
-                                 60 );
+    tripoint_omt_ms local_dest = omt_dest.get_omt( *global_dest ) + point( HALF_MAPSIZE_X,
+                                 HALF_MAPSIZE_Y );
     you.add_effect( effect_ignore_fall_damage, 1_seconds, false, 0, true );
     g->place_player_overmap( omt_pt );
     g->place_player( rebase_bub( local_dest ) );
