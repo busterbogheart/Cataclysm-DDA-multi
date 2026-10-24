@@ -15,6 +15,7 @@
 #include "map.h"
 #include "mp_client_conn.h"
 #include "mp_gamestate.h"
+#include "mp_magic.h"
 
 namespace cata_mp
 {
@@ -65,7 +66,11 @@ mp_field_contact_scope::mp_field_contact_scope( Creature &critter )
     hp_total = ch->get_hp();
     hp_torso = mp_part_hp( *ch, "torso" );
     hp_head = mp_part_hp( *ch, "head" );
+    pain = ch->get_pain();
     effects = mp_effect_keys( critter );
+    if( is_client_mode() ) {
+        hp_report = std::make_unique<mp_hp_event_scope>( "field" );
+    }
 }
 
 mp_field_contact_scope::~mp_field_contact_scope()
@@ -80,8 +85,9 @@ mp_field_contact_scope::~mp_field_contact_scope()
     const int total_after = ch->get_hp();
     const int torso_after = mp_part_hp( *ch, "torso" );
     const int head_after = mp_part_hp( *ch, "head" );
+    const int pain_after = ch->get_pain();
     const std::set<std::string> now = mp_effect_keys( *who );
-    if( total_after == hp_total && now == effects ) {
+    if( total_after == hp_total && pain_after == pain && now == effects ) {
         return;   // the fields here did nothing to this player this turn
     }
     std::string gained;
@@ -109,7 +115,9 @@ mp_field_contact_scope::~mp_field_contact_scope()
             " hp=" + std::to_string( hp_total ) + "->" + std::to_string( total_after ) +
             " torso=" + std::to_string( hp_torso ) + "->" + std::to_string( torso_after ) +
             " head=" + std::to_string( hp_head ) + "->" + std::to_string( head_after ) +
-            " +[" + gained + "] -[" + lost + "]" );
+            " pain=" + std::to_string( pain ) + "->" + std::to_string( pain_after ) +
+            " +[" + gained + "] -[" + lost + "]" +
+            ( hp_report ? " (HP change reported to the host)" : "" ) );
 }
 
 } // namespace cata_mp
