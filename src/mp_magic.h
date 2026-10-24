@@ -218,6 +218,15 @@ class mp_debug_body_edit_scope
 // every part, and that should not be a dozen packets).
 void mp_note_hp_event( const Character &who, const bodypart_id &bp, int delta );
 
+// client_hp sequencing (same scheme as act_pos / pos_seq).  Client: the number
+// of the last client_hp it sent.  Host: the last one it applied, echoed in each
+// state as "hp_seq"; the client skips the HP of a state older than its last send.
+// Reset on every join / reconnect / rejoin, both sides.
+int mp_client_hp_seq();
+int mp_host_hp_seq();
+void mp_client_hp_seq_reset();
+void mp_host_hp_seq_reset();
+
 // Diagnostic for ally-targeted spells (ROADMAP B5).  Called from
 // spell::is_valid_target's creature branch.  Fires only in co-op, only when the
 // spell accepts allies, and only for the partner's proxy -- otherwise every

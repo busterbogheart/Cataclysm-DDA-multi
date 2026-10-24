@@ -726,7 +726,36 @@ namespace
 int g_hp_scope_depth = 0;
 std::string g_hp_scope_source;
 std::map<std::string, int> g_hp_pending;   // bodypart id -> accumulated delta
+// Sequence of client_hp sends (client) and the last one applied (host, echoed
+// in each state as "hp_seq").  Same scheme as act_pos / pos_seq: a state the host
+// built before it applied our report still carries the pre-report HP.  Measured
+// 2026-10-24 (fire): such a state restored HP the client had already lost
+// (HP-AUTHORITY-RESTORE … client_local=0 host_says=34, a brief "revival" just
+// before PROXY-DIED), and the real echo after it was then narrated as "You are
+// hit for N damage!" on top of SP's own fire messages (10x).
+int g_client_hp_seq = 0;
+int g_host_hp_seq = 0;
 } // namespace
+
+int mp_client_hp_seq()
+{
+    return g_client_hp_seq;
+}
+
+int mp_host_hp_seq()
+{
+    return g_host_hp_seq;
+}
+
+void mp_client_hp_seq_reset()
+{
+    g_client_hp_seq = 0;
+}
+
+void mp_host_hp_seq_reset()
+{
+    g_host_hp_seq = 0;
+}
 
 mp_hp_event_scope::mp_hp_event_scope( const std::string &source )
 {
@@ -764,8 +793,10 @@ mp_hp_event_scope::~mp_hp_event_scope()
     if( parts.empty() ) {
         return;
     }
+    ++g_client_hp_seq;
     const std::string payload = "{\"type\":\"client_hp\",\"src\":\"" + g_hp_scope_source +
-                                "\",\"parts\":[" + parts + "]}";
+                                "\",\"seq\":" + std::to_string( g_client_hp_seq ) +
+                                ",\"parts\":[" + parts + "]}";
     mp_log( "[cdda-mp] CLI-HP-EVENT: " + payload );
     client_send( payload );
 }
@@ -807,7 +838,9 @@ mp_debug_body_edit_scope::~mp_debug_body_edit_scope()
     if( parts.empty() && pain_now == pain_ ) {
         return;
     }
-    const std::string payload = "{\"type\":\"client_hp\",\"src\":\"debug\",\"parts\":[" + parts + "]" +
+    ++g_client_hp_seq;
+    const std::string payload = "{\"type\":\"client_hp\",\"src\":\"debug\",\"seq\":" +
+                                std::to_string( g_client_hp_seq ) + ",\"parts\":[" + parts + "]" +
                                 ( pain_now != pain_ ? ",\"pain\":" + std::to_string( pain_now ) : "" ) + "}";
     mp_log( "[cdda-mp] CLI-HP-EVENT: " + payload );
     client_send( payload );
@@ -1108,6 +1141,8 @@ void mp_handle_client_hp( const std::string &msg )
         JsonObject jo = jv.get_object();
         jo.allow_omitted_members();
         const std::string src = jo.get_string( "src", "?" );
+        // Processed, whatever it applies: states from here on reflect it.
+        g_host_hp_seq = jo.get_int( "seq", g_host_hp_seq );
         if( !jo.has_array( "parts" ) ) {
             return;
         }

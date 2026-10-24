@@ -4780,6 +4780,7 @@ static void spawn_remote_player( const std::string &name )
     g_remote_moves = rn ? rn->get_speed() : 100;  // grant first turn immediately
     g_client_acted_this_turn = false;
     g_host_act_pos_seq = 0;   // the joining client counts its act_pos sends from 0
+    mp_host_hp_seq_reset();   // and its client_hp sends
     // The previous client's max HP must not be pinned onto this one.  Measured
     // 2026-10-24: a new client (max 77) had its proxy pinned to 91, the last
     // client's, until its own values arrived 9 s later.  Until then the proxy
@@ -14501,6 +14502,7 @@ static bool apply_one_state_message( const std::string &msg )
         g_client_last_grant_seq = 0;
         g_client_answered_seq = 0;
         g_client_act_pos_seq = 0;
+        mp_client_hp_seq_reset();
         g_client_hp_max_sig_sent.clear();   // re-send our max HP to this host
         // Force a real re-teleport on the next state packet instead of the
         // "OUT OF BUBBLE, skip" no-chase path in client_teleport_avatar(). If
@@ -14576,6 +14578,7 @@ static bool apply_one_state_message( const std::string &msg )
             g_client_last_grant_seq = 0;
             g_client_answered_seq = 0;
             g_client_act_pos_seq = 0;
+            mp_client_hp_seq_reset();
             g_client_hp_max_sig_sent.clear();   // re-send our max HP to this host
         }
 
@@ -15370,9 +15373,18 @@ static bool apply_one_state_message( const std::string &msg )
             }
         }
 
+        // A state built before the host applied our last client_hp still carries the
+        // HP from before it (see mp_client_hp_seq): skip its HP rather than restore
+        // what our report already took, and then narrate the echo as a hit.
+        const int hp_seq = jo.get_int( "hp_seq", mp_client_hp_seq() );
+        const bool hp_stale = jo.has_array( "bodyparts" ) && hp_seq < mp_client_hp_seq();
+        if( hp_stale ) {
+            mp_log( "[cdda-mp] HP-STALE-SKIP: state hp_seq=" + std::to_string( hp_seq ) +
+                    " < sent=" + std::to_string( mp_client_hp_seq() ) );
+        }
         // Apply per-bodypart HP to the client avatar so the sidebar stays accurate.
         // Also synthesise "you were hit" messages from HP deltas.
-        if( jo.has_array( "bodyparts" ) ) {
+        if( jo.has_array( "bodyparts" ) && !hp_stale ) {
             avatar &av = get_avatar();
             int total_damage = 0;
             int n_parts = 0;          // parts in this sync
@@ -16052,6 +16064,7 @@ void client_process_incoming()
         g_client_last_grant_seq = 0;
         g_client_answered_seq = 0;
         g_client_act_pos_seq = 0;
+        mp_client_hp_seq_reset();
         // Same reason: clear the turn-catchup trackers so a leftover calendar
         // turn from a previous game (quit to menu, new world, same process)
         // can't be diffed against this fresh game's turn 0 and fast-forward
@@ -21678,6 +21691,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
                }
                return s;
            }() ) +
+           "\"hp_seq\":" + std::to_string( mp_host_hp_seq() ) + "," +
            "\"bodyparts\":" + bparts_json +
            // The proxy's pain, after its own resistances.  The client applies the
            // rise since the last sync so SP's pain reactions run on the real body
