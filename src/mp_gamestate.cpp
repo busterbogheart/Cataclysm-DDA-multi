@@ -7683,6 +7683,15 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 io.allow_omitted_members();
                                 new_item.deserialize( io );
                                 if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
+                                    // DIAGNOSTIC (2026-10-24): the reverse of the host-grenade
+                                    // case — a client's live item arriving in the host's world.
+                                    if( new_item.active && new_item.countdown_point != calendar::turn_max ) {
+                                        mp_log( "[cdda-mp] SYNC-LIVE-ITEM: side=host from_client " +
+                                                new_item.typeId().str() + " @ " + std::to_string( abs.x() ) +
+                                                "," + std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
+                                                " countdown_in=" +
+                                                std::to_string( to_turns<int>( new_item.countdown_point - calendar::turn ) ) + "t" );
+                                    }
                                     new_items.push_back( std::move( new_item ) );
                                 }
                             } catch( const JsonError & ) {}
@@ -13404,6 +13413,29 @@ void process_mp_events()
     }
 }
 
+// Client: a copy of a host item never fires its own timer.  The host owns its
+// world's timed events: the host's real item counts down and goes off there, and
+// what that does (damage, fields, wrecked terrain, the item's removal) arrives as
+// state.  Run here too, it went off twice.  Measured 2026-10-24: a host-thrown
+// grenade_act arrived with countdown_in=5t and the client's world exploded it at
+// 14:21:17, 10 s before the host's (EXPLOSION side=client, then side=host), killing
+// the client's copy of a zombie early and hurting its stand-in of the host.
+// Same reasoning as mp_client_skips_corpse_revival.  Walks contents, so a primed
+// charge inside a container is caught too.  Items the host hands over (trade
+// "give") are not copies: the client owns those, and they keep their timers.
+static void mp_disarm_synced_copy( item &it, const char *where )
+{
+    it.visit_items( [where]( item * node, item * ) {
+        if( node->countdown_point != calendar::turn_max ) {
+            mp_log( std::string( "[cdda-mp] SYNC-DISARM: " ) + where + " " + node->typeId().str() +
+                    " fuse_in=" + std::to_string( to_turns<int>( node->countdown_point - calendar::turn ) ) +
+                    "t — the host's item runs it" );
+            node->countdown_point = calendar::turn_max;
+        }
+        return VisitResponse::NEXT;
+    } );
+}
+
 static void apply_monster_sync( JsonObject &jo );
 static void apply_tile_changes( JsonObject &jo );
 static void apply_vehicle_sync( JsonObject &jo );
@@ -14770,6 +14802,7 @@ static bool apply_one_state_message( const std::string &msg )
                         item worn_item;
                         try {
                             worn_item.deserialize( wo );
+                            mp_disarm_synced_copy( worn_item, "host_worn" );
                         } catch( const JsonError &e ) {
                             const itype_id tid( wo.get_string( "t", "" ) );
                             if( tid.is_valid() ) {
@@ -14877,6 +14910,7 @@ static bool apply_one_state_message( const std::string &msg )
                             wo.allow_omitted_members();
                             item tmp;
                             tmp.deserialize( wo );
+                            mp_disarm_synced_copy( tmp, "host_wielded" );
                             host_npc->set_wielded_item( tmp );
                             applied_wielded_full = true;
                             mp_log( "[cdda-mp] host_wielded applied(full): " + tmp.typeId().str()
@@ -14909,6 +14943,7 @@ static bool apply_one_state_message( const std::string &msg )
                             for( JsonObject iobj : inv_ja ) {
                                 item tmp;
                                 tmp.deserialize( iobj );
+                                mp_disarm_synced_copy( tmp, "host_inv" );
                                 inv_items.emplace_back( std::move( tmp ) );
                             }
                             auto do_inv_apply = [items = std::move( inv_items )]() mutable {
@@ -18748,6 +18783,7 @@ static void apply_tile_changes( JsonObject &jo )
                                             std::string( "none" ) :
                                             std::to_string( to_turns<int>( new_item.countdown_point - calendar::turn ) ) + "t" ) );
                         }
+                        mp_disarm_synced_copy( new_item, "ground" );
                         new_items.push_back( std::move( new_item ) );
                     }
                 } catch( const JsonError & ) {}
@@ -19452,6 +19488,7 @@ static void apply_vehicle_sync( JsonObject &jo )
                             new_item.deserialize( io );
                             if( !new_item.typeId().is_empty() &&
                                 new_item.typeId().is_valid() ) {
+                                mp_disarm_synced_copy( new_item, "veh_cargo" );
                                 mirror_uids[new_item.uid().get_value()] = new_item.count();
                                 mirror_items.push_back( std::move( new_item ) );
                             }
