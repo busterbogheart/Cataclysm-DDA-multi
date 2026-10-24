@@ -13436,6 +13436,14 @@ void process_mp_events()
 // Same reasoning as mp_client_skips_corpse_revival.  Walks contents, so a primed
 // charge inside a container is caught too.  Items the host hands over (trade
 // "give") are not copies: the client owns those, and they keep their timers.
+//
+// The copy is made inactive as well, not just given no countdown: SP's load-time
+// timer migration (#66161, item::deserialize) re-arms any item that is active
+// with a countdown_action and countdown_point == turn_max, with a fuse of
+// charges + item_counter seconds, i.e. at once.  Measured 2026-10-24 18:15:24: a
+// copy disarmed at 15:27 was still on the ground in the client's world when that
+// client died and saved; the next client to load it got an EXPLOSION side=client
+// on that tile seconds after joining.  An inactive copy isn't processed at all.
 static void mp_disarm_synced_copy( item &it, const char *where )
 {
     it.visit_items( [where]( item * node, item * ) {
@@ -13444,6 +13452,7 @@ static void mp_disarm_synced_copy( item &it, const char *where )
                     " fuse_in=" + std::to_string( to_turns<int>( node->countdown_point - calendar::turn ) ) +
                     "t — the host's item runs it" );
             node->countdown_point = calendar::turn_max;
+            node->active = false;
         }
         return VisitResponse::NEXT;
     } );
