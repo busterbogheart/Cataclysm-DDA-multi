@@ -94,6 +94,9 @@ std::string g_last_draw_key;
 // DIAG (2026-08-27): how many times the draw path has been entered since the
 // last INTENT-RECV.  See the note at the INTENT-RECV log for what it settles.
 int g_draw_calls = 0;
+// Set when a drawn hint is cleared; the next frame logs INTENT-DRAW-CLEARED, the
+// proof the arrow actually left the screen rather than only the state.
+bool g_clear_awaits_frame = false;
 
 void log_skip( const std::string &reason )
 {
@@ -136,6 +139,23 @@ bool step_is_wall_bump( const tripoint_bub_ms &target )
         return false;
     }
     return !here.open_door( get_avatar(), target, true, true );
+}
+
+// Receiver: drop the partner's hint AND repaint, as a new hint already repaints
+// (see the end of mp_handle_intent_recv).  Clearing only the state left the old
+// arrow painted until something else redrew: on the client that is the next
+// pump frame, but the host idles in a blocking wait for its own player's key, so
+// on the host the client's arrow outlived the client's pause (user 2026-10-24:
+// make pause clear the arrow, and make the client's arrow behave like the host's).
+void clear_partner_intent( const char *why )
+{
+    if( g_partner_kind != intent_kind::none ) {
+        g_clear_awaits_frame = true;
+    }
+    g_partner_kind = intent_kind::none;
+    g_last_draw_key.clear();
+    mp_log( std::string( "[cdda-mp] INTENT-RECV: clear (" ) + why + ")" );
+    g->invalidate_main_ui_adaptor();
 }
 
 } // namespace
@@ -231,15 +251,14 @@ void mp_handle_intent_recv( const std::string &msg )
             std::string( is_hosting() ? "host" : "client" ) + " " + msg );
 
     if( msg.find( "\"kind\":\"none\"" ) != std::string::npos ) {
-        g_partner_kind = intent_kind::none;
-        mp_log( "[cdda-mp] INTENT-RECV: clear" );
+        clear_partner_intent( "sender cleared" );
         return;
     }
 
     npc *partner = get_partner_npc();
     if( !partner ) {
         mp_log( "[cdda-mp] INTENT-RECV: REJECTED, no partner npc" );
-        g_partner_kind = intent_kind::none;
+        clear_partner_intent( "no partner npc" );
         return;
     }
 
@@ -259,7 +278,7 @@ void mp_handle_intent_recv( const std::string &msg )
         return;
     }
     if( dx == 0 && dy == 0 ) {
-        g_partner_kind = intent_kind::none;
+        clear_partner_intent( "no direction" );
         return;
     }
 
@@ -317,6 +336,10 @@ intent_kind mp_partner_intent( int view_z, tripoint_bub_ms &hint_pos, point &dir
         return intent_kind::none;
     }
     if( g_partner_kind == intent_kind::none ) {
+        if( g_clear_awaits_frame ) {
+            g_clear_awaits_frame = false;
+            mp_log( "[cdda-mp] INTENT-DRAW-CLEARED: first frame without the partner's arrow" );
+        }
         return intent_kind::none;
     }
     npc *partner = get_partner_npc();
