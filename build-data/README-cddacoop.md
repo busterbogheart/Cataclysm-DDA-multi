@@ -337,7 +337,7 @@ in the list and the info panel explains why**.
   not a verdict on the mod — we simply haven't tested it, and the game says so
   rather than pretending it knows. Plenty of them will be perfectly fine.
 
-**Won't work (Red):** Sky Island, Isolation Protocol, Magiclysm, Mind Over
+**Won't work (Red):** Sky Island, Isolation Protocol, Mind Over
 Matter (and its Knacks-only variant), Xedra Evolved, Aftershock.  Most of these
 rely on travel to separate map layers and/or sweeping scripted powers that can't
 be kept in sync.  Aftershock is the odd one out: its distinctive map specials

@@ -95,10 +95,11 @@ const std::map<std::string, coop_entry> &coop_table()
             // then warning on every single host of a world we are actively
             // developing against was pure friction.  This is an open work item
             // with a written spec, not an unknown — see ROADMAP "MAGICLYSM IN
-            // CO-OP".  Revisit the status when the summon / HP-authority /
-            // effect-sync work lands or is abandoned.
+            // CO-OP".  2026-10-25: the summon / HP-authority / effect-sync
+            // work landed and passed a WAN run, so the note now says what
+            // works instead of warning.
             "magiclysm", { mod_coop::ok,
-                translate_marker( "CO-OP: EXPERIMENTAL.  Spells cast by the joining player resolve in their own world: direct damage reaches shared monsters, but summons, spawned items, terrain changes and buffs may not.  Teleport spells can move you outside the host's simulated area and strand you.  Both players must run the same mod list." )
+                translate_marker( "CO-OP: supported.  Spells, summons, teleports and spell effects reach both players, on monsters and NPCs alike.  A teleport that would leave your partner too far behind is refused.  Both players must run the same mod list." )
             }
         },
 
