@@ -364,6 +364,24 @@ large scripted-effect/teleport power sets fall outside that model.
      non-dated heading, so Unreleased notes do NOT publish. At release, rename the
      heading to "### YYYY-MM-DD" and it publishes to the site + in-zip notes at once. -->
 
+### 2026-10-25
+- **MAGICLYSM support!!  🧙‍♀️ 👻 🔥 ❄️ ✨** A couple hundred hours and most of the last two months, and now it's here:
+    - Spells you cast on your partner (heals, buffs) actually reach them, at the correct spell level.
+    - Teleports land where they should and stay there, unless it would mean breaking the reality bubble (the game 
+    will warn "You can't teleport that far from…").
+    - Summons, summoned vehicles, charm, polymorph, banish, slow, etc all push/pull/knockback spells cast by the
+      joining player/client all work as expected on both screens and against monsters.
+    - Long casts *fast-forward* like other long actions. 
+    - Partner mana is now shown in the co-op panel.
+- **NPC work on the client** Refugee center people, traders, bandits now they show up on both screens, dressed the same and moving around. Walking into one asks them to step aside (or attacks a hostile one). Hits, kills and status effects (blinded, stunned…) count on both sides, and shooting a neutral NPC makes them angry like it should. (Talking or trading with them as the joining player/client isn't in yet.)
+- **Sleep work** Sleep fast-forwards like other long actions on both sides now, and a few sleep freezes and deadlocks were repro'd and
+ fixed. 
+- **The client hears the world.** Sounds from the host's side (gunshots, zombies, yelling) reach the
+  joining player and can wake them up. Monsters also hear noises the client makes (sorry).
+- **More move speed and stamina fixes.** The joining player moves at their own real speed now, so one player is not trailing behind when
+ they shouldn't be.
+- **New loading screen art** from Delicadeath (reddit) and @Qxx (discord).
+
 ### 2026-08-23
 - **CDDA CO-OP finally has full language support 🌎🌍🌏.** Previously English-only, now all upstream translations are pulled from Transifex and even some co-op specific strings are translated (mainly RU, ES, & PT).  This means `eight languages are now over 90% translated`.  Big thanks to @nonstop, @Qxx, and @1giro for their translation help.  
 - **The "your partner is getting far away" warning gave a distance that never happens.**
