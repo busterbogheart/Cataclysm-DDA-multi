@@ -11055,8 +11055,19 @@ static bool is_fast_forwardable_activity( const std::string &id )
     // each string in the tree (mp_gamestate.cpp:3496's short_item_acts set carries the
     // same three fossils and should be pruned in the same pass — not done here, out of
     // scope for this file's activity classification).
+    //
+    // ACT_PULP (2026-10-27) is here for a different reason: the FF_MIN_ACTIVITY_MOVES
+    // duration gate cannot see its END.  pulp_activity_actor::start() parks moves_left
+    // at calendar::INDEFINITELY_LONG and ends the activity itself once the pile is
+    // done, so ff_duration_ok() never sees the last 30 turns coming and FF would burst
+    // straight into an abrupt stop: the backlog that deadlocked ACT_FIRSTAID on
+    // 2026-07-19.  It is NOT short: measured ~100 turns per zombie (each punch does
+    // 4000 / pulp_data::time_to_pulp).  Feeding the gate a real remaining-time
+    // estimate would make it FF-safe; the user chose plain lockstep instead.  Of the
+    // actors that set that sentinel, the other two are study_spell (genuinely long,
+    // keeps FF) and ATM (interactive, never FF), so the gap is this one id.
     static const std::set<std::string> no_ff = {
-        "ACT_FIRSTAID", "ACT_CONSUME",
+        "ACT_FIRSTAID", "ACT_CONSUME", "ACT_PULP",
     };
     return no_ff.count( id ) == 0;
 }
