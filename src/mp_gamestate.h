@@ -562,6 +562,10 @@ bool is_client_waiting_for_ack();
 // Save the last smash action JSON so it can be re-queued for "keep smashing".
 void client_set_autosmash_json( const std::string &json );
 
+// Client: true when the smash target holds a revivable corpse, so the caller should
+// pulp it locally through SP's smash() instead of dispatching a smash to the host.
+bool client_pulps_locally( const tripoint_bub_ms &p );
+
 // Client only: after any action that consumed avatar moves, send a "wait" to
 // the server so the grant/ack cycle advances.  If pre_moves is provided, only
 // fires when the avatar has fewer moves now than it did before the action

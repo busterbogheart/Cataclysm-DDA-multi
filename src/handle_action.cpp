@@ -2986,6 +2986,11 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             if( !smashp ) {
                 return true; // cancelled — don't charge moves
             }
+            // A revivable corpse is pulped locally by SP's own smash(), like ACT_CRAFT.
+            if( cata_mp::client_pulps_locally( *smashp ) ) {
+                ::smash( smashp );
+                return true;
+            }
             const tripoint_abs_ms abs_target = get_map().get_abs( *smashp );
             // Send the client's actual bash ability so the server uses real strength,
             // not the NPC proxy's (which may be weaker).

@@ -1019,6 +1019,29 @@ static bool g_autosmash_pending = false;    // fire the smash on the next availa
 // processing is the same re-entrant-UI crash class as the aim bug.
 static bool g_client_smash_query_pending = false;
 
+// Client: the tile of the corpse pile the client is pulping LOCALLY (see
+// client_pulps_locally).  Only read by the CLI-PULP-* diagnostics, to spot the
+// host's tile broadcast replacing a pile mid-pulp.
+static std::optional<tripoint_abs_ms> g_client_pulp_target;
+
+// "[mon_zombie:1200/4000r,...]" for every corpse in `items`; r = still revivable.
+// One format for the CLI-PULP-* and HOST-PULP-APPLY lines so the two logs line up.
+template<typename Items>
+static std::string mp_corpse_sig( const Items &items )
+{
+    std::string s;
+    for( const item &it : items ) {
+        if( !it.is_corpse() ) {
+            continue;
+        }
+        const mtype *mt = it.get_mtype();
+        s += ( s.empty() ? "" : "," ) + ( mt ? mt->id.str() : it.typeId().str() ) + ':' +
+             std::to_string( it.damage() ) + '/' + std::to_string( it.max_damage() ) +
+             ( it.can_revive() ? "r" : "" );
+    }
+    return "[" + s + "]";
+}
+
 // Client: set when the host sends host_died or the socket drops.
 // Suppresses further processing and the lost-connection spam.
 static bool g_server_died = false;
@@ -7712,6 +7735,20 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                             } catch( const JsonError & ) {}
                         }
                         {
+                            // DIAGNOSTIC (2026-10-27, client pulping): both views of any
+                            // tile with a corpse, before the replace.  A revivable corpse
+                            // in client= that host= lacks is the revive race (the host
+                            // revived it, the replace would put the corpse back).
+                            const std::string host_corpses = mp_corpse_sig( m.i_at( bub ) );
+                            const std::string client_corpses = mp_corpse_sig( new_items );
+                            if( host_corpses != "[]" || client_corpses != "[]" ) {
+                                mp_log( "[cdda-mp] HOST-PULP-APPLY @ " + std::to_string( abs.x() ) + "," +
+                                        std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
+                                        " host=" + host_corpses + " client=" + client_corpses +
+                                        " partner_act=" + g_partner_activity );
+                            }
+                        }
+                        {
                             // Compare by type multiset: uids regenerate on add, so
                             // only "different things on the tile" is meaningful.
                             std::vector<std::string> host_types;
@@ -8293,15 +8330,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 } else {
                     target_name = m.tername( bub );
                 }
-                // Corpse pulping isn't wired up for the co-op proxy yet (SP's
-                // avatar::smash checks this same i_at/can_revive and routes to
-                // pulp_activity_actor INSTEAD of bashing terrain — see ROADMAP.md
-                // "Co-op corpse pulping" for the real fix). Bypassing that check
-                // meant the tile's corpse was silently ignored and whatever
-                // terrain/furniture happened to be under it got bashed instead —
-                // reported 2026-07-02 as "can't pulp corpses with a partner, it
-                // just smashes the floor." Block it explicitly with a clear
-                // message instead of that confusing silent wrong-target bash.
+                // The client pulps revivable corpses LOCALLY (client_pulps_locally +
+                // SP's smash(), 2026-10-27) and never sends a smash at one.  So a
+                // smash arriving at a tile that holds one here means the client's
+                // map shows no revivable corpse where ours does: a desync.  Never
+                // fall through to m.bash() on it — that silently bashed the floor
+                // under the corpse (the 2026-07-02 report this block was first
+                // written for).  Refuse, and log both views of the tile.
                 bool has_pulpable_corpse = false;
                 for( const item &maybe_corpse : m.i_at( bub ) ) {
                     if( maybe_corpse.can_revive() ) {
@@ -8311,9 +8346,13 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 }
                 if( has_pulpable_corpse ) {
                     smash_result_str = "no_pulp";
+                    mp_log( "[cdda-mp] PULP-DESYNC: client smashed a tile it sees no revivable "
+                            "corpse on @ " + std::to_string( abs_target.x() ) + "," +
+                            std::to_string( abs_target.y() ) + "," + std::to_string( abs_target.z() ) +
+                            " host_corpses=" + mp_corpse_sig( m.i_at( bub ) ) );
                     add_msg( m_info,
-                             _( "%s can't pulp corpses in co-op yet — not supported over the "
-                                "network.  The corpse is untouched." ), remote->get_name() );
+                             _( "%s's map is out of sync here, so the corpse wasn't pulped.  "
+                                "It is untouched." ), remote->get_name() );
                 } else {
                     auto bash_map = remote->smash_ability();
                     if( jo.has_int( "bash" ) ) {
@@ -15727,6 +15766,16 @@ static bool apply_one_state_message( const std::string &msg )
                             + " moves_left " + std::to_string( pre_tick_moves_left ) + "->" + std::to_string( post_tick_moves_left )
                             + " ended=" + std::to_string( !get_avatar().activity )
                             + " grant_seq=" + std::to_string( grant_seq ) );
+                    // DIAGNOSTIC (2026-10-27, client pulping): the pile's corpse damage
+                    // after this grant's ticks.  Pair with HOST-PULP-APPLY on the host.
+                    if( pre_tick_id == "ACT_PULP" && g_client_pulp_target ) {
+                        map &here = get_map();
+                        const tripoint_bub_ms pulp_bub = here.get_bub( *g_client_pulp_target );
+                        mp_log( "[cdda-mp] CLI-PULP-TICK ticks=" + std::to_string( ticks_done ) +
+                                " ended=" + std::to_string( !get_avatar().activity ) +
+                                " pile=" + ( here.inbounds( pulp_bub ) ? mp_corpse_sig( here.i_at( pulp_bub ) ) :
+                                             std::string( "out_of_bubble" ) ) );
+                    }
                     if( pre_tick_counter >= 0 || post_tick_counter >= 0 ) {
                         const int ap_spent = pre_tick_moves - post_tick_moves;
                         const long long gained = post_tick_counter - pre_tick_counter;
@@ -17671,6 +17720,32 @@ void client_set_autosmash_json( const std::string &json )
     g_client_autosmash_json = json;
 }
 
+bool client_pulps_locally( const tripoint_bub_ms &p )
+{
+    // The same test SP's avatar::smash makes before it routes to pulp_activity_actor
+    // instead of bashing terrain.  A yes means the caller runs SP's smash() on the
+    // client, and ACT_PULP then ticks locally exactly as ACT_CRAFT does: passive,
+    // one tick per host grant.  The corpse damage reaches the host through
+    // client_tile_changes, whose item signature is the full serialized item.
+    map &here = get_map();
+    bool revivable = false;
+    for( const item &it : here.i_at( p ) ) {
+        if( it.can_revive() ) {
+            revivable = true;
+            break;
+        }
+    }
+    if( !revivable ) {
+        return false;
+    }
+    const tripoint_abs_ms abs = here.get_abs( p );
+    g_client_pulp_target = abs;
+    mp_log( "[cdda-mp] CLI-PULP-START @ " + std::to_string( abs.x() ) + "," +
+            std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
+            " corpses=" + mp_corpse_sig( here.i_at( p ) ) );
+    return true;
+}
+
 // The position half of the activity-loop hooks.  Also brackets do_turn's
 // in-input-loop activity runner: a cast cheaper than the turn's moves finishes
 // there and never reaches the activity loop.  Measured 2026-10-24, Translocate
@@ -18892,6 +18967,18 @@ static void apply_tile_changes( JsonObject &jo )
                         new_items.push_back( std::move( new_item ) );
                     }
                 } catch( const JsonError & ) {}
+            }
+            // DIAGNOSTIC (2026-10-27, client pulping): the host replacing the pile the
+            // client is pulping right now.  The replace nulls the pulp actor's
+            // item_locations (safe_reference), so the local pulp drops those corpses.
+            static const activity_id ACT_PULP_OVERWRITE( "ACT_PULP" );
+            if( g_client_pulp_target && *g_client_pulp_target == abs &&
+                get_avatar().activity.id() == ACT_PULP_OVERWRITE ) {
+                mp_log( "[cdda-mp] CLI-PULP-OVERWRITE @ " + std::to_string( abs.x() ) + "," +
+                        std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
+                        " local=" + mp_corpse_sig( m.i_at( bub ) ) +
+                        " host=" + mp_corpse_sig( new_items ) +
+                        ( mp_ui_holds_item_refs() ? " (deferred)" : "" ) );
             }
             auto do_replace = [bub, items = std::move( new_items )]() mutable {
                 map &m2 = get_map();
