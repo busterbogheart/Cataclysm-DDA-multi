@@ -197,7 +197,7 @@ releases page and extract it into `Cddacoop/data/sound/` (so you have
 
 ## What works
 
-- Movement, melee combat, smashing terrain and furniture
+- Movement, melee combat, smashing terrain and furniture, pulping corpses
 - Vehicle driving by client and host (including being a passenger)
 - Item pickup, drop, wear, wield, use (single-tile and adjacent)
 - Eating & drinking
