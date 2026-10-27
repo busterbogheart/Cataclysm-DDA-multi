@@ -3925,16 +3925,17 @@ class pulp_activity_actor : public activity_actor
         void serialize( JsonOut &jsout ) const override;
         static std::unique_ptr<activity_actor> deserialize( JsonValue &jsin );
 
-        // ACT_PULP progress as "corpse N of total". There is no usable percent:
-        // moves_left never falls below moves_total, so the standard path — and the
-        // base get_progress_message() below — reports a permanent 0% that reads as
-        // a stall. The corpse counts are the real progress and were already
-        // serialized on this actor; they were simply never exposed. All four
+        // ACT_PULP progress as "corpse N of total, current corpse NN%". moves_left
+        // never falls below moves_total, so the standard path — and the base
+        // get_progress_message() below — reports a permanent 0% that reads as a
+        // stall. The real progress is the corpse counts plus the current corpse's
+        // damage, which climbs linearly (4000 / time_to_pulp per punch). All five
         // bodies live in mp_gamestate.cpp to keep them out of activity_actor.cpp,
         // the hottest upstream file in the tree.
         int mp_unfinished_count() const;
         int mp_pulp_total() const;
         int mp_pulp_current() const;
+        int mp_current_corpse_pct() const;
         std::string get_progress_message( const player_activity & ) const override;
 
     private:

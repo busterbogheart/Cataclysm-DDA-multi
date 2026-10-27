@@ -146,13 +146,34 @@ int pulp_activity_actor::mp_pulp_current() const
     return std::min( num_corpses + 1, mp_pulp_total() );
 }
 
+// The corpse being worked on, as a percent of max damage. do_turn walks `corpses`
+// from the back and punches the first one still below max_damage, so this picks
+// the same one. Damage climbs by 4000 / time_to_pulp per punch, i.e. linearly in
+// turns (measured 2026-10-27: +39/+40 per tick), so this is a true progress bar
+// for that corpse. -1 when nothing is left to pulp.
+int pulp_activity_actor::mp_current_corpse_pct() const
+{
+    for( auto it = corpses.rbegin(); it != corpses.rend(); ++it ) {
+        const item *corpse = it->get_item();
+        if( corpse != nullptr && corpse->damage() < corpse->max_damage() &&
+            corpse->max_damage() > 0 ) {
+            return corpse->damage() * 100 / corpse->max_damage();
+        }
+    }
+    return -1;
+}
+
 std::string pulp_activity_actor::get_progress_message( const player_activity & ) const
 {
     const int total = mp_pulp_total();
     if( total <= 0 ) {
         return std::string();
     }
-    return string_format( "%d/%d", mp_pulp_current(), total );
+    const int pct = mp_current_corpse_pct();
+    if( pct < 0 ) {
+        return string_format( "%d/%d", mp_pulp_current(), total );
+    }
+    return string_format( "%d/%d %d%%", mp_pulp_current(), total, pct );
 }
 
 namespace cata_mp {
@@ -1994,18 +2015,18 @@ struct mp_hud_t {
             }
             mvwprintz( win, point( x, crow ), c_yellow, "%s", vshown.c_str() );
             x += utf8_width( vshown ) + 1;
-            // ACT_PULP has no real progress fraction (moves_total == moves_left,
-            // see mp_compute_activity_pct) — it's an open-ended activity even in
-            // SP. Showing a permanent "0%" reads as broken sync; omit it instead.
+            // ACT_PULP's moves never advance (moves_left parked at
+            // INDEFINITELY_LONG), so its percent is the CURRENT corpse's damage
+            // (see mp_compute_activity_pct), shown after the corpse count: "3/7 40%".
+            // A pile-wide percent would treat a zombie and a brute as equal work;
+            // the count carries the pile, the percent the corpse in hand.
             static const activity_id ACT_PULP_ID_HUD( "ACT_PULP" );
             if( activity_id( g_partner_activity ) == ACT_PULP_ID_HUD &&
                 g_partner_pulp_packed > 0 ) {
-                // "3/7" corpses instead of the suppressed percent. A percentage
-                // would be actively misleading here — corpses vary enormously in
-                // pulp time, so 3/7 can sit still for a long stretch legitimately.
                 const int cur = g_partner_pulp_packed / 1000;
                 const int total = g_partner_pulp_packed % 1000;
-                const std::string frac = std::to_string( cur ) + "/" + std::to_string( total );
+                const std::string frac = std::to_string( cur ) + "/" + std::to_string( total ) +
+                                         " " + std::to_string( g_partner_activity_pct ) + "%";
                 mvwprintz( win, point( x, crow ), c_light_blue, "%s", frac.c_str() );
                 x += utf8_width( frac ) + 1;
             } else if( activity_id( g_partner_activity ) != ACT_PULP_ID_HUD &&
@@ -11993,11 +12014,10 @@ static std::string mp_craft_result_name( const player_activity &act )
 }
 
 // Pulp progress as "pulped/total corpses", encoded as done*1000+total so it rides
-// a single int field. ACT_PULP has no usable percent — moves_left never drops
-// below moves_total, so the standard path yields a permanent 0% that reads as
-// broken sync, which is why the panel suppresses the percent for it entirely.
-// The corpse counts ARE the real progress and are already serialized on the
-// actor; they were just never exposed. Returns 0 for anything else.
+// a single int field. The moves-based percent is useless for ACT_PULP (moves_left
+// never drops below moves_total), so mp_compute_activity_pct reports the current
+// corpse's damage instead and the panel shows both: "1/2 40%". Returns 0 for
+// anything else.
 static int mp_pulp_progress_packed( const player_activity &act )
 {
     static const activity_id ACT_PULP_ID( "ACT_PULP" );
@@ -12039,6 +12059,17 @@ static int mp_compute_activity_pct( const player_activity &act )
                     std::to_string( g_partner_activity_pct ) );
         }
         return g_partner_activity_pct;
+    }
+    // ACT_PULP: the standard path below reads a permanent 0 (moves_left is parked
+    // at INDEFINITELY_LONG).  Report the current corpse's damage instead; it rides
+    // the existing client_activity_pct / host_activity_pct fields, and the panel
+    // pairs it with the corpse count from mp_pulp_progress_packed.
+    static const activity_id ACT_PULP_PCT( "ACT_PULP" );
+    if( act.id() == ACT_PULP_PCT ) {
+        const pulp_activity_actor *pa = act.actor
+                                        ? dynamic_cast<const pulp_activity_actor *>( act.actor.get() )
+                                        : nullptr;
+        return pa ? std::max( 0, pa->mp_current_corpse_pct() ) : 0;
     }
     // Standard path — works for ACT_WAIT and any other actor that sets
     // moves_total properly.
