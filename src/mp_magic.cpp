@@ -341,6 +341,25 @@ bool mp_client_summon_vehicle( const spell &sp, Creature &caster, const tripoint
     return true;
 }
 
+bool mp_client_debug_spawn_vehicle( const std::string &proto, const tripoint_bub_ms &dest,
+                                    int status )
+{
+    if( !is_client_mode() ) {
+        return false;   // the host (or SP): debug_menu_spawn_vehicle places it as usual
+    }
+    const tripoint_abs_ms abs = get_map().get_abs( dest );
+    const std::string payload =
+        std::string( "{\"type\":\"client_summon_vehicle\",\"debug\":true,\"proto\":\"" ) +
+        proto +
+        "\",\"x\":" + std::to_string( abs.x() ) +
+        ",\"y\":" + std::to_string( abs.y() ) +
+        ",\"z\":" + std::to_string( abs.z() ) +
+        ",\"status\":" + std::to_string( status ) + "}";
+    mp_log( "[cdda-mp] CLI-DEBUG-VEH-SEND: " + payload );
+    client_send( payload );
+    return true;
+}
+
 void mp_handle_client_summon_vehicle( const std::string &msg )
 {
     if( !is_hosting() ) {
@@ -350,6 +369,11 @@ void mp_handle_client_summon_vehicle( const std::string &msg )
     tripoint_abs_ms abs;
     bool permanent = false;
     int turns = 0;
+    // "debug": the client's debug menu "Spawn a vehicle" (mp_client_debug_spawn_vehicle),
+    // not a spell.  Same placement, but with the menu's chosen condition and none of
+    // the summon's magic / time limit / ownership.
+    bool debug = false;
+    int status = 0;
     try {
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
@@ -358,6 +382,8 @@ void mp_handle_client_summon_vehicle( const std::string &msg )
         abs = tripoint_abs_ms{ jo.get_int( "x", 0 ), jo.get_int( "y", 0 ), jo.get_int( "z", 0 ) };
         permanent = jo.get_bool( "permanent", false );
         turns = jo.get_int( "turns", 0 );
+        debug = jo.get_bool( "debug", false );
+        status = jo.get_int( "status", 0 );
     } catch( const std::exception &e ) {
         mp_log( std::string( "[cdda-mp] HOST-SUMMON-VEH parse error: " ) + e.what() );
         return;
@@ -378,6 +404,22 @@ void mp_handle_client_summon_vehicle( const std::string &msg )
     // spawn_summoned_vehicle's own check, against the host's world.
     if( here.veh_at( bub ) ) {
         mp_log( "[cdda-mp] HOST-SUMMON-VEH: REJECTED, already a vehicle at " + abs.to_string() );
+        return;
+    }
+    if( debug ) {
+        // Exactly debug_menu_spawn_vehicle's call.  SP then boards the spawner; that
+        // part is left to the client's own `=` (the host's control_vehicle handler
+        // boards the proxy), so the proxy is never seated in a vehicle the client
+        // doesn't have yet.
+        if( status < -1 || status > 2 ) {
+            mp_log( "[cdda-mp] HOST-DEBUG-VEH: REJECTED, bad status " + std::to_string( status ) );
+            return;
+        }
+        vehicle *veh = here.add_vehicle( proto, bub, -90_degrees, 100,
+                                         static_cast<veh_spawn_status>( status ), true, true );
+        mp_log( "[cdda-mp] HOST-DEBUG-VEH-PLACE: " + proto_str +
+                ( veh ? " \"" + veh->name + "\"" : std::string( " FAILED" ) ) +
+                " abs=" + abs.to_string() + " status=" + std::to_string( status ) );
         return;
     }
     // Exactly spawn_summoned_vehicle's placement and settings, with the client's

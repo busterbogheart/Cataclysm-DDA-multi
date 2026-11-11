@@ -100,7 +100,17 @@ void mp_handle_client_summon( const std::string &msg );
 // caster is our own avatar); spawn_summoned_vehicle then places nothing locally.
 bool mp_client_summon_vehicle( const spell &sp, Creature &caster, const tripoint_bub_ms &target );
 
-// Host: apply a {"type":"client_summon_vehicle",...} packet.
+// Client debug menu "Spawn a vehicle": vehicles are host-simulated, so a copy
+// spawned only in the client's world can't be driven ("No vehicle here to
+// control"), never shows on the host, and the client's own vehicle cull deletes it
+// (CLI-VEH-CULL-LOCAL).  Client: send the pick to the host (the client_summon_vehicle
+// packet with "debug":true) and return true so the SP spawn is skipped; the vehicle
+// reaches both screens through the normal vehicle broadcast.  `status` is the
+// veh_spawn_status the debug menu chose.  False on the host / outside MP.
+bool mp_client_debug_spawn_vehicle( const std::string &proto, const tripoint_bub_ms &dest,
+                                    int status );
+
+// Host: apply a {"type":"client_summon_vehicle",...} packet (spell or "debug").
 void mp_handle_client_summon_vehicle( const std::string &msg );
 
 // --- Client monster-identity spells (ROADMAP B15) -------------------------

@@ -3295,7 +3295,8 @@ static void debug_menu_spawn_vehicle()
             veh_cond_menu.addentry( 2, true, MENU_AUTOASSIGN, _( "Disabled (tires or engine)" ) );
             veh_cond_menu.query();
 
-            if( veh_cond_menu.ret >= 0 && veh_cond_menu.ret < 4 ) {
+            if( veh_cond_menu.ret >= 0 && veh_cond_menu.ret < 4 &&
+                !cata_mp::mp_client_debug_spawn_vehicle( selected_opt.str(), dest, veh_cond_menu.ret - 1 ) ) {
                 // TODO: Allow picking this when add_vehicle has 3d argument
                 vehicle *veh = here.add_vehicle(
                                    selected_opt, dest, -90_degrees, 100, static_cast<veh_spawn_status>( veh_cond_menu.ret - 1 ), true,
