@@ -11719,8 +11719,15 @@ bool mp_hold_auto_move( Character &you, bool from_click )
     }
     ++g_auto_move_holds;
     // Client only: the host's wait_for_client_action loop is already paced (~16ms).
+    // This hold stands in for handle_action's input wait, which drains the host's
+    // grant/ack on every TIMEOUT -- so drain here too.  MEASURED 2026-11-11: a
+    // running step (61 moves) left moves=27 with ack=1; do_turn's moves>0 loop has
+    // no client drain, so the host's SRV-PARTIAL reply sat unread 8.4s until a
+    // keypress went through the real input path (overmap travel "stopped").
     if( client && !from_click ) {
         std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        client_process_incoming();
+        g->invalidate_main_ui_adaptor();
     }
     return true;
 }
