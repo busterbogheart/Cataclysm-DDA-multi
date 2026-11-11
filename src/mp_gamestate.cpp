@@ -2380,7 +2380,12 @@ void mp_open_chat()
     }
     text = text.substr( a, text.find_last_not_of( " \t" ) - a + 1 );
     if( text.size() > 256 ) {
-        text = text.substr( 0, 256 );
+        // Cut on a character boundary: 256 bytes can end inside a Cyrillic letter.
+        size_t cut = 256;
+        while( cut > 0 && ( static_cast<unsigned char>( text[cut] ) & 0xC0 ) == 0x80 ) {
+            --cut;
+        }
+        text = text.substr( 0, cut );
     }
     const bool host = is_hosting();
     const std::string from = get_avatar().get_name();
@@ -2876,17 +2881,78 @@ static std::unordered_map<tripoint_abs_ms, std::string> g_host_veh_cargo_baselin
 // Plain signature string keyed on typeId + variant + wielded id.
 static std::string g_client_worn_baseline;
 
+// Length of the well-formed UTF-8 sequence that starts at s[i], or 0 when none
+// does (RFC 3629: no overlong forms, no surrogates, nothing past U+10FFFF).
+static size_t mp_utf8_sequence_length( const std::string &s, size_t i )
+{
+    const auto at = [&s]( size_t k ) -> unsigned char {
+        return k < s.size() ? static_cast<unsigned char>( s[k] ) : 0;
+    };
+    const unsigned char c = at( i );
+    size_t len = 0;
+    unsigned char lo = 0x80;
+    unsigned char hi = 0xBF;
+    if( c >= 0xC2 && c <= 0xDF ) {
+        len = 2;
+    } else if( c >= 0xE0 && c <= 0xEF ) {
+        len = 3;
+        if( c == 0xE0 ) {
+            lo = 0xA0;
+        } else if( c == 0xED ) {
+            hi = 0x9F;
+        }
+    } else if( c >= 0xF0 && c <= 0xF4 ) {
+        len = 4;
+        if( c == 0xF0 ) {
+            lo = 0x90;
+        } else if( c == 0xF4 ) {
+            hi = 0x8F;
+        }
+    } else {
+        return 0;
+    }
+    if( at( i + 1 ) < lo || at( i + 1 ) > hi ) {
+        return 0;
+    }
+    for( size_t k = 2; k < len; ++k ) {
+        if( at( i + k ) < 0x80 || at( i + k ) > 0xBF ) {
+            return 0;
+        }
+    }
+    return len;
+}
+
+// Escapes a string for a double-quoted JSON value.  The result is valid strict
+// JSON for any input: other control characters become \u escapes, and a byte
+// that is not part of well-formed UTF-8 becomes U+FFFD.  The receiving parser
+// (flatbuffers, strict) rejects both, and a host that could not parse a client's
+// action used to end (2026-11-04).  An honest source of broken UTF-8: a long
+// Cyrillic character name cut mid-letter by the name field's byte limit.
 static std::string json_escape_str( const std::string &s )
 {
     std::string out;
     out.reserve( s.size() );
-    for( char c : s ) {
-        if( c == '"' )       { out += "\\\""; }
-        else if( c == '\\' ) { out += "\\\\"; }
-        else if( c == '\n' ) { out += "\\n";  }
-        else if( c == '\r' ) { out += "\\r";  }
-        else if( c == '\t' ) { out += "\\t";  }
-        else                 { out += c;       }
+    for( size_t i = 0; i < s.size(); ) {
+        const unsigned char c = static_cast<unsigned char>( s[i] );
+        if( c < 0x80 ) {
+            if( c == '"' )       { out += "\\\""; }
+            else if( c == '\\' ) { out += "\\\\"; }
+            else if( c == '\n' ) { out += "\\n";  }
+            else if( c == '\r' ) { out += "\\r";  }
+            else if( c == '\t' ) { out += "\\t";  }
+            else if( c < 0x20 )  { out += string_format( "\\u%04x", c ); }
+            else                 { out += static_cast<char>( c ); }
+            ++i;
+            continue;
+        }
+        const size_t len = mp_utf8_sequence_length( s, i );
+        if( len == 0 ) {
+            out += "\xEF\xBF\xBD";
+            ++i;
+        } else {
+            out.append( s, i, len );
+            i += len;
+        }
     }
     return out;
 }
@@ -6021,6 +6087,28 @@ static void srv_emit_ack( const char *action_name )
     g->invalidate_main_ui_adaptor();
 }
 
+// Host: drop a client action that cannot be applied, and still answer it.  The
+// client set its ack guard when it sent the action (client_mark_action_sent)
+// and acts again only after a state packet, while SRV-WAIT has no timeout: a
+// drop left unanswered stalled that player for good.  The actions that set the
+// guard are the enriched ones, which all carry "cseq".  One whose handler acked
+// before it failed is not acked twice.
+static void mp_reject_client_action( const std::string &reason, const std::string &msg )
+{
+    std::string why = reason.substr( 0, 300 );
+    std::replace( why.begin(), why.end(), '\n', ' ' );
+    mp_log( "[cdda-mp] ACTION-REJECT: " + why + " -- dropped: " + msg.substr( 0, 120 ) );
+    if( msg.find( "\"cseq\":" ) == std::string::npos || g_client_acted_this_turn ) {
+        return;
+    }
+    try {
+        srv_emit_ack( "rejected" );
+    } catch( const std::exception &e ) {
+        mp_log( std::string( "[cdda-mp] ACTION-REJECT: could not answer the dropped action: " ) +
+                e.what() );
+    }
+}
+
 static void mp_handle_note_sync( const std::string &msg );
 static void mp_handle_high_five_recv( const std::string &msg );
 static void mp_handle_shout_recv( const std::string &msg );
@@ -6664,8 +6752,22 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
 
     // Parse the full action JSON once here so char_stats and other top-level
     // fields are accessible without re-parsing inside each action block.
-    JsonValue jv_top = json_loader::from_string( msg );
-    JsonObject jo = jv_top.get_object();
+    // A packet that does not parse is dropped.  Its JsonError used to leave the
+    // game loop uncaught and end the server for every player: reproduced
+    // 2026-11-04 with a char_stats name holding a double quote, which clients
+    // up to 9f50a6140a sent unescaped.
+    std::optional<JsonValue> jv_top;
+    std::string parse_error = "not a JSON object";
+    try {
+        jv_top = json_loader::from_string( msg );
+    } catch( const JsonError &e ) {
+        parse_error = e.what();
+    }
+    if( !jv_top || !jv_top->test_object() ) {
+        mp_reject_client_action( parse_error, msg );
+        return;
+    }
+    JsonObject jo = jv_top->get_object();
     jo.allow_omitted_members();
 
     // Track the client's current activity for HUD + partner-notice display
@@ -12627,8 +12729,39 @@ static void mp_handle_templates_list( const std::string &msg )
     }
 }
 
+// A template name from the partner becomes a file name under templatedir().
+// Refuse anything that could leave that folder: a separator, a drive colon, "..".
+static bool mp_template_name_ok( const std::string &name )
+{
+    if( name.empty() || name.size() > 128 || name.find( ".." ) != std::string::npos ) {
+        return false;
+    }
+    for( const char c : name ) {
+        if( static_cast<unsigned char>( c ) < 0x20 ||
+            std::string( "/\\:*?\"<>|" ).find( c ) != std::string::npos ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Template exchange is for two players at one table.  A dedicated server has no
+// player to share templates with, and never asks for any, so it takes none:
+// before this, any client could write a file of any size under any path there.
+static bool mp_template_packet_ignored( const char *what )
+{
+    if( !is_server_mode() ) {
+        return false;
+    }
+    mp_log( std::string( "[cdda-mp] TEMPLATES: ignored " ) + what + " on --server" );
+    return true;
+}
+
 static void mp_handle_template_request( const std::string &msg )
 {
+    if( mp_template_packet_ignored( "template_request" ) ) {
+        return;
+    }
     try {
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
@@ -12639,6 +12772,10 @@ static void mp_handle_template_request( const std::string &msg )
         int sent = 0;
         for( const JsonValue &v : jo.get_array( "names" ) ) {
             const std::string name = v.get_string();
+            if( !mp_template_name_ok( name ) ) {
+                mp_log( "[cdda-mp] TEMPLATES: refused request for unsafe name: " + name.substr( 0, 80 ) );
+                continue;
+            }
             const std::string path = PATH_INFO::templatedir() + name + ".template";
             std::optional<std::string> content = read_whole_file( path );
             if( !content ) {
@@ -12665,6 +12802,9 @@ static void mp_handle_template_request( const std::string &msg )
 
 static void mp_handle_template_data( const std::string &msg )
 {
+    if( mp_template_packet_ignored( "template_data" ) ) {
+        return;
+    }
     try {
         JsonValue jv = json_loader::from_string( msg );
         JsonObject jo = jv.get_object();
@@ -12672,6 +12812,10 @@ static void mp_handle_template_data( const std::string &msg )
         const std::string name = jo.get_string( "name", "" );
         const std::string content = jo.get_string( "content", "" );
         if( name.empty() || content.empty() ) {
+            return;
+        }
+        if( !mp_template_name_ok( name ) ) {
+            mp_log( "[cdda-mp] TEMPLATES: refused template with unsafe name: " + name.substr( 0, 80 ) );
             return;
         }
         const std::string path = PATH_INFO::templatedir() + name + ".template";
@@ -13660,7 +13804,15 @@ void process_mp_events()
                             s_apply_outer = saved;
                         }
                     } guard( event.data.substr( 0, 60 ) );
-                    handle_remote_action( event.session_id, event.data );
+                    // Client data a handler cannot take throws: a member of the
+                    // wrong type (JsonError), an unknown enum value
+                    // (io::InvalidEnumString).  Uncaught, that ended the server for
+                    // every player; now only the action is lost.
+                    try {
+                        handle_remote_action( event.session_id, event.data );
+                    } catch( const std::exception &e ) {
+                        mp_reject_client_action( e.what(), event.data );
+                    }
                 }
                 if( !is_state_sync( event.data ) ) {
                     turn_action_processed = true;
@@ -17366,7 +17518,9 @@ std::string client_enrich_action( const std::string &json )
     // (spawned with the "player2" placeholder, since the client connects from
     // the main menu before its character exists). Renames the on-map @ and the
     // sidebar nearby-list; messages already use the real name from packets.
-    char_stats += "\"name\":\"" + av.get_name() + "\",";
+    // Escaped: a double quote or a backslash in the name made the whole action
+    // unparseable, and the host's parse of it ended the server (2026-11-04).
+    char_stats += "\"name\":\"" + json_escape_str( av.get_name() ) + "\",";
     char_stats += "\"str\":" + std::to_string( av.get_str_base() );
     char_stats += ",\"dex\":" + std::to_string( av.get_dex_base() );
     char_stats += ",\"int\":" + std::to_string( av.get_int_base() );
@@ -20976,7 +21130,7 @@ void mp_high_five()
     // attribution itself (avoids the "You"->name substitution path that the
     // yell feature mis-uses).
     const std::string payload = "{\"type\":\"high_five\",\"name\":\"" +
-                                av.get_name() + "\"}";
+                                json_escape_str( av.get_name() ) + "\"}";
     mp_log( "[cdda-mp] mp_high_five() sending payload: " + payload );
     if( is_hosting() || is_server_mode() ) {
         if( server *s = get_active_server() ) {
@@ -21090,22 +21244,11 @@ void mp_sync_note_add( const tripoint_abs_omt &pos, const std::string &text )
     if( !is_hosting() && !is_client_mode() ) {
         return;
     }
-    std::string escaped;
-    escaped.reserve( text.size() );
-    for( char c : text ) {
-        if( c == '\\' ) {
-            escaped += "\\\\";
-        } else if( c == '"' ) {
-            escaped += "\\\"";
-        } else {
-            escaped += c;
-        }
-    }
     std::string payload = "{\"type\":\"note_sync\",\"op\":\"add\","
                           "\"x\":" + std::to_string( pos.x() ) + ","
                           "\"y\":" + std::to_string( pos.y() ) + ","
                           "\"z\":" + std::to_string( pos.z() ) + ","
-                          "\"text\":\"" + escaped + "\"}";
+                          "\"text\":\"" + json_escape_str( text ) + "\"}";
     mp_send_note_msg( payload );
     mp_log( "[cdda-mp] note_sync send: add at " + std::to_string( pos.x() ) + ","
             + std::to_string( pos.y() ) );
@@ -21560,22 +21703,11 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
 
     // Helper: JSON-escape and append one message string.
     const auto append_msg = [&]( const std::string & text ) {
-        std::string escaped;
-        escaped.reserve( text.size() );
-        for( char c : text ) {
-            if( c == '\\' ) {
-                escaped += "\\\\";
-            } else if( c == '"' ) {
-                escaped += "\\\"";
-            } else {
-                escaped += c;
-            }
-        }
         if( !mfirst ) {
             msgs_json += ',';
         }
         mfirst = false;
-        msgs_json += '"' + escaped + '"';
+        msgs_json += '"' + json_escape_str( text ) + '"';
     };
 
     // 1. Action-window messages (unfiltered except for host-avatar "You..." skips).
@@ -21707,13 +21839,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
             const int face_deg     = static_cast<int>( std::lround( to_degrees( v->face.dir() ) ) );
             const int turn_dir_deg = static_cast<int>( std::lround( to_degrees( v->turn_dir ) ) );
             // JSON-escape the vehicle name so special characters don't break the packet.
-            std::string vname_escaped;
-            vname_escaped.reserve( v->name.size() );
-            for( char c : v->name ) {
-                if( c == '\\' ) { vname_escaped += "\\\\"; }
-                else if( c == '"' ) { vname_escaped += "\\\""; }
-                else { vname_escaped += c; }
-            }
+            const std::string vname_escaped = json_escape_str( v->name );
             // Per-part state: open/enabled, HP, and fuel (for tanks/fuel stores).
             // Sequential index over get_all_parts() — host and client share the same
             // save so the iteration order is identical on both sides.
@@ -21937,7 +22063,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
            // the gap between the two start dates (2026-07-19: 218 days vs ~1h).
            "\"start_of_game\":" + std::to_string( to_turn<int>( calendar::start_of_game ) ) + ","
            "\"start_of_cata\":" + std::to_string( to_turn<int>( calendar::start_of_cataclysm ) ) + ","
-           "\"host_name\":\"" + host.name + "\","
+           "\"host_name\":\"" + json_escape_str( host.name ) + "\","
            "\"pos\":{\"x\":" + std::to_string( pos.x() ) +
            ",\"y\":" + std::to_string( pos.y() ) +
            ",\"z\":" + std::to_string( pos.z() ) + "},"

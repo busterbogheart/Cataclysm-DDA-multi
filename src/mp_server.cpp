@@ -55,16 +55,24 @@ int mp_host_partner_rtt_ms()
 }
 
 // Escape a string for embedding in a JSON double-quoted value (host names can
-// contain quotes/backslashes). Minimal — covers the chars that break parsing.
+// contain quotes/backslashes). Control characters become \u escapes: a raw
+// newline would also split the line-delimited frame in two.
 static std::string mp_json_escape( const std::string &s )
 {
     std::string out;
     out.reserve( s.size() + 2 );
     for( const char c : s ) {
+        const unsigned char u = static_cast<unsigned char>( c );
         if( c == '"' || c == '\\' ) {
             out += '\\';
+            out += c;
+        } else if( u < 0x20 ) {
+            char buf[8];
+            std::snprintf( buf, sizeof( buf ), "\\u%04x", u );
+            out += buf;
+        } else {
+            out += c;
         }
-        out += c;
     }
     return out;
 }
@@ -151,9 +159,14 @@ static std::string mp_compress_frame( const std::string &msg )
 // real client, which probes microseconds after connecting.
 static constexpr int MP_PROBE_DEADLINE_S = 20;
 
+// Longest line a peer may send.  Without a limit, a peer that never sends a
+// newline grows read_buf until the server runs out of memory.  Far above any
+// packet seen: the longest in a five-hour session on 2026-11-04 was 8 KB.
+static constexpr std::size_t MP_MAX_LINE_BYTES = 16 * 1024 * 1024;
+
 struct client_session : public std::enable_shared_from_this<client_session> {
     tcp::socket socket;
-    asio::streambuf read_buf;
+    asio::streambuf read_buf{ MP_MAX_LINE_BYTES };
     std::string name;
     bool authenticated = false;
     // "ip:port" of the far end, captured at construction — remote_endpoint() is
@@ -377,6 +390,10 @@ struct client_session : public std::enable_shared_from_this<client_session> {
             asio::async_read_until( socket, read_buf, '\n',
             [self]( std::error_code ec, std::size_t ) {
                 if( ec ) {
+                    if( ec == asio::error::not_found ) {
+                        mp_log( "[cdda-mp] READ-REJECT: " + self->peer + " sent a line longer than " +
+                                std::to_string( MP_MAX_LINE_BYTES ) + " bytes; disconnecting" );
+                    }
                     self->disconnect();
                     return;
                 }
@@ -586,6 +603,42 @@ static std::string json_get_str( const std::string &json, const std::string &key
     return "";
 }
 
+// Screens a client line before the game thread parses it.  flatbuffers' parser
+// takes // and /* */ comments and single-quoted strings, but CDDA's TextJsonIn,
+// which re-reads the text to report errors and unread members, throws on them,
+// in one place from a destructor, where no catch helps.  And a document nested
+// deeper than the parser's own limit (FLATBUFFERS_MAX_PARSING_DEPTH, 64) that
+// also repeats a key sends that re-read into unbounded recursion.  Real packets
+// have none of this.  Returns why the line was refused, or an empty string.
+static std::string mp_refuse_line( const std::string &line )
+{
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for( const char c : line ) {
+        if( in_string ) {
+            if( escaped ) {
+                escaped = false;
+            } else if( c == '\\' ) {
+                escaped = true;
+            } else if( c == '"' ) {
+                in_string = false;
+            }
+        } else if( c == '"' ) {
+            in_string = true;
+        } else if( c == '{' || c == '[' ) {
+            if( ++depth > 64 ) {
+                return "nested deeper than 64 levels";
+            }
+        } else if( c == '}' || c == ']' ) {
+            --depth;
+        } else if( c == '/' || c == '\'' ) {
+            return "comment or single quote outside a string";
+        }
+    }
+    return std::string();
+}
+
 void server::on_message( std::shared_ptr<client_session> session, const std::string &msg ) {
     std::cout << "[cdda-mp] recv: " << msg << std::endl;
 
@@ -607,7 +660,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             if( !mp_version_commit_match( client_ver, version_ ) ) {
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
-                session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
+                session->send( "{\"type\":\"error\",\"message\":\"" + mp_json_escape( errmsg ) + "\"}\n" );
                 mp_log( "[cdda-mp] PROBE REJECTED — version mismatch. " + errmsg +
                         " (host and client are on different builds; both must run the same release)" );
                 session->disconnect();
@@ -643,7 +696,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         mp_log( "[cdda-mp] PROBE accepted — version OK; sending welcome (world='" +
                 mp_get_host_world_name() + "')" );
         session->send( "{\"type\":\"welcome\",\"player_id\":\"probe\""
-                       ",\"world\":\"" + mp_get_host_world_name() + "\""
+                       ",\"world\":\"" + mp_json_escape( mp_get_host_world_name() ) + "\""
                        ",\"host_name\":\"" + mp_json_escape( mp_get_host_player_name() ) + "\""
                        ",\"current_turn\":0,\"seed\":" +
                        std::to_string( mp_host_world_seed() ) +
@@ -688,7 +741,7 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
             if( !mp_version_commit_match( client_ver, version_ ) ) {
                 const std::string errmsg = "Version mismatch. Host: " + version_ +
                                            " Client: " + ( client_ver.empty() ? "(unknown)" : client_ver );
-                session->send( "{\"type\":\"error\",\"message\":\"" + errmsg + "\"}\n" );
+                session->send( "{\"type\":\"error\",\"message\":\"" + mp_json_escape( errmsg ) + "\"}\n" );
                 mp_log( "[cdda-mp] JOIN REJECTED — version mismatch. " + errmsg +
                         " client_commit=" + mp_version_commit_id( client_ver ) +
                         " host_commit=" + mp_version_commit_id( version_ ) );
@@ -740,6 +793,12 @@ void server::on_message( std::shared_ptr<client_session> session, const std::str
         session->disconnect();
 
     } else if( session->authenticated ) {
+        const std::string refused = mp_refuse_line( msg );
+        if( !refused.empty() ) {
+            mp_log( "[cdda-mp] LINE-REJECT: " + refused + " from " + session->peer + ": " +
+                    mp_json_escape( msg.substr( 0, 80 ) ) );
+            return;
+        }
         // Route action to game loop
         get_mp_queue().push( { cata_mp::mp_event::type::action, session->name, msg } );
 
