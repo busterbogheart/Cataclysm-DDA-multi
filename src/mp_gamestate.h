@@ -1093,7 +1093,28 @@ int mp_count_hostiles_near( const tripoint_abs_ms &around, int radius );
 // hot spin starves the network thread that delivers the grant (the same reason
 // as do_turn.cpp's activity busy-loop sleep).  Logs transitions only.  No-op
 // outside MP.
+// Also true (P1, both sides) after it STOPS the route: the step about to be popped
+// would leave the pair at or past the separation limit (68 tiles) and further
+// apart than now — "Your partner is past the edge … Auto move canceled."  Without
+// it, overmap travel by either player walks the client out of the host's bubble.
 bool mp_hold_auto_move( Character &you, bool from_click = false );
+
+// P1 — the per-step refusals SP runs in avatar_action::move, which the client's
+// move intercept never calls.  Client only, called before a walking step is sent
+// (after the vehicle-control branch; SP doesn't apply them to driving either), with
+// SP's own predicates and strings, against the client's local map:
+// - safe mode: g->check_safe_mode_allowed() (manual moves too — SP behaviour).
+//   MEASURED 2026-11-11: client auto-walk kept SENDing with safe_mode=2 (STOP)
+//   and 20+ zombies in view;
+// - an auto-moving step into a hostile monster: "Monster in the way.  Auto move
+//   canceled." instead of the host resolving it as an attack;
+// - a step into a neutral monster with safe mode ON: "Not attacking the X -- safe
+//   mode is on!";
+// - an auto-moving step into any NPC, the partner included: "NPC in the way, Auto
+//   move canceled." instead of opening the partner menu.
+// A refused auto-move step aborts the route (SP's moved-or-abort net).  True =
+// the step was refused; nothing is sent and no moves are spent.  Logs MOVE-REFUSED.
+bool mp_client_move_refused( Character &you, const tripoint_bub_ms &dest );
 
 // HA-AUTOMOVE: one line per route step popped in handle_action(), both sides:
 // side, moves, ack, position vs the popped target, route left, and how many held

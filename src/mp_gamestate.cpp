@@ -11686,6 +11686,40 @@ static std::string mp_bub_str( const tripoint_bub_ms &p )
     return std::to_string( p.x() ) + "," + std::to_string( p.y() ) + "," + std::to_string( p.z() );
 }
 
+// P1 separation stop: the route step about to be popped would leave the pair at or
+// past MP_SEPARATION_LIMIT, and further apart than now.  Moving back toward the
+// partner from past the limit is always allowed.  Same distance measure as
+// check_separation_warning (chebyshev, x/y), and silent until the pair has been
+// together once this session (the join transient).
+static bool mp_auto_move_separation_stop( Character &you,
+        const std::vector<tripoint_bub_ms> &route )
+{
+    if( route.empty() || !g_separation_settled ) {
+        return false;
+    }
+    const npc *partner = get_partner_npc();
+    if( partner == nullptr ) {
+        return false;
+    }
+    const tripoint_abs_ms p = partner->pos_abs();
+    const auto cheb = [&p]( const tripoint_abs_ms & a ) {
+        return std::max( std::abs( a.x() - p.x() ), std::abs( a.y() - p.y() ) );
+    };
+    const int now = cheb( you.pos_abs() );
+    const int next = cheb( get_map().get_abs( route.front() ) );
+    if( next < MP_SEPARATION_LIMIT || next <= now ) {
+        return false;
+    }
+    add_msg( m_warning,
+             _( "Your partner is past the edge of the simulated zone.  Auto move canceled." ) );
+    mp_log( std::string( "[cdda-mp] HA-AUTOMOVE: separation-stop side=" ) +
+            ( is_client_mode() ? "client" : "host" ) +
+            " now=" + std::to_string( now ) + " next=" + std::to_string( next ) +
+            " route_left=" + std::to_string( route.size() ) );
+    you.abort_automove();
+    return true;
+}
+
 bool mp_hold_auto_move( Character &you, bool from_click )
 {
     const bool client = is_client_mode();
@@ -11707,6 +11741,9 @@ bool mp_hold_auto_move( Character &you, bool from_click )
                 " hold=" + ( hold ? "yes" : "no" ) );
     }
     if( !hold ) {
+        if( mp_auto_move_separation_stop( you, route ) ) {
+            return true;   // route aborted; the caller pops nothing
+        }
         g_auto_move_target = route.empty() ? std::string( "none" ) : mp_bub_str( route.front() );
         return false;
     }
@@ -11749,6 +11786,53 @@ void mp_log_auto_move_pop( Character &you, action_id act )
             " route_left=" + std::to_string( you.get_auto_move_route().size() ) +
             " held=" + std::to_string( g_auto_move_holds ) );
     g_auto_move_holds = 0;
+}
+
+bool mp_client_move_refused( Character &you, const tripoint_bub_ms &dest )
+{
+    if( !is_client_mode() ) {
+        return false;
+    }
+    const bool auto_moving = you.is_auto_moving();
+    std::string why;
+    // avatar_action::move, in its order.  Safe mode first (it prints its own
+    // "Spotted …--safe mode is on!" message).
+    if( !g->check_safe_mode_allowed() ) {
+        why = "safe_mode";
+    } else if( monster *const mon = get_creature_tracker().creature_at<monster>( dest, true ) ) {
+        // Creatures swimming under a solid surface don't block surface movement.
+        const bool under = mon->is_underwater() &&
+                           get_map().has_flag( ter_furn_flag::TFLAG_SWIM_UNDER, dest );
+        if( !under && mon->friendly == 0 && !mon->has_effect( effect_pet ) ) {
+            if( auto_moving ) {
+                add_msg( m_warning, _( "Monster in the way.  Auto move canceled." ) );
+                add_msg( m_info, _( "Move into the monster to attack." ) );
+                why = "monster_in_way";
+            } else if( g->safe_mode == SAFE_MODE_ON &&
+                       mon->attitude_to( you ) == Creature::Attitude::NEUTRAL ) {
+                const std::string msg_safe_mode = press_x( ACTION_TOGGLE_SAFEMODE );
+                add_msg( m_warning,
+                         _( "Not attacking the %1$s -- safe mode is on!  (%2$s to turn it off)" ),
+                         mon->name(), msg_safe_mode );
+                why = "neutral_safe_mode";
+            }
+        }
+    } else if( get_creature_tracker().creature_at<npc>( dest ) != nullptr && auto_moving ) {
+        add_msg( _( "NPC in the way, Auto move canceled." ) );
+        add_msg( m_info, _( "Move into the NPC to interact or attack." ) );
+        why = "npc_in_way";
+    }
+    if( why.empty() ) {
+        return false;
+    }
+    mp_log( "[cdda-mp] MOVE-REFUSED: why=" + why + " auto=" + std::to_string( auto_moving ) +
+            " safe_mode=" + std::to_string( static_cast<int>( g->safe_mode ) ) +
+            " pos=" + mp_bub_str( you.pos_bub() ) + " dest=" + mp_bub_str( dest ) );
+    if( auto_moving ) {
+        // SP: the step didn't move us, so handle_action's moved-or-abort net ends the route.
+        you.abort_automove();
+    }
+    return true;
 }
 
 // ---- Vehicle AI in co-op (P3a) ----

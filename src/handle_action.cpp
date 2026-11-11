@@ -2688,6 +2688,12 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
                 return true;
             }
 
+            // SP's per-step refusals (safe mode, monster/NPC in the way while auto-moving).
+            if( offset_it != dir_to_offset.end() &&
+                cata_mp::mp_client_move_refused( player_character, next_pos ) ) {
+                return false;
+            }
+
             if( offset_it != dir_to_offset.end() ) {
                 if( here.impassable( next_pos ) ) {
                     const tripoint_abs_ms next_abs = here.get_abs( next_pos );
