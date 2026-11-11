@@ -3057,19 +3057,6 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             return true;
         }
 
-        if( act == ACTION_LOOK ) {
-            // Run look/cursor mode (needed for drop-to-tile, examine, etc.).
-            // If peek() fired inside look_around it consumed moves — send wait so the
-            // server advances rather than hanging for 30 s waiting for an action.
-            const int moves_before = player_character.get_moves();
-            g->look_around();
-            if( player_character.get_moves() < moves_before ) {
-                mp_dispatch( "{\"type\":\"action\",\"action\":\"wait\"}" );
-                return true;
-            }
-            return false;
-        }
-
         if( act == ACTION_PICKUP || act == ACTION_PICKUP_ALL ) {
             // Snapshot item type IDs on the player's tile before pickup so we can
             // diff afterwards and tell the server exactly what was taken.
