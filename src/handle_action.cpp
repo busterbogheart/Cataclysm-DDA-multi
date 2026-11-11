@@ -4392,11 +4392,13 @@ bool game::handle_action()
     avatar &player_character = get_avatar();
     // Check if we have an auto-move destination
     if( player_character.has_destination() ) {
-        act = player_character.get_next_auto_move_direction();
-        if( cata_mp::is_client_mode() ) {
-            cata_mp::mp_log( std::string( "[cdda-mp] HA-AUTOMOVE: dest=on next=" ) +
-                             action_ident( act ) );
+        if( cata_mp::mp_hold_auto_move( player_character ) ) {
+            // MP: no grant yet; keep the route (SP pops only with moves in hand).
+            handle_key_blocking_activity();
+            return false;
         }
+        act = player_character.get_next_auto_move_direction();
+        cata_mp::mp_log_auto_move_pop( player_character, act );
         if( act == ACTION_NULL ) {
             add_msg( m_info, _( "Auto-move canceled" ) );
             player_character.abort_automove();

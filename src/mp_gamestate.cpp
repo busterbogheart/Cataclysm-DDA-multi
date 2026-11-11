@@ -10,6 +10,7 @@
 #include "mp_queue.h"
 #include "mp_server.h"
 
+#include "action.h"   // action_ident (mp_log_auto_move_pop)
 #include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "event.h"
@@ -11670,6 +11671,77 @@ void mp_log_distraction_check( const Character &who,
             + " hostiles_near_me=" + std::to_string( mine )
             + " hostiles_near_partner=" + std::to_string( theirs )
             + " partner=" + ( partner ? "yes" : "no" ) );
+}
+
+// ---- Auto-travel in co-op (P0) ----
+// Held handle_action() calls since the last pop, so the pop line shows how long the
+// route waited for its grant.  The tile about to be popped is captured on the
+// not-held path, so the pop line can print position vs target: a null pop then reads
+// directly as "off course by N" against the previous line's target.
+static int g_auto_move_holds = 0;
+static std::string g_auto_move_target;
+
+static std::string mp_bub_str( const tripoint_bub_ms &p )
+{
+    return std::to_string( p.x() ) + "," + std::to_string( p.y() ) + "," + std::to_string( p.z() );
+}
+
+bool mp_hold_auto_move( Character &you, bool from_click )
+{
+    const bool client = is_client_mode();
+    if( !client && !is_hosting() ) {
+        return false;
+    }
+    const int moves = you.get_moves();
+    const bool ack = client && is_client_waiting_for_ack();
+    std::vector<tripoint_bub_ms> &route = you.get_auto_move_route();
+    // Host too (row H MEASURED 2026-11-11: with an idle client the host popped at
+    // moves=-48, HOST-LOCKED-BLOCK discarded it, the next pop was 2 tiles off -> null).
+    const bool hold = moves <= 0 || ack;
+    if( from_click ) {
+        mp_log( std::string( "[cdda-mp] HA-AUTOMOVE: click-travel side=" ) +
+                ( client ? "client" : "host" ) +
+                " route=" + std::to_string( route.size() ) +
+                " moves=" + std::to_string( moves ) +
+                " ack=" + std::to_string( ack ) +
+                " hold=" + ( hold ? "yes" : "no" ) );
+    }
+    if( !hold ) {
+        g_auto_move_target = route.empty() ? std::string( "none" ) : mp_bub_str( route.front() );
+        return false;
+    }
+    if( g_auto_move_holds == 0 && !from_click ) {
+        mp_log( std::string( "[cdda-mp] HA-AUTOMOVE: hold side=" ) + ( client ? "client" : "host" ) +
+                " moves=" + std::to_string( moves ) +
+                " ack=" + std::to_string( ack ) +
+                " route_left=" + std::to_string( route.size() ) +
+                " pos=" + mp_bub_str( you.pos_bub() ) );
+    }
+    ++g_auto_move_holds;
+    // Client only: the host's wait_for_client_action loop is already paced (~16ms).
+    if( client && !from_click ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+    }
+    return true;
+}
+
+void mp_log_auto_move_pop( Character &you, action_id act )
+{
+    const bool client = is_client_mode();
+    if( !client && !is_hosting() ) {
+        return;
+    }
+    const int moves = you.get_moves();
+    const bool ack = client && is_client_waiting_for_ack();
+    mp_log( "[cdda-mp] HA-AUTOMOVE: dest=on next=" + action_ident( act ) +
+            " side=" + ( client ? "client" : "host" ) +
+            " moves=" + std::to_string( moves ) +
+            " ack=" + std::to_string( ack ) +
+            " pos=" + mp_bub_str( you.pos_bub() ) +
+            " target=" + g_auto_move_target +
+            " route_left=" + std::to_string( you.get_auto_move_route().size() ) +
+            " held=" + std::to_string( g_auto_move_holds ) );
+    g_auto_move_holds = 0;
 }
 
 

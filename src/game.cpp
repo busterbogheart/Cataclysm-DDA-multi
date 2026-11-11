@@ -2782,6 +2782,9 @@ bool game::try_get_left_click_action( action_id &act, const tripoint_bub_ms &mou
             new_destination = false;
             u.set_destination( destination_preview );
             destination_preview.clear();
+            if( cata_mp::mp_hold_auto_move( u, /*from_click=*/true ) ) {
+                return true; // MP: no grant yet; the next granted turn pops step 1
+            }
             act = u.get_next_auto_move_direction();
             if( act == ACTION_NULL ) {
                 // Something went wrong

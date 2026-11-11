@@ -21,6 +21,7 @@ class monster;
 class player_activity;
 class spell;
 struct WORLD;
+enum action_id : int;
 
 namespace cata_mp {
 
@@ -1071,6 +1072,33 @@ void mp_log_distraction_check( const Character &who,
 // the same synced monster list, so "is something hostile near my partner" is a
 // local question needing no protocol.  Returns 0 outside MP.
 int mp_count_hostiles_near( const tripoint_abs_ms &around, int radius );
+
+// ---- Auto-travel in co-op (ROADMAP "★ SPEC 2026-10-28 — Auto-travel in co-op", P0) ----
+//
+// SP only ever pops an auto-move route step with moves in hand.  Co-op's locked
+// branches broke that: the client calls handle_action() every do_turn while it
+// waits for its grant (do_turn.cpp LOCKED-HA), and the host calls it from
+// wait_for_client_action() after 100ms (mp_poll_input).  With a route set, that
+// call pops the next tile, the step is dropped (client mp_dispatch DROP / host
+// HOST-LOCKED-BLOCK), the next pop is two tiles off the real position, and SP's
+// off-course check cancels the route ("Auto-move canceled").  MEASURED on the
+// client: 215 of 221 pops in 5 player logs, no route past its first step.
+//
+// True when a route step must NOT be popped yet.  Client: no moves, or waiting
+// for its ack — exactly when mp_dispatch would DROP.  Host: no moves (measured
+// 2026-11-11: an idle client killed host travel after one step).
+// `from_click` = game::try_get_left_click_action's second click, which pops step 1
+// itself.  A held handle_action() call on the client also yields 10ms: with no
+// activity and no input read, nothing else paces the locked do_turn loop, and a
+// hot spin starves the network thread that delivers the grant (the same reason
+// as do_turn.cpp's activity busy-loop sleep).  Logs transitions only.  No-op
+// outside MP.
+bool mp_hold_auto_move( Character &you, bool from_click = false );
+
+// HA-AUTOMOVE: one line per route step popped in handle_action(), both sides:
+// side, moves, ack, position vs the popped target, route left, and how many held
+// calls preceded the pop.  No-op outside MP.
+void mp_log_auto_move_pop( Character &you, action_id act );
 
 // DIAGNOSTIC (temporary, 2026-07-02, for the "host proxy vanished from client
 // screen" bug): named callout (rule 4) from Creature::deal_damage (creature.cpp,
