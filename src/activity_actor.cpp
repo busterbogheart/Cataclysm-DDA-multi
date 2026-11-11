@@ -774,16 +774,14 @@ void autodrive_activity_actor::update_player_vehicle( Character &who )
 void autodrive_activity_actor::start( player_activity &, Character &who )
 {
     update_player_vehicle( who );
-    // MP: autodrive runs the vehicle AI on the host every turn while active,
-    // which conflicts with the client driving the same vehicle.  Refuse to
-    // start the activity for both players.
-    add_msg( m_info, _( "Autodrive is disabled in multiplayer." ) );
-    who.cancel_activity();
-    // if( player_vehicle == nullptr ) {
-    //     who.cancel_activity();
-    // } else {
-    //     player_vehicle->is_autodriving = true;
-    // }
+    if( cata_mp::mp_refuse_autodrive( who ) ) {
+        return;
+    }
+    if( player_vehicle == nullptr ) {
+        who.cancel_activity();
+    } else {
+        player_vehicle->is_autodriving = true;
+    }
 }
 
 void autodrive_activity_actor::do_turn( player_activity &act, Character &who )

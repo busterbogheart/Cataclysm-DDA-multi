@@ -11744,6 +11744,33 @@ void mp_log_auto_move_pop( Character &you, action_id act )
     g_auto_move_holds = 0;
 }
 
+// ---- Vehicle AI in co-op (P3a) ----
+bool mp_vehicle_ai_disabled()
+{
+    return is_hosting() || is_client_mode();
+}
+
+bool mp_refuse_autodrive( Character &who )
+{
+    if( !mp_vehicle_ai_disabled() ) {
+        return false;
+    }
+    add_msg( m_info, _( "Autodrive is disabled in multiplayer." ) );
+    mp_log( "[cdda-mp] VEH-AI-REFUSED: autodrive" );
+    who.cancel_activity();
+    return true;
+}
+
+bool mp_refuse_autopilot()
+{
+    if( !mp_vehicle_ai_disabled() ) {
+        return false;
+    }
+    add_msg( m_info, _( "Autopilot is disabled in multiplayer." ) );
+    mp_log( "[cdda-mp] VEH-AI-REFUSED: autopilot" );
+    return true;
+}
+
 
 void set_last_monmove_ms( int ms )
 {

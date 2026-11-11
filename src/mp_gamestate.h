@@ -1100,6 +1100,20 @@ bool mp_hold_auto_move( Character &you, bool from_click = false );
 // calls preceded the pop.  No-op outside MP.
 void mp_log_auto_move_pop( Character &you, action_id act );
 
+// ---- Vehicle AI in co-op (ROADMAP auto-travel spec, P3a) ----
+//
+// Autodrive, autopilot follow/patrol and magical/animal follow run vehicle AI on
+// the host's copy of a vehicle every turn: it fights a client driver, and its
+// follow target is hard-coded to get_player_character().  Co-op refuses them;
+// single-player keeps them (572ee1b61a had disabled all five sites for SP too).
+// True while hosting or joined as a client.
+bool mp_vehicle_ai_disabled();
+// mp_vehicle_ai_disabled() plus "Autodrive is disabled in multiplayer." and
+// cancelling who's activity.
+bool mp_refuse_autodrive( Character &who );
+// mp_vehicle_ai_disabled() plus "Autopilot is disabled in multiplayer."
+bool mp_refuse_autopilot();
+
 // DIAGNOSTIC (temporary, 2026-07-02, for the "host proxy vanished from client
 // screen" bug): named callout (rule 4) from Creature::deal_damage (creature.cpp,
 // an upstream-hot SP file) so the actual damage-dealing event on the client's
