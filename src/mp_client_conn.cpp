@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <zstd/zstd.h>
 #include "catacharset.h"   // base64_decode — only pulls std headers, asio-safe
@@ -314,8 +315,31 @@ struct client_impl {
             std::string line;
             std::getline( is, line );
             if( !line.empty() ) {
-                std::string msg = mp_decompress_frame( std::move( line ) );
-                if( !msg.empty() ) {
+                // The wire protocol is one JSON message per line.  A compressed
+                // frame is one line that can decompress to SEVERAL: the host joins
+                // per-floor map_sync / overmap_sync messages with '\n' into one
+                // broadcast, and compression (06-25) wrapped them in one frame, so
+                // only the first was ever applied.  MEASURED 2026-11-11: host sent
+                // map_sync z=0, z=-1, z=1 in one tick, client logged ONE
+                // "MAPSYNC recv" -> client `>` "blocked off" on stairs the host
+                // could take.  Split back into lines before handling.
+                const std::string frame = mp_decompress_frame( std::move( line ) );
+                std::vector<std::string> msgs;
+                for( size_t a = 0; a < frame.size(); ) {
+                    size_t b = frame.find( '\n', a );
+                    if( b == std::string::npos ) {
+                        b = frame.size();
+                    }
+                    if( b > a ) {
+                        msgs.push_back( frame.substr( a, b - a ) );
+                    }
+                    a = b + 1;
+                }
+                if( msgs.size() > 1 ) {
+                    mp_log( "[cdda-mp] FRAME-SPLIT: one frame carried " +
+                            std::to_string( msgs.size() ) + " messages" );
+                }
+                for( std::string &msg : msgs ) {
                     // Heartbeat pong → true RTT, computed here on the io thread so
                     // the reading isn't tied to the game loop.  Match against our
                     // outstanding stamp to ignore stale/duplicate echoes.
