@@ -9858,6 +9858,7 @@ static std::string build_map_sync_z( int az )
 // except for the one synced floor (reported 2026-06-14, client a floor below the
 // host).  Fix: sync the union of the host's z and the remote player's z.  Same z
 // => one message (no extra cost); different floors => one message per floor.
+// 2026-11-11: plus the floors directly above and below the client (see below).
 static std::string build_map_sync()
 {
     if( !is_hosting() || !remote_player_connected ) {
@@ -9873,7 +9874,6 @@ static std::string build_map_sync()
     if( remote ) {
         client_z = remote->posz();
     }
-    const bool two_floors = client_z != host_z;
     // DIAG 2026-11-11 (lethal stairs report: client takes stairs to a floor the
     // host never visited and it reads as open air).  Host's view of the landing.
     static int s_last_proxy_z = INT_MIN;
@@ -9890,25 +9890,46 @@ static std::string build_map_sync()
         s_last_proxy_z = client_z;
     }
 
+    // Also the floors directly above and below the client.  SP's stairs check
+    // (find_or_make_stairs) runs on the CLIENT's map of the destination floor
+    // BEFORE the client is on it, so syncing the client's floor only on arrival
+    // was too late: an unsynced floor is the client's divergent local mapgen.
+    // MEASURED 2026-11-11 (basement, both on z0, only z0 synced): client `>` got
+    // "the way down becomes blocked off" on stairs the host walked down; once the
+    // host's descent synced z-1 the client's `>` worked.  The same gap gives the
+    // reported false "sheer drop.  Jump?" -> fall, and a wrong landing tile.
+    std::vector<int> floors{ host_z };
+    const auto add_floor = [&floors]( int z ) {
+        if( z >= -OVERMAP_DEPTH && z <= OVERMAP_HEIGHT &&
+            std::find( floors.begin(), floors.end(), z ) == floors.end() ) {
+            floors.push_back( z );
+        }
+    };
+    add_floor( client_z );
+    if( remote ) {
+        add_floor( client_z - 1 );
+        add_floor( client_z + 1 );
+    }
+
     // Forget submaps that have scrolled out of the synced region — a different
     // x/y bubble, or a z-level we're no longer syncing — so a return visit
     // re-syncs them (the client may have regenerated them locally after unload).
     for( auto it = g_map_sync_sent.begin(); it != g_map_sync_sent.end(); ) {
-        const bool z_synced = it->z() == host_z || ( two_floors && it->z() == client_z );
+        const bool z_synced = std::find( floors.begin(), floors.end(), it->z() ) != floors.end();
         const bool in_bubble = z_synced &&
                                it->x() >= origin.x() && it->x() < origin.x() + MAPSIZE &&
                                it->y() >= origin.y() && it->y() < origin.y() + MAPSIZE;
         it = in_bubble ? std::next( it ) : g_map_sync_sent.erase( it );
     }
 
-    std::string out = build_map_sync_z( host_z );
-    if( two_floors ) {
-        const std::string client_msg = build_map_sync_z( client_z );
-        if( !client_msg.empty() ) {
+    std::string out;
+    for( const int z : floors ) {
+        const std::string msg = build_map_sync_z( z );
+        if( !msg.empty() ) {
             if( !out.empty() ) {
                 out += '\n';
             }
-            out += client_msg;
+            out += msg;
         }
     }
     return out;
