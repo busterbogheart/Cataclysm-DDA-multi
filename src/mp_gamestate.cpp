@@ -9874,6 +9874,21 @@ static std::string build_map_sync()
         client_z = remote->posz();
     }
     const bool two_floors = client_z != host_z;
+    // DIAG 2026-11-11 (lethal stairs report: client takes stairs to a floor the
+    // host never visited and it reads as open air).  Host's view of the landing.
+    static int s_last_proxy_z = INT_MIN;
+    if( remote && client_z != s_last_proxy_z ) {
+        const map &here = get_map();
+        const tripoint_bub_ms p = remote->pos_bub();
+        mp_log( "[cdda-mp] HOST-PROXY-Z: z " + std::to_string( s_last_proxy_z ) + "->" +
+                std::to_string( client_z ) + " host_z=" + std::to_string( host_z ) +
+                " pos_abs=" + std::to_string( remote->pos_abs().x() ) + "," +
+                std::to_string( remote->pos_abs().y() ) + " ter=" + here.ter( p ).id().str() +
+                " furn=" + here.furn( p ).id().str() +
+                " below=" + here.ter( p + tripoint_rel_ms::below ).id().str() +
+                " hp=" + std::to_string( remote->get_hp() ) );
+        s_last_proxy_z = client_z;
+    }
 
     // Forget submaps that have scrolled out of the synced region — a different
     // x/y bubble, or a z-level we're no longer syncing — so a return visit
@@ -12552,8 +12567,16 @@ bool client_suppress_self_gravity( const Character &who )
     static int s_last_logged_z = INT_MIN;
     if( who.pos_abs().z() != s_last_logged_z ) {
         s_last_logged_z = who.pos_abs().z();
+        // DIAG 2026-11-11 (lethal stairs report): the client's own view of the landing.
+        const map &here = get_map();
+        const tripoint_bub_ms p = who.pos_bub();
         mp_log( "[cdda-mp] gravity: suppressed client avatar self-fall at z=" +
-                std::to_string( s_last_logged_z ) );
+                std::to_string( s_last_logged_z ) +
+                " pos_abs=" + std::to_string( who.pos_abs().x() ) + "," +
+                std::to_string( who.pos_abs().y() ) + " ter=" + here.ter( p ).id().str() +
+                " furn=" + here.furn( p ).id().str() +
+                " below=" + here.ter( p + tripoint_rel_ms::below ).id().str() +
+                " hp=" + std::to_string( who.get_hp() ) );
     }
     return true;
 }
