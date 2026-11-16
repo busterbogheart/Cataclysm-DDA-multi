@@ -14224,6 +14224,24 @@ static void remove_client_host_npc()
     // active copy and the overmap copy without a death.
     npc *host_npc = g->critter_by_id<npc>( client_host_npc_id );
     if( host_npc ) {
+        // Purge the host copy from the avatar's seen-creature cache BEFORE deleting
+        // it: g->remove_npc() frees the npc but leaves its raw npc* in
+        // mon_visible.unique_types[], and the next sidebar redraw (the compass
+        // widget, display.cpp get_compass_for_direction → n->get_attitude())
+        // dereferences it.  Measured 2026-11-16: host Cmd+Q → 6 failed reconnects →
+        // connected:false → this function → SIGBUS at display.cpp:1461 in the redraw
+        // inside client_process_incoming — the "client crashes when the host quits"
+        // crash shipped since 6660e11100.  Same fix as the host's proxy removal
+        // (07-01) and mp_remove_npc_from_game (10-20); SP does it in
+        // game::mon_info_update's dead-npc sweep.
+        monster_visible_info &mon_visible = get_avatar().get_mon_visible();
+        int listed = 0;
+        for( const std::vector<npc *> &nv : mon_visible.unique_types ) {
+            listed += std::count( nv.begin(), nv.end(), host_npc );
+        }
+        mp_log( "[cdda-mp] HOST-NPC-REMOVE: purging host copy from the compass list (listed=" +
+                std::to_string( listed ) + ")" );
+        mon_visible.remove_npc( host_npc );
         mp_hold_removed_creature( *host_npc, "host_left" );
         g->remove_npc( client_host_npc_id );
     }
