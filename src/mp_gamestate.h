@@ -709,6 +709,11 @@ void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
                          double ms_redraw_gated, double ms_redraw_popup,
                          double ms_refresh, double ms_total );
 
+// do_turn.cpp callouts: the host's per-turn input gate and the client's locked-loop
+// handle_action() pair, each logged only when its state changes.
+void mp_log_host_input_gate( const Character &u, bool enter_loop );
+void mp_log_locked_ha( const Character &u, bool entering );
+
 // Called at the last statement of game::do_turn() while a long action runs.
 // Logs once per 100 turns with the turn rate (was a bare per-turn marker).
 // No-ops outside an MP session.
@@ -1036,8 +1041,23 @@ const std::string &get_client_turn_activity();
 
 // Write a [cdda-mp] log line to stdout AND to ~/cdda-mp-server.log or
 // ~/cdda-mp-client.log (depending on mode).  Use this for any event that
-// should be readable after a session without stopping the process.
+// should be readable after a session without stopping the process.  The live
+// file rotates to <name>.log.1 at 8 MB.  Thread-safe.
 void mp_log( const std::string &msg );
+
+// RULE (2026-11-16): any diagnostic that can fire per turn, per packet or per
+// redraw goes through one of these two, never bare mp_log, or the logs grow
+// back to gigabytes (LOG AUDIT 2026-10-27).  Both pass everything through when
+// CDDA_MP_LOG=verbose is set (our own same-machine debugging).
+// Log `line` only when `state` differs from the last state seen under `key`.
+void mp_log_on_change( const std::string &key, const std::string &state, const std::string &line );
+// Log `line` at most once per `seconds` per `key`, with "(+N suppressed)".
+void mp_log_every( const std::string &key, int seconds, const std::string &line );
+// Both: log when `state` changes, otherwise at most once per `seconds`.
+void mp_log_sampled( const std::string &key, const std::string &state, int seconds,
+                     const std::string &line );
+// True when CDDA_MP_LOG=verbose (read once).
+bool mp_log_verbose();
 
 // DIAGNOSTIC (temporary, 2026-07-08, for issue #10 indoor-lighting divergence):
 // dumps is_outside + light level for a window around the local avatar, tagged

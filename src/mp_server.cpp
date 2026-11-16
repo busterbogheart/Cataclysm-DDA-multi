@@ -36,6 +36,8 @@ namespace cata_mp {
 // TU drags in CDDA's enum_traits.h, whose generic operator++ collides with
 // asio's std::atomic<long> increment in scheduler.hpp. We only need these two.
 void mp_log( const std::string &msg );
+void mp_log_every( const std::string &key, int seconds, const std::string &line );
+bool mp_log_verbose();
 unsigned int mp_host_world_seed();
 std::string mp_get_host_world_name();
 std::string mp_get_host_player_name();
@@ -246,17 +248,24 @@ struct client_session : public std::enable_shared_from_this<client_session> {
             if( hb_enqueued_ms_ == 0 ) {
                 hb_enqueued_ms_ = now_ms;
             }
-            mp_log( "[cdda-mp] HB-SEND: enqueued writing_in_flight=" +
-                    std::to_string( static_cast<int>( writing_ ) ) +
-                    " queue_depth=" + std::to_string( write_queue_.size() ) );
+            // Every beat when it queues behind traffic (the case this exists for);
+            // otherwise a once-a-minute sample proves the heartbeat is running.
+            const std::string hb_line = "[cdda-mp] HB-SEND: enqueued writing_in_flight=" +
+                                        std::to_string( static_cast<int>( writing_ ) ) +
+                                        " queue_depth=" + std::to_string( write_queue_.size() );
+            if( !write_queue_.empty() ) {
+                mp_log( hb_line );
+            } else {
+                mp_log_every( "HB-SEND", 60, hb_line );
+            }
         }
         // MP DIAG 2026-08-30 — reconcile SRP-BREAKDOWN's uncompressed "BYTES out="
         // against what actually hits the socket.  Compression happens HERE, before
         // the queue, which is why a >64KB gate on the post-compression size never
         // fired for a 1.16MB broadcast.
         if( msg.size() > 65536 ) {
-            mp_log( "[cdda-mp] HOST-FRAME: raw=" + std::to_string( msg.size() ) +
-                    " wire=" + std::to_string( framed.size() ) );
+            mp_log_every( "HOST-FRAME", 10, "[cdda-mp] HOST-FRAME: raw=" + std::to_string( msg.size() ) +
+                          " wire=" + std::to_string( framed.size() ) );
         }
         write_queue_.push_back( framed );
         if( !writing_ ) {
@@ -327,7 +336,9 @@ struct client_session : public std::enable_shared_from_this<client_session> {
         const bool track_flush = buf_bytes > MP_WRITE_LOG_BYTES || buf_has_hb;
         const auto flush_start = track_flush ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
-        if( track_flush ) {
+        // BEGIN only in verbose mode: DONE below carries the same bytes plus the
+        // elapsed time (LOG AUDIT 2026-10-27).
+        if( track_flush && mp_log_verbose() ) {
             mp_log( "[cdda-mp] HOST-WRITE-BEGIN: bytes=" + std::to_string( buf_bytes ) );
         }
         asio::async_write( socket, asio::buffer( *buf ),
@@ -336,21 +347,38 @@ struct client_session : public std::enable_shared_from_this<client_session> {
             if( track_flush ) {
                 const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                             std::chrono::steady_clock::now() - flush_start ).count();
-                mp_log( "[cdda-mp] HOST-WRITE-DONE: bytes=" + std::to_string( buf_bytes ) +
-                        " elapsed_ms=" + std::to_string( elapsed_ms ) +
-                        " ec=" + ec.message() +
-                        " has_hb=" + std::to_string( static_cast<int>( buf_has_hb ) ) +
-                        " queued_after=" + std::to_string( self->write_queue_.size() ) );
+                // Skip the ~60% that were small, fast, heartbeat-only writes with
+                // nothing behind them (LOG AUDIT 2026-10-27: 31,186 of 51,741 DONE
+                // lines were <100 B beats).  Big, slow, backed-up or failed writes
+                // always log.
+                constexpr long long MP_SLOW_WRITE_MS = 50;
+                const bool done_worth_logging = buf_bytes > MP_WRITE_LOG_BYTES ||
+                                                elapsed_ms >= MP_SLOW_WRITE_MS || ec ||
+                                                !self->write_queue_.empty();
+                if( done_worth_logging || mp_log_verbose() ) {
+                    mp_log( "[cdda-mp] HOST-WRITE-DONE: bytes=" + std::to_string( buf_bytes ) +
+                            " elapsed_ms=" + std::to_string( elapsed_ms ) +
+                            " ec=" + ec.message() +
+                            " has_hb=" + std::to_string( static_cast<int>( buf_has_hb ) ) +
+                            " queued_after=" + std::to_string( self->write_queue_.size() ) );
+                }
                 // MP DIAG 2026-08-30 — HB probe: queued_ms is how long the beat sat
                 // behind other traffic; write_ms is how long the socket write took.
                 // Either one exceeding the client's 8s MP_STALL_MS explains a
-                // spurious "host silent" reconnect.
+                // spurious "host silent" reconnect.  Every slow or failed beat logs;
+                // healthy ones get a once-a-minute sample.
                 if( buf_has_hb ) {
-                    mp_log( "[cdda-mp] HB-FLUSH: on the wire queued_ms=" +
-                            std::to_string( hb_queued_ms ) +
-                            " write_ms=" + std::to_string( elapsed_ms ) +
-                            " bytes=" + std::to_string( buf_bytes ) +
-                            " ec=" + ec.message() );
+                    const std::string flush_line = "[cdda-mp] HB-FLUSH: on the wire queued_ms=" +
+                                                   std::to_string( hb_queued_ms ) +
+                                                   " write_ms=" + std::to_string( elapsed_ms ) +
+                                                   " bytes=" + std::to_string( buf_bytes ) +
+                                                   " ec=" + ec.message();
+                    constexpr long long MP_SLOW_HB_MS = 500;
+                    if( ec || hb_queued_ms + elapsed_ms >= MP_SLOW_HB_MS ) {
+                        mp_log( flush_line );
+                    } else {
+                        mp_log_every( "HB-FLUSH", 60, flush_line );
+                    }
                 }
             }
             if( ec ) {

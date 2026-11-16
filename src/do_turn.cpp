@@ -787,7 +787,7 @@ bool game::do_turn()
                                 " ack=" + std::to_string( cata_mp::is_client_waiting_for_ack() );
         static std::string last;
         if( msg != last ) {
-            cata_mp::mp_log( msg );
+            cata_mp::mp_log_every( "post-incoming", 10, msg );
             last = msg;
         }
     }
@@ -976,15 +976,11 @@ bool game::do_turn()
 
     if( cata_mp::is_hosting() ) {
         cata_mp::mp_turn_phase( "pre_input" );
-        cata_mp::mp_log( "[cdda-mp] HOST-INPUT-GATE: avatar_moves=" + std::to_string( u.get_moves() ) +
-                         " has_act=" + ( u.activity ? u.activity.id().str() : "none" ) +
-                         " sleep=" + std::to_string( u.has_effect( effect_sleep ) ) +
-                         // Must mirror the guard BELOW, sleep effect included: printing
-                         // only moves>0 reported enter_loop=1 for a sleeping host that
-                         // provably never entered the loop (2026-08-30 stall hunt).
-                         " enter_loop=" + std::to_string(
-                             ( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) &&
-                             ( u.get_moves() > 0 || uquit == QUIT_WATCH ) ) );
+        // enter_loop must mirror the guard BELOW, sleep effect included: printing
+        // only moves>0 reported enter_loop=1 for a sleeping host that provably
+        // never entered the loop (2026-08-30 stall hunt).
+        cata_mp::mp_log_host_input_gate( u, ( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) &&
+                                         ( u.get_moves() > 0 || uquit == QUIT_WATCH ) );
     }
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
@@ -1279,12 +1275,9 @@ bool game::do_turn()
                 // displays progress.
                 if( !u.activity ) {
                     cata_mp::mp_client_locked_grant_guard();
-                    cata_mp::mp_log( "[cdda-mp] LOCKED-HA: enter handle_action, moves=" +
-                                     std::to_string( u.get_moves() ) );
+                    cata_mp::mp_log_locked_ha( u, true );
                     g->handle_action();
-                    cata_mp::mp_log( "[cdda-mp] LOCKED-HA: exit handle_action moves=" +
-                                     std::to_string( u.get_moves() ) +
-                                     " act=" + ( u.activity ? u.activity.id().str() : "none" ) );
+                    cata_mp::mp_log_locked_ha( u, false );
                     ui_manager::redraw();
                 }
                 // If handle_action assigned an activity (or otherwise drained
@@ -1368,9 +1361,6 @@ bool game::do_turn()
     m.process_falling();
     if( !cata_mp::is_client_mode() ) {
         const unsigned long long pre_veh = cata_mp::is_hosting() ? Messages::appended_total() : 0;
-        if( cata_mp::is_hosting() ) {
-            cata_mp::mp_log( "[veh-move] vehmove start, pre_msg=" + std::to_string( pre_veh ) );
-        }
         m.vehmove();
         cata_mp::host_capture_vehmove_msgs( pre_veh );
     }

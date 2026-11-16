@@ -88,6 +88,10 @@ body:
         Drag-and-drop the files directly into this box. If a player only has one of the
         two logs, that's fine, paste what you have and say which side it's from.
 
+        Each log starts a new file at 8 MB and keeps the previous part next to it as
+        `cdda-mp-server.log.1` / `cdda-mp-client.log.1`. If you have one, attach it too:
+        it holds the time just before the current file starts.
+
         **If logs are too big,** try zipping. For Windows: right-click > Send to > Compressed (zipped) folder.
         For macOS / Linux run: `gzip cdda-mp-server.log` or right-click > Compress
     validations:

@@ -99,6 +99,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <atomic>
 #include <cstdlib>
@@ -179,8 +180,22 @@ std::string pulp_activity_actor::get_progress_message( const player_activity & )
 
 namespace cata_mp {
 
+// Rotate the live log at this size (2026-11-16, LOG AUDIT 2026-10-27 item 1).  The
+// old cap was checked only when the file was opened, so one long session grew
+// without limit (a player's client log reached 1.2 GB; the host ran ~19 MB/hour).
+// Now the live file rotates to <name>.log.1 (replacing the previous .1) the moment
+// it passes 8 MB, so the current file always fits Discord's free 10 MB upload, and
+// the two files together hold the last ~8-16 MB.  Seam markers in both files.
+static constexpr std::uintmax_t MP_LOG_ROTATE_BYTES = 8ull * 1024 * 1024;
+
 void mp_log( const std::string &msg )
 {
+    // mp_log runs on the game thread AND the network threads (server writer,
+    // client io/reconnect).  The file handle, the path and the byte counter are
+    // shared, and rotation closes/renames/reopens the file, so serialize the
+    // whole body.  Nothing below calls mp_log, so this can't self-deadlock.
+    static std::mutex s_log_mutex;
+    std::lock_guard<std::mutex> lock( s_log_mutex );
     // Wall-clock ms since the previous mp_log line — lets us read the log as a
     // timeline ("this step took 47ms") without having to add timing helpers
     // around every call site.  Reset each line: prefix shows the gap since the
@@ -221,6 +236,7 @@ void mp_log( const std::string &msg )
     // changes (e.g. SP→host via the in-game menu).
     static std::ofstream log_file;
     static std::string current_path;
+    static std::uintmax_t s_bytes = 0;   // size of the live file, for rotation
     // Log directory: the user's HOME on every platform, so the log PERSISTS
     // across reboots and the OS's temp-cleanup. The old /tmp location is wiped
     // on every boot on Linux (systemd clears /tmp) — a real player who reboots
@@ -252,22 +268,26 @@ void mp_log( const std::string &msg )
         if( log_file.is_open() ) {
             log_file.close();
         }
-        // Append (don't rotate per session — that split a play session across
-        // .log/.log.1 and hid debug data, 2026-06-03).  ONE exception: if the
-        // file has grown past a hard cap, truncate on open so it can't grow
-        // unbounded across dozens of launches.  Only fires at the start of a new
-        // launch, never mid-session, so it never pulls live data out from under
-        // a debugging run.
-        constexpr std::uintmax_t LOG_CAP_BYTES = 10ull * 1024 * 1024;  // 10 MB — keeps logs attachable to Discord (10MB free) / GitHub (25MB)
+        // Append across launches (don't start a new file per session — that split
+        // a play session across .log/.log.1 and hid debug data, 2026-06-03).  A
+        // file already past the rotation size moves to .log.1 first, so it can't
+        // grow unbounded across launches; the live session rotates below.
         std::error_code ec;
         const std::uintmax_t sz =
             std::filesystem::exists( desired_path, ec )
             ? std::filesystem::file_size( desired_path, ec ) : 0;
-        const std::ios::openmode mode = ( !ec && sz > LOG_CAP_BYTES )
-                                        ? ( std::ios::out | std::ios::trunc )
-                                        : ( std::ios::out | std::ios::app );
-        log_file.open( desired_path, mode );
+        if( !ec && sz > MP_LOG_ROTATE_BYTES ) {
+            const std::string old_path = desired_path + ".1";
+            std::filesystem::remove( old_path, ec );   // Windows rename won't replace
+            std::filesystem::rename( desired_path, old_path, ec );
+        }
+        log_file.open( desired_path, std::ios::out | std::ios::app );
         current_path = desired_path;
+        s_bytes = std::filesystem::exists( desired_path, ec )
+                  ? std::filesystem::file_size( desired_path, ec ) : 0;
+        if( ec ) {
+            s_bytes = 0;
+        }
         log_file << "\n[cdda-mp] ===================== LOG OPENED ====================="
                  << std::endl;
         // Echo so the user can find it (esp. on Windows where the path varies).
@@ -276,8 +296,119 @@ void mp_log( const std::string &msg )
     }
     if( log_file.is_open() ) {
         log_file << line << '\n';
-        log_file.flush();
+        log_file.flush();   // per-line flush: what makes the log survive a crash
+        s_bytes += line.size() + 1;
+        if( s_bytes > MP_LOG_ROTATE_BYTES ) {
+            const std::string old_path = current_path + ".1";
+            log_file << "[cdda-mp] ===================== LOG ROTATED — continues in "
+                     << current_path << " =====================" << std::endl;
+            log_file.close();
+            std::error_code ec;
+            std::filesystem::remove( old_path, ec );   // Windows rename won't replace
+            std::filesystem::rename( current_path, old_path, ec );
+            // Rename failed (e.g. another process holds the file on Windows):
+            // truncate instead, so the cap still holds.
+            log_file.open( current_path, ec ? ( std::ios::out | std::ios::trunc )
+                           : ( std::ios::out | std::ios::app ) );
+            s_bytes = 0;
+            log_file << "[cdda-mp] ===================== LOG ROTATED — previous part in "
+                     << old_path << ( ec ? " (rename FAILED, previous part lost)" : "" )
+                     << " =====================" << std::endl;
+        }
     }
+}
+
+// do_turn.cpp callout (host): the per-turn input gate.  Logged on change of the
+// activity / sleep / enter-loop decision (moves change every turn and would defeat
+// that); it was 15.4% of a 7 h host log as a per-turn line (LOG AUDIT 2026-10-27).
+void mp_log_host_input_gate( const Character &u, bool enter_loop )
+{
+    static const efftype_id effect_sleep_gate( "sleep" );
+    const std::string act = u.activity ? u.activity.id().str() : "none";
+    const std::string sleep = std::to_string( u.has_effect( effect_sleep_gate ) );
+    mp_log_on_change( "HOST-INPUT-GATE", act + "|" + sleep + "|" + std::to_string( enter_loop ),
+                      "[cdda-mp] HOST-INPUT-GATE: avatar_moves=" + std::to_string( u.get_moves() ) +
+                      " has_act=" + act + " sleep=" + sleep +
+                      " enter_loop=" + std::to_string( enter_loop ) );
+}
+
+// do_turn.cpp callout (client): the locked-loop handle_action() pair.  Logged on
+// change of moves / activity; the same pair repeating while locked was a few % of
+// every client log.
+void mp_log_locked_ha( const Character &u, bool entering )
+{
+    const std::string act = u.activity ? u.activity.id().str() : "none";
+    const std::string moves = std::to_string( u.get_moves() );
+    if( entering ) {
+        mp_log_on_change( "LOCKED-HA-enter", moves,
+                          "[cdda-mp] LOCKED-HA: enter handle_action, moves=" + moves );
+    } else {
+        mp_log_on_change( "LOCKED-HA-exit", moves + "|" + act,
+                          "[cdda-mp] LOCKED-HA: exit handle_action moves=" + moves + " act=" + act );
+    }
+}
+
+// CDDA_MP_LOG=verbose restores every per-turn / per-packet / per-redraw line the
+// helpers below would otherwise thin out.  For our own same-machine debugging;
+// players never set it, so their logs stay small.  Read once.
+bool mp_log_verbose()
+{
+    static const bool verbose = [] {
+        const char *v = std::getenv( "CDDA_MP_LOG" );
+        return v != nullptr && std::string( v ) == "verbose";
+    }();
+    return verbose;
+}
+
+// The one gate behind the helpers below (game + network threads both call them).
+// Writes `line` when `state` differs from the last state written under `key`, or
+// when `seconds` (> 0) have passed since the last write; otherwise counts it and
+// appends "(+N suppressed)" to the next line that does get written.
+static void mp_log_gated( const std::string &key, const std::string &state, int seconds,
+                          const std::string &line )
+{
+    int suppressed = 0;
+    if( !mp_log_verbose() ) {
+        struct gate {
+            std::string state;
+            std::chrono::steady_clock::time_point last{};
+            int suppressed = 0;
+            bool any = false;
+        };
+        static std::mutex s_gate_mutex;
+        static std::unordered_map<std::string, gate> s_gates;
+        std::lock_guard<std::mutex> lock( s_gate_mutex );
+        gate &g = s_gates[key];
+        const auto now = std::chrono::steady_clock::now();
+        const bool changed = !g.any || g.state != state;
+        const bool due = seconds > 0 && now - g.last >= std::chrono::seconds( seconds );
+        if( !changed && !due ) {
+            ++g.suppressed;
+            return;
+        }
+        suppressed = g.suppressed;
+        g.state = state;
+        g.suppressed = 0;
+        g.last = now;
+        g.any = true;
+    }
+    mp_log( suppressed > 0 ? line + " (+" + std::to_string( suppressed ) + " suppressed)" : line );
+}
+
+void mp_log_on_change( const std::string &key, const std::string &state, const std::string &line )
+{
+    mp_log_gated( key, state, 0, line );
+}
+
+void mp_log_every( const std::string &key, int seconds, const std::string &line )
+{
+    mp_log_gated( key, std::string(), seconds, line );
+}
+
+void mp_log_sampled( const std::string &key, const std::string &state, int seconds,
+                     const std::string &line )
+{
+    mp_log_gated( key, state, seconds, line );
 }
 
 // ----------------------------------------------------------------------------
@@ -478,7 +609,7 @@ void mp_do_turn_update_body( Character &u )
         }
         s_body_turns_applied += span;
         const int host_span = to_turns<int>( calendar::turn - s_body_first_turn );
-        mp_log( "[cdda-mp] mp_do_turn_update_body: RANGE catch-up from=" +
+        mp_log_every( "update_body-RANGE", 10, "[cdda-mp] mp_do_turn_update_body: RANGE catch-up from=" +
                 to_string( s_last_update_body ) + " to=" + to_string( calendar::turn ) +
                 " (turns=" + std::to_string( span ) + ")" +
                 " applied_total=" + std::to_string( s_body_turns_applied ) +
@@ -3399,7 +3530,7 @@ void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
                 }
             };
             const char *cat_name = category >= 0 && category < 13 ? cat_names[category] : "?";
-            mp_log( std::string( "[cdda-mp] SOUND-LOCAL: cat=" ) + cat_name +
+            mp_log_sampled( "SOUND-LOCAL", cat_name, 10, std::string( "[cdda-mp] SOUND-LOCAL: cat=" ) + cat_name +
                     " v=" + std::to_string( vol ) +
                     " d=" + std::to_string( rl_dist( p, get_avatar().pos_bub() ) ) +
                     " ambient=" + std::to_string( ambient ) +
@@ -3447,7 +3578,7 @@ void mp_note_sound( const tripoint_bub_ms &p, int vol, int category,
                 proxy_footsteps = 0;
             }
         } else {
-            mp_log( "[cdda-mp] SOUND-AT-PROXY: cat=" + std::to_string( category ) +
+            mp_log_sampled( "SOUND-AT-PROXY", std::to_string( category ), 10, "[cdda-mp] SOUND-AT-PROXY: cat=" + std::to_string( category ) +
                     " v=" + std::to_string( vol ) + " d=" + std::to_string( rl_dist( abs, listener ) ) +
                     " desc=\"" + description + "\" id=" + id );
         }
@@ -5285,12 +5416,17 @@ void host_capture_vehmove_msgs( unsigned long long pre_msg )
         return;
     }
     const unsigned long long cur = Messages::appended_total();
-    mp_log( "[veh-move] host_capture_vehmove_msgs: pre=" + std::to_string( pre_msg ) +
-            " cur=" + std::to_string( cur ) +
-            " delta=" + std::to_string( cur > pre_msg ? cur - pre_msg : 0 ) );
     if( cur <= pre_msg ) {
+        // Nothing vehmove() said this turn: the common case, and 10.5% of a 7 h host
+        // log when it logged every turn (LOG AUDIT 2026-10-27).  Verbose mode keeps it.
+        if( mp_log_verbose() ) {
+            mp_log( "[veh-move] host_capture_vehmove_msgs: pre=" + std::to_string( pre_msg ) +
+                    " delta=0" );
+        }
         return;
     }
+    mp_log( "[veh-move] host_capture_vehmove_msgs: pre=" + std::to_string( pre_msg ) +
+            " cur=" + std::to_string( cur ) + " delta=" + std::to_string( cur - pre_msg ) );
     const auto new_msgs = Messages::recent_messages( static_cast<size_t>( cur - pre_msg ) );
     for( const auto &[time_str, text] : new_msgs ) {
         ( void )time_str;
@@ -6058,8 +6194,10 @@ static void srv_emit_ack( const char *action_name )
 {
     g_client_acted_this_turn = true;
     g_remote_moves = 0;
-    mp_log( std::string( "[cdda-mp] SRV-ACK: moves=0 (" ) + action_name
-            + ") grant_seq=" + std::to_string( g_grant_seq ) );
+    // On a change of action, else a 10 s sample: a wait-ack every turn otherwise.
+    mp_log_sampled( "SRV-ACK", action_name, 10,
+                    std::string( "[cdda-mp] SRV-ACK: moves=0 (" ) + action_name
+                    + ") grant_seq=" + std::to_string( g_grant_seq ) );
     server *srv = get_active_server();
     if( srv ) {
         // MP PERF 2026-08-15 — the "wait" ack is the ONLY caller here that mutates
@@ -7996,13 +8134,18 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                 // is the prime suspect for client-side ground changes that never
                 // land, since the reality bubble is centred on the HOST and a
                 // change made near a distant client can fall outside it.
-                mp_log( "[cdda-mp] TILE-APPLY-RESULT: seen=" + std::to_string( seen ) +
-                        " applied=" + std::to_string( applied ) +
-                        " out_of_bounds=" + std::to_string( oob ) +
-                        " changed: ter=" + std::to_string( diff_ter ) +
-                        " furn=" + std::to_string( diff_furn ) +
-                        " items=" + std::to_string( diff_items ) +
-                        ( diff_examples.empty() ? "" : " e.g." + diff_examples ) );
+                // Only when something happened (the all-zero line was 1.8% of a
+                // 7 h host log; LOG AUDIT 2026-10-27).
+                if( applied > 0 || oob > 0 || diff_ter + diff_furn + diff_items > 0 ||
+                    mp_log_verbose() ) {
+                    mp_log( "[cdda-mp] TILE-APPLY-RESULT: seen=" + std::to_string( seen ) +
+                            " applied=" + std::to_string( applied ) +
+                            " out_of_bounds=" + std::to_string( oob ) +
+                            " changed: ter=" + std::to_string( diff_ter ) +
+                            " furn=" + std::to_string( diff_furn ) +
+                            " items=" + std::to_string( diff_items ) +
+                            ( diff_examples.empty() ? "" : " e.g." + diff_examples ) );
+                }
                 // B18 DIAG: fields the client created (spell fog/fire/acid...)
                 // reaching the host.  Per packet, per type.
                 if( !field_counts.empty() ) {
@@ -8010,7 +8153,7 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                     for( const auto &[t, n] : field_counts ) {
                         fc += " " + t + " x" + std::to_string( n );
                     }
-                    mp_log( "[cdda-mp] FIELD-FROM-CLIENT:" + fc );
+                    mp_log_sampled( "FIELD-FROM-CLIENT", fc, 60, "[cdda-mp] FIELD-FROM-CLIENT:" + fc );
                 }
             }
         } catch( const JsonError & ) {}
@@ -8311,8 +8454,11 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     const bool is_wait = msg.find( "\"action\":\"wait\"" ) != std::string::npos ||
                          msg.find( "\"action\": \"wait\"" ) != std::string::npos;
     if( is_wait ) {
-        mp_log( "[cdda-mp] wait recv: ctrl_veh=" + std::to_string( remote->controlling_vehicle ) +
-                " g_remote_moves=" + std::to_string( g_remote_moves ) );
+        // Verbose only: srv_emit_ack's SRV-ACK line records the wait.
+        if( mp_log_verbose() ) {
+            mp_log( "[cdda-mp] wait recv: ctrl_veh=" + std::to_string( remote->controlling_vehicle ) +
+                    " g_remote_moves=" + std::to_string( g_remote_moves ) );
+        }
         // A wait that carried act_pos gets the full tile scan (any other name
         // than "wait" does): the client needs the area around its new spot.
         srv_emit_ack( act_pos_moved ? "wait+act_pos" : "wait" );
@@ -9435,9 +9581,16 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         const int wiped = std::max( 0, g_remote_moves );
         g_pace_win.cli_wiped += wiped;
         g_remote_moves = std::min( 0, g_remote_moves );
-        mp_log( "[cdda-mp] SRV-ACK: moves=" + std::to_string( g_remote_moves ) +
-                " (debt-carry) wiped=" + std::to_string( wiped ) +
-                " ack to client, grant_seq=" + std::to_string( g_grant_seq ) );
+        // Every ack that wiped moves (the walk/run parity signal); otherwise a
+        // 10 s sample.
+        const std::string ack_line = "[cdda-mp] SRV-ACK: moves=" + std::to_string( g_remote_moves ) +
+                                     " (debt-carry) wiped=" + std::to_string( wiped ) +
+                                     " ack to client, grant_seq=" + std::to_string( g_grant_seq );
+        if( wiped > 0 ) {
+            mp_log( ack_line );
+        } else {
+            mp_log_every( "SRV-ACK-debt", 10, ack_line );
+        }
     } else {
         mp_log( "[cdda-mp] SRV-FREE: no-op move (wall/bump), sending free=true, moves=" + std::to_string( g_remote_moves ) );
     }
@@ -10225,10 +10378,14 @@ void grant_client_turn()
     // packets) — use it to align the host and client logs by game turn, immune to
     // wall-clock skew.  Safe to read here: grant_client_turn runs on the game
     // thread.
-    mp_log( "[cdda-mp] grant_client_turn: remote_moves=" + std::to_string( g_remote_moves ) +
-            " seq=" + std::to_string( g_grant_seq ) +
-            " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) +
-            " host_act=" + ( ha ? ha.id().str() : "none" ) );
+    // On a host-activity change, else a 10 s sample (13.3% of a 7 h host log as a
+    // per-turn line; LOG AUDIT 2026-10-27).
+    const std::string grant_act = ha ? ha.id().str() : "none";
+    mp_log_sampled( "grant_client_turn", grant_act, 10,
+                    "[cdda-mp] grant_client_turn: remote_moves=" + std::to_string( g_remote_moves ) +
+                    " seq=" + std::to_string( g_grant_seq ) +
+                    " turn=" + std::to_string( to_turn<int>( calendar::turn ) ) +
+                    " host_act=" + grant_act );
     // Proxy skips npcmove so never auto-regenerates stamina. Replicate the
     // update_body() path that the real avatar gets each game turn — but only
     // when a client_stamina sync hasn't ALREADY set the proxy's stamina to the
@@ -10386,7 +10543,7 @@ void grant_client_turn()
             };
             const long long tot = d( grant_body_t0, g_t_ser_send );
             if( tot >= 20 ) {
-                mp_log( "[cdda-mp] GRANT-BREAKDOWN: total=" + std::to_string( tot ) +
+                mp_log_every( "GRANT-BREAKDOWN", 10, "[cdda-mp] GRANT-BREAKDOWN: total=" + std::to_string( tot ) +
                         "ms critter_lookup=" + std::to_string( d( grant_body_t0, grant_t_lookup ) ) +
                         "ms stamina=" + std::to_string( d( grant_t_lookup, grant_t_stamina ) ) +
                         "ms separation=" + std::to_string( d( grant_t_stamina, grant_t_separation ) ) +
@@ -10577,7 +10734,7 @@ void wait_for_client_action()
             const int64_t now_ms = mp_now_ms();
             if( s_hold_start_ms == 0 ) {
                 s_hold_start_ms = now_ms;
-                mp_log( "[cdda-mp] FF-LEAD: holding burst, client " +
+                mp_log_every( "FF-LEAD-1", 10, "[cdda-mp] FF-LEAD: holding burst, client " +
                         std::to_string( lead ) + " turns behind (window " +
                         std::to_string( MP_FF_MAX_LEAD_TURNS ) + ")" );
             }
@@ -10587,7 +10744,7 @@ void wait_for_client_action()
                 // its FF bail disabled for the duration (g_ff_lead_holding).
                 g_ff_lead_holding = true;
             } else {
-                mp_log( "[cdda-mp] FF-LEAD: hold exceeded " +
+                mp_log_every( "FF-LEAD-2", 10, "[cdda-mp] FF-LEAD: hold exceeded " +
                         std::to_string( MP_FF_HOLD_MAX_MS ) + "ms with lead=" +
                         std::to_string( lead ) + " — bursting anyway (safety valve)" );
                 s_hold_start_ms = 0;
@@ -10597,7 +10754,7 @@ void wait_for_client_action()
             }
         } else {
             if( s_hold_start_ms != 0 ) {
-                mp_log( "[cdda-mp] FF-LEAD: released, lead=" + std::to_string( lead ) );
+                mp_log_every( "FF-LEAD-3", 10, "[cdda-mp] FF-LEAD: released, lead=" + std::to_string( lead ) );
                 s_hold_start_ms = 0;
             }
             mp_turn_phase( "cw:ff_events" );
@@ -10642,10 +10799,14 @@ void wait_for_client_action()
     // so SDL stays pumped during long waits.
     const bool host_in_wait = host_is_in_wait_activity();  // logged only
     {
+        // Verbose only: SRV-WAIT done/DONE at the end carry the outcome (LOG AUDIT
+        // 2026-10-27: "entering" alone was 4.6% of a 7 h host log).
         const player_activity &ha_enter = get_avatar().activity;
-        mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) +
-                " host_in_wait=" + std::to_string( host_in_wait ) +
-                " host_act=" + ( ha_enter ? ha_enter.id().str() : "none" ) );
+        if( mp_log_verbose() ) {
+            mp_log( "[cdda-mp] SRV-WAIT: entering, grant_seq=" + std::to_string( g_grant_seq ) +
+                    " host_in_wait=" + std::to_string( host_in_wait ) +
+                    " host_act=" + ( ha_enter ? ha_enter.id().str() : "none" ) );
+        }
     }
 
     int iter_count = 0;
@@ -10704,14 +10865,24 @@ void wait_for_client_action()
             const int64_t now_probe = mp_now_ms();
             if( now_probe - s_last_probe_ms >= 1000 ) {
                 s_last_probe_ms = now_probe;
-                mp_log( "[cdda-mp] SRV-WAIT-PROBE: ff=" + std::to_string( ff_mid ? 1 : 0 ) +
-                        " reason=" + ( ff_mid ? std::string( "(would bail)" ) : mp_ff_decline_reason() ) +
-                        " acted=" + std::to_string( g_client_acted_this_turn ? 1 : 0 ) +
-                        " self=" + mp_local_ff_activity() +
-                        " partner=" + ( g_partner_activity.empty() ? "(none)" : g_partner_activity ) +
-                        " partner_moves=" + std::to_string( g_partner_activity_moves ) +
-                        " held=" + std::to_string( mp_peer_modal_held() ? 1 : 0 ) +
-                        " granted=" + std::to_string( g_granted_this_turn ? 1 : 0 ) );
+                // On a change of the decision (ff / reason / who is doing what),
+                // else a 10 s sample: a long idle wait used to log once a second.
+                const std::string probe_reason =
+                    ff_mid ? std::string( "(would bail)" ) : mp_ff_decline_reason();
+                const std::string probe_self = mp_local_ff_activity();
+                const std::string probe_partner =
+                    g_partner_activity.empty() ? "(none)" : g_partner_activity;
+                mp_log_sampled( "SRV-WAIT-PROBE",
+                                probe_reason + "|" + probe_self + "|" + probe_partner + "|" +
+                                std::to_string( mp_peer_modal_held() ? 1 : 0 ), 10,
+                                "[cdda-mp] SRV-WAIT-PROBE: ff=" + std::to_string( ff_mid ? 1 : 0 ) +
+                                " reason=" + probe_reason +
+                                " acted=" + std::to_string( g_client_acted_this_turn ? 1 : 0 ) +
+                                " self=" + probe_self +
+                                " partner=" + probe_partner +
+                                " partner_moves=" + std::to_string( g_partner_activity_moves ) +
+                                " held=" + std::to_string( mp_peer_modal_held() ? 1 : 0 ) +
+                                " granted=" + std::to_string( g_granted_this_turn ? 1 : 0 ) );
             }
         }
         if( g_ff_lead_holding ) {
@@ -10719,7 +10890,7 @@ void wait_for_client_action()
             // catch up rather than taking the FF bail.
             const int lead_now = mp_ff_lead_turns();
             if( lead_now < MP_FF_MAX_LEAD_TURNS ) {
-                mp_log( "[cdda-mp] FF-LEAD: client caught up mid-wait, lead=" +
+                mp_log_every( "FF-LEAD-4", 10, "[cdda-mp] FF-LEAD: client caught up mid-wait, lead=" +
                         std::to_string( lead_now ) );
                 g_ff_hold_start_ms = 0;
                 g_ff_lead_holding = false;
@@ -10728,12 +10899,12 @@ void wait_for_client_action()
             if( !ff_mid ) {
                 // FF no longer applies (the partner's activity ended): from here this
                 // is an ordinary lockstep wait for the client's action.
-                mp_log( "[cdda-mp] FF-LEAD: fast-forward ended during the hold, lead=" +
+                mp_log_every( "FF-LEAD-5", 10, "[cdda-mp] FF-LEAD: fast-forward ended during the hold, lead=" +
                         std::to_string( lead_now ) + " — waiting for the client normally" );
                 g_ff_hold_start_ms = 0;
                 g_ff_lead_holding = false;
             } else if( mp_now_ms() - g_ff_hold_start_ms >= MP_FF_HOLD_MAX_MS ) {
-                mp_log( "[cdda-mp] FF-LEAD: hold exceeded " + std::to_string( MP_FF_HOLD_MAX_MS ) +
+                mp_log_every( "FF-LEAD-6", 10, "[cdda-mp] FF-LEAD: hold exceeded " + std::to_string( MP_FF_HOLD_MAX_MS ) +
                         "ms mid-wait with lead=" + std::to_string( lead_now ) +
                         " — releasing one turn (safety valve)" );
                 g_ff_hold_start_ms = 0;
@@ -10922,8 +11093,15 @@ void wait_for_client_action()
     {
         const long wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - t_start ).count();
-        mp_log( "[cdda-mp] SRV-WAIT-DONE: turn_wait=" + std::to_string( wait_ms ) +
-                "ms" + ( wait_ms > 400 ? "  >400 (RED)" : "" ) );
+        // Every RED wait (>400 ms) logs; normal ones get a 10 s sample.
+        const std::string done_line = "[cdda-mp] SRV-WAIT-DONE: turn_wait=" +
+                                      std::to_string( wait_ms ) + "ms" +
+                                      ( wait_ms > 400 ? "  >400 (RED)" : "" );
+        if( wait_ms > 400 ) {
+            mp_log( done_line );
+        } else {
+            mp_log_every( "SRV-WAIT-DONE", 10, done_line );
+        }
     }
     // Force a main-UI repaint each turn cycle.  During a long activity (|-wait,
     // crafting, sleep) the host's main game loop stays in a tight do_turn() loop
@@ -10936,17 +11114,25 @@ void wait_for_client_action()
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_start ).count() );
     {
+        // Same rule as SRV-WAIT-DONE: every wait over 400 ms; otherwise a 10 s
+        // sample.
         const player_activity &ha = get_avatar().activity;
-        mp_log( "[cdda-mp] SRV-WAIT: done, elapsed=" + std::to_string( g_wait_elapsed_ms ) +
-                "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
-                " host_in_wait=" + std::to_string( host_in_wait ) +
-                " iters=" + std::to_string( iter_count ) +
-                " acted_flag=" + std::to_string( g_client_acted_this_turn ) +
-                " max_wait=" + std::to_string( max_waitev_ms ) +
-                "ms max_drain=" + std::to_string( max_drain_ms ) +
-                "ms max_pump=" + std::to_string( max_pump_ms ) +
-                "ms max_redraw=" + std::to_string( max_redraw_ms ) +
-                "ms max_input=" + std::to_string( max_input_ms ) + "ms" );
+        const std::string done_line = "[cdda-mp] SRV-WAIT: done, elapsed=" +
+                                      std::to_string( g_wait_elapsed_ms ) +
+                                      "ms host_act=" + ( ha ? ha.id().str() : "none" ) +
+                                      " host_in_wait=" + std::to_string( host_in_wait ) +
+                                      " iters=" + std::to_string( iter_count ) +
+                                      " acted_flag=" + std::to_string( g_client_acted_this_turn ) +
+                                      " max_wait=" + std::to_string( max_waitev_ms ) +
+                                      "ms max_drain=" + std::to_string( max_drain_ms ) +
+                                      "ms max_pump=" + std::to_string( max_pump_ms ) +
+                                      "ms max_redraw=" + std::to_string( max_redraw_ms ) +
+                                      "ms max_input=" + std::to_string( max_input_ms ) + "ms";
+        if( g_wait_elapsed_ms > 400 ) {
+            mp_log( done_line );
+        } else {
+            mp_log_every( "SRV-WAIT-done", 10, done_line );
+        }
     }
 
     // Keep the remote NPC proxy's in_vehicle flag in sync with its map position
@@ -11552,7 +11738,7 @@ void mp_turn_phase_flush( int threshold_ms )
                     std::to_string( sum.first ) + "ms";
         }
     }
-    mp_log( line );
+    mp_log_every( "TURN-PHASES", 10, line );
     g_turn_marks.clear();
 }
 
@@ -11636,7 +11822,9 @@ void mp_log_progress_ui( bool wait_redraw, bool gate_fired, int rate_turns,
                        "redraw_gated=%.2fms redraw_popup=%.2fms refresh=%.2fms total=%.2fms",
                        gate_fired ? 1 : 0, ff ? 1 : 0, rate_turns,
                        ms_redraw_gated, ms_redraw_popup, ms_refresh, ms_total );
-        mp_log( buf );
+        // A 10 s sample; PROGRESS-UI-AVG below carries the per-100 averages
+        // (LOG AUDIT 2026-10-27: keep the AVG summary).
+        mp_log_every( "PROGRESS-UI", 10, buf );
     }
     if( ( calls % 100 ) == 0 ) {
         char buf[256];
@@ -13168,10 +13356,10 @@ std::string mp_game_report_section()
     }
 #if defined(_WIN32)
     s += "- Co-op Logs (attach to bug reports): %USERPROFILE%\\cdda-mp-server.log (host) / "
-         "%USERPROFILE%\\cdda-mp-client.log (client)\n";
+         "%USERPROFILE%\\cdda-mp-client.log (client), plus the matching .log.1 if there is one\n";
 #else
     s += "- Co-op Logs (attach to bug reports): ~/cdda-mp-server.log (host) / "
-         "~/cdda-mp-client.log (client)\n";
+         "~/cdda-mp-client.log (client), plus the matching .log.1 if there is one\n";
 #endif
     s += "- Co-op Note: both players must run the SAME Game Version listed above; "
          "mismatched builds are rejected at join.\n";
@@ -16148,7 +16336,7 @@ static bool apply_one_state_message( const std::string &msg )
                 get_avatar().set_moves( srv_moves );
             } else if( srv_moves <= 0 ) {
                 // ACK: server confirmed our action was received.  Always apply.
-                mp_log( "[cdda-mp] CLI-ACK-CLEAR: moves=" + std::to_string( srv_moves ) +
+                mp_log_every( "CLI-ACK-CLEAR", 10, "[cdda-mp] CLI-ACK-CLEAR: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
                         " ack_was=" + std::to_string( g_client_waiting_for_ack ) +
                         " last_seq=" + std::to_string( g_client_last_grant_seq ) );
@@ -16170,7 +16358,7 @@ static bool apply_one_state_message( const std::string &msg )
                 }
                 const player_activity &ca = get_avatar().activity;
                 const bool asleep = !ca && mp_char_is_asleep( get_avatar() );
-                mp_log( "[cdda-mp] CLI-GRANT: moves=" + std::to_string( srv_moves ) +
+                mp_log_sampled( "CLI-GRANT", ca ? ca.id().str() : asleep ? MP_ASLEEP_ACT : "none", 10, "[cdda-mp] CLI-GRANT: moves=" + std::to_string( srv_moves ) +
                         " seq=" + std::to_string( grant_seq ) +
                         " act=" + ( ca ? ca.id().str() : asleep ? MP_ASLEEP_ACT : "none" ) +
                         " override_ack=" + std::to_string( ( ca || asleep ) && g_client_waiting_for_ack ) );
@@ -16287,7 +16475,7 @@ static bool apply_one_state_message( const std::string &msg )
                                     "recv path despite mp_cast_finishing (should not happen)" );
                         }
                     }
-                    mp_log( "[cdda-mp] CLI-GRANT-ACT-ACK: id=" + pre_tick_id
+                    mp_log_sampled( "CLI-GRANT-ACT-ACK", pre_tick_id + ( get_avatar().activity ? "" : "|ended" ), 10, "[cdda-mp] CLI-GRANT-ACT-ACK: id=" + pre_tick_id
                             + " moves " + std::to_string( pre_tick_moves ) + "->" + std::to_string( post_tick_moves )
                             + " moves_left " + std::to_string( pre_tick_moves_left ) + "->" + std::to_string( post_tick_moves_left )
                             + " ended=" + std::to_string( !get_avatar().activity )
@@ -16682,12 +16870,12 @@ void client_process_incoming()
         const std::string moves_str = ( m_pos != std::string::npos )
                                       ? msg.substr( m_pos, 16 ) : "no-moves";
         const int pre_apply_moves = get_avatar().get_moves();
-        mp_log( "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) + ": " + moves_str +
+        mp_log_every( "CLI-RECV", 10, "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) + ": " + moves_str +
                 " pre_apply_moves=" + std::to_string( pre_apply_moves ) );
         apply_one_state_message( msg );
         const int post_apply_moves = get_avatar().get_moves();
         if( post_apply_moves != pre_apply_moves ) {
-            mp_log( "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) +
+            mp_log_every( "CLI-RECV-moves", 10, "[cdda-mp] CLI-RECV#" + std::to_string( recv_count ) +
                     ": moves changed " + std::to_string( pre_apply_moves ) + "->" +
                     std::to_string( post_apply_moves ) +
                     " autosmash=" + std::to_string( g_autosmash_pending ) );
@@ -16704,9 +16892,11 @@ void client_process_incoming()
                                 std::to_string( get_avatar().get_moves() ) +
                                 " ack=" + std::to_string( g_client_waiting_for_ack ) +
                                 " last_seq=" + std::to_string( g_client_last_grant_seq );
+        // last_seq changes every grant, so the dedupe alone still wrote one line
+        // per turn (4.1% of a client log): add a 10 s sample on top.
         static std::string last;
         if( msg != last ) {
-            mp_log( msg );
+            mp_log_every( "CLI-DRAIN-END", 10, msg );
             last = msg;
         }
     }
@@ -18911,7 +19101,7 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
         // 10ms threshold matches the existing TILE-SCAN line so the two pair up per scan.
         if( total_us >= 10000 && n_tiles > 0 ) {
             ns_diff = total_us * 1000 - ( ns_coord + ns_terfurn + ns_items + ns_rest );
-            mp_log( "[cdda-mp] TILE-SCAN-SPLIT: total=" + std::to_string( total_us / 1000 ) +
+            mp_log_every( "TILE-SCAN-SPLIT", 10, "[cdda-mp] TILE-SCAN-SPLIT: total=" + std::to_string( total_us / 1000 ) +
                     "ms tiles=" + std::to_string( n_tiles ) +
                     " us_per_tile=" + std::to_string( total_us / n_tiles ) +
                     " | coord=" + std::to_string( ns_coord / 1000 ) +
@@ -18924,7 +19114,7 @@ static std::string build_tile_changes( const tripoint_abs_ms &center, int radius
         }
     }
     if( dbg_delta_items > 0 || dbg_delta_fields > 0 || dbg_delta_terfurn > 0 ) {
-        mp_log( "[cdda-mp] tile_delta: terfurn=" + std::to_string( dbg_delta_terfurn ) +
+        mp_log_every( "tile_delta", 10, "[cdda-mp] tile_delta: terfurn=" + std::to_string( dbg_delta_terfurn ) +
                 " items=" + std::to_string( dbg_delta_items ) +
                 " fields=" + std::to_string( dbg_delta_fields ) + " tiles changed" );
     }
@@ -19470,7 +19660,10 @@ static void apply_tile_changes( JsonObject &jo )
             // tile, defer the replace until it closes — see mp_ui_item_ref_guard
             // in mp_gamestate.h.
             std::vector<item> new_items;
-            std::string applied;
+            std::string applied;        // every type id: the change check below
+            std::string applied_head;   // the first few: what the log line shows
+            int applied_n = 0;
+            constexpr int APPLIED_SHOWN = 8;
             for( const JsonValue &iv : to.get_array( "items" ) ) {
                 try {
                     item new_item;
@@ -19479,17 +19672,29 @@ static void apply_tile_changes( JsonObject &jo )
                     new_item.deserialize( io );
                     if( !new_item.typeId().is_empty() && new_item.typeId().is_valid() ) {
                         applied += new_item.typeId().str() + ' ';
+                        if( applied_n < APPLIED_SHOWN ) {
+                            applied_head += new_item.typeId().str() + ' ';
+                        }
+                        ++applied_n;
                         // DIAGNOSTIC (2026-10-24, host grenade on the client): a live
                         // item arriving here is a working copy that counts down in this
-                        // world too.  Pairs with EXPLOSION (mp_world_events.cpp).
+                        // world too.  Pairs with EXPLOSION (mp_world_events.cpp).  Per
+                        // tile + type, on change of whether it has a countdown, else a
+                        // 60 s sample: a re-sent pile with a lamp in it logged every
+                        // turn (7.3% of Meldonyi's client log).
                         if( new_item.active ) {
-                            mp_log( std::string( "[cdda-mp] SYNC-LIVE-ITEM: side=" ) +
-                                    ( is_client_mode() ? "client" : "host" ) + " " +
-                                    new_item.typeId().str() + " @ " + std::to_string( abs.x() ) + "," +
-                                    std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
-                                    " countdown_in=" + ( new_item.countdown_point == calendar::turn_max ?
-                                            std::string( "none" ) :
-                                            std::to_string( to_turns<int>( new_item.countdown_point - calendar::turn ) ) + "t" ) );
+                            const std::string where = std::to_string( abs.x() ) + "," +
+                                                      std::to_string( abs.y() ) + "," +
+                                                      std::to_string( abs.z() );
+                            const bool counting = new_item.countdown_point != calendar::turn_max;
+                            mp_log_sampled( "SYNC-LIVE-ITEM@" + where + ":" + new_item.typeId().str(),
+                                            counting ? "countdown" : "none", 60,
+                                            std::string( "[cdda-mp] SYNC-LIVE-ITEM: side=" ) +
+                                            ( is_client_mode() ? "client" : "host" ) + " " +
+                                            new_item.typeId().str() + " @ " + where +
+                                            " countdown_in=" + ( counting ?
+                                                    std::to_string( to_turns<int>( new_item.countdown_point - calendar::turn ) ) + "t" :
+                                                    std::string( "none" ) ) );
                         }
                         mp_disarm_synced_copy( new_item, "ground" );
                         new_items.push_back( std::move( new_item ) );
@@ -19520,11 +19725,23 @@ static void apply_tile_changes( JsonObject &jo )
             } else {
                 do_replace();
             }
+            // Count + the first few names (full list in verbose mode), and an
+            // identical re-send of the same pile is suppressed — its "(+N
+            // suppressed)" is how many times it came again.  The full list on every
+            // re-send was 89% (1,093 MB) of Meldonyi's 1.2 GB client log: one
+            // 3,455-item stash, 18,719 times (LOG AUDIT 2026-10-27).
             if( !applied.empty() ) {
-                mp_log( "[cdda-mp] apply_tile_changes: set items @ " +
-                        std::to_string( abs.x() ) + "," +
-                        std::to_string( abs.y() ) + "," +
-                        std::to_string( abs.z() ) + " items=[" + applied + "]" );
+                const std::string where = std::to_string( abs.x() ) + "," +
+                                          std::to_string( abs.y() ) + "," +
+                                          std::to_string( abs.z() );
+                const std::string shown = mp_log_verbose() ? applied :
+                                          applied_head + ( applied_n > APPLIED_SHOWN ?
+                                                  "... (+" + std::to_string( applied_n - APPLIED_SHOWN ) + " more)" : "" );
+                mp_log_sampled( "apply_tile_changes@" + where,
+                                std::to_string( applied_n ) + "#" +
+                                std::to_string( std::hash<std::string> {}( applied ) ), 60,
+                                "[cdda-mp] apply_tile_changes: set items @ " + where +
+                                " n=" + std::to_string( applied_n ) + " items=[" + shown + "]" );
             }
         }
 
@@ -19643,7 +19860,7 @@ static void apply_tile_changes( JsonObject &jo )
         for( const auto &[t, n] : host_field_counts ) {
             fc += " " + t + " x" + std::to_string( n );
         }
-        mp_log( "[cdda-mp] FIELD-FROM-HOST:" + fc );
+        mp_log_sampled( "FIELD-FROM-HOST", fc, 60, "[cdda-mp] FIELD-FROM-HOST:" + fc );
     }
     if( ter_seen > 0 ) {
         mp_log( "[cdda-mp] apply_tile_changes: batch ter_seen=" + std::to_string( ter_seen ) +
@@ -21656,7 +21873,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
         const long long d = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - srp_t0 ).count();
         if( d >= 10 ) {
-            mp_log( "[cdda-mp] TILE-SCAN: build_tile_changes(r=20) took " +
+            mp_log_every( "TILE-SCAN", 10, "[cdda-mp] TILE-SCAN: build_tile_changes(r=20) took " +
                     std::to_string( d ) + "ms bytes=" + std::to_string( tile_changes.size() ) );
         }
     }
@@ -22382,7 +22599,7 @@ std::string serialize_remote_player_state( bool skip_tile_scan )
         };
         const long long srp_total = ms( srp_all_t0, srp_t_end );
         if( srp_total >= 20 ) {
-            mp_log( "[cdda-mp] SRP-BREAKDOWN: total=" + std::to_string( srp_total ) +
+            mp_log_every( "SRP-BREAKDOWN", 10, "[cdda-mp] SRP-BREAKDOWN: total=" + std::to_string( srp_total ) +
                     "ms viewport=" + std::to_string( ms( srp_all_t0, srp_t_viewport ) ) +
                     "ms monsters=" + std::to_string( ms( srp_t_viewport, srp_t_monsters ) ) +
                     "ms tile_scans_all=" + std::to_string( ms( srp_t0, srp_t_scans ) ) +
