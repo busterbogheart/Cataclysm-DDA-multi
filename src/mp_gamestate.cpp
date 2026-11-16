@@ -6677,6 +6677,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // The client's reality bubble moved and it dropped its copies of whatever SP
+    // unloaded or restored (mp_client_heal_monsters_after_shift).  Clear the delta
+    // cache so the next broadcast re-sends every monster in range, exactly as the
+    // periodic keyframe does.
+    if( msg.find( "\"type\":\"mon_keyframe_request\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] HOST-MON-KEYFRAME: client's bubble shifted, re-sending all " +
+                std::to_string( g_server_mon_last_sent.size() ) + " cached monsters next broadcast" );
+        g_server_mon_last_sent.clear();
+        return;
+    }
+
     // Client charmed, polymorphed or banished a synced monster.  Out-of-band
     // for the same reason as client_summon, and drained before the next grant
     // so the next broadcast already carries the change.  Body in mp_magic.cpp.
@@ -13777,6 +13788,7 @@ void process_mp_events()
                || data.find( "\"type\":\"chat\"" ) != std::string::npos
                || data.find( "\"type\":\"templates_list\"" ) != std::string::npos
                || data.find( "\"type\":\"resync_request\"" ) != std::string::npos
+               || data.find( "\"type\":\"mon_keyframe_request\"" ) != std::string::npos
                || data.find( "\"type\":\"heartbeat\"" ) != std::string::npos
                || data.find( "\"type\":\"peer_modal\"" ) != std::string::npos
                || data.find( "\"client_tile_changes\":" ) != std::string::npos;
@@ -14070,6 +14082,57 @@ void mp_log_step_source( const item &craft, const item_location &loc,
             " tools_to_continue=" + std::to_string( craft.has_tools_to_continue() ) );
 }
 
+// Client, right after an update_map that MOVED the reality bubble.  SP unloads the
+// monsters the bubble leaves into its off-bubble overmap storage and restores the
+// stored copies when the bubble comes back, mp_net_id included.  That is right for
+// SP's own monsters, but in co-op every monster with an mp_net_id belongs to the
+// host, and only the host's broadcast may place one.  Measured (Meldonyi's 10-27
+// client log): every non-empty MON-DUP-NID landed in the same ms as a TELE-MON-GAIN
+// (a restore next to the replacement the host had already sent), and two turkeys
+// stayed doubled ~5 h; a TELE-MON-DROP'd monster stayed invisible 48 s to 2 min,
+// because the host's delta cache still believed the client had it (GH#23 B, the
+// "second zombie on the corpse" in nyonine's logs).  So after every shift:
+//  1. remove each restored copy quietly (no corpse, no message: the monster itself
+//     is alive on the host and is re-sent next), and
+//  2. ask the host for a full monster snapshot (mon_keyframe_request), which places
+//     everything it has in range, including monsters that only just came into the
+//     client's bounds.
+// The MON-GHOST tombstone cleanup in apply_monster_sync stays as the backstop.
+static void mp_client_heal_monsters_after_shift( const tripoint_abs_sm &sub_before,
+        const std::unordered_set<const monster *> &synced_before )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    const tripoint_abs_sm sub_after = get_map().get_abs_sub();
+    if( sub_after == sub_before ) {
+        return;   // the bubble didn't move: nothing was unloaded or restored
+    }
+    std::vector<monster *> restored;
+    for( const auto &p : get_creature_tracker().get_monsters_list() ) {
+        if( p && p->mp_net_id != 0 && !p->is_dead() && !synced_before.count( p.get() ) ) {
+            restored.push_back( p.get() );
+        }
+    }
+    std::string removed_log;
+    for( monster *mon : restored ) {
+        removed_log += mon->type->id.str() + "(nid=" + std::to_string( mon->mp_net_id ) +
+                       " @" + mon->pos_abs().to_string() + ") ";
+        const auto it = g_net_id_map.find( mon->mp_net_id );
+        if( it != g_net_id_map.end() && it->second == mon ) {
+            g_net_id_map.erase( it );
+        }
+        mp_remove_zombie( *mon, "restored_copy" );
+    }
+    if( !restored.empty() ) {
+        mp_log( "[cdda-mp] MON-RESTORED-REMOVED: " + std::to_string( restored.size() ) +
+                " host-owned copies restored from SP storage, removed [" + removed_log + "]" );
+    }
+    mp_log( "[cdda-mp] MON-KEYFRAME-REQ: bubble shifted " + sub_before.to_string() + " -> " +
+            sub_after.to_string() + ", asking the host for a full monster snapshot" );
+    client_send( "{\"type\":\"mon_keyframe_request\"}" );
+}
+
 // Move the client avatar to an absolute position, loading the map chunk if needed.
 static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
 {
@@ -14158,10 +14221,18 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         // shift back (16:52:41) restored the old copy beside it (MON-DUP-NID).
         int mons_before = 0;
         std::unordered_map<uint32_t, int> nids_before;
+        // For mp_client_heal_monsters_after_shift: which synced monsters existed
+        // before the shift.  keep_alive holds them so a monster the shift frees
+        // can't have its address reused by a restored copy in the same call.
+        std::unordered_set<const monster *> synced_before;
+        std::vector<shared_ptr_fast<monster>> keep_alive;
+        const tripoint_abs_sm sub_before = m.get_abs_sub();
         for( const auto &p : get_creature_tracker().get_monsters_list() ) {
             if( p && p->mp_net_id != 0 && !p->is_dead() ) {
                 ++mons_before;
                 ++nids_before[p->mp_net_id];
+                synced_before.insert( p.get() );
+                keep_alive.push_back( p );
             }
         }
         if( new_pos.z() != u.pos_bub().z() ) {
@@ -14211,6 +14282,7 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
             mp_log( "[cdda-mp] TELE-MON-GAIN: update_map brought back synced copies [" + gained +
                     "] (x2+ = now a duplicate)" );
         }
+        mp_client_heal_monsters_after_shift( sub_before, synced_before );
     }
 }
 
