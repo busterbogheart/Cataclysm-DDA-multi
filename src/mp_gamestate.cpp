@@ -14762,8 +14762,16 @@ static bool apply_one_state_message( const std::string &msg )
     // disconnect handler takes over from there.
     if( msg.find( "\"type\":\"session_ending\"" ) != std::string::npos ) {
         mp_log( "[cdda-mp] SESSION-END RECV: host is leaving" );
-        // Intentional end — don't auto-reconnect when the socket closes next.
-        client_disable_reconnect();
+        // Intentional end — don't auto-reconnect when the socket closes next.  The
+        // io thread already did that the moment this packet arrived (g_rc_enabled,
+        // "RECONNECT: disabled (host goodbye/session_ending)").  Do NOT call
+        // client_disable_reconnect() here: it also clears g_client_joined, so the
+        // host's EOF ~300 ms later took the PRE-JOIN branch ("link lost during the
+        // pre-JOIN window (character creation)") and never pushed connected:false —
+        // the client sat in a dead world forever after every clean host quit
+        // (measured 2026-11-16 17:33:13).  Left joined, the EOF takes the
+        // "reconnect disabled" branch → connected:false → remove_client_host_npc +
+        // "Lost connection to server."
         add_msg( m_warning, _( "Your partner is leaving.  The session will end shortly." ) );
         return true;
     }
