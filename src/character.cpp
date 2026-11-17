@@ -1822,7 +1822,7 @@ void Character::on_try_dodge()
 {
     ret_val<void> can_dodge = can_try_dodge();
     if( !can_dodge.success() ) {
-        add_msg( m_bad, can_dodge.c_str() );
+        add_msg_player_or_npc( m_bad, can_dodge.str(), can_dodge.str() );
         return;
     }
 
