@@ -13,34 +13,34 @@ msgstr ""
 
 #: src/activity_actor.cpp:780
 msgid "Autodrive is disabled in multiplayer."
-msgstr ""
+msgstr "Автопілот вимкнено в мультиплеєрі."
 
 #: src/debug_menu.cpp:1063
 msgid "Spawn a random item"
-msgstr ""
+msgstr "Створити випадковий предмет"
 
 #: src/debug_menu.cpp:1069 src/debug_menu.cpp:4321
 msgid "Spawn random monster"
-msgstr ""
+msgstr "Створити випадкового монстра"
 
 #: src/debug_menu.cpp:4278
 msgid "Spawn random item"
-msgstr ""
+msgstr "Створити випадковий предмет"
 
 #: src/debug_menu.cpp:4298
 #, c-format
 msgid "Spawned random item: %s"
-msgstr ""
+msgstr "Створено випадковий предмет: %s"
 
 #: src/debug_menu.cpp:4340
 #, c-format
 msgid "Spawned random monster: %s"
-msgstr ""
+msgstr "Створено випадкового монстра: %s"
 
 #: src/debug_menu.cpp:4342
 #, c-format
 msgid "Could not spawn %s here."
-msgstr ""
+msgstr "Не вдалося створити тут %s."
 
 #. ~ this string is for the progress display: %1$s is the activity verb and
 #. %2$d is the percent (number) complete.  %% is a literal percent sign.
@@ -51,44 +51,44 @@ msgstr ""
 
 #: src/game.cpp:5368
 msgid "Tap on shoulder"
-msgstr ""
+msgstr "Поплескати по плечу"
 
 #: src/game.cpp:5385
 msgid "Help with task"
-msgstr ""
+msgstr "Допомогти із завданням"
 
 #: src/game.cpp:5389
 msgid "Pass item"
-msgstr ""
+msgstr "Передати предмет"
 
 #: src/game.cpp:5390
 msgid "High five"
-msgstr ""
+msgstr "Дай п'ять"
 
 #: src/game.cpp:5458
 #, c-format
 msgid "You push %s."
-msgstr ""
+msgstr "Ви штовхаєте %s."
 
 #: src/game.cpp:5485 src/game.cpp:5491
 #, c-format
 msgid "You tap %s on the shoulder."
-msgstr ""
+msgstr "Ти торкаєшся плеча %s."
 
 #: src/game.cpp:5517
 #, c-format
 msgid "You join %s to help with their task."
-msgstr ""
+msgstr "Ти приєднуєшся до %s, щоб допомогти з його завданням."
 
 #: src/handle_action.cpp:3141
 #, c-format
 msgid "Now dropping items, %s to interrupt."
-msgstr ""
+msgstr "Скидання предметів, %s для переривання."
 
 #: src/handle_action.cpp:3207
 #, c-format
 msgid "Now consuming, %s to interrupt."
-msgstr ""
+msgstr "Зараз споживаю, %s щоб перервати."
 
 #: src/handle_action.cpp:4109
 msgid ""
@@ -96,24 +96,29 @@ msgid ""
 "host will also save the shared world when you leave, so your progress there "
 "stays in sync."
 msgstr ""
+"Зберегти й від'єднатися?  Твій персонаж збережений локально до наступного "
+"разу.  Хост також збереже спільний світ, коли ти підеш, тож твій прогрес там "
+"залишиться синхронізованим."
 
 #: src/handle_action.cpp:4123
 msgid ""
 "Save and quit?  This is the authoritative co-op save — the shared world will "
 "be saved.  Your partner will be disconnected."
 msgstr ""
+"Зберегти й вийти?  Це авторитетне збереження кооперативу — спільний світ "
+"буде збережено.  Твого партнера буде відключено."
 
 #: src/handle_action.cpp:4444
 msgid "Waiting for partner — can't do that yet."
-msgstr ""
+msgstr "Очікування напарника — поки що не можна."
 
 #: src/item_location.cpp:1177
 msgid "containers are nested too deeply"
-msgstr ""
+msgstr "контейнери вкладені занадто глибоко"
 
 #: src/main_menu.cpp:203
 msgid "Donate"
-msgstr ""
+msgstr "Пожертвувати"
 
 #: src/main_menu.cpp:491
 #, c-format
@@ -126,79 +131,86 @@ msgid ""
 "\n"
 "Thanks for playing!"
 msgstr ""
+"CDDA CO-OP — безкоштовний фанатський проєкт.\n"
+"\n"
+"Будь ласка, розгляньте пожертву на підтримку майбутніх збірок:\n"
+"\n"
+"    %s\n"
+"\n"
+"Дякуємо за гру!"
 
 #: src/main_menu.cpp:502
 msgctxt "Main Menu"
 msgid "C<O|o>-OP"
-msgstr ""
+msgstr "К<O|o>-ОП"
 
 #: src/main_menu.cpp:505
 msgctxt "Main Menu"
 msgid "T<u|U>torial"
-msgstr ""
+msgstr "<u|U> Навчання"
 
 #: src/main_menu.cpp:509
 msgctxt "Main Menu"
 msgid "<D|d>onate"
-msgstr ""
+msgstr "<D|d>онат"
 
 #: src/main_menu.cpp:542
 msgctxt "Main Menu|Co-op"
 msgid "<H|h>ost a session"
-msgstr ""
+msgstr "<H|h> Створити сесію"
 
 #: src/main_menu.cpp:543
 msgctxt "Main Menu|Co-op"
 msgid "<J|j>oin a session"
-msgstr ""
+msgstr "<J|j> Приєднатися до сесії"
 
 #: src/main_menu.cpp:1015
 msgid "Co-op: choose character"
-msgstr ""
+msgstr "Кооператив: обрати персонажа"
 
 #: src/main_menu.cpp:1016
 msgid "Custom Character"
-msgstr ""
+msgstr "Власний персонаж"
 
 #: src/main_menu.cpp:1017
 msgid "Preset Character"
-msgstr ""
+msgstr "Готовий персонаж"
 
 #: src/main_menu.cpp:1018
 msgid "Random Character"
-msgstr ""
+msgstr "Випадковий персонаж"
 
 #: src/main_menu.cpp:1041
 msgid "Co-op: host a session"
-msgstr ""
+msgstr "Кооператив: створити сесію"
 
 #: src/main_menu.cpp:1042 src/main_menu.cpp:1219
 msgid "New character"
-msgstr ""
+msgstr "Новий персонаж"
 
 #: src/main_menu.cpp:1043
 msgid "Load saved world"
-msgstr ""
+msgstr "Завантажити збережений світ"
 
 #: src/main_menu.cpp:1044
 msgid "Cancel co-op"
-msgstr ""
+msgstr "Скасувати кооператив"
 
 #: src/main_menu.cpp:1054
 msgid "Co-op: world for new character"
-msgstr ""
+msgstr "Кооператив: світ для нового персонажа"
 
 #: src/main_menu.cpp:1056
 msgid "No existing worlds yet — create a new one."
-msgstr ""
+msgstr "Наразі немає світів — створи новий."
 
 #: src/main_menu.cpp:1058
 msgid "Use existing world"
-msgstr ""
+msgstr "Використати наявний світ"
 
 #: src/main_menu.cpp:1059
 msgid "Create new world"
-msgstr ""
+msgstr "Створити новий світ"
 
 #: src/main_menu.cpp:1074
 #, c-format
@@ -207,6 +219,9 @@ msgid ""
 "\n"
 "Continue to character creation?"
 msgstr ""
+"Світ «%s» створено.\n"
+"\n"
+"Перейти до створення персонажа?"
 
 #: src/main_menu.cpp:1108
 msgid ""
@@ -214,14 +229,17 @@ msgid ""
 "\n"
 "Create one from Host > New character, or from the main menu under World."
 msgstr ""
+"Немає світів для завантаження.\n"
+"\n"
+"Створи один через Хост > Новий персонаж або з головного меню під «Світ»."
 
 #: src/main_menu.cpp:1117
 msgid "Co-op: load saved world"
-msgstr ""
+msgstr "Кооператив: завантажити збережений світ"
 
 #: src/main_menu.cpp:1142
 msgid "This world can't be hosted in co-op:"
-msgstr ""
+msgstr "Цей світ не можна розмістити в кооперативі:"
 
 #: src/main_menu.cpp:1146
 msgid ""
@@ -229,10 +247,13 @@ msgid ""
 "\n"
 "Pick a different world or create a new one."
 msgstr ""
+"\n"
+"\n"
+"Вибери інший світ або створи новий."
 
 #: src/main_menu.cpp:1151
 msgid "This world may not work fully in co-op:"
-msgstr ""
+msgstr "Цей світ може не повністю працювати в кооперативі:"
 
 #: src/main_menu.cpp:1155
 msgid ""
@@ -240,6 +261,9 @@ msgid ""
 "\n"
 "Host it anyway?"
 msgstr ""
+"\n"
+"\n"
+"Все одно розмістити?"
 
 #: src/main_menu.cpp:1197
 #, c-format
@@ -247,6 +271,8 @@ msgid ""
 "Connected to world \"%s\".\n"
 "Press a key to continue."
 msgstr ""
+"Підключено до світу «%s».\n"
+"Натисни клавішу, щоб продовжити."
 
 #. ~ %1$s is the host's name (player name), %2$s is the world name
 #: src/main_menu.cpp:1201
@@ -256,26 +282,29 @@ msgid ""
 "World: \"%2$s\"\n"
 "Press a key to continue."
 msgstr ""
+"Підключено до гри %1$s.\n"
+"Світ: «%2$s»\n"
+"Натисни клавішу, щоб продовжити."
 
 #: src/main_menu.cpp:1208 src/mp_gamestate.cpp:8465
 msgid "Co-op: join a session"
-msgstr ""
+msgstr "Кооператив: приєднатися до сесії"
 
 #. ~ %s is the world's name
 #: src/main_menu.cpp:1211
 #, c-format
 msgid "Joining \"%s\""
-msgstr ""
+msgstr "Приєднується \"%s\""
 
 #. ~ %1$s is the world name, %2$s is the host's player name
 #: src/main_menu.cpp:1214
 #, c-format
 msgid "Joining \"%1$s\" — %2$s's game"
-msgstr ""
+msgstr "Приєднання до «%1$s» — гра %2$s"
 
 #: src/main_menu.cpp:1221
 msgid "Load existing character"
-msgstr ""
+msgstr "Завантажити наявного персонажа"
 
 #. ~ %1$s is the passenger, %2$s is the player trying to get on the vehicle
 #: src/map.cpp:1691
@@ -286,33 +315,33 @@ msgstr ""
 #: src/mondeath.cpp:67
 #, c-format
 msgid "You kill the %s!"
-msgstr ""
+msgstr "Ви вбиваєте %s!"
 
 #. ~ this string for killing monsters: %1$s is the killer, %2$s is the monster
 #. name
 #: src/mondeath.cpp:73
 #, c-format
 msgid "%1$s kills the %2$s!"
-msgstr ""
+msgstr "%1$s вбиває %2$s!"
 
 #: src/mp_gamestate.cpp:580
 #, c-format
 msgid "port %d"
-msgstr ""
+msgstr "порт %d"
 
 #: src/mp_gamestate.cpp:1016
 msgid "Partner"
-msgstr ""
+msgstr "Партнер"
 
 #: src/mp_gamestate.cpp:1066
 #, c-format
 msgid "%1$s begins %2$s."
-msgstr ""
+msgstr "%1$s починає %2$s."
 
 #: src/mp_gamestate.cpp:1071
 #, c-format
 msgid "%1$s has finished %2$s."
-msgstr ""
+msgstr "%1$s закінчує %2$s."
 
 #: src/mp_gamestate.cpp:1273
 msgid ""
@@ -323,11 +352,11 @@ msgstr ""
 #: src/mp_gamestate.cpp:1275
 #, c-format
 msgid "Partner not connected   %s"
-msgstr ""
+msgstr "Партнер не підключений   %s"
 
 #: src/mp_gamestate.cpp:1290
 msgid "Reconnecting to host…"
-msgstr ""
+msgstr "Повторне під'єднання до хоста…"
 
 #. ~ Label on the co-op panel's kill tally, drawn as "kills 3\u00b74"
 #. ~ (your count, then your partner's).  KEEP THE TRAILING SPACE — it
@@ -335,82 +364,82 @@ msgstr ""
 #. ~ immediately after it in a different color.
 #: src/mp_gamestate.cpp:1468
 msgid "kills "
-msgstr ""
+msgstr "вбиває "
 
 #: src/mp_gamestate.cpp:1738
 msgid "No co-op partner connected."
-msgstr ""
+msgstr "Партнера по кооперативу не підключено."
 
 #: src/mp_gamestate.cpp:1742
 msgid "Co-op chat: "
-msgstr ""
+msgstr "Чат кооперативу: "
 
 #: src/mp_gamestate.cpp:1783
 msgid "Join IP address copied to clipboard."
-msgstr ""
+msgstr "IP-адресу для приєднання скопійовано до буфера обміну."
 
 #: src/mp_gamestate.cpp:1784
 msgid "Couldn't copy to clipboard."
-msgstr ""
+msgstr "Не вдалося скопіювати до буфера обміну."
 
 #: src/mp_gamestate.cpp:1788
 msgid "Clipboard copy isn't available in this build."
-msgstr ""
+msgstr "Копіювання в буфер обміну недоступне в цій збірці."
 
 #: src/mp_gamestate.cpp:1804
 msgid "Only the host has a join address to share."
-msgstr ""
+msgstr "Лише хост має адресу приєднання, якою можна поділитися."
 
 #: src/mp_gamestate.cpp:1808
 msgid "Your partner is already connected."
-msgstr ""
+msgstr "Твій партнер уже під'єднаний."
 
 #: src/mp_gamestate.cpp:2819
 msgid "Your partner disconnected."
-msgstr ""
+msgstr "Твій партнер відключився."
 
 #: src/mp_gamestate.cpp:3644
 msgid "Your partner is leaving.  The game has been saved."
-msgstr ""
+msgstr "Твій напарник іде.  Гру збережено."
 
 #: src/mp_gamestate.cpp:3655
 msgid "Your partner saved — the shared world was saved too."
-msgstr ""
+msgstr "Твій напарник зберігся — спільний світ теж збережено."
 
 #: src/mp_gamestate.cpp:3716
 #, c-format
 msgid "%s reconnected."
-msgstr ""
+msgstr "%s повторно під'єднано."
 
 #: src/mp_gamestate.cpp:3720
 #, c-format
 msgid "%s has connected and joined the game."
-msgstr ""
+msgstr "%s під'єднався й приєднався до гри."
 
 #: src/mp_gamestate.cpp:4450 src/mp_gamestate.cpp:9710
 #, c-format
 msgid "%s swaps places with you."
-msgstr ""
+msgstr "%s міняється з вами місцями."
 
 #: src/mp_gamestate.cpp:4475 src/mp_gamestate.cpp:9713
 #, c-format
 msgid "%s pushes you out of the way."
-msgstr ""
+msgstr "%s відштовхує тебе з дороги."
 
 #: src/mp_gamestate.cpp:4477
 #, c-format
 msgid "%s tries to push you but you have nowhere to go."
-msgstr ""
+msgstr "%s намагається штовхнути тебе, але тобі нікуди діватися."
 
 #: src/mp_gamestate.cpp:4499 src/mp_gamestate.cpp:9692
 #, c-format
 msgid "%s taps you on the shoulder, snapping you out of your wait."
-msgstr ""
+msgstr "%s торкається твого плеча, виводячи тебе з очікування."
 
 #: src/mp_gamestate.cpp:4502
 #, c-format
 msgid "%s taps you on the shoulder."
-msgstr ""
+msgstr "%s торкається твого плеча."
 
 #: src/mp_gamestate.cpp:4683
 #, c-format
@@ -423,126 +452,126 @@ msgstr ""
 #: src/mp_gamestate.cpp:4703
 #, c-format
 msgid "%1$s smashes the %2$s to pieces!"
-msgstr ""
+msgstr "%1$s розбиває %2$s на шматки!"
 
 #. ~ %1$s is the player smashing, %2$s is the monster name
 #: src/mp_gamestate.cpp:4707
 #, c-format
 msgid "%1$s strikes the %2$s."
-msgstr ""
+msgstr "%1$s б'є %2$s."
 
 #. ~ %1$s is the player smashing, %2$s is the monster name
 #: src/mp_gamestate.cpp:4711
 #, c-format
 msgid "%1$s can't damage the %2$s."
-msgstr ""
+msgstr "%1$s не може пошкодити %2$s."
 
 #: src/mp_gamestate.cpp:4804
 #, c-format
 msgid "%s lets go of the controls."
-msgstr ""
+msgstr "%s відпускає органи керування."
 
 #. ~ %1$s is the player, %2$s is the vehicle name
 #: src/mp_gamestate.cpp:4847
 #, c-format
 msgid "%1$s takes control of the %2$s."
-msgstr ""
+msgstr "%1$s бере під контроль %2$s."
 
 #. ~ %1$s is the player, %2$s is the vehicle name
 #: src/mp_gamestate.cpp:4858
 #, c-format
 msgid "%1$s can't start the %2$s's engine."
-msgstr ""
+msgstr "%1$s не може завести двигун %2$s."
 
 #. ~ %s is the vehicle name
 #: src/mp_gamestate.cpp:4861
 #, c-format
 msgid "You can't start the %s's engine."
-msgstr ""
+msgstr "Ти не можеш завести двигун %s."
 
 #: src/mp_gamestate.cpp:4865
 #, c-format
 msgid "%s can't drive from here — no controls."
-msgstr ""
+msgstr "%s не може їхати звідси — немає керування."
 
 #: src/mp_gamestate.cpp:4866
 msgid "You can't drive from here — no controls."
-msgstr ""
+msgstr "Ти не можеш їхати звідси — немає керування."
 
 #: src/mp_gamestate.cpp:4870
 #, c-format
 msgid "No vehicle here for %s to control."
-msgstr ""
+msgstr "Тут немає транспорту, яким %s міг би керувати."
 
 #: src/mp_gamestate.cpp:4871
 msgid "No vehicle here to control."
-msgstr ""
+msgstr "Тут немає транспорту для керування."
 
 #: src/mp_gamestate.cpp:4984
 #, c-format
 msgid "%s pulls a handbrake."
-msgstr ""
+msgstr "%s тягне ручне гальмо."
 
 #. ~ %1$s is the player, %2$s is the vehicle name
 #: src/mp_gamestate.cpp:4991
 #, c-format
 msgid "%1$s loses control of %2$s."
-msgstr ""
+msgstr "%1$s втрачає контроль над %2$s."
 
 #: src/mp_gamestate.cpp:5024
 #, c-format
 msgid "%s turns off the engine and lets go of the controls."
-msgstr ""
+msgstr "%s вимикає двигун і відпускає органи керування."
 
 #: src/mp_gamestate.cpp:5044
 #, c-format
 msgid "%s turns off the engine."
-msgstr ""
+msgstr "%s глушить двигун."
 
 #: src/mp_gamestate.cpp:5048
 #, c-format
 msgid "%s starts the engine."
-msgstr ""
+msgstr "%s заводить двигун."
 
 #: src/mp_gamestate.cpp:5049
 msgid "You start the engine."
-msgstr ""
+msgstr "Ви заводите двигун."
 
 #: src/mp_gamestate.cpp:5110
 #, c-format
 msgid "%s triggers the alarm!"
-msgstr ""
+msgstr "%s вмикає тривогу!"
 
 #: src/mp_gamestate.cpp:5153
 #, c-format
 msgid "%s finds the wire that starts the engine."
-msgstr ""
+msgstr "%s знаходить дріт, що запускає двигун."
 
 #: src/mp_gamestate.cpp:5157
 #, c-format
 msgid "%s finds a wire that looks like the right one."
-msgstr ""
+msgstr "%s знаходить дріт, який схожий на потрібний."
 
 #: src/mp_gamestate.cpp:5244
 msgid "You stop what you were doing."
-msgstr ""
+msgstr "Ти кидаєш те, що робив."
 
 #: src/mp_gamestate.cpp:5247
 msgid "You start sorting loot into the zones."
-msgstr ""
+msgstr "Ти починаєш сортувати здобич по зонах."
 
 #: src/mp_gamestate.cpp:7199
 #, c-format
 msgid "You can no longer reach %s and stop treating them."
-msgstr ""
+msgstr "Ти більше не можеш дотягнутися до %s і припиняєш лікування."
 
 #: src/mp_gamestate.cpp:7200
 msgid "your patient"
-msgstr ""
+msgstr "ваш пацієнт"
 
 #: src/mp_gamestate.cpp:7482
 msgid "Your partner finished — you stop helping."
-msgstr ""
+msgstr "Твій напарник закінчив — ти припиняєш допомагати."
 
 #: src/mp_gamestate.cpp:7591
 msgid ""
@@ -550,16 +579,21 @@ msgid ""
 "partner's character.  (Your partner also keeps a local copy of their own "
 "character.)"
 msgstr ""
+"Збереження кооп-світу — авторитетне збереження спільного світу й персонажа "
+"твого напарника.  (Напарник також зберігає локальну копію власного "
+"персонажа.)"
 
 #: src/mp_gamestate.cpp:7594
 msgid ""
 "Saved your character locally.  Asking the host to save the shared world so "
 "you stay in sync…"
 msgstr ""
+"Твого персонажа збережено локально.  Просимо хоста зберегти спільний світ, "
+"щоб ви залишалися синхронізованими…"
 
 #: src/mp_gamestate.cpp:7798
 msgid "received template"
-msgstr ""
+msgstr "отриманий шаблон"
 
 #: src/mp_gamestate.cpp:7929
 msgid "Listen port (CDDA_MP_PORT env override active)"
@@ -567,17 +601,19 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:7930
 msgid "Listen port (default 8080)"
-msgstr ""
+msgstr "Порт прослуховування (типово 8080)"
 
 #. ~ %1$s is the wrong port, %2$s is original one entered
 #: src/mp_gamestate.cpp:7953
 #, c-format
 msgid "Invalid port \"%1$s\" — keeping %2$s."
-msgstr ""
+msgstr "Недійсний порт «%1$s» — залишаю %2$s."
 
 #: src/mp_gamestate.cpp:7965
 msgid "Hide join IP address on game screen? (was hidden last session)"
 msgstr ""
+"Приховувати IP-адресу приєднання на ігровому екрані? (було приховано в "
+"минулій сесії)"
 
 #: src/mp_gamestate.cpp:7966
 msgid ""
@@ -594,6 +630,12 @@ msgid ""
 "So finish world and character creation first.  Once you're in the world your "
 "partner can join."
 msgstr ""
+"Гра не відкриває порт, доки ти фактично не у світі, тож будь-хто, хто пробує "
+"раніше, отримує лише «з'єднання відхилено», навіть якщо твоя адреса й "
+"переадресація портів правильні.\n"
+"\n"
+"Тож спершу завершіть створення світу й персонажа.  Коли ти у світі, партнер "
+"може приєднатися."
 
 #: src/mp_gamestate.cpp:8130
 #, c-format
@@ -602,20 +644,23 @@ msgid ""
 "\n"
 "Install the missing mod(s), then rejoin."
 msgstr ""
+"Не вдається приєднатися: хост запустив моди, яких у тебе не встановлено:%s\n"
+"\n"
+"Встанови відсутні моди й приєднайся знову."
 
 #: src/mp_gamestate.cpp:8158
 msgid "Couldn't prepare the co-op world."
-msgstr ""
+msgstr "Не вдалося підготувати кооперативний світ."
 
 #: src/mp_gamestate.cpp:8180
 #, c-format
 msgid "Mod \"%s\" is not co-op compatible."
-msgstr ""
+msgstr "Мод «%s» несумісний із кооперативом."
 
 #: src/mp_gamestate.cpp:8184
 #, c-format
 msgid "Mod \"%s\" may break in co-op."
-msgstr ""
+msgstr "Мод «%s» може ламатися в кооперативі."
 
 #: src/mp_gamestate.cpp:8207
 msgid ""
@@ -624,32 +669,32 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:8302
 msgid "This world has co-op history"
-msgstr ""
+msgstr "Цей світ має кооперативну історію"
 
 #: src/mp_gamestate.cpp:8303
 msgid "Load as solo, or arm Host so your partner can Join?"
-msgstr ""
+msgstr "Завантажити соло чи запустити Хост, щоб твій напарник міг приєднатися?"
 
 #: src/mp_gamestate.cpp:8309
 msgid "Load solo"
-msgstr ""
+msgstr "Завантажити соло"
 
 #: src/mp_gamestate.cpp:8310
 msgid "Arm Host (co-op)"
-msgstr ""
+msgstr "Рука господаря (кооп)"
 
 #: src/mp_gamestate.cpp:8445
 #, c-format
 msgid "Invalid port in '%s'."
-msgstr ""
+msgstr "Недійсний порт у '%s'."
 
 #: src/mp_gamestate.cpp:8475
 msgid "Enter new address…"
-msgstr ""
+msgstr "Введіть нову адресу…"
 
 #: src/mp_gamestate.cpp:8490
 msgid "Host address  (e.g. 192.168.1.5  or  100.64.0.5:8080)"
-msgstr ""
+msgstr "Адреса хоста  (напр. 192.168.1.5  або  100.64.0.5:8080)"
 
 #. ~ %1$s is the host address, %2$d is the port number
 #: src/mp_gamestate.cpp:8523
@@ -671,34 +716,41 @@ msgstr ""
 #: src/mp_gamestate.cpp:8540
 #, c-format
 msgid "Could not connect to %1$s:%2$d."
-msgstr ""
+msgstr "Не вдалося з'єднатися з %1$s:%2$d."
 
 #: src/mp_gamestate.cpp:8557
 msgid "Save as (optional label, e.g. 'Intel Mac' — blank to skip)"
 msgstr ""
+"Зберегти як (необов'язкова мітка, напр. «Intel Mac» — залиш порожнім, щоб "
+"пропустити)"
 
 #: src/mp_gamestate.cpp:8569
 msgid "Co-op: armed — re-enter Host to pick world / character"
 msgstr ""
+"Кооп: підготовлено — повторно зайди як Хост, щоб вибрати світ / персонажа"
 
 #: src/mp_gamestate.cpp:8571
 #, c-format
 msgid "Co-op: hosting on port %d — waiting for partner"
-msgstr ""
+msgstr "Кооп: хостинг на порту %d — очікування напарника"
 
 #: src/mp_gamestate.cpp:8575
 msgid "Co-op: connected to host — re-enter Join to pick character"
 msgstr ""
+"Кооп: підключено до хоста — повторно зайди як Приєднатися, щоб вибрати "
+"персонажа"
 
 #: src/mp_gamestate.cpp:8618
 msgid "You and your partner are close enough again."
-msgstr ""
+msgstr "Ти й твій напарник знову досить близько."
 
 #: src/mp_gamestate.cpp:8623
 #, c-format
 msgid ""
 "Your partner is getting far away (%d tiles).  Max safe range is about 60."
 msgstr ""
+"Твій партнер віддаляється (%d клітинок).  Максимальна безпечна відстань "
+"близько 60."
 
 #: src/mp_gamestate.cpp:8628
 #, c-format
@@ -706,6 +758,8 @@ msgid ""
 "Your partner is near the edge of the simulated zone (%d tiles)!  Brake or "
 "turn around."
 msgstr ""
+"Твій партнер біля краю змодельованої зони (%d клітинок)!  Гальмуй або "
+"розвертайся."
 
 #: src/mp_gamestate.cpp:8633
 #, c-format
@@ -713,6 +767,8 @@ msgid ""
 "Your partner is past the edge (%d tiles)!  Vehicle physics will break — "
 "close the gap now."
 msgstr ""
+"Твій напарник за межею (%d клітинок)!  Фізика транспорту зламається — "
+"негайно скоротіть відстань."
 
 #: src/mp_gamestate.cpp:8748
 #, c-format
@@ -723,137 +779,145 @@ msgstr ""
 
 #: src/mp_gamestate.cpp:9338
 msgid "Your partner has died.  Waiting for them to respawn..."
-msgstr ""
+msgstr "Твій напарник помер.  Чекаємо, поки він відродиться..."
 
 #: src/mp_gamestate.cpp:9352
 msgid "Your partner is leaving.  The session will end shortly."
-msgstr ""
+msgstr "Твій напарник іде.  Сесія скоро завершиться."
 
 #: src/mp_gamestate.cpp:9359
 msgid ""
 "The host saved the shared world — your progress is in sync.  (Your inventory "
 "isn't fully mirrored to the host yet — known limitation.)"
 msgstr ""
+"Хост зберіг спільний світ — твій прогрес синхронізовано.  (Твій інвентар ще "
+"не повністю віддзеркалений хосту — відоме обмеження.)"
 
 #: src/mp_gamestate.cpp:9470
 msgid "Connection to host lost — reconnecting… (up to ~15s)"
-msgstr ""
+msgstr "З'єднання з хостом втрачено — перепідключення… (до ~15 с)"
 
 #. ~ %1$d is the current attempt number, %2$d is the total or max attempts,
 #. like 1/5
 #: src/mp_gamestate.cpp:9486
 #, c-format
 msgid "Reconnecting to host… (try %1$d/%2$d)"
-msgstr ""
+msgstr "Повторне підключення до хоста… (спроба %1$d/%2$d)"
 
 #: src/mp_gamestate.cpp:9495
 msgid ""
 "Couldn't join: the connection dropped during char creation and could not be "
 "re-established.  You are NOT in the host's game."
 msgstr ""
+"Не вдалося приєднатися: з'єднання обірвалося під час створення персонажа й "
+"не відновилося.  Ти НЕ в грі хоста."
 
 #: src/mp_gamestate.cpp:9501
 msgid ""
 "If either player is running a commercial VPN, turn it off and try again."
 msgstr ""
+"Якщо хтось із гравців використовує комерційний VPN, вимкни його й спробуй ще "
+"раз."
 
 #: src/mp_gamestate.cpp:9506
 msgid "Couldn't reconnect to the host after several tries — connection lost."
 msgstr ""
+"Не вдалося перепідключитися до хоста після кількох спроб — з'єднання "
+"втрачено."
 
 #: src/mp_gamestate.cpp:9511
 msgid "Reconnected to the host — resuming."
-msgstr ""
+msgstr "Знову під'єднано до хоста — відновлення."
 
 #: src/mp_gamestate.cpp:9540
 msgid "Lost connection to server."
-msgstr ""
+msgstr "З'єднання із сервером втрачено."
 
 #: src/mp_gamestate.cpp:9686 src/mp_gamestate.cpp:9703
 msgid "Your partner"
-msgstr ""
+msgstr "Ваш партнер"
 
 #. ~ %d is the total damage taken across all body parts this tick.
 #: src/mp_gamestate.cpp:10118
 #, c-format
 msgid "You are hit for %d damage!"
-msgstr ""
+msgstr "Тебе вдарено на %d шкоди!"
 
 #: src/mp_gamestate.cpp:11296
 msgid "You can't do that right now."
-msgstr ""
+msgstr "Ти не можеш цього зробити зараз."
 
 #: src/mp_gamestate.cpp:11301
 msgid "Direct your character"
-msgstr ""
+msgstr "Керуйте своїм персонажем"
 
 #: src/mp_gamestate.cpp:11304
 msgid "Sort loot into zones"
-msgstr ""
+msgstr "Сортувати здобич по зонах"
 
 #: src/mp_gamestate.cpp:11305
 msgid "Stop what they're doing"
-msgstr ""
+msgstr "Зупинити те, що вони роблять"
 
 #: src/mp_gamestate.cpp:13544 src/mp_gamestate.cpp:13623
 msgid "Your partner is not connected."
-msgstr ""
+msgstr "Твій партнер не підключений."
 
 #: src/mp_gamestate.cpp:13550
 msgid "You need to be adjacent to your partner."
-msgstr ""
+msgstr "Потрібно бути поруч зі своїм напарником."
 
 #: src/mp_gamestate.cpp:13555
 msgid "Pass what?"
-msgstr ""
+msgstr "Що передати?"
 
 #: src/mp_gamestate.cpp:13555
 msgid "You have no items to pass."
-msgstr ""
+msgstr "У тебе немає предметів, які можна передати."
 
 #. ~ %1$s is the item to pass, %2$s is the partner's name
 #: src/mp_gamestate.cpp:13571
 #, c-format
 msgid "You pass the %1$s to %2$s."
-msgstr ""
+msgstr "Ти передаєш %1$s до %2$s."
 
 #: src/mp_gamestate.cpp:13632
 msgid "You need to be adjacent to your partner to high-five."
-msgstr ""
+msgstr "Ти маєш бути поруч із напарником, щоб дати «п'ять»."
 
 #: src/mp_gamestate.cpp:13640
 #, c-format
 msgid "%s is busy and leaves you hanging."
-msgstr ""
+msgstr "%s зайнятий і кидає тебе напризволяще."
 
 #. ~ %1$s is partner name, %2$s is the verb/activity they are doing
 #: src/mp_gamestate.cpp:13643
 #, c-format
 msgid "%1$s is busy %2$s and leaves you hanging."
-msgstr ""
+msgstr "%1$s зайнятий %2$s і залишає тебе висіти."
 
 #: src/mp_gamestate.cpp:13659
 #, c-format
 msgid "You high-five %s!"
-msgstr ""
+msgstr "Ви даєте «п'ять» %s!"
 
 #: src/mp_gamestate.cpp:13725
 #, c-format
 msgid "%s yells"
-msgstr ""
+msgstr "%s кричить"
 
 #: src/mp_gamestate.cpp:13754
 #, c-format
 msgid "%s high-fives you!"
-msgstr ""
+msgstr "%s дає вам «п'ять»!"
 
 #: src/mp_gamestate.cpp:13851
 msgid "Your partner marked a spot on the map."
-msgstr ""
+msgstr "Твій напарник позначив місце на карті."
 
 #: src/mp_gamestate.cpp:13863
 msgid "Your partner marked an area as dangerous."
-msgstr ""
+msgstr "Твій напарник позначив зону як небезпечну."
 
 #: src/mp_mod_compat.cpp:29
 msgid ""
@@ -861,6 +925,9 @@ msgid ""
 "has not been vetted for co-op; it may desync or crash the joining player.  "
 "Both players must have the exact same mods installed."
 msgstr ""
+"CO-OP: неперевірений сторонній мод.  Цей мод не входить до гри й не "
+"перевірений для кооперативу; може розсинхронізувати чи обвалити гру гравця, "
+"що приєднується.  Обидва гравці мають мати точно однакові моди."
 
 #: src/mp_mod_compat.cpp:55
 msgid ""
@@ -868,6 +935,9 @@ msgid ""
 "separate dimensions; co-op shares one world and cannot place the two players "
 "in different dimensions."
 msgstr ""
+"КООП: НЕСУМІСНО.  Переміщується між островом і материком як окремими "
+"вимірами; кооператив ділить один світ і не може розмістити двох гравців у "
+"різних вимірах."
 
 #: src/mp_mod_compat.cpp:60
 msgid ""
@@ -875,6 +945,9 @@ msgid ""
 "generated instanced level; co-op's single shared map can't hold two players "
 "on different levels."
 msgstr ""
+"КООП: НЕСУМІСНО.  Кожен спуск ліфтом телепортує в щойно згенерований "
+"інстансований рівень; єдина спільна мапа кооперативу не може вмістити двох "
+"гравців на різних рівнях."
 
 #: src/mp_mod_compat.cpp:65
 msgid ""
@@ -882,6 +955,9 @@ msgid ""
 "(effect-on-condition) effects that don't apply to the remote player, and "
 "long-range teleports break the shared map."
 msgstr ""
+"КООП: НЕСУМІСНО.  Сильно спирається на заклинання телепортації й скриптові "
+"(ефект-за-умови) ефекти, що не діють на віддаленого гравця, а далекі "
+"телепортації ламають спільну карту."
 
 #: src/mp_mod_compat.cpp:70
 msgid ""
@@ -889,12 +965,17 @@ msgid ""
 "client; teleportation powers break the shared map and self-heals desync from "
 "the host."
 msgstr ""
+"КООП: НЕ СУМІСНО.  Псіонічні сили реалізовані скриптами й працюють лише на "
+"твоєму клієнті; сили телепортації ламають спільну мапу, а самолікування "
+"розсинхронізовується з хостом."
 
 #: src/mp_mod_compat.cpp:75
 msgid ""
 "CO-OP: NOT COMPATIBLE.  Built on Mind Over Matter, which is not co-op "
 "compatible."
 msgstr ""
+"КООП: НЕ СУМІСНО.  Побудовано на «Розум над матерією», що не сумісне з "
+"кооперативом."
 
 #: src/mp_mod_compat.cpp:80
 msgid ""
@@ -902,6 +983,9 @@ msgid ""
 "and run only on your own client, and several mechanics teleport you to "
 "separate maps (dream realm, pocket dungeons)."
 msgstr ""
+"КООП: НЕСУМІСНО.  Сили параклезіанців, вампірів і снів скриптові й працюють "
+"лише на твоєму клієнті, а кілька механік телепортують тебе на окремі карти "
+"(царство снів, кишенькові підземелля)."
 
 #: src/mp_mod_compat.cpp:85
 msgid ""
@@ -910,18 +994,27 @@ msgid ""
 "world generates its own terrain at the same coordinates, so the two players "
 "stand on completely different maps."
 msgstr ""
+"КООП: НЕСУМІСНИЙ.  Особливі мапи Aftershock (стартові майданчики екзопланет, "
+"чужі біоми) не передаються з хоста клієнту; світ гравця, що приєднується, "
+"генерує власний ландшафт у тих самих координатах, тож гравці стоять на "
+"повністю різних мапах."
 
 #: src/mp_mod_compat.cpp:92
 msgid ""
 "CO-OP: may break.  Inherits Xedra Evolved's scripted powers, which don't "
 "apply to the remote player."
 msgstr ""
+"CO-OP: може не працювати.  Успадковує скриптові сили Xedra Evolved, які не "
+"застосовуються до віддаленого гравця."
 
 #: src/mp_mod_compat.cpp:97
 msgid ""
 "CO-OP: may break.  Perk leveling is driven by kill events that aren't "
 "credited to the remote player, so the joining player gains no perks."
 msgstr ""
+"CO-OP: може зламатися.  Прокачування перків залежить від подій убивств, що "
+"не зараховуються віддаленому гравцеві, тож гравець, що приєднався, не "
+"отримує перків."
 
 #: src/mp_mod_compat.cpp:102
 msgid ""
@@ -929,54 +1022,73 @@ msgid ""
 "the remote player, so the joining player's bonuses won't apply in shared "
 "combat."
 msgstr ""
+"КООП: може ламатися.  Бонуси перків застосовуються скриптами, що не "
+"досягають віддаленого гравця, тож бонуси приєднаного гравця не діятимуть у "
+"спільному бою."
 
 #: src/mp_mod_compat.cpp:107
 msgid ""
 "CO-OP: may break.  Bionics aren't synced, so a joining player's passive "
 "bonuses and active bionic powers won't apply on the host."
 msgstr ""
+"КООП: може ламатися.  Біоніка не синхронізується, тож пасивні бонуси й "
+"активні біонічні сили гравця, що приєднався, не діятимуть на хості."
 
 #: src/mp_mod_compat.cpp:112
 msgid ""
 "CO-OP: may break.  The mutagen-gland system runs only on your own client and "
 "won't sync to the remote player."
 msgstr ""
+"CO-OP: може зламатися.  Система мутагенних залоз працює лише на твоєму "
+"клієнті й не синхронізується з віддаленим гравцем."
 
 #: src/mp_mod_compat.cpp:117
 msgid ""
 "CO-OP: may break.  Spell effects run only on your own client; only direct "
 "damage reaches the shared world."
 msgstr ""
+"CO-OP: може не працювати.  Ефекти заклинань виконуються лише на вашому "
+"клієнті; до спільного світу доходить тільки пряма шкода."
 
 #: src/mp_mod_compat.cpp:122
 msgid ""
 "CO-OP: may break.  Some scripted effects (e.g. the immortal snail instant-"
 "kill) don't apply to the remote player."
 msgstr ""
+"CO-OP: може зламатися.  Деякі скриптові ефекти (напр., миттєве вбивство "
+"безсмертним равликом) не діють на віддаленого гравця."
 
 #: src/mp_mod_compat.cpp:127
 msgid ""
 "CO-OP: may break.  Infection applies correctly, but its status and death-"
 "warning UI may not show for the remote player."
 msgstr ""
+"CO-OP: може зламатися.  Інфекція застосовується правильно, але її статус і "
+"UI попередження про смерть можуть не відображатися для віддаленого гравця."
 
 #: src/mp_mod_compat.cpp:132
 msgid ""
 "CO-OP: may break.  Pet ownership and control across two players is "
 "unresolved; the joining player's tamed pets may be uncontrollable."
 msgstr ""
+"КООП: може ламатися.  Володіння й керування тваринами для двох гравців не "
+"вирішено; приручені тварини гравця, що приєднався, можуть бути некерованими."
 
 #: src/mp_mod_compat.cpp:147
 msgid ""
 "CO-OP: may break.  The scripted intro and the sleep-death mechanic run only "
 "on the host and are skipped for the remote player."
 msgstr ""
+"КООП: може ламатися.  Скриптований вступ і механіка смерті уві сні працюють "
+"лише на хості й пропускаються для віддаленого гравця."
 
 #: src/mp_mod_compat.cpp:152
 msgid ""
 "CO-OP: minor issues.  Most works, but on-kill style buffs aren't credited to "
 "the remote player."
 msgstr ""
+"КООП: дрібні проблеми.  Більшість працює, але бафи за вбивство не "
+"зараховуються віддаленому гравцеві."
 
 #: src/newcharacter.cpp:2761
 #, c-format
@@ -984,23 +1096,27 @@ msgid ""
 "This tab could not be drawn (likely a mod data error):\n"
 "%s"
 msgstr ""
+"Не вдалося намалювати цю вкладку (імовірно, помилка даних моду):\n"
+"%s"
 
 #: src/newcharacter.cpp:2764
 msgid "This tab could not be drawn (unknown error)."
-msgstr ""
+msgstr "Цю вкладку не вдалося відобразити (невідома помилка)."
 
 #: src/options.cpp:2060
 msgid "Co-op HUD panel position"
-msgstr ""
+msgstr "Позиція панелі HUD кооперативу"
 
 #: src/options.cpp:2061
 msgid ""
 "Which screen edge the co-op multiplayer partner HUD panel is drawn along."
 msgstr ""
+"Вздовж якого краю екрана малюється панель HUD партнера в мережевому "
+"кооперативі."
 
 #: src/options.cpp:2541
 msgid "Fill vehicle gaps when turning"
-msgstr ""
+msgstr "Заповнювати прогалини транспорту під час повороту"
 
 #: src/options.cpp:2542
 msgid ""
@@ -1008,10 +1124,14 @@ msgid ""
 "facings with small colored triangles, hiding the jagged rotation seam.  "
 "Disable for isometric tilesets or if it conflicts with custom sprite work."
 msgstr ""
+"Якщо істина, заповнювати кути сходів між частинами транспорту на проміжних "
+"поворотах малими кольоровими трикутниками, приховуючи зубчастий шов "
+"обертання.  Вимкни для ізометричних тайлсетів чи якщо суперечить власній "
+"роботі зі спрайтами."
 
 #: src/options.cpp:3753
 msgid "NPCs not available in co-op mode yet."
-msgstr ""
+msgstr "НІП у кооперативному режимі поки недоступні."
 
 #: src/options.cpp:3801
 msgid ""
@@ -1020,12 +1140,16 @@ msgid ""
 "It must match between all players — differing world options can break "
 "multiplayer sync and cause the game states to diverge."
 msgstr ""
+"Цей параметр заблоковано у вилці кооперативу.\n"
+"\n"
+"Він має збігатися в усіх гравців — відмінні параметри світу можуть зламати "
+"синхронізацію мультиплеєра й призвести до розбіжності ігрових станів."
 
 #. ~ %s is the monster's name
 #: src/player_activity.cpp:519
 #, c-format
 msgid "Your partner is in danger! The %s is close!"
-msgstr ""
+msgstr "Твій напарник у небезпеці! %s поруч!"
 
 #: src/vehicle_use.cpp:312
 #, c-format
@@ -1038,33 +1162,35 @@ msgstr ""
 
 #: src/vehicle_use.cpp:360
 msgid "Camera system isn't synced in co-op yet — ask your partner."
-msgstr ""
+msgstr "Систему камер ще не синхронізовано в коопі — запитай напарника."
 
 #: src/vehicle_use.cpp:569 src/vehicle_use.cpp:571 src/vehicle_use.cpp:908
 msgid "Autopilot is disabled in multiplayer."
-msgstr ""
+msgstr "Автопілот вимкнено в мультиплеєрі."
 
 #: src/vehicle_use.cpp:1890
 msgid "Rack/unrack vehicles isn't synced in co-op yet"
-msgstr ""
+msgstr "Установка/зняття транспорту зі стійки ще не синхронізується в коопі"
 
 #: src/vehicle_use.cpp:1892
 msgid "Ask your partner to rack or unrack vehicles for now."
-msgstr ""
+msgstr "Поки що попроси напарника ставити чи знімати транспорт зі стійок."
 
 #: src/worldfactory.cpp:877
 msgid " --- not co-op compatible"
-msgstr ""
+msgstr " --- несумісне з кооперативом"
 
 #: src/worldfactory.cpp:881
 msgid " --- may break in co-op"
-msgstr ""
+msgstr " --- може зламатися в кооперативі"
 
 #: src/worldfactory.cpp:1735
 msgid ""
 "\n"
 "NPCs not available in co-op mode yet."
 msgstr ""
+"\n"
+"НІП у кооперативному режимі поки недоступні."
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1074,6 +1200,8 @@ msgid ""
 "<color_pink>CO-OP:</color> Bump into your partner to trade, pass an item, "
 "assist, or high-five."
 msgstr ""
+"<color_pink>КООП:</color> Зіткнись із партнером, щоб обмінятися, передати "
+"предмет, допомогти чи дати «п'ять»."
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1083,6 +1211,8 @@ msgid ""
 "<color_pink>CO-OP:</color> In-game chat is available: bind the `Co-op chat` "
 "action to message your partner… or you can yell…"
 msgstr ""
+"<color_pink>КООП:</color> Чат у грі доступний: прив'яжи дію `Чат кооп` для "
+"повідомлень партнеру… або можеш кричати…"
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1092,6 +1222,8 @@ msgid ""
 "<color_pink>CO-OP:</color> \"Pause\" ('5' or '.') is crucial for co-op.  It "
 "gives your partner moves/AP. And vice versa."
 msgstr ""
+"<color_pink>КООП:</color> «Пауза» ('5' або '.') критична для кооперативу.  "
+"Вона дає ходи/ОД твоєму партнеру.  І навпаки."
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1101,6 +1233,8 @@ msgid ""
 "<color_pink>CO-OP:</color> The host runs the entire world simulation… So "
 "host with the faster machine w/ the better connection."
 msgstr ""
+"<color_pink>КООП:</color> Хост запускає симуляцію всього світу… Тож хост — "
+"той, у кого швидша машина з кращим з'єднанням."
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1110,6 +1244,8 @@ msgid ""
 "<color_pink>CO-OP:</color> If you're both asleep or in long activities, the "
 "game will fast-forward so you're not stuck waiting in real time."
 msgstr ""
+"<color_pink>КООП:</color> Якщо ви обидва спите чи виконуєте тривалі дії, гра "
+"перемотається вперед, щоб не чекати в реальному часі."
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1119,6 +1255,8 @@ msgid ""
 "<color_pink>CO-OP:</color> Passenger in a car?  Try \"waiting several "
 "turns\" (`|`) to give your driver better control."
 msgstr ""
+"<color_pink>CO-OP:</color> Пасажир в авто?  Спробуй «чекати кілька ходів» (`|"
+"`), щоб дати водієві кращий контроль."
 
 #. Co-op tip shown on the loading screen and main menu.
 #. Keep the <color_pink>CO-OP:</color> prefix exactly as-is; translate only
@@ -1128,3 +1266,5 @@ msgid ""
 "<color_pink>CO-OP:</color> Feature requests? Bugs? Want to donate? Visit "
 "CDDACOOP.com (Discord invite @ CDDACOOP.com/discord)"
 msgstr ""
+"<color_pink>КООП:</color> Пропозиції? Помилки? Хочеш підтримати? Відвідай "
+"CDDACOOP.com (запрошення в Discord: CDDACOOP.com/discord)"
