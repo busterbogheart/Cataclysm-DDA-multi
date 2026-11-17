@@ -1,6 +1,6 @@
 name: Build Windows binary
 description: >
-  Build cataclysm-tiles.exe via MSYS2/MinGW-w64, walk DLL deps with ntldd,
+  Build cataclysm-tiles.exe via MSYS2/MinGW-w64 (static, no bundled DLLs),
   package into Cddacoop/ folder, zip, and upload as
   cddacoop-windows-x64.
 
@@ -36,7 +36,6 @@ runs:
           mingw-w64-x86_64-wavpack
           mingw-w64-x86_64-opusfile
           mingw-w64-x86_64-opus
-          mingw-w64-x86_64-ntldd
           mingw-w64-x86_64-ccache
           zip
 
@@ -164,20 +163,25 @@ runs:
         # binary, same as data/ and gfx/ above.
         if [ -d lang/mo ]; then mkdir -p Cddacoop/lang && cp -r lang/mo Cddacoop/lang/; fi
 
-        # Walk transitive DLL deps from the .exe and copy each one in.
-        # ntldd output line format:
-        #   <name>.dll => <path> (0x...)
-        # grep for mingw64 to drop system DLLs we shouldn't bundle.
-        # With STATIC=1 the .exe pulls everything in statically, so ntldd
-        # returns only Windows system DLLs and grep finds zero matches.
-        # The `|| true` on grep keeps msys2's pipefail from killing the
-        # script in that case; xargs with no input is a no-op.
-        ntldd -R Cddacoop/cataclysm-tiles.exe \
-          | { grep -i mingw64 || true; } \
-          | awk '{print $3}' \
-          | sed 's|\\|/|g' \
-          | sort -u \
-          | xargs -I{} cp {} Cddacoop/
+        # STATIC=1 links every MinGW library into the .exe, so the zip ships
+        # no DLLs. Fail if the .exe still imports a DLL that lives in
+        # /mingw64/bin: players wouldn't have it and the game wouldn't start.
+        # This replaced an ntldd walk that copied such DLLs into the zip. The
+        # walk copied nothing under STATIC=1 (released zips hold no DLLs),
+        # and from 2026-11-16 the ntldd package stopped installing:
+        # the mirror's file no longer matched the checksum in the installer's
+        # frozen package database (update: false above). objdump ships with
+        # the toolchain's binutils. A MinGW DLL would appear as a direct
+        # import, so checking direct imports is enough.
+        MINGW_DLLS=$(objdump -p Cddacoop/cataclysm-tiles.exe \
+          | awk '/DLL Name:/ {print $3}' \
+          | while read -r dll; do
+              ls /mingw64/bin | { grep -ixF "$dll" || true; }
+            done)
+        if [ -n "$MINGW_DLLS" ]; then
+          echo "::error title=Static link::cataclysm-tiles.exe imports MinGW DLLs the zip doesn't ship:" $MINGW_DLLS
+          exit 1
+        fi
 
         ZIP="cddacoop-${VERSION}-windows-x64.zip"
         zip -r "$ZIP" Cddacoop
