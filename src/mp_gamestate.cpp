@@ -6820,8 +6820,10 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
     // cache so the next broadcast re-sends every monster in range, exactly as the
     // periodic keyframe does.
     if( msg.find( "\"type\":\"mon_keyframe_request\"" ) != std::string::npos ) {
-        mp_log( "[cdda-mp] HOST-MON-KEYFRAME: client's bubble shifted, re-sending all " +
-                std::to_string( g_server_mon_last_sent.size() ) + " cached monsters next broadcast" );
+        // ~1/s while the client rides a vehicle, so rate-limited.
+        mp_log_every( "HOST-MON-KEYFRAME", 10,
+                      "[cdda-mp] HOST-MON-KEYFRAME: client's bubble shifted, re-sending all " +
+                      std::to_string( g_server_mon_last_sent.size() ) + " cached monsters next broadcast" );
         g_server_mon_last_sent.clear();
         return;
     }
@@ -14286,8 +14288,37 @@ void mp_log_step_source( const item &craft, const item_location &loc,
 //     everything it has in range, including monsters that only just came into the
 //     client's bounds.
 // The MON-GHOST tombstone cleanup in apply_monster_sync stays as the backstop.
+//
+// Every client call that can move the bubble takes a snapshot first and heals after:
+// the avatar teleport (walking) and the vehicle_step displace_vehicle (riding: SP's
+// map::displace_vehicle calls g->update_map when the avatar is aboard).  Measured
+// 2026-11-18 WAN: with only the teleport path healed, a client riding through town
+// shifted its bubble ~1/s with no heal, and the drive back restored nid 20 and 21
+// beside the host's re-sent copies (MON-DUP-NID @5524,2740 vs @5524,2750): 3 → 5.
+struct mp_client_shift_snapshot {
+    tripoint_abs_sm sub_before;
+    // Synced monsters alive before the shift.  keep_alive holds them so a monster
+    // the shift frees can't have its address reused by a restored copy in the
+    // same call.
+    std::unordered_set<const monster *> synced_before;
+    std::vector<shared_ptr_fast<monster>> keep_alive;
+};
+
+static mp_client_shift_snapshot mp_client_snapshot_before_shift()
+{
+    mp_client_shift_snapshot s;
+    s.sub_before = get_map().get_abs_sub();
+    for( const auto &p : get_creature_tracker().get_monsters_list() ) {
+        if( p && p->mp_net_id != 0 && !p->is_dead() ) {
+            s.synced_before.insert( p.get() );
+            s.keep_alive.push_back( p );
+        }
+    }
+    return s;
+}
+
 static void mp_client_heal_monsters_after_shift( const tripoint_abs_sm &sub_before,
-        const std::unordered_set<const monster *> &synced_before )
+        const std::unordered_set<const monster *> &synced_before, const char *via )
 {
     if( !is_client_mode() ) {
         return;
@@ -14314,10 +14345,14 @@ static void mp_client_heal_monsters_after_shift( const tripoint_abs_sm &sub_befo
     }
     if( !restored.empty() ) {
         mp_log( "[cdda-mp] MON-RESTORED-REMOVED: " + std::to_string( restored.size() ) +
-                " host-owned copies restored from SP storage, removed [" + removed_log + "]" );
+                " host-owned copies restored from SP storage, removed [" + removed_log +
+                "] via=" + via );
     }
-    mp_log( "[cdda-mp] MON-KEYFRAME-REQ: bubble shifted " + sub_before.to_string() + " -> " +
-            sub_after.to_string() + ", asking the host for a full monster snapshot" );
+    // Riding shifts the bubble about once a second, so this line is rate-limited.
+    mp_log_every( std::string( "MON-KEYFRAME-REQ-" ) + via, 10,
+                  "[cdda-mp] MON-KEYFRAME-REQ: bubble shifted " + sub_before.to_string() + " -> " +
+                  sub_after.to_string() + " via=" + via +
+                  ", asking the host for a full monster snapshot" );
     client_send( "{\"type\":\"mon_keyframe_request\"}" );
 }
 
@@ -14407,21 +14442,13 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
         // logged too (TELE-MON-GAIN).  Measured 2026-10-15: nid=33 dropped at a
         // bubble-edge shift (16:48:49), the sync spawned a replacement, and the
         // shift back (16:52:41) restored the old copy beside it (MON-DUP-NID).
-        int mons_before = 0;
-        std::unordered_map<uint32_t, int> nids_before;
         // For mp_client_heal_monsters_after_shift: which synced monsters existed
-        // before the shift.  keep_alive holds them so a monster the shift frees
-        // can't have its address reused by a restored copy in the same call.
-        std::unordered_set<const monster *> synced_before;
-        std::vector<shared_ptr_fast<monster>> keep_alive;
-        const tripoint_abs_sm sub_before = m.get_abs_sub();
-        for( const auto &p : get_creature_tracker().get_monsters_list() ) {
-            if( p && p->mp_net_id != 0 && !p->is_dead() ) {
-                ++mons_before;
-                ++nids_before[p->mp_net_id];
-                synced_before.insert( p.get() );
-                keep_alive.push_back( p );
-            }
+        // before the shift.
+        const mp_client_shift_snapshot shift = mp_client_snapshot_before_shift();
+        const int mons_before = static_cast<int>( shift.synced_before.size() );
+        std::unordered_map<uint32_t, int> nids_before;
+        for( const monster *mon : shift.synced_before ) {
+            ++nids_before[mon->mp_net_id];
         }
         if( new_pos.z() != u.pos_bub().z() ) {
             // Z-level change (ramp / bridge crossing).
@@ -14470,7 +14497,7 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
             mp_log( "[cdda-mp] TELE-MON-GAIN: update_map brought back synced copies [" + gained +
                     "] (x2+ = now a duplicate)" );
         }
-        mp_client_heal_monsters_after_shift( sub_before, synced_before );
+        mp_client_heal_monsters_after_shift( shift.sub_before, shift.synced_before, "teleport" );
     }
 }
 
@@ -20246,7 +20273,11 @@ static void apply_vehicle_sync( JsonObject &jo )
             const tripoint_bub_ms new_bub = m.get_bub( new_abs );
             const tripoint_rel_ms dp      = new_bub - cur_bub;
             if( dp != tripoint_rel_ms::zero ) {
+                // Moves the bubble when the avatar rides this vehicle (SP's
+                // displace_vehicle → g->update_map); heal like the teleport path.
+                const mp_client_shift_snapshot shift = mp_client_snapshot_before_shift();
                 m.displace_vehicle( *found, dp );
+                mp_client_heal_monsters_after_shift( shift.sub_before, shift.synced_before, "vehicle" );
                 did_displace = true;
                 // advance_precalc_mounts inside displace_vehicle already:
                 //   - cleared the rendering cache at old positions
