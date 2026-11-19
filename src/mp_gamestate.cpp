@@ -14332,12 +14332,12 @@ void mp_log_step_source( const item &craft, const item_location &loc,
 //     client's bounds.
 // The MON-GHOST tombstone cleanup in apply_monster_sync stays as the backstop.
 //
-// Every client call that can move the bubble takes a snapshot first and heals after:
-// the avatar teleport (walking) and the vehicle_step displace_vehicle (riding: SP's
-// map::displace_vehicle calls g->update_map when the avatar is aboard).  Measured
-// 2026-11-18 WAN: with only the teleport path healed, a client riding through town
-// shifted its bubble ~1/s with no heal, and the drive back restored nid 20 and 21
-// beside the host's re-sent copies (MON-DUP-NID @5524,2740 vs @5524,2750): 3 → 5.
+// It runs from mp_bubble_shift_guard, held by SP's game::update_map and
+// game::vertical_shift, so every way the client's bubble moves is covered.  Measured
+// 2026-11-18 WAN: with only the avatar-teleport path healed, a client riding through
+// town shifted its bubble ~1/s with no heal (map::displace_vehicle calls
+// g->update_map when the avatar is aboard), and the drive back restored nid 20 and
+// 21 beside the host's re-sent copies (MON-DUP-NID @5524,2740 vs @5524,2750): 3 → 5.
 struct mp_client_shift_snapshot {
     tripoint_abs_sm sub_before;
     // Synced monsters alive before the shift.  keep_alive holds them so a monster
@@ -14397,6 +14397,40 @@ static void mp_client_heal_monsters_after_shift( const tripoint_abs_sm &sub_befo
                   sub_after.to_string() + " via=" + via +
                   ", asking the host for a full monster snapshot" );
     client_send( "{\"type\":\"mon_keyframe_request\"}" );
+}
+
+// mp_bubble_shift_guard (mp_gamestate.h): the one place the heal above runs.
+// SP's game::update_map and game::vertical_shift each hold one, so every path that
+// moves the client's bubble is covered, not just the two that had explicit
+// wrappers (avatar teleport, riding).  Nested calls (vertical_shift then
+// update_map inside one teleport, update_map inside displace_vehicle) take one
+// snapshot at the outermost guard and heal once when it ends.
+static int g_shift_guard_depth = 0;
+static std::optional<mp_client_shift_snapshot> g_shift_guard_snap;
+
+mp_bubble_shift_guard::mp_bubble_shift_guard( const char *via ) : via_( via )
+{
+    if( !is_client_mode() ) {
+        return;
+    }
+    counted_ = true;
+    if( g_shift_guard_depth++ == 0 ) {
+        g_shift_guard_snap = mp_client_snapshot_before_shift();
+        outermost_ = true;
+    }
+}
+
+mp_bubble_shift_guard::~mp_bubble_shift_guard()
+{
+    if( !counted_ ) {
+        return;
+    }
+    --g_shift_guard_depth;
+    if( outermost_ && g_shift_guard_snap ) {
+        const mp_client_shift_snapshot snap = std::move( *g_shift_guard_snap );
+        g_shift_guard_snap.reset();
+        mp_client_heal_monsters_after_shift( snap.sub_before, snap.synced_before, via_ );
+    }
 }
 
 // Move the client avatar to an absolute position, loading the map chunk if needed.
@@ -14549,7 +14583,8 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
             mp_log( "[cdda-mp] TELE-MON-GAIN: update_map brought back synced copies [" + gained +
                     "] (x2+ = now a duplicate)" );
         }
-        mp_client_heal_monsters_after_shift( shift.sub_before, shift.synced_before, "teleport" );
+        // The heal itself ran inside vertical_shift / update_map
+        // (mp_bubble_shift_guard), so TELE-MON-GAIN above only shows a copy it missed.
     }
 }
 
@@ -20370,10 +20405,8 @@ static void apply_vehicle_sync( JsonObject &jo )
             const tripoint_rel_ms dp      = new_bub - cur_bub;
             if( dp != tripoint_rel_ms::zero ) {
                 // Moves the bubble when the avatar rides this vehicle (SP's
-                // displace_vehicle → g->update_map); heal like the teleport path.
-                const mp_client_shift_snapshot shift = mp_client_snapshot_before_shift();
+                // displace_vehicle → g->update_map); the guard in update_map heals.
                 m.displace_vehicle( *found, dp );
-                mp_client_heal_monsters_after_shift( shift.sub_before, shift.synced_before, "vehicle" );
                 did_displace = true;
                 // advance_precalc_mounts inside displace_vehicle already:
                 //   - cleared the rendering cache at old positions

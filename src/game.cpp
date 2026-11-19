@@ -10345,6 +10345,7 @@ std::optional<tripoint_bub_ms> game::find_or_make_stairs( map &mp, const int z_a
 
 bool game::vertical_shift( const int z_after )
 {
+    cata_mp::mp_bubble_shift_guard mp_shift_guard( "vertical_shift" );
     map &here = get_map();
 
     if( z_after < -OVERMAP_DEPTH || z_after > OVERMAP_HEIGHT ) {
@@ -10416,6 +10417,7 @@ point_rel_sm game::update_map( Character &p, bool z_level_changed )
 
 point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
 {
+    cata_mp::mp_bubble_shift_guard mp_shift_guard( "update_map" );
     map &here = get_map();
 
     point_rel_sm shift;

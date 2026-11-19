@@ -1059,6 +1059,27 @@ void mp_log_sampled( const std::string &key, const std::string &state, int secon
 // True when CDDA_MP_LOG=verbose (read once).
 bool mp_log_verbose();
 
+// Co-op client: put one at the top of an SP function that can move the reality
+// bubble (game::update_map, game::vertical_shift).  It records the host-owned
+// monsters before the move; when it goes out of scope it removes the stale copies
+// SP restored from off-bubble storage and asks the host for a full monster
+// snapshot (mp_client_heal_monsters_after_shift).  Every way the bubble moves goes
+// through those two functions: walking, riding, stairs, elevators, traps,
+// teleports, being flung.  Only the outermost guard acts; on the host and in
+// single player it does nothing.
+class mp_bubble_shift_guard
+{
+    public:
+        explicit mp_bubble_shift_guard( const char *via );
+        ~mp_bubble_shift_guard();
+        mp_bubble_shift_guard( const mp_bubble_shift_guard & ) = delete;
+        mp_bubble_shift_guard &operator=( const mp_bubble_shift_guard & ) = delete;
+    private:
+        const char *via_;
+        bool counted_ = false;
+        bool outermost_ = false;
+};
+
 // DIAGNOSTIC (temporary, 2026-07-08, for issue #10 indoor-lighting divergence):
 // dumps is_outside + light level for a window around the local avatar, tagged
 // HOST/CLIENT, so a host-vs-client diff reveals whether the client's roof (z+1)
