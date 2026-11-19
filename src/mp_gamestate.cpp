@@ -17104,8 +17104,18 @@ static std::string build_client_tile_changes( int radius = 10, bool seed_unseen 
             if( !m.inbounds( abs ) ) {
                 continue;
             }
-            // Before any operator[] below creates the entry.
-            if( seed_unseen && g_client_terfurn_baseline.count( abs ) ) {
+            // Before any operator[] below creates the entry.  A tile with no
+            // baseline has never been scanned by this client nor pushed by the host
+            // (apply_tile_changes refreshes the baselines of every tile it applies),
+            // so its contents are the client's OWN map: local mapgen, or a stale
+            // save.  It is recorded below and never sent.  Sending it wrote the
+            // client's world into the host's: the 10-14 Beguile (698 entries), and
+            // 2026-11-18 a rejoin whose first step sent 438 tiles of the client's
+            // mapgen (host TILE-APPLY-RESULT changed ter=167 furn=42 items=3, the
+            // host's downstairs gone).  The client only changes tiles next to it,
+            // which it has scanned on earlier turns.
+            const bool unseen = !g_client_terfurn_baseline.count( abs );
+            if( seed_unseen && !unseen ) {
                 continue;
             }
             const tripoint_bub_ms bub = m.get_bub( abs );
@@ -17221,7 +17231,7 @@ static std::string build_client_tile_changes( int radius = 10, bool seed_unseen 
                 !trap_changed && !graffiti_changed && !pc_changed ) {
                 continue;
             }
-            if( seed_unseen ) {
+            if( seed_unseen || unseen ) {
                 ++seeded;   // baseline recorded above; nothing to send
                 continue;
             }
@@ -17273,7 +17283,17 @@ static std::string build_client_tile_changes( int radius = 10, bool seed_unseen 
     } else if( radius > 10 || emitted > 0 ) {
         mp_log( "[cdda-mp] TILE-SCAN-RESULT: radius=" + std::to_string( radius ) +
                 " entries=" + std::to_string( emitted ) +
-                " bytes=" + std::to_string( out.size() ) );
+                " bytes=" + std::to_string( out.size() ) +
+                " unseen_recorded=" + std::to_string( seeded ) );
+    }
+    // Walking records ~21 new tiles a step, so only a big batch (after a join,
+    // rejoin or teleport) logs every time.
+    if( !seed_unseen && seeded >= 100 ) {
+        mp_log( "[cdda-mp] TILE-SCAN-UNSEEN: recorded " + std::to_string( seeded ) +
+                " tiles new to this client, not sent (the client's own map never overwrites the host's)" );
+    } else if( !seed_unseen && seeded > 0 ) {
+        mp_log_every( "TILE-SCAN-UNSEEN", 30, "[cdda-mp] TILE-SCAN-UNSEEN: recorded " +
+                      std::to_string( seeded ) + " new tiles, not sent" );
     }
     return out;
 }
