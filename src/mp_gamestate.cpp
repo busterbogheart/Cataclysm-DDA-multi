@@ -6859,6 +6859,17 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
         return;
     }
 
+    // The client just placed itself in our area (join or rejoin).  The join
+    // resync went out before it got here and was dropped, so forget what we
+    // believe it holds: the next broadcast re-sends every tile, item and submap.
+    if( msg.find( "\"type\":\"tile_resync_request\"" ) != std::string::npos ) {
+        mp_log( "[cdda-mp] HOST-TILE-RESYNC: client is in our area, re-sending all tiles (dropping " +
+                std::to_string( g_tile_baseline.size() ) + " sent-tile records) and submaps" );
+        g_tile_baseline.clear();
+        mp_reset_map_sync();
+        return;
+    }
+
     // Client charmed, polymorphed or banished a synced monster.  Out-of-band
     // for the same reason as client_summon, and drained before the next grant
     // so the next broadcast already carries the change.  Body in mp_magic.cpp.
@@ -14010,6 +14021,7 @@ void process_mp_events()
                || data.find( "\"type\":\"templates_list\"" ) != std::string::npos
                || data.find( "\"type\":\"resync_request\"" ) != std::string::npos
                || data.find( "\"type\":\"mon_keyframe_request\"" ) != std::string::npos
+               || data.find( "\"type\":\"tile_resync_request\"" ) != std::string::npos
                || data.find( "\"type\":\"heartbeat\"" ) != std::string::npos
                || data.find( "\"type\":\"peer_modal\"" ) != std::string::npos
                || data.find( "\"client_tile_changes\":" ) != std::string::npos;
@@ -14414,6 +14426,15 @@ static void client_teleport_avatar( const tripoint_abs_ms &abs_pos )
                     std::to_string( g->get_seed() ) );
             g->place_player_overmap( project_to<coords::omt>( abs_pos ), true );
             g_initial_teleport_done = true;
+            // The host's join resync (REJOIN-RESYNC: every tile + item around it)
+            // went out the moment we joined, while we still stood at our own
+            // start/save position, so it landed out of bounds and was dropped; the
+            // host then believes we hold every tile and only sends changes.
+            // Measured 2026-11-18 rejoin: resync 18:53:41.310, our OUT OF BUBBLE
+            // skip 18:53:41.901, this placement 18:53:43.820, and the host's items
+            // and furniture never reached us.  Ask again now that we stand there.
+            mp_log( "[cdda-mp] TILE-RESYNC-REQ: placed in the host's area, asking it to re-send its tiles" );
+            client_send( "{\"type\":\"tile_resync_request\"}" );
         } else {
             // The host moved out of the client's bubble and we already did the
             // one-time overmap placement, so we refuse to chase it.  If the
