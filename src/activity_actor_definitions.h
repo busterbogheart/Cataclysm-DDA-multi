@@ -3937,6 +3937,9 @@ class pulp_activity_actor : public activity_actor
         int mp_pulp_current() const;
         int mp_current_corpse_pct() const;
         std::string get_progress_message( const player_activity & ) const override;
+        // Co-op client: re-collect the corpses on a tile after the host's pile re-send
+        // replaced its items (body in mp_gamestate.cpp).
+        int mp_reacquire_corpses( const tripoint_abs_ms &pos );
 
     private:
         // list of corpses we are iterating over, from last

@@ -178,6 +178,37 @@ std::string pulp_activity_actor::get_progress_message( const player_activity & )
     return string_format( "%d/%d %d%%", mp_pulp_current(), total, pct );
 }
 
+// Co-op client, right after the host's pile re-send replaced the items on a tile
+// this pulp is working on (apply_tile_changes' do_replace: i_clear + add_item).
+// The replace nulls the item_locations in `corpses`, and do_turn pops a null ref
+// as a finished corpse, so the pulp ended with "You finished pulping the corpses."
+// on a corpse at 955/4000 (measured 2026-11-18 WAN: CLI-PULP-OVERWRITE and ACT-END
+// in the same ms, the host had just joined the same pile).  Re-collect the corpses
+// on that tile exactly as start() builds the list from `placement`; the dead refs
+// go first so do_turn doesn't count them.  Returns how many were collected.
+int pulp_activity_actor::mp_reacquire_corpses( const tripoint_abs_ms &pos )
+{
+    corpses.erase( std::remove_if( corpses.begin(), corpses.end(),
+    []( const item_location & il ) {
+        return il.get_item() == nullptr;
+    } ), corpses.end() );
+    map &here = get_map();
+    if( !here.inbounds( pos ) ) {
+        return 0;
+    }
+    const tripoint_bub_ms bub = here.get_bub( pos );
+    int n = 0;
+    for( item &corpse : here.i_at( bub ) ) {
+        if( !corpse.is_corpse() || !corpse.can_revive() ) {
+            // Don't smash non-rezing corpses or random items (same test as start())
+            continue;
+        }
+        corpses.emplace_back( map_cursor( bub ), &corpse );
+        ++n;
+    }
+    return n;
+}
+
 namespace cata_mp {
 
 // Rotate the live log at this size (2026-11-16, LOG AUDIT 2026-10-27 item 1).  The
@@ -18491,6 +18522,29 @@ bool client_pulps_locally( const tripoint_bub_ms &p )
     return true;
 }
 
+// Client, after the host's pile re-send replaced the items at `abs`: if our ACT_PULP
+// is working that tile, point it at the new corpse objects (see
+// pulp_activity_actor::mp_reacquire_corpses) instead of letting it end early.
+static void mp_client_pulp_reacquire_after_replace( const tripoint_abs_ms &abs )
+{
+    static const activity_id ACT_PULP_REACQUIRE( "ACT_PULP" );
+    avatar &u = get_avatar();
+    if( !g_client_pulp_target || *g_client_pulp_target != abs ||
+        u.activity.id() != ACT_PULP_REACQUIRE ) {
+        return;
+    }
+    pulp_activity_actor *actor = dynamic_cast<pulp_activity_actor *>( u.activity.actor.get() );
+    if( actor == nullptr ) {
+        return;
+    }
+    const int n = actor->mp_reacquire_corpses( abs );
+    map &here = get_map();
+    mp_log( "[cdda-mp] CLI-PULP-REACQUIRE @ " + std::to_string( abs.x() ) + "," +
+            std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
+            " n=" + std::to_string( n ) + " pile=" +
+            ( here.inbounds( abs ) ? mp_corpse_sig( here.i_at( here.get_bub( abs ) ) ) : "oob" ) );
+}
+
 // The position half of the activity-loop hooks.  Also brackets do_turn's
 // in-input-loop activity runner: a cast cheaper than the turn's moves finishes
 // there and never reaches the activity loop.  Measured 2026-10-24, Translocate
@@ -19740,12 +19794,13 @@ static void apply_tile_changes( JsonObject &jo )
                         " host=" + mp_corpse_sig( new_items ) +
                         ( mp_ui_holds_item_refs() ? " (deferred)" : "" ) );
             }
-            auto do_replace = [bub, items = std::move( new_items )]() mutable {
+            auto do_replace = [bub, abs, items = std::move( new_items )]() mutable {
                 map &m2 = get_map();
                 m2.i_clear( bub );
                 for( item &it : items ) {
                     m2.add_item( bub, std::move( it ) );
                 }
+                mp_client_pulp_reacquire_after_replace( abs );
             };
             if( mp_ui_holds_item_refs() ) {
                 mp_defer_item_apply( std::move( do_replace ) );
