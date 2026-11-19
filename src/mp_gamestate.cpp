@@ -188,6 +188,16 @@ std::string pulp_activity_actor::get_progress_message( const player_activity & )
 // go first so do_turn doesn't count them.  Returns how many were collected.
 int pulp_activity_actor::mp_reacquire_corpses( const tripoint_abs_ms &pos )
 {
+    // Only a tile this pulp works on.  A smash pulp names its tile in `placement`;
+    // a pulp picked from a menu has no placement, so go by whether the replace just
+    // cost it a corpse.  -1 = not ours, nothing touched.
+    const bool lost_any = std::any_of( corpses.begin(), corpses.end(),
+    []( const item_location & il ) {
+        return il.get_item() == nullptr;
+    } );
+    if( placement.empty() ? !lost_any : !placement.count( pos ) ) {
+        return -1;
+    }
     corpses.erase( std::remove_if( corpses.begin(), corpses.end(),
     []( const item_location & il ) {
         return il.get_item() == nullptr;
@@ -1224,6 +1234,35 @@ static std::string mp_corpse_sig( const Items &items )
              ( it.can_revive() ? "r" : "" );
     }
     return "[" + s + "]";
+}
+
+// Host or client, right after the partner's copy of a pile replaced the items at
+// `abs` (i_clear + add_item): if our own avatar is pulping that tile, point its
+// ACT_PULP at the new corpse objects (pulp_activity_actor::mp_reacquire_corpses)
+// instead of letting the null references end it with "You finished pulping".
+// Returns how many corpses it collected, or -1 when we aren't pulping that tile.
+static int mp_avatar_pulp_reacquire( const tripoint_abs_ms &abs )
+{
+    static const activity_id ACT_PULP_REACQUIRE( "ACT_PULP" );
+    avatar &u = get_avatar();
+    if( u.activity.id() != ACT_PULP_REACQUIRE ) {
+        return -1;
+    }
+    pulp_activity_actor *actor = dynamic_cast<pulp_activity_actor *>( u.activity.actor.get() );
+    return actor == nullptr ? -1 : actor->mp_reacquire_corpses( abs );
+}
+
+// One line per replace while both players pulp the same pile, so sampled: on a
+// change of the count, else every 10 s per tile.
+static void mp_log_pulp_reacquire( const char *tag, const tripoint_abs_ms &abs, int n )
+{
+    map &here = get_map();
+    const std::string where = std::to_string( abs.x() ) + "," + std::to_string( abs.y() ) + "," +
+                              std::to_string( abs.z() );
+    mp_log_sampled( std::string( tag ) + "@" + where, std::to_string( n ), 10,
+                    std::string( "[cdda-mp] " ) + tag + " @ " + where + " n=" + std::to_string( n ) +
+                    " pile=" + ( here.inbounds( abs ) ? mp_corpse_sig( here.i_at( here.get_bub( abs ) ) ) :
+                                 std::string( "oob" ) ) );
 }
 
 // Client: set when the host sends host_died or the socket drops.
@@ -8093,11 +8132,19 @@ static void handle_remote_action( const std::string &/*name*/, const std::string
                                 note_diff( abs, "items " + list( host_types ) + "->" + list( client_types ) );
                             }
                         }
-                        auto do_replace = [bub, items = std::move( new_items )]() mutable {
+                        auto do_replace = [bub, abs, items = std::move( new_items )]() mutable {
                             map &m2 = get_map();
                             m2.i_clear( bub );
                             for( item &it : items ) {
                                 m2.add_item( bub, std::move( it ) );
+                            }
+                            // The host pulping the same pile: same null-reference end
+                            // as the client's (measured 2026-11-18 same-machine: the
+                            // host's ACT_PULP closed in the same ms as HOST-PULP-APPLY,
+                            // 3 times, "You finished pulping" on a revivable corpse).
+                            const int n = mp_avatar_pulp_reacquire( abs );
+                            if( n >= 0 ) {
+                                mp_log_pulp_reacquire( "HOST-PULP-REACQUIRE", abs, n );
                             }
                         };
                         if( mp_ui_holds_item_refs() ) {
@@ -18603,22 +18650,13 @@ bool client_pulps_locally( const tripoint_bub_ms &p )
 // pulp_activity_actor::mp_reacquire_corpses) instead of letting it end early.
 static void mp_client_pulp_reacquire_after_replace( const tripoint_abs_ms &abs )
 {
-    static const activity_id ACT_PULP_REACQUIRE( "ACT_PULP" );
-    avatar &u = get_avatar();
-    if( !g_client_pulp_target || *g_client_pulp_target != abs ||
-        u.activity.id() != ACT_PULP_REACQUIRE ) {
+    if( !g_client_pulp_target || *g_client_pulp_target != abs ) {
         return;
     }
-    pulp_activity_actor *actor = dynamic_cast<pulp_activity_actor *>( u.activity.actor.get() );
-    if( actor == nullptr ) {
-        return;
+    const int n = mp_avatar_pulp_reacquire( abs );
+    if( n >= 0 ) {
+        mp_log_pulp_reacquire( "CLI-PULP-REACQUIRE", abs, n );
     }
-    const int n = actor->mp_reacquire_corpses( abs );
-    map &here = get_map();
-    mp_log( "[cdda-mp] CLI-PULP-REACQUIRE @ " + std::to_string( abs.x() ) + "," +
-            std::to_string( abs.y() ) + "," + std::to_string( abs.z() ) +
-            " n=" + std::to_string( n ) + " pile=" +
-            ( here.inbounds( abs ) ? mp_corpse_sig( here.i_at( here.get_bub( abs ) ) ) : "oob" ) );
 }
 
 // The position half of the activity-loop hooks.  Also brackets do_turn's
